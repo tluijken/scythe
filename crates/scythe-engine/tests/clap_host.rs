@@ -167,3 +167,49 @@ fn plugin_latency_is_compensated() {
     assert_eq!(hits, [(500, 4.0)]);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn parameter_envelopes_drive_plugins_by_index() {
+    use scythe_core::rpp::project_from_rpp;
+    use scythe_engine::MediaPool;
+    use scythe_engine::fx::FxRegistry;
+    use scythe_engine::render::{MeterRegistry, RenderGraph, RenderScratch};
+
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let descs = ClapLibrary::load(&path).unwrap().descriptors();
+    let dir = std::env::temp_dir().join(format!("scythe-parmenv-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ones = dir.join("ones.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 1000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(&ones, spec).unwrap();
+    for _ in 0..1000 {
+        w.write_sample(1.0f32).unwrap();
+    }
+    w.finalize().unwrap();
+    // The gain parameter (index 0, plain range 0-1) ramps from 0 to 1 over the second.
+    let rpp = format!(
+        "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    <FXCHAIN\n      BYPASS 0 0 0\n      <CLAP \"CLAP: Test Gain (Scythe)\" org.scythe.test-gain \"\"\n        CFG 4 0 0 \"\"\n      >\n      FXID {{44444444-2222-3333-4444-555555555555}}\n      <PARMENV 0 0 1 0.5 \"Gain\"\n        ACT 1 -1\n        PT 0 0 0\n        PT 1 1 0\n      >\n      WAK 0 0\n    >\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      FADEIN 1 0 0 1 0 0 0\n      FADEOUT 1 0 0 1 0 0 0\n      <SOURCE WAVE\n        FILE \"{}\"\n      >\n    >\n  >\n>\n",
+        ones.display()
+    );
+    let project = project_from_rpp(&rpp).unwrap();
+    let pool = MediaPool::default();
+    pool.load(&ones, 1000).unwrap();
+    let mut fx = FxRegistry::new(1000);
+    fx.set_clap_plugins(descs);
+    let graph = RenderGraph::build(&project, &pool, &mut MeterRegistry::default(), &mut fx, 1000);
+    let (mut l, mut r) = (vec![0.0f32; 1000], vec![0.0f32; 1000]);
+    graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
+    // Parameters change every 64 frames, so allow one step of the ramp.
+    for t in [100, 400, 800] {
+        assert!((l[t] - t as f32 / 1000.0).abs() < 0.07, "frame {t}: {}", l[t]);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

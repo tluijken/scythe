@@ -91,7 +91,7 @@ Working:
   VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)
   and Linux VST 2 plugins from `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`. Add them from the
   inspector, click a slot for its parameters, and use **Edit** for the plugin's own editor (CLAP,
-  VST 2 and VST 3, in a separate X11 window). Plugin latency is compensated across tracks,
+  VST 2, VST 3 and LV2 X11 UIs, in a separate X11 window). Plugin latency is compensated across tracks,
   sends and folders.
 - **Time-stretch and pitch**: a take's play rate keeps its pitch when "Keep pitch" is on (REAPER's
   default), and takes can be pitch-shifted in semitones; both use a phase vocoder, prepared in the
@@ -114,7 +114,7 @@ compare with scythe's output sample by sample:
 
 | Area | Result |
 |---|---|
-| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), hybrid at -3 dB and below and at 0 dB, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
+| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), hybrid at every law from -1.5 dB down and at 0 dB, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
 | Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
 | Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
 | Reversed sections | exact |
@@ -126,16 +126,16 @@ compare with scythe's output sample by sample:
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
 
-The hybrid taper at laws between -3 and 0 dB is approximated (within 4 %); no project in the
-corpus uses one.
+The hybrid taper between -1.5 and 0 dB keeps its far side within 2 % (the near side is exact);
+no project in the corpus uses such a law.
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.
 
 ### Not there yet
 
-- LV2 plugin GUIs (CLAP, VST 2 and VST 3 editors open); FX parameter envelopes other than
-  bypass, wet/dry and ReaDelay's taps. NAM models are run at the project rate without resampling
+- FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
+  parameter; logarithmic parameters of the built-in effects are not mapped specially. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - MIDI to VST 2 instruments, MIDI controller editing, MIDI input. (MIDI items do play through
   CLAP instruments, the built-in sampler and the preview synth.)

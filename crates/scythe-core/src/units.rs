@@ -84,9 +84,11 @@ impl PanLaw {
     /// The linear taper runs straight from the centre gain to 0 and 1. The sine taper is the
     /// constant-power curve through the centre gain, blended towards the one that ends at
     /// unity by `(1/cos(a pi/4) - 1) / (sqrt 2 - 1)` of the pan amount `a`; both are exact
-    /// for every law. The hybrid taper equals the sine taper from -3 dB down and is a plain
-    /// balance control at 0 dB; laws in between are approximated (within 4 %) by the sine
-    /// taper clipped to that balance control.
+    /// for every law. The hybrid taper equals the sine taper from -3 dB down. Above it, both
+    /// channels follow sine arcs from the centre gain: the far side turns towards silence at
+    /// `asin(centre)` per unit of pan (held to the balance line `1 - a`), the near side reaches
+    /// unity at `a = hybrid_unity(centre)`. That is exact up to a centre of `sin 1` (-1.5 dB);
+    /// closer to 0 dB the far side's shape changes and stays within 2 %.
     pub fn gains(self, pan: f64) -> (f64, f64) {
         use std::f64::consts::{FRAC_PI_4, SQRT_2};
         let pan = pan.clamp(-1.0, 1.0);
@@ -106,11 +108,47 @@ impl PanLaw {
             PanTaper::Linear => linear,
             PanTaper::Sine => sine,
             PanTaper::Hybrid if centre <= std::f64::consts::FRAC_1_SQRT_2 + 1e-4 => sine,
-            PanTaper::Hybrid => (sine.0.max(linear.0).min(1.0 - a), sine.1.min(1.0)),
+            PanTaper::Hybrid => {
+                use std::f64::consts::FRAC_PI_2;
+                let start = centre.asin();
+                let unity = hybrid_unity(centre);
+                let near = if a >= unity { 1.0 } else { (start + (FRAC_PI_2 - start) * a / unity).sin() };
+                let far = (centre.acos() + start * a).min(FRAC_PI_2).cos().min(1.0 - a);
+                (far, near)
+            }
         };
         let (l, r) = if pan < 0.0 { (toward, away) } else { (away, toward) };
         (l * scale, r * scale)
     }
+}
+
+/// Pan amount at which the hybrid taper's near side reaches unity: `acos(c) / asin(c)` up to a
+/// centre gain of `sin 1`, then measured from REAPER renders (0 at a 0 dB centre).
+fn hybrid_unity(centre: f64) -> f64 {
+    const MEASURED: [(f64, f64); 16] = [
+        (0.8414, 0.5713),
+        (0.8511, 0.5368),
+        (0.8610, 0.5016),
+        (0.8710, 0.4659),
+        (0.8810, 0.4300),
+        (0.8912, 0.3934),
+        (0.9016, 0.3563),
+        (0.9120, 0.3191),
+        (0.9226, 0.2813),
+        (0.9333, 0.2427),
+        (0.9441, 0.2036),
+        (0.9550, 0.1644),
+        (0.9660, 0.1253),
+        (0.9772, 0.0861),
+        (0.9886, 0.0469),
+        (1.0, 0.0),
+    ];
+    if centre <= MEASURED[0].0 {
+        return centre.acos() / centre.asin();
+    }
+    let i = MEASURED.partition_point(|p| p.0 < centre).clamp(1, MEASURED.len() - 1);
+    let ((x0, y0), (x1, y1)) = (MEASURED[i - 1], MEASURED[i]);
+    y0 + (y1 - y0) * (centre - x0) / (x1 - x0)
 }
 
 #[cfg(test)]

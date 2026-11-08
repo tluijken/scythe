@@ -14,9 +14,11 @@ const PLUGINS_TTL: &str = r#"
 @prefix atom: <http://lv2plug.in/ns/ext/atom#> .
 @prefix doap: <http://usefulinc.com/ns/doap#> .
 @prefix midi: <http://lv2plug.in/ns/ext/midi#> .
+@prefix ui:   <http://lv2plug.in/ns/extensions/ui#> .
 
 <urn:scythe:test-amp>
     a lv2:Plugin ;
+    ui:ui <urn:scythe:test-amp#ui> ;
     doap:name "Test Amp" ;
     lv2:port [ a lv2:AudioPort , lv2:InputPort ; lv2:index 0 ; lv2:symbol "in_l" ; lv2:name "In L" ] ,
              [ a lv2:AudioPort , lv2:InputPort ; lv2:index 1 ; lv2:symbol "in_r" ; lv2:name "In R" ] ,
@@ -25,6 +27,8 @@ const PLUGINS_TTL: &str = r#"
              [ a lv2:ControlPort , lv2:InputPort ; lv2:index 4 ; lv2:symbol "gain" ; lv2:name "Gain" ;
                lv2:default 0.5 ; lv2:minimum 0.0 ; lv2:maximum 1.0 ] ,
              [ a lv2:ControlPort , lv2:OutputPort ; lv2:index 5 ; lv2:symbol "label_len" ; lv2:name "Label length" ] .
+
+<urn:scythe:test-amp#ui> a ui:X11UI ; ui:binary <test%20plugins.so> .
 
 <urn:scythe:test-synth>
     a lv2:Plugin , lv2:InstrumentPlugin ;
@@ -160,5 +164,61 @@ fn midi_items_play_through_an_lv2_instrument() {
     assert_eq!(l[499], 0.0);
     assert!((l[500] - level).abs() < 1e-6 && (l[999] - level).abs() < 1e-6, "{} {}", l[500], l[999]);
     assert_eq!(l[1000], 0.0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn opens_the_x11_ui_and_takes_its_control_changes() {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
+    let Some(root) = bundle("ui") else {
+        eprintln!("lv2-test-plugins not built; skipping");
+        return;
+    };
+    let Ok((conn, screen)) = x11rb::connect(None) else {
+        eprintln!("no X11 display; skipping");
+        return;
+    };
+    let parent = conn.generate_id().unwrap();
+    let screen_root = conn.setup().roots[screen].root;
+    conn.create_window(
+        0,
+        parent,
+        screen_root,
+        0,
+        0,
+        640,
+        480,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    conn.flush().unwrap();
+
+    let plugins = lv2::scan(std::slice::from_ref(&root));
+    let amp = plugins.iter().find(|p| p.uri == "urn:scythe:test-amp").unwrap();
+    assert_eq!(amp.ui.as_ref().map(|u| u.0.as_str()), Some("urn:scythe:test-amp#ui"));
+
+    let mut project = scythe_core::Project::default();
+    let mut track = scythe_core::Track::new("t");
+    track.fx.push(scythe_engine::fx::lv2_slot(amp));
+    let id = track.id;
+    project.tracks.push(track);
+    let mut fx = registry(&root, 1000);
+    let chain = fx.chain(Some(id), &project.tracks[0].fx);
+    let mut editor = chain[0].with(|e| e.editor()).flatten().expect("the amp has a UI");
+    assert_eq!(editor.open(parent).unwrap(), (320, 200));
+    assert_eq!(editor.idle(), None);
+
+    let ctx =
+        scythe_engine::fx::ProcessContext { sample_rate: 1000, position: 0, playing: true, notes: None, bpm: 120.0 };
+    let (mut l, mut r) = (vec![1.0f32; 4], vec![1.0f32; 4]);
+    chain[0].process(&mut l, &mut r, &ctx);
+    assert_eq!(l[0], 0.8, "the UI's control change reached the plugin");
+    editor.close();
+    conn.destroy_window(parent).unwrap();
+    conn.flush().unwrap();
     std::fs::remove_dir_all(root).ok();
 }

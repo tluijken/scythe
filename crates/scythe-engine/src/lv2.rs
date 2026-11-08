@@ -11,6 +11,7 @@ use crate::turtle::{self, Graph, Term};
 
 const LV2: &str = "http://lv2plug.in/ns/lv2core#";
 const ATOM: &str = "http://lv2plug.in/ns/ext/atom#";
+const UI: &str = "http://lv2plug.in/ns/extensions/ui#";
 const MIDI_EVENT: &str = "http://lv2plug.in/ns/ext/midi#MidiEvent";
 const RDFS_SEE_ALSO: &str = "http://www.w3.org/2000/01/rdf-schema#seeAlso";
 const DOAP_NAME: &str = "http://usefulinc.com/ns/doap#name";
@@ -62,6 +63,8 @@ pub struct Lv2Info {
     pub binary: PathBuf,
     pub ports: Vec<PortInfo>,
     pub instrument: bool,
+    /// An X11 editor (`ui:X11UI`): its URI and binary.
+    pub ui: Option<(String, PathBuf)>,
 }
 
 /// Directories LV2 bundles are looked up in: `$LV2_PATH`, then the usual user and system
@@ -194,7 +197,11 @@ fn plugin_info(g: &Graph, plugin: &Term, bundle: &Path) -> Option<Lv2Info> {
     let midi_in = ports.iter().any(|p| p.kind == PortKind::Atom && p.input && p.midi);
     let audio_in = ports.iter().any(|p| p.kind == PortKind::Audio && p.input);
     let instrument = g.has_type(plugin, &lv2("InstrumentPlugin")) || (midi_in && !audio_in);
-    Some(Lv2Info { uri, name, bundle: bundle.to_owned(), binary, ports, instrument })
+    let ui = g
+        .objects(plugin, &format!("{UI}ui"))
+        .filter(|u| g.has_type(u, &format!("{UI}X11UI")))
+        .find_map(|u| Some((u.iri()?.to_owned(), iri_path(g.object(u, &format!("{UI}binary"))?.iri()?)?)));
+    Some(Lv2Info { uri, name, bundle: bundle.to_owned(), binary, ports, instrument, ui })
 }
 
 // ---- C ABI ---------------------------------------------------------------------------------
@@ -408,6 +415,10 @@ pub struct Lv2Plugin {
     worker: Box<Worker>,
     features: Features,
     block: usize,
+    /// Control changes the editor made, applied before the next block.
+    ui_writes: Arc<Mutex<Vec<(u32, f32)>>>,
+    /// Control values after the last block, for the editor (f32 bits per port index).
+    mirror: Arc<Vec<std::sync::atomic::AtomicU32>>,
     seq_type: u32,
     chunk_type: u32,
     midi_type: u32,
@@ -524,6 +535,8 @@ impl Lv2Plugin {
             worker,
             features,
             block,
+            ui_writes: Default::default(),
+            mirror: Arc::new((0..size).map(|_| std::sync::atomic::AtomicU32::new(0)).collect()),
             seq_type: map(&format!("{ATOM}Sequence")),
             chunk_type: map(&format!("{ATOM}Chunk")),
             midi_type: map(MIDI_EVENT),
@@ -591,6 +604,12 @@ impl Lv2Plugin {
     /// input that takes MIDI.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32], midi: &[(u32, [u8; 3])]) {
         let n = left.len().min(right.len()).min(self.block);
+        let writes = self.ui_writes.clone();
+        if let Ok(mut writes) = writes.try_lock() {
+            for (port, value) in writes.drain(..) {
+                self.set_control(port, value);
+            }
+        }
         let ports: Vec<(PortKind, bool)> = self.info.ports.iter().map(|p| (p.kind, p.input)).collect();
         let (mut ins, mut outs) = (0, 0);
         for ((kind, input), buf) in
@@ -647,6 +666,9 @@ impl Lv2Plugin {
             }
         }
         self.run_worker();
+        for (m, v) in self.mirror.iter().zip(&self.controls) {
+            m.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
         let mut out_bufs = ports
             .iter()
             .filter(|(k, _)| matches!(k, PortKind::Audio | PortKind::Cv))
@@ -839,4 +861,226 @@ pub fn reaper_state(entries: &[StateEntry]) -> scythe_core::rpp::Chunk {
         }
     }
     state
+}
+
+// ---- editors -----------------------------------------------------------------------------
+
+const UI_PARENT: &str = "http://lv2plug.in/ns/extensions/ui#parent";
+const UI_RESIZE: &str = "http://lv2plug.in/ns/extensions/ui#resize";
+const UI_IDLE: &str = "http://lv2plug.in/ns/extensions/ui#idleInterface";
+const INSTANCE_ACCESS: &str = "http://lv2plug.in/ns/ext/instance-access";
+
+type WriteFn = unsafe extern "C" fn(*mut c_void, u32, u32, u32, *const c_void);
+
+#[repr(C)]
+struct UiDescriptor {
+    uri: *const c_char,
+    instantiate: Option<
+        unsafe extern "C" fn(
+            *const UiDescriptor,
+            *const c_char,
+            *const c_char,
+            WriteFn,
+            *mut c_void,
+            *mut *mut c_void,
+            *const *const Feature,
+        ) -> *mut c_void,
+    >,
+    cleanup: Option<unsafe extern "C" fn(*mut c_void)>,
+    port_event: Option<unsafe extern "C" fn(*mut c_void, u32, u32, u32, *const c_void)>,
+    extension_data: Option<unsafe extern "C" fn(*const c_char) -> *const c_void>,
+}
+
+#[repr(C)]
+struct UiResize {
+    handle: *mut c_void,
+    ui_resize: unsafe extern "C" fn(*mut c_void, i32, i32) -> i32,
+}
+
+#[repr(C)]
+struct UiIdle {
+    idle: Option<unsafe extern "C" fn(*mut c_void) -> i32>,
+}
+
+/// What the UI's callbacks reach: its control writes and its size requests.
+#[derive(Default)]
+struct UiShared {
+    writes: Arc<Mutex<Vec<(u32, f32)>>>,
+    resize: Mutex<Option<(u32, u32)>>,
+}
+
+unsafe extern "C" fn ui_write(controller: *mut c_void, port: u32, size: u32, protocol: u32, buffer: *const c_void) {
+    // Protocol 0 is a float control value; atom transfers are not passed on.
+    if protocol != 0 || size != 4 || buffer.is_null() {
+        return;
+    }
+    // SAFETY: controller is the editor's UiShared; buffer holds one f32.
+    unsafe {
+        let shared = &*(controller as *const UiShared);
+        shared.writes.lock().unwrap().push((port, *(buffer as *const f32)));
+    }
+}
+
+unsafe extern "C" fn ui_resize(handle: *mut c_void, width: i32, height: i32) -> i32 {
+    // SAFETY: handle is the editor's UiShared.
+    let shared = unsafe { &*(handle as *const UiShared) };
+    *shared.resize.lock().unwrap() = Some((width.max(1) as u32, height.max(1) as u32));
+    0
+}
+
+/// An LV2 plugin's X11 UI, embedded through `ui:parent`.
+pub struct Lv2Editor {
+    ui: (String, PathBuf),
+    plugin_uri: String,
+    plugin: *mut c_void,
+    shared: Box<UiShared>,
+    mirror: Arc<Vec<std::sync::atomic::AtomicU32>>,
+    controls: Vec<u32>,
+    sent: Vec<u32>,
+    lib: Option<libloading::Library>,
+    desc: *const UiDescriptor,
+    handle: *mut c_void,
+    closed: bool,
+    _features: Vec<CString>,
+}
+
+impl Lv2Plugin {
+    /// The plugin's X11 UI, when it has one. The editor talks to the plugin through shared
+    /// queues and only reads the instance pointer; keep the plugin alive while it is open.
+    pub fn editor(&self) -> Option<Lv2Editor> {
+        let ui = self.info.ui.clone()?;
+        let controls: Vec<u32> =
+            self.info.ports.iter().filter(|p| p.kind == PortKind::Control).map(|p| p.index).collect();
+        Some(Lv2Editor {
+            ui,
+            plugin_uri: self.info.uri.clone(),
+            plugin: self.handle,
+            shared: Box::new(UiShared { writes: self.ui_writes.clone(), resize: Mutex::new(None) }),
+            mirror: self.mirror.clone(),
+            sent: vec![u32::MAX; controls.len()],
+            controls,
+            lib: None,
+            desc: std::ptr::null(),
+            handle: std::ptr::null_mut(),
+            closed: false,
+            _features: Vec::new(),
+        })
+    }
+}
+
+impl Lv2Editor {
+    /// Tells the UI about control values that changed since it last heard.
+    fn send_controls(&mut self) {
+        // SAFETY: desc and handle are valid while the UI is open.
+        let Some(port_event) = (unsafe { self.desc.as_ref() }).and_then(|d| d.port_event) else { return };
+        for (i, &port) in self.controls.iter().enumerate() {
+            let bits = self.mirror.get(port as usize).map_or(0, |m| m.load(std::sync::atomic::Ordering::Relaxed));
+            if bits != self.sent[i] {
+                self.sent[i] = bits;
+                let value = f32::from_bits(bits);
+                // SAFETY: format 0 is a float control value.
+                unsafe { port_event(self.handle, port, 4, 0, &value as *const f32 as *const c_void) };
+            }
+        }
+    }
+}
+
+impl crate::editor::Editor for Lv2Editor {
+    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+        let (uri, binary) = self.ui.clone();
+        // SAFETY: loading a plugin UI runs its initialisers; that is inherent to hosting it.
+        let lib = unsafe { libloading::Library::new(&binary) }.map_err(|e| e.to_string())?;
+        // SAFETY: `lv2ui_descriptor` has this signature in every LV2 UI binary.
+        let entry: libloading::Symbol<unsafe extern "C" fn(u32) -> *const UiDescriptor> =
+            unsafe { lib.get(b"lv2ui_descriptor") }.map_err(|e| e.to_string())?;
+        let mut desc = std::ptr::null();
+        for i in 0.. {
+            // SAFETY: returns null past the last UI.
+            let d = unsafe { entry(i) };
+            // SAFETY: d is null or a valid descriptor with a URI.
+            if d.is_null() || unsafe { CStr::from_ptr((*d).uri) }.to_bytes() == uri.as_bytes() {
+                desc = d;
+                break;
+            }
+        }
+        if desc.is_null() {
+            return Err(format!("{} does not provide {uri}", binary.display()));
+        }
+        let names: Vec<CString> = [URID_MAP, URID_UNMAP, UI_PARENT, UI_RESIZE, UI_IDLE, INSTANCE_ACCESS]
+            .iter()
+            .map(|u| CString::new(*u).unwrap())
+            .collect();
+        let map = UridMap { handle: std::ptr::null_mut(), map: map_cb };
+        let unmap = UridUnmap { handle: std::ptr::null_mut(), unmap: unmap_cb };
+        let shared = &*self.shared as *const UiShared as *mut c_void;
+        let resize = UiResize { handle: shared, ui_resize };
+        let list = [
+            Feature { uri: names[0].as_ptr(), data: &map as *const UridMap as *mut c_void },
+            Feature { uri: names[1].as_ptr(), data: &unmap as *const UridUnmap as *mut c_void },
+            Feature { uri: names[2].as_ptr(), data: parent as usize as *mut c_void },
+            Feature { uri: names[3].as_ptr(), data: &resize as *const UiResize as *mut c_void },
+            Feature { uri: names[4].as_ptr(), data: std::ptr::null_mut() },
+            Feature { uri: names[5].as_ptr(), data: self.plugin },
+        ];
+        let mut ptrs: Vec<*const Feature> = list.iter().map(|f| f as *const Feature).collect();
+        ptrs.push(std::ptr::null());
+        let bundle = binary.parent().map(|p| format!("{}/", p.display())).unwrap_or_default();
+        let (bundle, plugin_uri) =
+            (CString::new(bundle).unwrap_or_default(), CString::new(self.plugin_uri.as_str()).unwrap_or_default());
+        let mut widget = std::ptr::null_mut();
+        // SAFETY: the features are only used during instantiate except `parent` (a plain id),
+        // the URID callbacks (static) and the resize handle (boxed in self).
+        let handle = unsafe {
+            let instantiate = (*desc).instantiate.ok_or("the UI cannot be instantiated")?;
+            instantiate(desc, plugin_uri.as_ptr(), bundle.as_ptr(), ui_write, shared, &mut widget, ptrs.as_ptr())
+        };
+        if handle.is_null() {
+            return Err("the UI refused to start".into());
+        }
+        self.lib = Some(lib);
+        self.desc = desc;
+        self.handle = handle;
+        self.send_controls();
+        Ok(self.shared.resize.lock().unwrap().take().unwrap_or((640, 480)))
+    }
+
+    fn idle(&mut self) -> Option<(u32, u32)> {
+        if self.handle.is_null() {
+            return None;
+        }
+        self.send_controls();
+        let idle_uri = CString::new(UI_IDLE).unwrap();
+        // SAFETY: extension_data returns null or the idle interface.
+        let idle =
+            unsafe { (*self.desc).extension_data.and_then(|f| (f(idle_uri.as_ptr()) as *const UiIdle).as_ref()) };
+        if let Some(f) = idle.and_then(|i| i.idle)
+            // SAFETY: an idle call on the UI's own thread.
+            && unsafe { f(self.handle) } != 0
+        {
+            self.closed = true;
+        }
+        self.shared.resize.lock().unwrap().take()
+    }
+
+    fn close(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: ends the UI instantiated in `open`.
+            unsafe {
+                if let Some(cleanup) = (*self.desc).cleanup {
+                    cleanup(self.handle);
+                }
+            }
+            self.handle = std::ptr::null_mut();
+        }
+    }
+
+    fn closed(&self) -> bool {
+        self.closed
+    }
+}
+
+impl Drop for Lv2Editor {
+    fn drop(&mut self) {
+        crate::editor::Editor::close(self);
+    }
 }

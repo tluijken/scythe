@@ -88,10 +88,33 @@ pub enum Target {
     Named(String),
 }
 
+/// Maps an envelope value onto a parameter: linearly from the envelope's range to the
+/// parameter's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParamMapping {
+    pub id: u32,
+    pub from: (f64, f64),
+    pub to: (f64, f64),
+}
+
+impl ParamMapping {
+    pub fn map(&self, v: f64) -> f64 {
+        let span = self.from.1 - self.from.0;
+        let k = if span.abs() > 1e-12 { ((v - self.from.0) / span).clamp(0.0, 1.0) } else { 0.0 };
+        self.to.0 + k * (self.to.1 - self.to.0)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParamAutomation {
     pub target: Target,
     pub envelope: scythe_core::Envelope,
+    /// The parameter at the envelope's index, for effects that do not know its name.
+    pub fallback: Option<ParamMapping>,
+    /// Position in the effect's parameter list (`PARMENV <index>:<name>`).
+    pub index: usize,
+    /// The envelope's value range (`PARMENV … <min> <max>`).
+    pub range: (f64, f64),
 }
 
 /// `<PARMENV <index>:<name> <min> <max> <default> "label"` chunks of a slot, with their points.
@@ -103,8 +126,14 @@ fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
             _ => None,
         })
         .filter_map(|c| {
-            let spec = c.args().into_iter().next()?;
-            let name = spec.split_once(':').map_or(spec.as_str(), |(_, n)| n).to_owned();
+            let args = c.args();
+            let spec = args.first()?.clone();
+            let (index, name) = match spec.split_once(':') {
+                Some((i, n)) => (i.parse().unwrap_or(usize::MAX), n.to_owned()),
+                None => (spec.parse().unwrap_or(usize::MAX), String::new()),
+            };
+            let bound = |i: usize, d: f64| args.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
+            let range = (bound(1, 0.0), bound(2, 1.0));
             let target = if name == "bypass" { Target::Bypass } else { Target::Named(name) };
             let mut envelope = scythe_core::Envelope::new(scythe_core::EnvelopeKind::Volume);
             for node in &c.children {
@@ -123,7 +152,13 @@ fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
                 }
             }
             envelope.sort();
-            (envelope.active && !envelope.points.is_empty()).then_some(ParamAutomation { target, envelope })
+            (envelope.active && !envelope.points.is_empty()).then_some(ParamAutomation {
+                target,
+                envelope,
+                fallback: None,
+                index,
+                range,
+            })
         })
         .collect()
 }
@@ -162,7 +197,11 @@ impl FxInstance {
             match &a.target {
                 Target::Bypass => bypassed = v >= 0.5,
                 Target::Named(name) => {
-                    fx.set_named_param(name, v);
+                    if !fx.set_named_param(name, v)
+                        && let Some(m) = &a.fallback
+                    {
+                        fx.set_param(m.id, m.map(v));
+                    }
                 }
             }
         }
@@ -265,7 +304,15 @@ impl FxRegistry {
                 && let Some(inst) = &self.entries[&key].instance
             {
                 out.push(inst.clone());
-                automation.push(parameter_envelopes(slot));
+                let mut envs = parameter_envelopes(slot);
+                if envs.iter().any(|a| matches!(a.target, Target::Named(_))) {
+                    let params = inst.with(|e| e.params()).unwrap_or_default();
+                    for a in &mut envs {
+                        a.fallback =
+                            params.get(a.index).map(|p| ParamMapping { id: p.id, from: a.range, to: (p.min, p.max) });
+                    }
+                }
+                automation.push(envs);
             }
         }
         (out, automation)
@@ -883,6 +930,10 @@ impl Lv2Effect {
 impl Effect for Lv2Effect {
     fn is_instrument(&self) -> bool {
         self.plugin.info.instrument
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {

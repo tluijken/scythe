@@ -1,7 +1,8 @@
 //! Minimal LV2 plugins used to test scythe's LV2 host. `urn:scythe:test-amp` scales stereo
 //! audio by its `gain` control and keeps a text label in its state, reporting the label's
 //! length on an output control. `urn:scythe:test-synth` writes the held MIDI key / 128 as a
-//! constant level, so tests can read note timing exactly. The Turtle files live in the tests.
+//! constant level, so tests can read note timing exactly. The amp has an X11 UI that sets its
+//! gain to 0.8 when it opens. The Turtle files live in the tests.
 
 use std::ffi::{CStr, c_char, c_void};
 
@@ -271,4 +272,149 @@ pub unsafe extern "C" fn lv2_descriptor(index: u32) -> *const Descriptor {
         1 => &SYNTH,
         _ => std::ptr::null(),
     }
+}
+
+// ---- amp UI --------------------------------------------------------------------------------
+
+#[repr(C)]
+pub struct UiDescriptor {
+    uri: *const c_char,
+    instantiate: unsafe extern "C" fn(
+        *const UiDescriptor,
+        *const c_char,
+        *const c_char,
+        WriteFn,
+        *mut c_void,
+        *mut *mut c_void,
+        *const *const Feature,
+    ) -> *mut c_void,
+    cleanup: unsafe extern "C" fn(*mut c_void),
+    port_event: unsafe extern "C" fn(*mut c_void, u32, u32, u32, *const c_void),
+    extension_data: unsafe extern "C" fn(*const c_char) -> *const c_void,
+}
+
+// SAFETY: the descriptor only holds pointers to static strings and functions.
+unsafe impl Sync for UiDescriptor {}
+
+type WriteFn = unsafe extern "C" fn(*mut c_void, u32, u32, u32, *const c_void);
+
+#[repr(C)]
+struct UiResize {
+    handle: *mut c_void,
+    ui_resize: unsafe extern "C" fn(*mut c_void, i32, i32) -> i32,
+}
+
+/// The UI: a coloured child window. On start it sets the gain to 0.8 through the host.
+struct AmpUi {
+    conn: x11rb::rust_connection::RustConnection,
+    window: u32,
+}
+
+unsafe fn feature(features: *const *const Feature, uri: &[u8]) -> Option<*mut c_void> {
+    let mut f = features;
+    // SAFETY: the host passes a NUL-terminated array of valid features.
+    unsafe {
+        while !(*f).is_null() {
+            if CStr::from_ptr((**f).uri).to_bytes() == uri {
+                return Some((**f).data);
+            }
+            f = f.add(1);
+        }
+    }
+    None
+}
+
+unsafe extern "C" fn ui_instantiate(
+    _d: *const UiDescriptor,
+    _plugin: *const c_char,
+    _bundle: *const c_char,
+    write: WriteFn,
+    controller: *mut c_void,
+    widget: *mut *mut c_void,
+    features: *const *const Feature,
+) -> *mut c_void {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
+    // SAFETY: features come from the host.
+    let Some(parent) = (unsafe { feature(features, b"http://lv2plug.in/ns/extensions/ui#parent") }) else {
+        return std::ptr::null_mut();
+    };
+    let Ok((conn, _)) = x11rb::connect(None) else { return std::ptr::null_mut() };
+    let Ok(window) = conn.generate_id() else { return std::ptr::null_mut() };
+    let aux = CreateWindowAux::new().background_pixel(0xe76f51);
+    let made = conn
+        .create_window(
+            x11rb::COPY_DEPTH_FROM_PARENT,
+            window,
+            parent as usize as u32,
+            0,
+            0,
+            320,
+            200,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            x11rb::COPY_FROM_PARENT,
+            &aux,
+        )
+        .is_ok();
+    if !made || conn.map_window(window).is_err() || conn.flush().is_err() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: the host's resize feature, widget pointer and write function are valid here.
+    unsafe {
+        if let Some(r) = feature(features, b"http://lv2plug.in/ns/extensions/ui#resize") {
+            let r = &*(r as *const UiResize);
+            (r.ui_resize)(r.handle, 320, 200);
+        }
+        *widget = window as usize as *mut c_void;
+        let gain = 0.8f32;
+        write(controller, 4, 4, 0, &gain as *const f32 as *const c_void);
+    }
+    Box::into_raw(Box::new(AmpUi { conn, window })) as *mut c_void
+}
+
+unsafe extern "C" fn ui_cleanup(handle: *mut c_void) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    // SAFETY: undoes the Box::into_raw in instantiate.
+    let ui = unsafe { Box::from_raw(handle as *mut AmpUi) };
+    let _ = ui.conn.destroy_window(ui.window);
+    let _ = ui.conn.flush();
+}
+
+unsafe extern "C" fn ui_port_event(_h: *mut c_void, _port: u32, _size: u32, _format: u32, _buffer: *const c_void) {}
+
+unsafe extern "C" fn ui_idle(_h: *mut c_void) -> i32 {
+    0
+}
+
+#[repr(C)]
+struct UiIdle {
+    idle: unsafe extern "C" fn(*mut c_void) -> i32,
+}
+
+static UI_IDLE: UiIdle = UiIdle { idle: ui_idle };
+
+unsafe extern "C" fn ui_extension(uri: *const c_char) -> *const c_void {
+    // SAFETY: uri is a C string.
+    if unsafe { CStr::from_ptr(uri) }.to_bytes() == b"http://lv2plug.in/ns/extensions/ui#idleInterface" {
+        &UI_IDLE as *const _ as *const c_void
+    } else {
+        std::ptr::null()
+    }
+}
+
+static AMP_UI: UiDescriptor = UiDescriptor {
+    uri: c"urn:scythe:test-amp#ui".as_ptr(),
+    instantiate: ui_instantiate,
+    cleanup: ui_cleanup,
+    port_event: ui_port_event,
+    extension_data: ui_extension,
+};
+
+/// # Safety
+/// Called by LV2 hosts with any index; returns null past the last UI.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lv2ui_descriptor(index: u32) -> *const UiDescriptor {
+    if index == 0 { &AMP_UI } else { std::ptr::null() }
 }

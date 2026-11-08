@@ -1926,6 +1926,9 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "lv2-test-plugins"
 version = "0.1.0"
+dependencies = [
+ "x11rb",
+]
 
 [[package]]
 name = "mach2"
@@ -3172,6 +3175,7 @@ dependencies = [
  "symphonia",
  "thiserror 2.0.21",
  "vst3",
+ "x11rb",
 ]
 
 [[package]]
