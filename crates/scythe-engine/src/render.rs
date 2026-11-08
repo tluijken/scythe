@@ -161,6 +161,8 @@ pub struct RenderTrack {
     pub fx_pins: Vec<Option<PinMap>>,
     /// Buffers the pins of such effects are gathered into, one per pin of the widest.
     pub pin_bufs: Option<Arc<AuxChannels>>,
+    /// MIDI effects pass down the chain within a block.
+    pub chain_midi: Arc<ChainMidi>,
     /// MIDI of the track's items when an instrument in the chain plays it.
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
@@ -213,6 +215,13 @@ impl RenderSend {
 /// allocates. Only the track's own render and the routing after it touch them.
 #[derive(Debug)]
 pub struct AuxChannels(std::sync::Mutex<Vec<Vec<f32>>>);
+
+/// The MIDI the chain carries in the current block and the next effect's output.
+#[derive(Debug, Default)]
+pub struct ChainMidi(std::sync::Mutex<[MidiBlock; 2]>);
+
+/// MIDI messages as frame offsets within a block.
+type MidiBlock = Vec<(usize, [u8; 3])>;
 
 impl AuxChannels {
     fn new(channels: usize) -> Self {
@@ -609,6 +618,7 @@ impl RenderGraph {
                     fx: chain,
                     fx_automation,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
+                    chain_midi: Arc::default(),
                     fx_pins,
                     notes,
                     monitor: (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0).then(
@@ -771,6 +781,8 @@ impl RenderGraph {
             let mut pin_bufs = self.master_pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
             for (k, (fx, latency)) in self.master_fx.iter().zip(&self.master_fx_latency).enumerate() {
                 let mut ctx = ProcessContext {
+                    midi: None,
+                    midi_from: 0,
                     sample_rate: self.sample_rate,
                     position,
                     playing: input.play_items,
@@ -868,6 +880,9 @@ impl RenderGraph {
         let mut position = read;
         if track.audible && !track.fx.is_empty() {
             let mut pin_bufs = track.pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
+            let mut midi_bufs = track.chain_midi.0.try_lock().ok();
+            // Set once an effect has passed MIDI on; until then effects read the track's own.
+            let mut chain_has_midi = false;
             for (k, ((fx, automation), latency)) in
                 track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency).enumerate()
             {
@@ -883,7 +898,14 @@ impl RenderGraph {
                     live: if track.midi_input.is_some() { input.midi } else { &[] },
                     live_channel: track.midi_input.flatten(),
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
+                    midi: None,
+                    midi_from: 0,
                 };
+                let (chain_midi, next_midi) = match midi_bufs.as_deref_mut() {
+                    Some([held, next]) => (chain_has_midi.then_some(&held[..]), Some(next)),
+                    None => (None, None),
+                };
+                ctx.midi = chain_midi;
                 let t = position as f64 / self.sample_rate as f64;
                 position -= latency;
                 // REAPER sets enveloped FX parameters once per 512-frame block, from the value at
@@ -912,6 +934,7 @@ impl RenderGraph {
                                 let slice_ctx = ProcessContext {
                                     position: frame,
                                     live: if at == 0 { ctx.live } else { &[] },
+                                    midi_from: at,
                                     ..ctx
                                 };
                                 fx.process_pins_automated(
@@ -936,6 +959,7 @@ impl RenderGraph {
                                     position: frame,
                                     live: if at == 0 { ctx.live } else { &[] },
                                     aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
+                                    midi_from: at,
                                     ..ctx
                                 };
                                 fx.process_automated(
@@ -949,26 +973,36 @@ impl RenderGraph {
                         }
                     }
                     scatter_pins(map, bufs, n, tl, tr, aux.as_deref_mut(), track.channels);
-                    continue;
-                }
-                ctx.aux = aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n]));
-                if automation.is_empty() {
-                    fx.process(tl, tr, &ctx);
                 } else {
-                    for (at, len, frame) in slices(n) {
-                        let slice_ctx = ProcessContext {
-                            position: frame,
-                            live: if at == 0 { ctx.live } else { &[] },
-                            aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
-                            ..ctx
-                        };
-                        fx.process_automated(
-                            &mut tl[at..at + len],
-                            &mut tr[at..at + len],
-                            &slice_ctx,
-                            automation,
-                            t + at as f64 / sr,
-                        );
+                    ctx.aux = aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n]));
+                    if automation.is_empty() {
+                        fx.process(tl, tr, &ctx);
+                    } else {
+                        for (at, len, frame) in slices(n) {
+                            let slice_ctx = ProcessContext {
+                                position: frame,
+                                live: if at == 0 { ctx.live } else { &[] },
+                                aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
+                                midi_from: at,
+                                ..ctx
+                            };
+                            fx.process_automated(
+                                &mut tl[at..at + len],
+                                &mut tr[at..at + len],
+                                &slice_ctx,
+                                automation,
+                                t + at as f64 / sr,
+                            );
+                        }
+                    }
+                }
+                if let Some(next) = next_midi {
+                    next.clear();
+                    if fx.take_midi(next) {
+                        chain_has_midi = true;
+                        if let Some([held, next]) = midi_bufs.as_deref_mut() {
+                            std::mem::swap(held, next);
+                        }
                     }
                 }
             }
@@ -1437,12 +1471,23 @@ fn effective_pins(
         .filter(|(i, s)| s.enabled && has_instance(s, *i))
         .zip(chain)
         .map(|((_, s), inst)| {
-            pin_map(s).or_else(|| {
-                (inst.pins.0 > 2 || inst.pins.1 > 2).then(|| PinMap {
-                    inputs: (0..inst.pins.0.min(64)).map(|p| 1u64 << p).collect(),
-                    outputs: (0..inst.pins.1.min(64)).map(|p| 1u64 << p).collect(),
+            // Pins a saved map leaves out keep their default channel (pin n on channel n).
+            let widen = |masks: &mut Vec<u64>, n: usize| {
+                let from = masks.len();
+                masks.extend((from..n.min(64)).map(|p| 1u64 << p));
+            };
+            pin_map(s)
+                .map(|mut m| {
+                    widen(&mut m.inputs, inst.pins.0);
+                    widen(&mut m.outputs, inst.pins.1);
+                    m
                 })
-            })
+                .or_else(|| {
+                    (inst.pins.0 > 2 || inst.pins.1 > 2).then(|| PinMap {
+                        inputs: (0..inst.pins.0.min(64)).map(|p| 1u64 << p).collect(),
+                        outputs: (0..inst.pins.1.min(64)).map(|p| 1u64 << p).collect(),
+                    })
+                })
         })
         .collect()
 }

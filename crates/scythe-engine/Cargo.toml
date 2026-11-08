@@ -17,6 +17,7 @@ clap-sys.workspace = true
 vst3.workspace = true
 libc.workspace = true
 realfft.workspace = true
+rustfft.workspace = true
 base64.workspace = true
 cpal.workspace = true
 symphonia.workspace = true

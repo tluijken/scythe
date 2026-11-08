@@ -427,6 +427,8 @@ mod tests {
             &mut l,
             &mut r,
             &ProcessContext {
+                midi: None,
+                midi_from: 0,
                 sample_rate: 1000,
                 position: 0,
                 playing: true,
@@ -473,6 +475,8 @@ mod tests {
             &mut l,
             &mut r,
             &ProcessContext {
+                midi: None,
+                midi_from: 0,
                 sample_rate: 48000,
                 position: 0,
                 playing: true,

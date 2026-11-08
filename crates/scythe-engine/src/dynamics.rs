@@ -403,6 +403,8 @@ mod tests {
 
     fn run(fx: &mut dyn Effect) -> Vec<f32> {
         let ctx = ProcessContext {
+            midi: None,
+            midi_from: 0,
             sample_rate: 48000,
             position: 0,
             playing: true,

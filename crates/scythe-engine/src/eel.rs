@@ -3,6 +3,8 @@
 //! are case-insensitive); `x[i]` addresses the shared memory. User functions are inlined at
 //! each call with their parameters, locals and instance variables renamed, as EEL2 itself does.
 
+mod spectral;
+
 use std::collections::HashMap;
 
 /// Values closer than this count as equal, and closer than this to zero as false.
@@ -74,6 +76,22 @@ pub enum Builtin {
     StrGetchar,
     MemTop,
     TimePrecise,
+    MidiRecvBuf,
+    MidiSendBuf,
+    AtomicGet,
+    AtomicSet,
+    AtomicAdd,
+    AtomicExch,
+    AtomicSetIfEqual,
+    Fft,
+    Ifft,
+    FftReal,
+    IfftReal,
+    FftPermute,
+    FftIpermute,
+    ConvolveC,
+    Mdct,
+    Imdct,
     /// No more parameter changes queued in this block (`slider_next_chg`).
     NoChange,
     /// Accepted and ignored (UI and host notifications).
@@ -124,6 +142,22 @@ impl Builtin {
             "__memtop" => (MemTop, 0),
             "time_precise" => (TimePrecise, usize::MAX),
             "slider_next_chg" => (NoChange, 2),
+            "midirecv_buf" => (MidiRecvBuf, 3),
+            "midisend_buf" => (MidiSendBuf, 3),
+            "atomic_get" => (AtomicGet, 1),
+            "atomic_set" => (AtomicSet, 2),
+            "atomic_add" => (AtomicAdd, 2),
+            "atomic_exch" => (AtomicExch, 2),
+            "atomic_setifequal" => (AtomicSetIfEqual, 3),
+            "fft" => (Fft, 2),
+            "ifft" => (Ifft, 2),
+            "fft_real" => (FftReal, 2),
+            "ifft_real" => (IfftReal, 2),
+            "fft_permute" => (FftPermute, 2),
+            "fft_ipermute" => (FftIpermute, 2),
+            "convolve_c" => (ConvolveC, 3),
+            "mdct" => (Mdct, 2),
+            "imdct" => (Imdct, 2),
             "slider_automate" | "sliderchange" | "slider_show" | "export_buffer_to_project" | "get_pinmapper_flags" => {
                 (Nop, usize::MAX)
             }
@@ -722,7 +756,8 @@ impl Resolver<'_> {
         }
         // `ns.fn(...)` calls `fn` with `ns` as its instance namespace.
         // Function names may contain dots themselves, so the namespace is the shortest prefix
-        // that leaves a known function.
+        // that leaves a known function; the instance namespace is then the whole call name
+        // up to its last dot (`a.obj.go()` calling `obj.go` works on `a.obj`).
         let (ns, fname) = match self.functions.get(name) {
             Some(_) => (None, name),
             None => match name
@@ -743,7 +778,13 @@ impl Resolver<'_> {
         }
         let this = match ns {
             Some("this") => scope.this.clone(),
-            Some(n) => Some(scope.renames.get(n).cloned().unwrap_or_else(|| n.to_owned())),
+            Some(n) => {
+                let n = scope.renames.get(n).cloned().unwrap_or_else(|| n.to_owned());
+                Some(match fname.rsplit_once('.') {
+                    Some((inner, _)) => format!("{n}.{inner}"),
+                    None => n,
+                })
+            }
             None => scope.this.clone(),
         };
         let mut inner = Scope { renames: HashMap::new(), this: this.clone(), depth: scope.depth + 1 };
@@ -797,6 +838,23 @@ pub struct Machine {
     midi_read: usize,
     /// What `printf` wrote.
     pub output: String,
+    spectral: spectral::Spectral,
+}
+
+/// Bytes in a channel message with this status byte.
+fn midi_len(status: u8) -> usize {
+    match status & 0xf0 {
+        0xc0 | 0xd0 => 2,
+        _ => 3,
+    }
+}
+
+/// What an expression used as a target writes to: `(x = 0)` stands for `x`.
+fn place(node: &Node) -> &Node {
+    match node {
+        Node::Assign(target, _) => place(target),
+        n => n,
+    }
 }
 
 impl Machine {
@@ -813,6 +871,7 @@ impl Machine {
             midi_out: Vec::new(),
             midi_read: 0,
             output: String::new(),
+            spectral: Default::default(),
         }
     }
 
@@ -901,6 +960,19 @@ impl Machine {
         self.midi_in.extend(events);
         self.midi_read = 0;
         self.midi_out.clear();
+    }
+
+    /// What the block passes on into `out`, offsets within `n` frames and moved by `base`:
+    /// the messages `midirecv` left unread, then those `midisend` sent, in frame order.
+    pub fn drain_midi(&mut self, n: usize, base: usize, out: &mut Vec<(usize, [u8; 3])>) {
+        let from = out.len();
+        let last = n.saturating_sub(1) as f64;
+        let at = |offset: f64| base + offset.clamp(0.0, last) as usize;
+        out.extend(self.midi_in.drain(self.midi_read.min(self.midi_in.len())..).map(|(o, m)| (at(o), m)));
+        out.extend(self.midi_out.drain(..).map(|(o, m)| (at(o), m)));
+        out[from..].sort_by_key(|e| e.0);
+        self.midi_in.clear();
+        self.midi_read = 0;
     }
 
     fn mem_index(x: f64) -> Option<usize> {
@@ -1129,6 +1201,56 @@ impl Machine {
                 self.midi_out.push((offset, [a as u8, b as u8, c as u8]));
                 a
             }
+            MidiRecvBuf => {
+                let (at, max) = (arg(self, 1), arg(self, 2));
+                let Some(&(offset, msg)) = self.midi_in.get(self.midi_read) else { return 0.0 };
+                let len = midi_len(msg[0]);
+                if (len as f64) > max {
+                    return 0.0;
+                }
+                self.midi_read += 1;
+                if let Some(t) = args.first() {
+                    self.store(t, offset);
+                }
+                for (k, &byte) in msg.iter().take(len).enumerate() {
+                    if let Some(c) = self.cell(at + k as f64) {
+                        *c = byte as f64;
+                    }
+                }
+                len as f64
+            }
+            MidiSendBuf => {
+                let (offset, at, len) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                let len = len.max(0.0) as usize;
+                // Only channel messages travel; system exclusive is dropped.
+                if !(1..=3).contains(&len) {
+                    return 0.0;
+                }
+                let mut msg = [0u8; 3];
+                for (k, b) in msg.iter_mut().take(len).enumerate() {
+                    *b = self.read(at + k as f64) as u8;
+                }
+                self.midi_out.push((offset, msg));
+                len as f64
+            }
+            AtomicGet => arg(self, 0),
+            AtomicSet | AtomicAdd => {
+                let v = arg(self, 1);
+                let new = if matches!(b, AtomicAdd) { arg(self, 0) + v } else { v };
+                self.store(place(&args[0]), new)
+            }
+            AtomicExch => {
+                let (a, v) = (arg(self, 0), arg(self, 1));
+                self.store(place(&args[1]), a);
+                self.store(place(&args[0]), v)
+            }
+            AtomicSetIfEqual => {
+                let (old, value, comp) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                if (old - comp).abs() < CLOSE {
+                    self.store(place(&args[0]), value);
+                }
+                old
+            }
             Printf => {
                 let s = self.format(args);
                 self.output.push_str(&s);
@@ -1170,6 +1292,53 @@ impl Machine {
                 s.as_bytes().get(i.max(0.0) as usize).map_or(0.0, |&c| c as f64)
             }
             MemTop => MEM_SIZE as f64,
+            Fft | Ifft | FftPermute | FftIpermute | FftReal | IfftReal | Mdct | Imdct => {
+                let (at, size) = (arg(self, 0), arg(self, 1));
+                let n = spectral::pow2_floor(size);
+                // Valid sizes as REAPER has them: others leave the buffer alone, real FFTs
+                // and MDCTs beyond the largest work at the largest.
+                let (len, valid) = match b {
+                    FftReal | IfftReal => (n.min(32768), n >= 16),
+                    Mdct | Imdct => (n.min(4096), n >= 32),
+                    _ => (2 * n, (16..=16384).contains(&n)),
+                };
+                if valid {
+                    let mut data: Vec<f64> = (0..len).map(|k| self.read(at + k as f64)).collect();
+                    let s = &mut self.spectral;
+                    match b {
+                        Fft => s.fft(&mut data, false),
+                        Ifft => s.fft(&mut data, true),
+                        FftPermute => s.permute(&mut data, false),
+                        FftIpermute => s.permute(&mut data, true),
+                        FftReal => s.fft_real(&mut data, false),
+                        IfftReal => s.fft_real(&mut data, true),
+                        Mdct => s.mdct(&mut data, false),
+                        _ => s.mdct(&mut data, true),
+                    }
+                    let written = if matches!(b, Mdct) { len / 2 } else { len };
+                    for (k, v) in data.into_iter().take(written).enumerate() {
+                        if let Some(c) = self.cell(at + k as f64) {
+                            *c = v;
+                        }
+                    }
+                }
+                at
+            }
+            ConvolveC => {
+                let (dst, src, size) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                for k in 0..(size.max(0.0) as usize).min(MEM_SIZE / 2) {
+                    let i = (2 * k) as f64;
+                    let x = (self.read(dst + i), self.read(dst + i + 1.0));
+                    let y = (self.read(src + i), self.read(src + i + 1.0));
+                    if let Some(c) = self.cell(dst + i) {
+                        *c = x.0 * y.0 - x.1 * y.1;
+                    }
+                    if let Some(c) = self.cell(dst + i + 1.0) {
+                        *c = x.0 * y.1 + x.1 * y.0;
+                    }
+                }
+                dst
+            }
             TimePrecise => {
                 let t =
                     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
@@ -1286,8 +1455,26 @@ mod tests {
              function parmchg.set(v) instance(x) ( x = v ); gain.parmchg.set(3); \
              spl0 = 1; spl(0) = 5; spl(0) += 1;");
         assert_eq!((var(&m, "i"), var(&m, "n")), (4.0, 8.0));
-        assert_eq!(var(&m, "gain.x"), 3.0);
+        // REAPER's Spectral Hold relies on this: the instance namespace is `gain.parmchg`.
+        assert_eq!(var(&m, "gain.parmchg.x"), 3.0);
         assert_eq!(var(&m, "spl0"), 6.0);
+    }
+
+    #[test]
+    fn atomics_and_buffer_midi() {
+        let mut m = run("a = 1; b = 2; atomic_add(a, 5); r = atomic_exch(a = 0, b); \
+             atomic_setifequal(b, 9, 0); old = atomic_setifequal(b, 7, 1);");
+        assert_eq!((var(&m, "a"), var(&m, "b"), var(&m, "r"), var(&m, "old")), (2.0, 9.0, 2.0, 9.0));
+        let code = compile(
+            "n = midirecv_buf(at, 100, 3); midisend_buf(at + 1, 100, n); c = midirecv_buf(at2, 200, 1);",
+            &mut m.vars,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        m.set_midi([(4.0, [0x90, 60, 100]), (5.0, [0xc0, 3, 0])].into_iter());
+        m.run(&code);
+        assert_eq!((var(&m, "n"), var(&m, "at"), var(&m, "c")), (3.0, 4.0, 0.0), "a 2-byte message does not fit 1");
+        assert_eq!(m.midi_out, [(5.0, [0x90, 60, 100])]);
     }
 
     #[test]

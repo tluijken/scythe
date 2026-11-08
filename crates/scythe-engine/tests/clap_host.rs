@@ -101,6 +101,8 @@ fn plugin_state_survives_save_and_load() {
     chain[0].with(|e| e.set_param(7, 0.3));
     let (mut l, mut r) = (vec![1.0f32; 8], vec![1.0f32; 8]);
     let ctx = scythe_engine::fx::ProcessContext {
+        midi: None,
+        midi_from: 0,
         sample_rate: 48000,
         position: 0,
         playing: true,

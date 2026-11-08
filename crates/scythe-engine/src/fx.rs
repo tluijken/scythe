@@ -35,12 +35,52 @@ pub struct ProcessContext<'a> {
     pub aux: Option<(&'a [f32], &'a [f32])>,
     /// Project tempo at the block start, in quarter notes per minute.
     pub bpm: f64,
+    /// MIDI an earlier effect in the chain passed on, as frame offsets from the start of the
+    /// chain's block; when set it stands in for `notes` and `live`.
+    pub midi: Option<&'a [(usize, [u8; 3])]>,
+    /// Where this call's frames start within the chain's block.
+    pub midi_from: usize,
 }
 
 impl ProcessContext<'_> {
     /// Live MIDI messages for this track.
     pub fn live_midi(&self) -> impl Iterator<Item = &LiveMidi> {
         self.live.iter().filter(|m| self.live_channel.is_none_or(|c| m.channel() == c))
+    }
+
+    /// The chain's MIDI due in this call's `n` frames, as offsets from the call's first frame.
+    pub fn chain_midi(&self, n: usize) -> Option<impl Iterator<Item = (usize, [u8; 3])> + '_> {
+        let from = self.midi_from;
+        self.midi
+            .map(move |m| m.iter().filter(move |e| (from..from + n).contains(&e.0)).map(move |&(o, b)| (o - from, b)))
+    }
+
+    /// Every MIDI message due in this call's `n` frames: the chain's, or else live input first
+    /// and then the track's notes and controllers, note-offs before note-ons at the same frame.
+    pub fn block_midi(&self, n: usize, out: &mut Vec<(usize, [u8; 3])>) {
+        out.clear();
+        if let Some(chain) = self.chain_midi(n) {
+            out.extend(chain);
+            return;
+        }
+        let live = self.live_midi().count();
+        out.extend(self.live_midi().map(|m| (0, m.bytes)));
+        if let Some(notes) = self.notes {
+            let (start, end) = (self.position, self.position + n as i64);
+            for note in notes.starting_in(start - notes.max_span()..end) {
+                if (start..end).contains(&note.start) {
+                    out.push(((note.start - start) as usize, [0x90 | note.channel, note.key, note.velocity]));
+                }
+                let off = note.end.min(note.cutoff);
+                if (start..end).contains(&off) {
+                    out.push(((off - start) as usize, [0x80 | note.channel, note.key, 0]));
+                }
+            }
+            for c in notes.controls_in(start..end) {
+                out.push(((c.frame - start) as usize, c.bytes));
+            }
+            out[live..].sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
+        }
     }
 }
 
@@ -51,6 +91,12 @@ pub trait Effect: Send {
     /// Audio input and output pins, for effects with more than a stereo pair.
     fn pins(&self) -> (usize, usize) {
         (2, 2)
+    }
+
+    /// Moves the MIDI the effect passed on since the last call into `out`, as offsets from the
+    /// chain's block; false when the effect leaves the chain's MIDI as it is.
+    fn take_midi(&mut self, _out: &mut Vec<(usize, [u8; 3])>) -> bool {
+        false
     }
 
     /// Processes frames `range` of `bufs` in place: input pin `k` arrives in `bufs[k]`, output
@@ -279,6 +325,10 @@ impl FxInstance {
         }
     }
 
+    pub fn take_midi(&self, out: &mut Vec<(usize, [u8; 3])>) -> bool {
+        self.effect.try_lock().is_ok_and(|mut fx| fx.take_midi(out))
+    }
+
     /// Runs `f` on the effect from the UI thread, waiting for the audio thread to finish its
     /// block if needed.
     pub fn with<R>(&self, f: impl FnOnce(&mut dyn Effect) -> R) -> Option<R> {
@@ -496,6 +546,11 @@ impl FxRegistry {
             Owner::Track(id) => project.track(*id).is_some(),
             Owner::Master => true,
         });
+    }
+
+    /// Looks for JSFX in `paths` instead of the standard locations.
+    pub fn set_jsfx_paths(&mut self, paths: Vec<PathBuf>) {
+        self.jsfx_paths = std::sync::OnceLock::from(paths);
     }
 
     /// Replaces the CLAP plugin list instead of scanning the standard locations.
@@ -1020,6 +1075,22 @@ impl ClapEffect {
         }
         self.expected = Some(end);
         if self.instrument
+            && let Some(chain) = ctx.chain_midi(n as usize)
+        {
+            for (at, bytes) in chain {
+                match bytes[0] & 0xf0 {
+                    0x90 | 0x80 => {
+                        let on = bytes[0] & 0xf0 == 0x90 && bytes[2] > 0;
+                        let vel = if on { bytes[2] } else { 0 };
+                        let e = crate::clap_host::note_event(on, at as u32, bytes[0] & 0x0f, bytes[1], vel);
+                        self.plugin.events.push(e);
+                    }
+                    _ => self.plugin.midi.push(crate::clap_host::midi_event(at as u32, bytes)),
+                }
+            }
+            return;
+        }
+        if self.instrument
             && let Some(notes) = ctx.notes
         {
             for note in notes.starting_in(start - notes.max_span()..end) {
@@ -1105,6 +1176,18 @@ impl Vst3Effect {
     fn queue_midi(&mut self, n: usize, ctx: &ProcessContext) {
         self.notes.clear();
         self.controls.clear();
+        if let Some(chain) = ctx.chain_midi(n) {
+            for (at, bytes) in chain {
+                match bytes[0] & 0xf0 {
+                    0x90 | 0x80 => {
+                        let on = bytes[0] & 0xf0 == 0x90 && bytes[2] > 0;
+                        self.notes.push((at as i32, on, bytes[0] & 0x0f, bytes[1], if on { bytes[2] } else { 0 }));
+                    }
+                    _ => self.controls.push((at as i32, bytes)),
+                }
+            }
+            return;
+        }
         if let Some(notes) = ctx.notes {
             let (start, end) = (ctx.position, ctx.position + n as i64);
             for note in notes.starting_in(start - notes.max_span()..end) {
@@ -1209,11 +1292,12 @@ impl Effect for Vst3Effect {
 struct Lv2Effect {
     plugin: crate::lv2::Lv2Plugin,
     midi: Vec<(u32, [u8; 3])>,
+    scratch_midi: Vec<(usize, [u8; 3])>,
 }
 
 impl Lv2Effect {
     fn new(plugin: crate::lv2::Lv2Plugin) -> Self {
-        Self { plugin, midi: Vec::with_capacity(256) }
+        Self { plugin, midi: Vec::with_capacity(256), scratch_midi: Vec::with_capacity(256) }
     }
 
     fn control_ports(&self) -> impl Iterator<Item = &crate::lv2::PortInfo> {
@@ -1232,25 +1316,10 @@ impl Effect for Lv2Effect {
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         self.midi.clear();
-        if let Some(notes) = ctx.notes {
-            let (start, end) = (ctx.position, ctx.position + left.len() as i64);
-            for note in notes.starting_in(start - notes.max_span()..end) {
-                if (start..end).contains(&note.start) {
-                    self.midi.push(((note.start - start) as u32, [0x90 | note.channel, note.key, note.velocity]));
-                }
-                let off = note.end.min(note.cutoff);
-                if (start..end).contains(&off) {
-                    self.midi.push(((off - start) as u32, [0x80 | note.channel, note.key, 0]));
-                }
-            }
-            for c in notes.controls_in(start..end) {
-                self.midi.push(((c.frame - start) as u32, c.bytes));
-            }
-            self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
-        }
-        for (i, m) in ctx.live_midi().enumerate() {
-            self.midi.insert(i, (0, m.bytes));
-        }
+        let mut events = std::mem::take(&mut self.scratch_midi);
+        ctx.block_midi(left.len(), &mut events);
+        self.midi.extend(events.iter().map(|&(at, b)| (at as u32, b)));
+        self.scratch_midi = events;
         for (l, r) in left
             .chunks_mut(crate::render::RenderScratch::MAX_BLOCK)
             .zip(right.chunks_mut(crate::render::RenderScratch::MAX_BLOCK))
@@ -1317,25 +1386,7 @@ struct Vst2Effect {
 impl Vst2Effect {
     /// Collects the block's MIDI (live input, the track's notes and controllers) in `midi`.
     fn queue_midi(&mut self, n: usize, ctx: &ProcessContext) {
-        self.midi.clear();
-        self.midi.extend(ctx.live_midi().map(|m| (0, m.bytes)));
-        if let Some(notes) = ctx.notes {
-            let (start, end) = (ctx.position, ctx.position + n as i64);
-            for note in notes.starting_in(start - notes.max_span()..end) {
-                if (start..end).contains(&note.start) {
-                    self.midi.push(((note.start - start) as usize, [0x90 | note.channel, note.key, note.velocity]));
-                }
-                let off = note.end.min(note.cutoff);
-                if (start..end).contains(&off) {
-                    self.midi.push(((off - start) as usize, [0x80 | note.channel, note.key, 0]));
-                }
-            }
-            for c in notes.controls_in(start..end) {
-                self.midi.push(((c.frame - start) as usize, c.bytes));
-            }
-            // Offsets in order, note-offs before note-ons at the same frame.
-            self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
-        }
+        ctx.block_midi(n, &mut self.midi);
     }
 
     fn new(plugin: Vst2Plugin) -> Self {

@@ -143,6 +143,8 @@ fn main() {
                 cl,
                 cr,
                 &ProcessContext {
+                    midi: None,
+                    midi_from: 0,
                     sample_rate: SR,
                     position: 0,
                     playing: true,

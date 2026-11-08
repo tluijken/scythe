@@ -132,8 +132,10 @@ Working:
   (the sampler receives the track's MIDI; musical delay lengths follow the tempo map), as do
   ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). JSFX run from their own
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
-  user functions with locals and instances, memory, strings, MIDI): every JSFX in the corpus
-  and 201 of REAPER's 219 stock effects; they are read from `~/.config/REAPER/Effects` and the
+  user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
+  bin order and scale): every JSFX in the corpus and 211 of REAPER's 219 stock effects. They
+  run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
+  next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
   installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
   browser (equalizer, gate, compressor, delay, convolution reverb) with editable parameters, and
   are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate, ReaComp, ReaDelay
@@ -185,6 +187,9 @@ compare with scythe's output sample by sample:
 | Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels; VST, JSFX and LV2), JSFX with more pins (3-band splitter, 8-into-2 mixer, expander with sidechain) | exact (21 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
 | JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
+| JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
+| JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
+| VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
@@ -195,15 +200,15 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel: REAPER writes CLAP pin maps as `<IN_PINS`/`<OUT_PINS`, as for LV2, but its
-  render with the workspace's CLAP test plugin did not finish, so CLAP audio is checked against
-  the plugin alone, not against REAPER. VST 3 buses are set to the plugin's own arrangements;
-  other speaker layouts are not requested. The audio device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
+- Multichannel: VST 3 buses are set to the plugin's own arrangements; other speaker layouts
+  are not requested. The audio device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
   (device × 32 + channel); REAPER's file encoding of it is unverified.
 - ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.
-- JSFX: no FFT/MDCT, file access (`file_open`) or graphics (`@gfx`), and MIDI a JSFX sends does
-  not reach the next effect.
+- JSFX: no file access (`file_open`) or graphics (`@gfx`); system exclusive (`midisyx`) is not
+  passed on, and the built-in ReaSamplOmatic5000 plays the track's notes rather than MIDI an
+  earlier JSFX sent. NaN follows IEEE rules; REAPER compares it as both less than and equal to
+  anything.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not

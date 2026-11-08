@@ -186,6 +186,8 @@ mod tests {
         let notes = crate::synth::NoteList::new(vec![note(5, 36), note(6, 38)], 100);
         let (mut l, mut r) = (vec![0.0; 20], vec![0.0; 20]);
         let ctx = ProcessContext {
+            midi: None,
+            midi_from: 0,
             sample_rate: 100,
             position: 0,
             playing: true,

@@ -28,6 +28,8 @@ fn main() {
         let path = scythe_engine::jsfx::find(name, &roots).expect("effect not found");
         let mut fx = JsfxEffect::new(Script::load(&path, &roots).unwrap(), &[], 48000).unwrap();
         let ctx = ProcessContext {
+            midi: None,
+            midi_from: 0,
             sample_rate: 48000,
             position: 0,
             playing: true,

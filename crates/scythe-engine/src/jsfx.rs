@@ -227,6 +227,23 @@ pub fn find(name: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     roots.iter().map(|r| r.join(name)).find(|p| p.is_file())
 }
 
+/// REAPER renders in blocks of this many frames, aligned to the project start; `@block` runs
+/// once per block and MIDI offsets count from its start.
+const BLOCK_FRAMES: i64 = 512;
+
+/// `(offset, length)` of the REAPER blocks covering `n` frames from `position`.
+fn blocks(position: i64, n: usize) -> impl Iterator<Item = (usize, usize)> {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        (at < n).then(|| {
+            let frame = position + at as i64;
+            let len = ((BLOCK_FRAMES - frame.rem_euclid(BLOCK_FRAMES)) as usize).min(n - at);
+            at += len;
+            (at - len, len)
+        })
+    })
+}
+
 /// A running JSFX.
 pub struct JsfxEffect {
     pub script: Script,
@@ -246,6 +263,13 @@ pub struct JsfxEffect {
     num_ch: usize,
     ext_noinit: usize,
     was_playing: bool,
+    /// Whether the script reads or writes MIDI; others leave the chain's MIDI alone.
+    uses_midi: bool,
+    midi_in: Vec<(usize, [u8; 3])>,
+    /// What the effect passed on since the chain last took it.
+    midi_sent: Vec<(usize, [u8; 3])>,
+    /// Whether it ran since; a bypassed effect lets the chain's MIDI go past it.
+    midi_ran: bool,
 }
 
 impl JsfxEffect {
@@ -280,6 +304,10 @@ impl JsfxEffect {
             slot(&mut vars, "pdc_delay"),
             slot(&mut vars, "num_ch"),
         );
+        let uses_midi = all.iter().flat_map(|secs| secs.values()).any(|src| {
+            let src = src.to_ascii_lowercase();
+            src.contains("midirecv") || src.contains("midisend")
+        });
         let mut take = |n: &str| sections.remove(n).unwrap_or_default();
         let mut fx = Self {
             init: take("init"),
@@ -299,9 +327,19 @@ impl JsfxEffect {
             num_ch,
             ext_noinit: 0,
             was_playing: false,
+            uses_midi,
+            midi_in: Vec::new(),
+            midi_sent: Vec::new(),
+            midi_ran: false,
         };
         fx.ext_noinit = fx.machine.vars.slot("ext_noinit");
         fx.initialise();
+        // Effects often set `pdc_delay` in `@block`; one block up front makes their latency
+        // known before the first is rendered, as REAPER has it.
+        fx.machine.vars.values[fx.samplesblock] = BLOCK_FRAMES as f64;
+        for code in &fx.block {
+            fx.machine.run(code);
+        }
         Ok(fx)
     }
 
@@ -329,18 +367,13 @@ impl JsfxEffect {
         }
     }
 
-    fn visible(&self) -> impl Iterator<Item = (usize, &Slider)> {
-        self.script.sliders.iter().enumerate().filter(|(_, s)| !s.hidden)
-    }
-}
-
-impl Effect for JsfxEffect {
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         // REAPER runs `@init` again when playback starts, unless the effect sets ext_noinit.
         if ctx.playing && !self.was_playing && self.machine.vars.values[self.ext_noinit] == 0.0 {
             self.initialise();
         }
         self.was_playing = ctx.playing;
+        self.receive_midi(left.len(), ctx);
         let v = &mut self.machine.vars.values;
         v[self.samplesblock] = left.len() as f64;
         v[self.play_state] = if ctx.playing { 1.0 } else { 0.0 };
@@ -349,6 +382,7 @@ impl Effect for JsfxEffect {
             self.machine.run(code);
         }
         if self.sample.is_empty() {
+            self.pass_midi(left.len(), ctx);
             return;
         }
         let (s0, s1) = (self.machine.spl_slots[0], self.machine.spl_slots[1]);
@@ -368,17 +402,14 @@ impl Effect for JsfxEffect {
             *l = self.machine.vars.values[s0] as f32;
             *r = self.machine.vars.values[s1] as f32;
         }
+        self.pass_midi(left.len(), ctx);
     }
 
-    fn pins(&self) -> (usize, usize) {
-        (self.script.in_pins.unwrap_or(2), self.script.out_pins.unwrap_or(2))
-    }
-
-    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+    fn process_pins_block(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
         let (ins, outs) = self.pins();
         if ins <= 2 && outs <= 2 {
             if let [l, r, ..] = bufs {
-                self.process(&mut l[range.clone()], &mut r[range], ctx);
+                self.process_block(&mut l[range.clone()], &mut r[range], ctx);
             }
             return;
         }
@@ -386,6 +417,7 @@ impl Effect for JsfxEffect {
             self.initialise();
         }
         self.was_playing = ctx.playing;
+        self.receive_midi(range.len(), ctx);
         let channels = ins.max(outs).min(bufs.len()).min(64);
         let v = &mut self.machine.vars.values;
         v[self.samplesblock] = range.len() as f64;
@@ -396,8 +428,10 @@ impl Effect for JsfxEffect {
             self.machine.run(code);
         }
         if self.sample.is_empty() {
+            self.pass_midi(range.len(), ctx);
             return;
         }
+        let n = range.len();
         for i in range {
             for (c, buf) in bufs.iter().enumerate().take(channels) {
                 let slot = self.machine.spl_slots[c];
@@ -410,6 +444,69 @@ impl Effect for JsfxEffect {
                 buf[i] = self.machine.vars.values[self.machine.spl_slots[c]] as f32;
             }
         }
+        self.pass_midi(n, ctx);
+    }
+
+    fn receive_midi(&mut self, n: usize, ctx: &ProcessContext) {
+        if self.uses_midi {
+            ctx.block_midi(n, &mut self.midi_in);
+            self.machine.set_midi(self.midi_in.iter().map(|&(at, m)| (at as f64, m)));
+        }
+    }
+
+    fn pass_midi(&mut self, n: usize, ctx: &ProcessContext) {
+        if self.uses_midi {
+            self.machine.drain_midi(n, ctx.midi_from, &mut self.midi_sent);
+            self.midi_ran = true;
+        }
+    }
+
+    fn visible(&self) -> impl Iterator<Item = (usize, &Slider)> {
+        self.script.sliders.iter().enumerate().filter(|(_, s)| !s.hidden)
+    }
+}
+
+impl Effect for JsfxEffect {
+    /// A script that reads or sends MIDI takes the track's notes, as an instrument does.
+    fn is_instrument(&self) -> bool {
+        self.uses_midi
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        for (at, len) in blocks(ctx.position, left.len()) {
+            let sub = ProcessContext {
+                position: ctx.position + at as i64,
+                live: if at == 0 { ctx.live } else { &[] },
+                aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
+                midi_from: ctx.midi_from + at,
+                ..*ctx
+            };
+            self.process_block(&mut left[at..at + len], &mut right[at..at + len], &sub);
+        }
+    }
+
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        for (at, len) in blocks(ctx.position, range.len()) {
+            let sub = ProcessContext {
+                position: ctx.position + at as i64,
+                live: if at == 0 { ctx.live } else { &[] },
+                midi_from: ctx.midi_from + at,
+                ..*ctx
+            };
+            self.process_pins_block(bufs, range.start + at..range.start + at + len, &sub);
+        }
+    }
+
+    fn pins(&self) -> (usize, usize) {
+        (self.script.in_pins.unwrap_or(2), self.script.out_pins.unwrap_or(2))
+    }
+
+    fn take_midi(&mut self, out: &mut Vec<(usize, [u8; 3])>) -> bool {
+        if !std::mem::take(&mut self.midi_ran) {
+            return false;
+        }
+        out.append(&mut self.midi_sent);
+        true
     }
 
     fn reset(&mut self) {
@@ -506,6 +603,8 @@ mod tests {
         let mut fx = JsfxEffect::new(script, &[Some(-20.0)], 48000).unwrap();
         let (mut l, mut r) = (vec![1.0f32; 4], vec![0.5f32; 4]);
         let ctx = ProcessContext {
+            midi: None,
+            midi_from: 0,
             sample_rate: 48000,
             position: 0,
             playing: true,

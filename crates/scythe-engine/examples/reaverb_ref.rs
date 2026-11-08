@@ -94,6 +94,8 @@ fn compare_real_ir(dir: &Path, reaper: &str, cfg: &Path, ir: &Path, name: &str) 
             a,
             b,
             &ProcessContext {
+                midi: None,
+                midi_from: 0,
                 sample_rate: SR,
                 position: 0,
                 playing: true,

@@ -49,6 +49,8 @@ fn scans_processes_and_keeps_state() {
     let chain = fx.chain(Some(id), &project.tracks[0].fx);
     assert_eq!(chain.len(), 1, "{:?}", fx.status(Some(id), &project.tracks[0].fx[0], 0));
     let ctx = ProcessContext {
+        midi: None,
+        midi_from: 0,
         sample_rate: 1000,
         position: 0,
         playing: true,
@@ -175,6 +177,8 @@ fn sidechain_bus_takes_pins_three_and_four() {
     let chain = fx.chain(Some(track.id), &track.fx);
     assert_eq!(chain[0].pins, (4, 2), "main and sidechain bus in, main bus out");
     let ctx = ProcessContext {
+        midi: None,
+        midi_from: 0,
         sample_rate: 1000,
         position: 0,
         playing: true,
