@@ -93,6 +93,12 @@ pub trait Effect: Send {
         (2, 2)
     }
 
+    /// Whether parameter envelopes reach the effect with their value at the last frame of
+    /// each block, as REAPER automates hosted plugins (its own effects take the first).
+    fn automates_at_block_end(&self) -> bool {
+        false
+    }
+
     /// What a JSFX's `@serialize` writes, stored by REAPER as `<JS_SER` beside the effect.
     fn save_serialized(&mut self) -> Option<Vec<f64>> {
         None
@@ -260,6 +266,11 @@ pub enum FxStatus {
 
 /// Sets the effect's enveloped parameters for time `t`; returns whether a bypass envelope
 /// switches it off.
+/// When in a block of `n` frames from `t` the effect's envelopes are read.
+fn automation_time(fx: &dyn Effect, t: f64, n: usize, sample_rate: u32) -> f64 {
+    if fx.automates_at_block_end() { t + n.saturating_sub(1) as f64 / sample_rate as f64 } else { t }
+}
+
 fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64) -> bool {
     let mut bypassed = false;
     for a in automation {
@@ -304,6 +315,7 @@ impl FxInstance {
         t: f64,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
+        let t = automation_time(fx.as_ref(), t, left.len(), ctx.sample_rate);
         if !apply_automation(fx.as_mut(), automation, t) {
             fx.process(left, right, ctx);
         }
@@ -319,6 +331,7 @@ impl FxInstance {
         t: f64,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
+        let t = automation_time(fx.as_ref(), t, range.len(), ctx.sample_rate);
         if !apply_automation(fx.as_mut(), automation, t) {
             fx.process_pins(bufs, range, ctx);
         }
@@ -1063,6 +1076,10 @@ struct ClapEffect {
 }
 
 impl Effect for ClapEffect {
+    fn automates_at_block_end(&self) -> bool {
+        true
+    }
+
     fn is_instrument(&self) -> bool {
         self.instrument
     }
@@ -1277,6 +1294,10 @@ impl Vst3Effect {
 }
 
 impl Effect for Vst3Effect {
+    fn automates_at_block_end(&self) -> bool {
+        true
+    }
+
     fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
         self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
     }
@@ -1448,6 +1469,10 @@ impl Vst2Effect {
 }
 
 impl Effect for Vst2Effect {
+    fn automates_at_block_end(&self) -> bool {
+        true
+    }
+
     fn is_instrument(&self) -> bool {
         self.plugin.is_synth()
     }

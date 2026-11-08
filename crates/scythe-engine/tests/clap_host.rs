@@ -217,9 +217,10 @@ fn parameter_envelopes_drive_plugins_by_index() {
     let graph = RenderGraph::build(&project, &pool, &mut MeterRegistry::default(), &mut fx, 1000);
     let (mut l, mut r) = (vec![0.0f32; 1000], vec![0.0f32; 1000]);
     graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
-    // Parameters take the envelope value at the start of each 512-frame block.
-    for (t, block_start) in [(100, 0), (400, 0), (600, 512), (900, 512)] {
-        assert!((l[t] - block_start as f32 / 1000.0).abs() < 1e-3, "frame {t}: {}", l[t]);
+    // As REAPER automates hosted plugins: the envelope value at each 512-frame block's last
+    // frame (the second block ends with the render at frame 999).
+    for (t, block_last) in [(100, 511), (400, 511), (600, 999), (900, 999)] {
+        assert!((l[t] - block_last as f32 / 1000.0).abs() < 1e-3, "frame {t}: {}", l[t]);
     }
     std::fs::remove_dir_all(&dir).ok();
 }

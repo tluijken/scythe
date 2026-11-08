@@ -191,6 +191,7 @@ compare with scythe's output sample by sample:
 | ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate) | exact (35/35 cases, 10 high-frequency cases) |
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
 | ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project) | levels and pan per channel identical; difference -27 to -32 dB from the resampling filter |
+| FX parameter envelopes on hosted plugins: a ramp, a square step and a jump on CLAP and VST 3 gains (REAPER sends the value at each 512-frame block's last frame) and on a JSFX volume (its first frame, rounded to the slider step, with `@slider` and `@block` running as REAPER runs them) | exact (3 cases) |
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry | exact; its low-/high-pass filters approximate (impulse response within 0.04) |
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
@@ -212,9 +213,9 @@ compares the two files.
 
 ### Not there yet
 
-- FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
-  plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
-  to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
+- FX parameter envelopes on LV2 plugins take each block's first value; REAPER gives a block
+  that holds an envelope point the value after it. NAM models are run at the project rate
+  without resampling to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: VST 3 buses are set to the plugin's own arrangements; other speaker layouts
   are not requested. Master channels go to the audio device's outputs in order, as many as the device offers; channels beyond that reach only multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead.

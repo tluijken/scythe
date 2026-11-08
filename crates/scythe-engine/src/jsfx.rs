@@ -375,11 +375,16 @@ impl JsfxEffect {
             .collect();
         fx.initialise();
         // Effects often set `pdc_delay` in `@block`; one block up front makes their latency
-        // known before the first is rendered, as REAPER has it.
+        // known before the first is rendered, as REAPER has it. Only the latency is kept: the
+        // first real block must still see the state `@init` and `@slider` left.
+        let before = fx.machine.vars.values.clone();
         fx.machine.vars.values[fx.samplesblock] = BLOCK_FRAMES as f64;
         for code in &fx.block {
             fx.machine.run(code);
         }
+        let latency = fx.machine.vars.values[fx.pdc_delay];
+        fx.machine.vars.values = before;
+        fx.machine.vars.values[fx.pdc_delay] = latency;
         Ok(fx)
     }
 
@@ -611,7 +616,11 @@ impl Effect for JsfxEffect {
     /// REAPER's slider order, values spread linearly over each slider's range.
     fn set_normalized(&mut self, index: usize, value: f64) -> bool {
         let Some(s) = self.script.sliders.get(index) else { return false };
-        let v = s.min + value.clamp(0.0, 1.0) * (s.max - s.min);
+        let mut v = s.min + value.clamp(0.0, 1.0) * (s.max - s.min);
+        // REAPER holds automated sliders to their step.
+        if s.step > 0.0 {
+            v = s.min + ((v - s.min) / s.step).round() * s.step;
+        }
         if self.values[index] != v {
             self.values[index] = v;
             self.run_slider();
