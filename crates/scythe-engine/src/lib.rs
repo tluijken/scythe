@@ -5,6 +5,7 @@ pub mod clap_host;
 pub mod clap_presets;
 pub mod convolve;
 pub mod delay;
+pub mod devices;
 pub mod disc;
 pub mod dynamics;
 pub mod editor;
@@ -36,6 +37,7 @@ pub mod vst2;
 pub mod vst3_host;
 pub mod wavcodec;
 
+pub use devices::DeviceRequest;
 pub use engine::{DeviceInfo, Engine, Transport};
 pub use media::{AudioData, Media, MediaPool, MediaState, Peaks};
 pub use meter::Meter;

@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
 use scythe_core::TrackId;
 
@@ -70,8 +70,16 @@ impl Recording {
     /// Opens the default input and starts writing one WAV file per target. `preferred_rate` is
     /// used when the device supports it, so recordings need no resampling.
     pub fn start(targets: Vec<RecordTarget>, preferred_rate: u32) -> Result<Self, RecordError> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(RecordError::NoDevice)?;
+        Self::start_on(&crate::DeviceRequest::default(), targets, preferred_rate)
+    }
+
+    /// Like [`Recording::start`], from the input `devices` names.
+    pub fn start_on(
+        devices: &crate::DeviceRequest,
+        targets: Vec<RecordTarget>,
+        preferred_rate: u32,
+    ) -> Result<Self, RecordError> {
+        let device = crate::devices::input_device(devices).map_err(RecordError::Device)?;
         let name = device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "input".into());
         let default = device.default_input_config().map_err(|e| RecordError::Device(e.to_string()))?;
         let format = default.sample_format();

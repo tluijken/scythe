@@ -6,10 +6,11 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
 use scythe_core::{Project, TimeRange};
 
+use crate::devices::DeviceRequest;
 use crate::fx::FxRegistry;
 use crate::media::MediaPool;
 use crate::midi_io::{ALL_PORTS, LiveMidi, MidiInputs, MidiSender, OutMessage};
@@ -433,21 +434,30 @@ pub struct Engine {
     midi_out_tx: Sender<Option<MidiOutQueue>>,
     midi_sender: Option<MidiSender>,
     output: Output,
+    devices: DeviceRequest,
 }
 
 impl Engine {
     /// Opens the default output device, falling back to a silent real-time clock when there
     /// is none so the transport still behaves.
     pub fn start(pool: Arc<MediaPool>) -> Self {
-        match open_device() {
+        Self::start_with(pool, &DeviceRequest::default())
+    }
+
+    /// Opens the devices `request` names, falling back like [`Engine::start`].
+    pub fn start_with(pool: Arc<MediaPool>, request: &DeviceRequest) -> Self {
+        let rate = request.sample_rate.unwrap_or(48_000);
+        let mut engine = match open_device(request) {
             Ok((device, config, format, name)) => {
                 match Self::with_device(pool.clone(), &device, config, format, name.clone()) {
                     Ok(engine) => engine,
-                    Err(e) => Self::start_null(pool, 48_000, Some(format!("{name}: {e}"))),
+                    Err(e) => Self::start_null(pool, rate, Some(format!("{name}: {e}"))),
                 }
             }
-            Err(reason) => Self::start_null(pool, 48_000, Some(reason)),
-        }
+            Err(reason) => Self::start_null(pool, rate, Some(reason)),
+        };
+        engine.devices = request.clone();
+        engine
     }
 
     fn with_device(
@@ -494,6 +504,7 @@ impl Engine {
                 supported: None,
                 proc,
             }),
+            devices: DeviceRequest::default(),
         })
     }
 
@@ -543,7 +554,20 @@ impl Engine {
                 fallback_reason: reason,
             },
             output: Output::Null { stop, thread: Some(thread) },
+            devices: DeviceRequest::default(),
         }
+    }
+
+    /// A silent engine that never opens a device, not even an input.
+    pub fn start_offline(pool: Arc<MediaPool>, sample_rate: u32) -> Self {
+        let mut engine = Self::start_null(pool, sample_rate, None);
+        engine.devices.no_input = true;
+        engine
+    }
+
+    /// The devices this engine was asked to use.
+    pub fn devices(&self) -> &DeviceRequest {
+        &self.devices
     }
 
     pub fn info(&self) -> &DeviceInfo {
@@ -604,8 +628,7 @@ impl Engine {
             let _ = self.input_tx.send(None);
             return Ok(());
         }
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or("no audio input device")?;
+        let device = crate::devices::input_device(&self.devices)?;
         let default = device.default_input_config().map_err(|e| e.to_string())?;
         let mut config = default.config();
         config.sample_rate = self.info.sample_rate;
@@ -717,13 +740,22 @@ impl Engine {
     }
 }
 
-fn open_device() -> Result<(cpal::Device, StreamConfig, SampleFormat, String), String> {
-    let host = cpal::default_host();
-    let device = host.default_output_device().ok_or("no default output device")?;
-    let name = device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "Default output".into());
+fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, SampleFormat, String), String> {
+    let device = crate::devices::output_device(request)?;
+    let name = crate::devices::device_name(&device);
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
-    Ok((device, supported.into(), format, name))
+    let mut config: StreamConfig = supported.into();
+    if let Some(rate) = request.sample_rate {
+        config.sample_rate = rate;
+    }
+    if let Some(frames) = request.buffer_size {
+        config.buffer_size = cpal::BufferSize::Fixed(frames);
+    }
+    if let Some(channels) = request.output_channels {
+        config.channels = config.channels.max(channels);
+    }
+    Ok((device, config, format, name))
 }
 
 /// Channel counts `device` can play at `rate` in `format`, ascending.
