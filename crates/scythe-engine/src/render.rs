@@ -6,7 +6,7 @@ use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
 use scythe_core::{Envelope, EnvelopeKind, Fade, Project, Source, TrackId};
 
-use crate::fx::{FxInstance, FxRegistry, ParamAutomation, ProcessContext};
+use crate::fx::{FxInstance, FxRegistry, ParamAutomation, PinMap, ProcessContext, pin_map};
 use crate::media::{AudioData, MediaPool};
 use rayon::prelude::*;
 
@@ -157,6 +157,10 @@ pub struct RenderTrack {
     pub fx: Vec<Arc<FxInstance>>,
     /// Parameter envelopes of each effect in `fx`.
     pub fx_automation: Vec<Vec<ParamAutomation>>,
+    /// Pin maps of the effects that do not simply process channels 1/2.
+    pub fx_pins: Vec<Option<PinMap>>,
+    /// Buffers the pins of such effects are gathered into: two audio pins and two sidechain.
+    pub pin_bufs: Option<Arc<AuxChannels>>,
     /// MIDI of the track's items when an instrument in the chain plays it.
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
@@ -176,6 +180,9 @@ pub struct RenderTrack {
     pub send_delays: Vec<Option<Arc<DelayLine>>>,
     pub main_delay: Option<Arc<DelayLine>>,
 }
+
+/// An auxiliary (sidechain) input pair.
+type Sidechain<'a> = Option<(&'a [f32], &'a [f32])>;
 
 /// One send as the graph plays it.
 #[derive(Debug, Clone)]
@@ -529,6 +536,13 @@ impl RenderGraph {
                     })
                     .collect::<Vec<_>>();
                 let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx);
+                // Aligned with `chain`: the enabled slots that have an instance.
+                let fx_pins: Vec<Option<PinMap>> =
+                    t.fx.iter()
+                        .enumerate()
+                        .filter(|(i, s)| s.enabled && fx.instance(Some(t.id), s, *i).is_some())
+                        .map(|(_, s)| pin_map(s))
+                        .collect();
                 // With an instrument in the chain, MIDI items feed it instead of the preview synth.
                 // MIDI items feed an instrument in the chain or a hardware output instead of the
                 // preview synth.
@@ -591,6 +605,8 @@ impl RenderGraph {
                     automation: Automation::from_track(t, project.pan_law_for(t)).map(Arc::new),
                     fx: chain,
                     fx_automation,
+                    pin_bufs: fx_pins.iter().any(Option::is_some).then(|| Arc::new(AuxChannels::new(4))),
+                    fx_pins,
                     notes,
                     monitor: (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0).then(
                         || {
@@ -804,12 +820,45 @@ impl RenderGraph {
         }
         let mut position = read;
         if track.audible && !track.fx.is_empty() {
-            for ((fx, automation), latency) in track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency) {
+            let mut pin_bufs = track.pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
+            for (k, ((fx, automation), latency)) in
+                track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency).enumerate()
+            {
+                // An effect with its own pin map works on buffers gathered from its channels.
+                let pins = track.fx_pins.get(k).and_then(Option::as_ref).filter(|_| pin_bufs.is_some());
+                let (pl, pr, side): (&mut [f32], &mut [f32], Sidechain) = match (pins, pin_bufs.as_deref_mut()) {
+                    (Some(map), Some(bufs)) => {
+                        for (pin, buf) in bufs.iter_mut().enumerate() {
+                            buf[..n].fill(0.0);
+                            let mask = map.input(pin);
+                            for c in (0..track.channels.min(64)).filter(|c| mask & (1 << c) != 0) {
+                                let src: &[f32] = match c {
+                                    0 => tl,
+                                    1 => tr,
+                                    c => match aux.as_deref() {
+                                        Some(a) => &a[c - 2],
+                                        None => continue,
+                                    },
+                                };
+                                for i in 0..n {
+                                    buf[i] += src[i];
+                                }
+                            }
+                        }
+                        let (main, side) = bufs.split_at_mut(2);
+                        let (a, b) = main.split_at_mut(1);
+                        let side = (map.inputs.len() >= 4).then(|| (&side[0][..n], &side[1][..n]));
+                        (&mut a[0][..n], &mut b[0][..n], side)
+                    }
+                    _ => {
+                        (&mut *tl, &mut *tr, aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n])))
+                    }
+                };
                 let ctx = ProcessContext {
                     sample_rate: self.sample_rate,
                     position,
                     playing: input.play_items,
-                    aux: aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n])),
+                    aux: side,
                     // While stopped the position stands still; feeding notes would retrigger them.
                     notes: if input.play_items { track.notes.as_deref() } else { None },
                     live: if track.midi_input.is_some() { input.midi } else { &[] },
@@ -819,7 +868,7 @@ impl RenderGraph {
                 let t = position as f64 / self.sample_rate as f64;
                 position -= latency;
                 if automation.is_empty() {
-                    fx.process(tl, tr, &ctx);
+                    fx.process(pl, pr, &ctx);
                 } else {
                     // REAPER sets enveloped FX parameters once per 512-frame block, from the value
                     // at the block's start.
@@ -835,8 +884,29 @@ impl RenderGraph {
                             ..ctx
                         };
                         let st = t + at as f64 / self.sample_rate as f64;
-                        fx.process_automated(&mut tl[at..at + len], &mut tr[at..at + len], &slice_ctx, automation, st);
+                        fx.process_automated(&mut pl[at..at + len], &mut pr[at..at + len], &slice_ctx, automation, st);
                         at += len;
+                    }
+                }
+                // Channels an output pin feeds take its audio; the others pass through.
+                if let (Some(map), Some(bufs)) = (pins, pin_bufs.as_deref()) {
+                    for c in 0..track.channels.min(64) {
+                        let bit = 1u64 << c;
+                        let (o0, o1) = (map.output(0) & bit != 0, map.output(1) & bit != 0);
+                        if !o0 && !o1 {
+                            continue;
+                        }
+                        let dst: &mut [f32] = match c {
+                            0 => &mut *tl,
+                            1 => &mut *tr,
+                            c => match aux.as_deref_mut() {
+                                Some(a) => &mut a[c - 2][..n],
+                                None => continue,
+                            },
+                        };
+                        for i in 0..n {
+                            dst[i] = if o0 { bufs[0][i] } else { 0.0 } + if o1 { bufs[1][i] } else { 0.0 };
+                        }
                     }
                 }
             }

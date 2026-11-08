@@ -735,6 +735,95 @@ fn slot_plugin(slot: &FxSlot) -> Option<&Chunk> {
     })
 }
 
+/// Which track channels an effect's pins connect to, as bitmasks (channel 1 is bit 0). Only
+/// the first two input and output pins carry audio here; input pins 3 and 4 are the
+/// sidechain.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinMap {
+    pub inputs: Vec<u64>,
+    pub outputs: Vec<u64>,
+}
+
+impl PinMap {
+    pub fn input(&self, pin: usize) -> u64 {
+        self.inputs.get(pin).copied().unwrap_or(0)
+    }
+
+    pub fn output(&self, pin: usize) -> u64 {
+        self.outputs.get(pin).copied().unwrap_or(0)
+    }
+
+    /// Pins 1/2 in and out on channels 1/2, with any sidechain on 3/4: what the graph does
+    /// without a map.
+    fn is_plain(&self) -> bool {
+        self.input(0) == 1
+            && self.input(1) == 2
+            && self.output(0) == 1
+            && self.output(1) == 2
+            && self.outputs.iter().skip(2).all(|&m| m == 0)
+            && self.inputs.get(2).is_none_or(|&m| m == 4)
+            && self.inputs.get(3).is_none_or(|&m| m == 8)
+    }
+}
+
+/// The pin map REAPER stored for a slot, or `None` when it is plain stereo (or not stored):
+/// VST and VST 3 slots keep it in their state header, JSFX in a `<JS_PINMAP` chunk.
+pub fn pin_map(slot: &FxSlot) -> Option<PinMap> {
+    let plugin = slot_plugin(slot)?;
+    let map = match plugin.name() {
+        "VST" => {
+            let lines: Vec<String> = plugin
+                .children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Line(l) => Some(l.trim().to_owned()),
+                    Node::Chunk(_) => None,
+                })
+                .collect();
+            let state = ReaperVstState::decode(&lines)?;
+            PinMap { inputs: state.inputs, outputs: state.outputs }
+        }
+        "JS" => {
+            use base64::Engine as _;
+            let chunk = slot.raw.iter().find_map(|n| match n {
+                Node::Chunk(c) if c.name() == "JS_PINMAP" => Some(c),
+                _ => None,
+            })?;
+            let text: String = chunk
+                .children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Line(l) => Some(l.trim()),
+                    Node::Chunk(_) => None,
+                })
+                .collect();
+            let bytes = base64::engine::general_purpose::STANDARD.decode(text).ok()?;
+            js_pin_blocks(&bytes)?
+        }
+        _ => return None,
+    };
+    (!map.is_plain()).then_some(map)
+}
+
+/// `<JS_PINMAP`: a version word, then an input and an output block, each its byte size
+/// followed by two words, the pin count and one 64-bit channel mask per pin.
+fn js_pin_blocks(bytes: &[u8]) -> Option<PinMap> {
+    let word = |at: usize| bytes.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let mut at = 4;
+    let mut blocks = Vec::new();
+    for _ in 0..2 {
+        let size = word(at)?;
+        let pins = word(at + 12)?;
+        let masks = (0..pins)
+            .map(|p| bytes.get(at + 16 + p * 8..at + 24 + p * 8).map(|b| u64::from_le_bytes(b.try_into().unwrap())))
+            .collect::<Option<Vec<u64>>>()?;
+        blocks.push(masks);
+        at += 4 + size;
+    }
+    let outputs = blocks.pop()?;
+    Some(PinMap { inputs: blocks.pop()?, outputs })
+}
+
 /// The plugin chunk is what defines the sound; bypass and window lines do not.
 fn plugin_state(slot: &FxSlot) -> Vec<Node> {
     slot_plugin(slot).map(|c| vec![Node::Chunk(c.clone())]).unwrap_or_default()
@@ -1179,5 +1268,31 @@ impl Effect for Vst2Effect {
                 right[..n].copy_from_slice(&self.outputs[1][..n]);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    fn js_slot(pinmap: Option<&str>) -> FxSlot {
+        let mut text = String::from("<FXCHAIN\n  BYPASS 0 0 0\n  <JS utility/volume \"\"\n    -6 0 -\n  >\n");
+        if let Some(b64) = pinmap {
+            text.push_str(&format!("  <JS_PINMAP\n    {b64}\n  >\n"));
+        }
+        text.push_str("  WAK 0 0\n>\n");
+        let chain = scythe_core::rpp::parse(&text).unwrap();
+        FxSlot { name: "JS".into(), enabled: true, raw: chain.children }
+    }
+
+    #[test]
+    fn reads_jsfx_pin_maps() {
+        // Written by REAPER: inputs from channels 3/4, outputs to 1/2.
+        let map = pin_map(&js_slot(Some(
+            "6AMAABwAAADoAwAABAAAAAIAAAAEAAAAAAAAAAgAAAAAAAAAHAAAAOgDAAAEAAAAAgAAAAEAAAAAAAAAAgAAAAAAAAA=",
+        )))
+        .unwrap();
+        assert_eq!((map.inputs, map.outputs), (vec![4, 8], vec![1, 2]));
+        assert_eq!(pin_map(&js_slot(None)), None, "no map means plain stereo");
     }
 }

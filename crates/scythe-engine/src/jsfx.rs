@@ -342,9 +342,16 @@ impl Effect for JsfxEffect {
             return;
         }
         let (s0, s1) = (self.machine.spl_slots[0], self.machine.spl_slots[1]);
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+        let (s2, s3) = (self.machine.spl_slots[2], self.machine.spl_slots[3]);
+        // A sidechain arrives as channels 3/4 (`spl2`, `spl3`).
+        self.machine.vars.values[self.num_ch] = if ctx.aux.is_some() { 4.0 } else { 2.0 };
+        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
             self.machine.vars.values[s0] = *l as f64;
             self.machine.vars.values[s1] = *r as f64;
+            if let Some((a, b)) = ctx.aux {
+                self.machine.vars.values[s2] = a[i] as f64;
+                self.machine.vars.values[s3] = b[i] as f64;
+            }
             for code in &self.sample {
                 self.machine.run(code);
             }

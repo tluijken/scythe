@@ -401,6 +401,10 @@ pub struct ReaperVstState {
     pub unique_id: u32,
     pub chunk: Vec<u8>,
     pub program: Vec<u8>,
+    /// Track channels each input and output pin is connected to, as bitmasks (channel 1 is
+    /// bit 0).
+    pub inputs: Vec<u64>,
+    pub outputs: Vec<u64>,
 }
 
 impl ReaperVstState {
@@ -434,11 +438,14 @@ impl ReaperVstState {
         }
         let unique_id = u32::from_le_bytes(header[0..4].try_into().ok()?);
         let word = |at: usize| header.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+        let mask = |at: usize| header.get(at..at + 8).and_then(|b| b.try_into().ok()).map(u64::from_le_bytes);
         let n_in = word(8)? as usize;
         let after_in = 12 + n_in * 8;
         let n_out = word(after_in)? as usize;
         let size_at = after_in + 4 + n_out * 8;
         let size = word(size_at)? as usize;
+        let inputs = (0..n_in).filter_map(|i| mask(12 + i * 8)).collect();
+        let outputs = (0..n_out).filter_map(|i| mask(after_in + 4 + i * 8)).collect();
 
         let rest = &lines[1..];
         let (data_lines, program_line) = match rest.split_last() {
@@ -449,7 +456,7 @@ impl ReaperVstState {
         let mut chunk = b64.decode(joined).ok()?;
         chunk.truncate(size);
         let program = program_line.and_then(|l| b64.decode(l.trim()).ok()).unwrap_or_default();
-        Some(Self { unique_id, chunk, program })
+        Some(Self { unique_id, chunk, program, inputs, outputs })
     }
 }
 
