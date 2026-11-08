@@ -24,6 +24,8 @@ pub struct Rs5kSettings {
     pub obey_note_offs: bool,
     /// Voices that sound at once; a note beyond them takes over the oldest.
     pub max_voices: usize,
+    /// Notes play only with a velocity in this range.
+    pub velocities: (u8, u8),
     /// Attack time in seconds (the parameter spans 0..2 s).
     pub attack: f64,
     pub start: f64,
@@ -52,6 +54,18 @@ impl Rs5kSettings {
             obey_note_offs: v(11, 0.0) >= 0.5,
             // Measured from REAPER's renders: 0 is one voice, 1/16 two, 1/2 nine.
             max_voices: (1.0 + 16.0 * v(8, 1.0).clamp(0.0, 1.0)).round() as usize,
+            velocities: {
+                // Past the 16 parameters the state mixes integers and doubles; the velocity range
+                // is a pair of doubles 164 bytes in, as fractions of 127.
+                let at = |o: usize| {
+                    chunk[nul + 1..]
+                        .get(o..o + 8)
+                        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+                        .filter(|x| x.is_finite() && (0.0..=1.0).contains(x))
+                };
+                let vel = |x: f64| (x * 127.0).round() as u8;
+                (at(164).map_or(1, vel), at(172).map_or(127, vel))
+            },
             attack: v(9, 0.0005) * 2.0,
             start: v(13, 0.0).clamp(0.0, 1.0),
             end: v(14, 1.0).clamp(0.0, 1.0),
@@ -131,7 +145,8 @@ impl Rs5kCompat {
         let mut fates = vec![Fate::Plays; notes.notes.len()];
         let mut sounding: Vec<(usize, i64, i64)> = Vec::new();
         for (i, note) in notes.notes.iter().enumerate() {
-            if !self.accepts(note.channel, note.key) {
+            if !self.accepts(note.channel, note.key) || !self.plays_velocity(note.velocity) {
+                fates[i] = Fate::Silent;
                 continue;
             }
             sounding.retain(|&(_, _, end)| end > note.start);
@@ -147,6 +162,10 @@ impl Rs5kCompat {
             sounding.push((i, note.start, end));
         }
         fates
+    }
+
+    fn plays_velocity(&self, velocity: u8) -> bool {
+        (self.settings.velocities.0..=self.settings.velocities.1).contains(&velocity)
     }
 
     fn accepts(&self, channel: u8, key: u8) -> bool {
@@ -169,7 +188,7 @@ impl Rs5kCompat {
             let channel = status & 0x0f;
             match status & 0xf0 {
                 0x90 if vel > 0 => {
-                    if self.accepts(channel, key) {
+                    if self.accepts(channel, key) && self.plays_velocity(vel) {
                         if self.voices.len() >= self.settings.max_voices.max(1) {
                             self.voices.remove(0);
                         }
@@ -316,6 +335,7 @@ mod tests {
             channel: 0,
             obey_note_offs: false,
             max_voices: 16,
+            velocities: (1, 127),
             attack: 0.0,
             start: 0.0,
             end: 1.0,
