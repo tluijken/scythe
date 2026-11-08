@@ -237,8 +237,7 @@ compares the two files.
 - JSFX views (`@gfx`) are drawn from shapes, not pixels: images cannot be loaded
   (`gfx_loadimg` fails), `gfx_getpixel` sees only filled rectangles, blits ignore rotation,
   additive `gfx_mode` blends normally, `gfx_showmenu` shows no menu, and text is laid out on a
-  fixed-width grid in the UI's monospace font rather than the font asked for. System exclusive reaches VST 2, CLAP and LV2 plugins but not
-  VST 3 ones. REAPER runs
+  fixed-width grid in the UI's monospace font rather than the font asked for. REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
   that count its runs. Math functions give 0 where the result is not finite (`log(0)`,
   `exp(1000)`, `acos(2)`, `pow(-8, 1/3)`), as in REAPER; arithmetic NaN (0/0) follows IEEE

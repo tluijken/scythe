@@ -617,6 +617,8 @@ pub struct Vst3Plugin {
     _host: ComWrapper<HostApp>,
     handler: ComWrapper<ComponentHandler>,
     events: ComWrapper<EventList>,
+    /// System exclusive for the next `process` call, as frame offset and message.
+    pub sysex: Vec<(usize, Vec<u8>)>,
     changes: ComWrapper<ParamChanges>,
     /// One buffer per channel of every audio bus, inputs and outputs in bus order.
     inputs: Vec<Vec<f32>>,
@@ -766,6 +768,7 @@ impl Vst3Plugin {
                 _host: host,
                 handler,
                 events: ComWrapper::new(EventList::default()),
+                sysex: Vec::new(),
                 changes: ComWrapper::new(ParamChanges::default()),
                 inputs: vec![vec![0.0; block]; in_layout.iter().sum()],
                 outputs: vec![vec![0.0; block]; out_layout.iter().sum()],
@@ -1040,6 +1043,19 @@ impl Vst3Plugin {
                 }
                 events.push(e);
             }
+            for (offset, data) in &self.sysex {
+                // SAFETY: as above; the bytes live in `self.sysex` until after `process`.
+                let mut e: Event = unsafe { std::mem::zeroed() };
+                e.sampleOffset = *offset as int32;
+                e.r#type = Event_::EventTypes_::kDataEvent as u16;
+                e.__field0.data = DataEvent {
+                    size: data.len() as uint32,
+                    r#type: DataEvent_::DataTypes_::kMidiSysEx as uint32,
+                    bytes: data.as_ptr(),
+                };
+                events.push(e);
+            }
+            events.sort_by_key(|e| e.sampleOffset);
         }
         // SAFETY: an all-zero ProcessContext is valid; the used fields are set below.
         let mut context: ProcessContext = unsafe { std::mem::zeroed() };
@@ -1068,6 +1084,7 @@ impl Vst3Plugin {
         // SAFETY: every buffer and object referenced by `data` lives through the call.
         unsafe { self.processor.process(&mut data) };
         self.changes.clear();
+        self.sysex.clear();
     }
 
     pub fn reset(&mut self) {

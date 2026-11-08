@@ -1299,6 +1299,7 @@ impl Vst3Effect {
     fn queue_midi(&mut self, n: usize, ctx: &ProcessContext) {
         self.notes.clear();
         self.controls.clear();
+        ctx.block_long(n, &mut self.plugin.sysex);
         if let Some(chain) = ctx.chain_midi(n) {
             for (at, bytes) in chain {
                 match bytes[0] & 0xf0 {
