@@ -33,6 +33,8 @@ mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 eframe = "0.37.0"
 egui = "0.37.0"
 rfd = "0.18.0"
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [profile.dev.package."*"]
 opt-level = 2

@@ -45,6 +45,8 @@ pub struct Script {
     pub data_dirs: Vec<PathBuf>,
     /// The size `@gfx w h` asks for, 0 where it does not care.
     pub gfx_size: Option<(u32, u32)>,
+    /// The folder the effect is in, where `gfx_loadimg` looks first.
+    pub folder: Option<PathBuf>,
 }
 
 /// The files of `dir` in the data folders, sorted by name as REAPER lists them.
@@ -160,7 +162,8 @@ impl Script {
     pub fn load(path: &Path, roots: &[PathBuf]) -> Result<Self, String> {
         let text = read_text(path)?;
         let (header, sections) = split_sections(&text);
-        let mut script = Script { sections, gfx_size: gfx_size(&text), ..Default::default() };
+        let folder = path.parent().map(Path::to_path_buf);
+        let mut script = Script { sections, gfx_size: gfx_size(&text), folder, ..Default::default() };
         for line in header {
             let line = line.trim();
             if let Some(d) = line.strip_prefix("desc:") {
@@ -383,6 +386,7 @@ impl JsfxEffect {
         };
         fx.ext_noinit = fx.machine.vars.slot("ext_noinit");
         fx.machine.data_dirs = fx.script.data_dirs.clone();
+        fx.machine.set_image_dirs(fx.script.folder.iter().cloned().collect());
         fx.machine.file_sliders = fx
             .script
             .sliders
@@ -543,14 +547,14 @@ impl JsfxEffect {
 
     /// Runs `@gfx` once for a view of `input`'s size and mouse; returns what it shows.
     /// Sliders it changes take effect as if set from outside, with `@slider` run.
-    pub fn run_gfx(&mut self, input: &crate::eel::gfx::Input) -> Vec<crate::eel::gfx::Draw> {
+    pub fn run_gfx(&mut self, input: &crate::eel::gfx::Input) -> crate::eel::gfx::Output {
         let values = &self.machine.vars.values;
         let before: Vec<f64> = self.slider_vars.iter().map(|&s| values[s]).collect();
         self.machine.gfx_begin(input);
         for code in &self.gfx {
             self.machine.run(code);
         }
-        let draws = self.machine.gfx_end();
+        let out = self.machine.gfx_end();
         let mut changed = false;
         for ((value, &slot), old) in self.values.iter_mut().zip(&self.slider_vars).zip(before) {
             let now = self.machine.vars.values[slot];
@@ -561,7 +565,7 @@ impl JsfxEffect {
         if changed {
             self.run_slider();
         }
-        draws
+        out
     }
 
     fn visible(&self) -> impl Iterator<Item = (usize, &Slider)> {
@@ -628,7 +632,7 @@ impl Effect for JsfxEffect {
         (!self.gfx.is_empty()).then(|| self.script.gfx_size.unwrap_or_default())
     }
 
-    fn gfx(&mut self, input: &crate::eel::gfx::Input) -> Option<Vec<crate::eel::gfx::Draw>> {
+    fn gfx(&mut self, input: &crate::eel::gfx::Input) -> Option<crate::eel::gfx::Output> {
         (!self.gfx.is_empty()).then(|| self.run_gfx(input))
     }
 

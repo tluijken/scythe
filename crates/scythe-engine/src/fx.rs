@@ -175,8 +175,9 @@ pub trait Effect: Send {
         None
     }
 
-    /// Runs the effect's `@gfx` once on the UI thread and returns what its view shows.
-    fn gfx(&mut self, _input: &crate::eel::gfx::Input) -> Option<Vec<crate::eel::gfx::Draw>> {
+    /// Runs the effect's `@gfx` once on the UI thread; what it drew is drawn by rendering the
+    /// output, which needs no lock on the effect.
+    fn gfx(&mut self, _input: &crate::eel::gfx::Input) -> Option<crate::eel::gfx::Output> {
         None
     }
 

@@ -69,7 +69,8 @@ fn main() {
         match Script::load(f, &roots).and_then(|s| JsfxEffect::new(s, &[], 48000)) {
             Ok(mut fx) => {
                 ok += 1;
-                if scythe_engine::fx::Effect::gfx(&mut fx, &view).is_some() {
+                if let Some(out) = scythe_engine::fx::Effect::gfx(&mut fx, &view) {
+                    out.render();
                     views += 1;
                 }
             }

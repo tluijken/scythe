@@ -153,10 +153,16 @@ Working:
   `file_open` reads WAV files as samples and text one value per item. Effects with `@gfx`
   (analyzers, scopes, the channel mapper) open their own view from the Edit button: `@gfx`
   runs on the UI thread about 30 times a second, sharing the effect's variables and memory,
-  with the mouse (buttons, modifiers, wheel) and typed keys; rectangles, lines, circles, arcs,
-  triangles, gradients and text are painted from its display list, `gfx_clear = -1` keeps what
-  was drawn, `gfx_blit` copies drawn shapes (scrolling views), and sliders it sets take effect
-  as if moved by hand. They
+  with the mouse (buttons, modifiers, wheel) and typed keys. It draws into pixels as REAPER
+  does: rectangles, lines, circles, arcs, triangles, gradients and pixels blend with `gfx_a`
+  and `gfx_mode` (additive too), into the screen or any of 1024 images (`gfx_dest`,
+  `gfx_setimgdim`); text is drawn in the face `gfx_setfont` names (found through fontconfig;
+  bold, italic, underline and turned text) and measures as it draws; `gfx_blit` and
+  `gfx_blitext` scale, turn and filter; `gfx_loadimg` reads PNG and JPEG files from the
+  effect's folder or `Data`; `gfx_getpixel`, `gfx_blurto` and `gfx_muladdrect` work on the
+  pixels; `gfx_showmenu` opens a menu at the mouse; `gfx_clear = -1` keeps what was drawn; and
+  sliders it sets take effect as if moved by hand. The script runs under the effect's lock,
+  its drawing after the lock is let go, and the view uploads the screen only when it changed. They
   run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
   next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
   installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
@@ -241,10 +247,13 @@ compares the two files.
 - ReaScript covers a subset of the API (above); Python needs `python3` on the PATH, and its
   `print` goes to Scythe's stderr, not the console. EEL2 `eval`, `extension_api`, `gfx_*`
   windows and EEL file/network functions are not there.
-- JSFX views (`@gfx`) are drawn from shapes, not pixels: images cannot be loaded
-  (`gfx_loadimg` fails), `gfx_getpixel` sees only filled rectangles, blits ignore rotation,
-  additive `gfx_mode` blends normally, `gfx_showmenu` shows no menu, and text is laid out on a
-  fixed-width grid in the UI's monospace font rather than the font asked for. REAPER runs
+- JSFX views (`@gfx`): `gfx_showmenu` does not wait inside the script; the run stops at the
+  call, drops what it drew, and runs again with the same mouse once a choice is made, so code
+  before the call runs twice. Font 0 is the system sans at 10 pixels rather than REAPER's
+  8-pixel bitmap font, other font flags (outline, shadow, inverted) are ignored, and views
+  draw one pixel per point (`gfx_ext_retina` stays 0). `gfx_deltablit`, `gfx_transformblit`
+  and `gfx_getdropfile` do nothing. Audio passes the effect by while its `@gfx` script runs.
+  REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
   that count its runs. Math functions give 0 where the result is not finite (`log(0)`,
   `exp(1000)`, `acos(2)`, `pow(-8, 1/3)`), as in REAPER; arithmetic NaN (0/0) follows IEEE

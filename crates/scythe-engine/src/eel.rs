@@ -1210,13 +1210,16 @@ impl Machine {
                 let mut v = 0.0;
                 for i in items {
                     v = self.eval(i);
+                    if self.gfx.halted() {
+                        break;
+                    }
                 }
                 v
             }
             Node::While(body) => {
                 // EEL2 stops runaway loops after a million passes.
                 let mut n = 0;
-                while truth(self.eval(body)) && n < 1_000_000 {
+                while truth(self.eval(body)) && n < 1_000_000 && !self.gfx.halted() {
                     n += 1;
                 }
                 0.0
@@ -1225,6 +1228,9 @@ impl Machine {
                 let n = self.eval(count).clamp(0.0, 1_000_000.0) as usize;
                 for _ in 0..n {
                     self.eval(body);
+                    if self.gfx.halted() {
+                        break;
+                    }
                 }
                 0.0
             }

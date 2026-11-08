@@ -1,5 +1,5 @@
 mod arrange;
-mod gfx_view;
+pub mod gfx_view;
 mod inspector;
 pub mod midi_editor;
 mod mixer;

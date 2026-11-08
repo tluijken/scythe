@@ -23,6 +23,8 @@ cpal.workspace = true
 symphonia.workspace = true
 hound.workspace = true
 midir.workspace = true
+ab_glyph.workspace = true
+image.workspace = true
 
 [dev-dependencies]
 x11rb.workspace = true

@@ -1,24 +1,20 @@
 //! JSFX views: each open `@gfx` runs on the UI thread about 30 times a second in a window of
-//! its own, with the mouse and keys over it, and its display list is painted there.
+//! its own, with the mouse and keys over it. Its screen is drawn after the effect's lock is
+//! let go and shown as a texture, uploaded again only when it changed.
 
 use std::time::{Duration, Instant};
 
-use egui::epaint::{Mesh, PathStroke};
 use egui::{
-    Align2, Color32, CornerRadius, Event, Id, Key, MouseWheelUnit, Painter, PointerButton, Pos2, Rect, Sense, Shape,
-    Stroke, StrokeKind, Ui, pos2, vec2,
+    Color32, ColorImage, Event, Id, Key, MouseWheelUnit, PointerButton, Rect, Sense, TextureOptions, Ui, pos2, vec2,
 };
-use scythe_engine::eel::gfx::{self, Draw, Input};
+use scythe_engine::eel::gfx::{Input, Menu, MenuItem};
 
 use crate::app::{GfxView, ScytheApp};
-use crate::theme;
 
 const PERIOD: Duration = Duration::from_millis(33);
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
-    // Monospace advance per point of font size, to fit text to the grid `@gfx` lays it out on.
-    let advance = super::widgets::text_width(ui, "MMMMMMMMMM", theme::mono(100.0)) / 1000.0;
     app.gfx_views.retain_mut(|view| {
         let mut open = true;
         let (w, h) = view.size;
@@ -29,14 +25,14 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
             .open(&mut open)
             .default_size(size)
             .resizable(true)
-            .show(&ctx, |ui| canvas(ui, view, advance));
+            .show(&ctx, |ui| canvas(ui, view));
         open
     });
 }
 
-fn canvas(ui: &mut Ui, view: &mut GfxView, advance: f32) {
+fn canvas(ui: &mut Ui, view: &mut GfxView) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size().max(vec2(64.0, 48.0)), Sense::click_and_drag());
-    let hovered = resp.hovered();
+    let hovered = resp.hovered() && view.menu.is_none();
     let held = resp.is_pointer_button_down_on();
     let (buttons, mods, pointer) = ui.input(|i| {
         let mut buttons = 0;
@@ -83,8 +79,13 @@ fn canvas(ui: &mut Ui, view: &mut GfxView, advance: f32) {
     if let Some(p) = pointer.filter(|_| hovered || held) {
         view.mouse = ((p.x - rect.left()) as f64, (p.y - rect.top()) as f64);
     }
-    let due = view.ran.is_none_or(|t| t.elapsed() >= PERIOD) || view.pressed != 0;
-    if due {
+    // While a menu is up the script waits for it, as REAPER's `gfx_showmenu` blocks.
+    if let Some(pending) = view.menu.take() {
+        match menu(ui, rect, &pending) {
+            Some(choice) => run(ui, view, Input { menu_choice: Some(choice), ..pending.input }),
+            None => view.menu = Some(GfxMenu { just_opened: false, ..pending }),
+        }
+    } else if view.ran.is_none_or(|t| t.elapsed() >= PERIOD) || view.pressed != 0 {
         let input = Input {
             w: rect.width().floor() as f64,
             h: rect.height().floor() as f64,
@@ -95,88 +96,78 @@ fn canvas(ui: &mut Ui, view: &mut GfxView, advance: f32) {
             hwheel: std::mem::take(&mut view.wheel.1),
             mouse_in: hovered,
             chars: std::mem::take(&mut view.chars),
+            menu_choice: None,
         };
-        if let Some(draws) = view.instance.with(|e| e.gfx(&input)).flatten() {
-            view.draws = draws;
-        }
         view.pressed = 0;
-        view.ran = Some(Instant::now());
+        run(ui, view, input);
     }
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, CornerRadius::ZERO, Color32::BLACK);
-    for d in &view.draws {
-        paint(&painter, rect, d, advance);
+    painter.rect_filled(rect, 0.0, Color32::BLACK);
+    if let Some(t) = &view.texture {
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        painter.image(t.id(), Rect::from_min_size(rect.min, t.size_vec2()), uv, Color32::WHITE);
     }
 }
 
-fn color(c: gfx::Color) -> Color32 {
-    let [r, g, b, a] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
-    Color32::from_rgba_unmultiplied(r, g, b, a)
+/// A menu `@gfx` asked for and the input of the run to repeat once the user has chosen.
+pub struct GfxMenu {
+    pub menu: Menu,
+    pub input: Input,
+    pub just_opened: bool,
 }
 
-fn paint(base: &Painter, rect: Rect, d: &Draw, advance: f32) {
-    let o = rect.min.to_vec2();
-    let clipped;
-    let painter = match d.clip {
-        Some([l, t, r, b]) => {
-            clipped = base.with_clip_rect(Rect::from_min_max(pos2(l, t) + o, pos2(r, b) + o).intersect(rect));
-            &clipped
+/// Runs `@gfx` under the effect's lock, then draws what it queued without the lock.
+fn run(ui: &Ui, view: &mut GfxView, input: Input) {
+    let Some(out) = view.instance.with(|e| e.gfx(&input)).flatten() else { return };
+    view.ran = Some(Instant::now());
+    if let Some(screen) = out.render().filter(|s| s.w > 0 && s.h > 0) {
+        let image = ColorImage::from_rgba_unmultiplied([screen.w, screen.h], screen.px.as_flattened());
+        match &mut view.texture {
+            Some(t) => t.set(image, TextureOptions::NEAREST),
+            None => view.texture = Some(ui.ctx().load_texture("jsfx-gfx", image, TextureOptions::NEAREST)),
         }
-        None => base,
-    };
-    let c = color(d.color);
-    let stroke = Stroke::new(1.0, c);
-    // Lines and outlines run through pixel centres, as REAPER draws them.
-    let at = |x: f32, y: f32| pos2(x + 0.5, y + 0.5) + o;
-    let area = |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(pos2(x, y) + o, vec2(w, h));
-    match &d.shape {
-        gfx::Shape::Rect { x, y, w, h, filled: true } => {
-            painter.rect_filled(area(*x, *y, *w, *h), CornerRadius::ZERO, c);
-        }
-        gfx::Shape::Rect { x, y, w, h, .. } => {
-            painter.rect_stroke(area(*x, *y, *w, *h), CornerRadius::ZERO, stroke, StrokeKind::Inside);
-        }
-        gfx::Shape::RoundRect { x, y, w, h, r } => {
-            let radius = CornerRadius::same(r.clamp(0.0, 255.0) as u8);
-            painter.rect_stroke(area(*x, *y, *w, *h), radius, stroke, StrokeKind::Inside);
-        }
-        gfx::Shape::Line { a, b } => {
-            painter.line_segment([at(a[0], a[1]), at(b[0], b[1])], stroke);
-        }
-        gfx::Shape::Circle { x, y, r, filled } => {
-            if *filled {
-                painter.circle_filled(at(*x, *y), *r, c);
-            } else {
-                painter.circle_stroke(at(*x, *y), *r, stroke);
+    }
+    if let Some(menu) = out.menu {
+        // The repeated run must not see the keys and wheel the first one used up.
+        let input = Input { chars: Vec::new(), wheel: 0.0, hwheel: 0.0, ..input };
+        view.menu = Some(GfxMenu { menu, input, just_opened: true });
+    }
+}
+
+/// Shows the menu at its place in the view; the item chosen, or 0 once it is dismissed.
+fn menu(ui: &Ui, rect: Rect, pending: &GfxMenu) -> Option<u32> {
+    let at = rect.min + vec2(pending.menu.x as f32, pending.menu.y as f32);
+    let mut chosen = None;
+    let area = egui::Area::new(Id::unique(("jsfx-gfx-menu", rect.min.x as i32, rect.min.y as i32)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::menu(ui.style()).show(ui, |ui| {
+                ui.set_min_width(140.0);
+                menu_items(ui, &pending.menu.items, &mut chosen);
+            });
+        });
+    let dismissed = ui.input(|i| i.key_pressed(Key::Escape))
+        || (!pending.just_opened && area.response.clicked_elsewhere() && chosen.is_none());
+    chosen.or(dismissed.then_some(0))
+}
+
+fn menu_items(ui: &mut Ui, items: &[MenuItem], chosen: &mut Option<u32>) {
+    for item in items {
+        match item {
+            MenuItem::Item { label, id, checked, enabled } => {
+                if ui.add_enabled(*enabled, egui::Button::selectable(*checked, label)).clicked() {
+                    *chosen = Some(*id);
+                }
             }
-        }
-        gfx::Shape::Arc { x, y, r, from, to } => {
-            let steps = ((to - from).abs() * r).ceil().clamp(4.0, 256.0) as usize;
-            let points: Vec<Pos2> = (0..=steps)
-                .map(|k| {
-                    let t = from + (to - from) * k as f32 / steps as f32;
-                    at(x + r * t.sin(), y - r * t.cos())
-                })
-                .collect();
-            painter.add(Shape::line(points, PathStroke::new(1.0, c)));
-        }
-        gfx::Shape::Polygon(points) => {
-            painter.add(Shape::convex_polygon(points.iter().map(|p| pos2(p[0], p[1]) + o).collect(), c, Stroke::NONE));
-        }
-        gfx::Shape::Gradient { x, y, w, h, corners } => {
-            let r = area(*x, *y, *w, *h);
-            let mut mesh = Mesh::default();
-            for (p, k) in [r.left_top(), r.right_top(), r.left_bottom(), r.right_bottom()].into_iter().zip(corners) {
-                mesh.colored_vertex(p, color(*k));
+            MenuItem::Sub { label, items: sub, enabled } => {
+                ui.add_enabled_ui(*enabled, |ui| {
+                    ui.menu_button(label, |ui| menu_items(ui, sub, chosen));
+                });
             }
-            mesh.add_triangle(0, 1, 2);
-            mesh.add_triangle(1, 3, 2);
-            painter.add(Shape::mesh(mesh));
-        }
-        gfx::Shape::Text { x, y, size, text } => {
-            let font = (gfx::char_width(*size) / advance.max(0.1)).min(*size).max(1.0);
-            let top = pos2(*x, *y + (size - font) / 2.0) + o;
-            painter.text(top, Align2::LEFT_TOP, text, theme::mono(font), c);
+            MenuItem::Separator => {
+                ui.separator();
+            }
         }
     }
 }

@@ -205,7 +205,10 @@ pub struct GfxView {
     pub instance: Arc<scythe_engine::fx::FxInstance>,
     /// The size `@gfx` asks for, 0 where it does not care.
     pub size: (u32, u32),
-    pub draws: Vec<scythe_engine::eel::gfx::Draw>,
+    /// The screen `@gfx` drew last.
+    pub texture: Option<egui::TextureHandle>,
+    /// A menu the script waits on.
+    pub menu: Option<crate::ui::gfx_view::GfxMenu>,
     pub ran: Option<Instant>,
     /// Buttons pressed since the last run, so a quick click is not missed.
     pub pressed: u32,
@@ -1269,7 +1272,8 @@ impl ScytheApp {
                 title,
                 instance,
                 size,
-                draws: Vec::new(),
+                texture: None,
+                menu: None,
                 ran: None,
                 pressed: 0,
                 wheel: (0.0, 0.0),
