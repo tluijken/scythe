@@ -126,6 +126,7 @@ fn plays_controls_and_state_from_a_reaper_chunk() {
         notes: None,
         live: &[],
         live_channel: None,
+        aux: None,
         bpm: 120.0,
     };
     chain[0].process(&mut l, &mut r, &ctx);
@@ -226,6 +227,7 @@ fn opens_the_x11_ui_and_takes_its_control_changes() {
         notes: None,
         live: &[],
         live_channel: None,
+        aux: None,
         bpm: 120.0,
     };
     let (mut l, mut r) = (vec![1.0f32; 4], vec![1.0f32; 4]);

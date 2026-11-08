@@ -34,6 +34,7 @@ fn main() {
             notes: None,
             live: &[],
             live_channel: None,
+            aux: None,
             bpm: 120.0,
         };
         let (mut l, mut r) = (vec![0.0f32; 512], vec![0.0f32; 512]);

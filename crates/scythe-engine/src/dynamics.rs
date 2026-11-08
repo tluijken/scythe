@@ -69,6 +69,12 @@ impl Lookahead {
     }
 }
 
+/// The detector input when `SignIn` (parameter `index`) picks channels 3/4 and the track has
+/// them: REAPER stores the detector's first input channel there, 0 for the main pair.
+fn sidechain<'a>(params: &[f32], index: usize, ctx: &ProcessContext<'a>) -> Option<(&'a [f32], &'a [f32])> {
+    let first = params.get(index).copied().unwrap_or(0.0).round() as usize;
+    if first >= 2 { ctx.aux } else { None }
+}
 pub struct Gate {
     params: Vec<f32>,
     sample_rate: u32,
@@ -170,11 +176,15 @@ impl Effect for Gate {
         Some(marked_chunk(&self.params))
     }
 
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            // The detector sees the incoming signal; with pre-open the audio is delayed so
-            // the gate is already open when a hit arrives.
-            let level = l.abs().max(r.abs());
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        let key = sidechain(&self.params, 7, ctx);
+        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+            // The detector sees the incoming signal (or the sidechain); with pre-open the audio
+            // is delayed so the gate is already open when a hit arrives.
+            let level = match key {
+                Some((kl, kr)) => kl[i].abs().max(kr[i].abs()),
+                None => l.abs().max(r.abs()),
+            };
             if level >= self.threshold {
                 self.open = true;
                 self.below = 0;
@@ -336,10 +346,12 @@ impl Effect for Compressor {
         Some(marked_chunk(&self.params))
     }
 
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         let n = self.window.len();
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let sq = (*l as f64 * *l as f64).max(*r as f64 * *r as f64);
+        let key = sidechain(&self.params, 8, ctx);
+        for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
+            let (dl, dr) = key.map_or((*l, *r), |(kl, kr)| (kl[i], kr[i]));
+            let sq = (dl as f64 * dl as f64).max(dr as f64 * dr as f64);
             self.window_sum += sq - self.window[self.window_at];
             self.window[self.window_at] = sq;
             self.window_at = (self.window_at + 1) % n;
@@ -397,6 +409,7 @@ mod tests {
             notes: None,
             live: &[],
             live_channel: None,
+            aux: None,
             bpm: 120.0,
         };
         let input = steps();

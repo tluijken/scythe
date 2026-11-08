@@ -555,19 +555,13 @@ fn split_plugin_name(full: &str) -> (String, String) {
 fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect, y: &mut f32, track_id: TrackId) {
     let track = app.project.track(track_id).unwrap().clone();
     // Hardware MIDI output: click cycles through none and every output port.
-    painter.text(
-        pos2(inner.left(), *y + 12.0),
-        Align2::LEFT_CENTER,
-        "MIDI hardware out",
-        theme::semibold(12.0),
-        TEXT_DIM,
-    );
+    painter.text(pos2(inner.left(), *y + 12.0), Align2::LEFT_CENTER, "MIDI out", theme::semibold(12.0), TEXT_DIM);
     let names = app.midi_output_names().to_vec();
     let label = match track.midi_out {
         None => "None".to_owned(),
         Some((dev, _)) => names.get(dev as usize).cloned().unwrap_or_else(|| format!("Device {}", dev + 1)),
     };
-    let pill = Rect::from_min_size(pos2(inner.right() - 200.0, *y), vec2(200.0, 24.0));
+    let pill = Rect::from_min_size(pos2(inner.right() - 170.0, *y), vec2(170.0, 24.0));
     let label = widgets::truncate(ui, &label, &theme::mono(10.0), pill.width() - 16.0);
     if text_pill(ui, pill, &label, theme::mono(10.0), BG, if track.midi_out.is_some() { TEXT } else { TEXT_DIM })
         .on_hover_text("Where this track's MIDI goes besides its instrument (click to change)")
@@ -581,6 +575,24 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         app.edit("Set MIDI hardware output", |p| p.track_mut(track_id).unwrap().midi_out = next);
     }
     *y += 36.0;
+    // Track channels: click for more, right-click for fewer.
+    painter.text(pos2(inner.left(), *y + 12.0), Align2::LEFT_CENTER, "Track channels", theme::semibold(12.0), TEXT_DIM);
+    let pill = Rect::from_min_size(pos2(inner.right() - 70.0, *y), vec2(70.0, 24.0));
+    let resp = text_pill(ui, pill, &track.channels.to_string(), theme::mono(11.0), BG, TEXT)
+        .on_hover_text("Audio channels of this track (click for more, right-click for fewer)");
+    const CHANNELS: [u32; 7] = [2, 4, 6, 8, 12, 16, 32];
+    let at = CHANNELS.iter().position(|&c| c >= track.channels).unwrap_or(0);
+    let next = if resp.clicked() {
+        Some(CHANNELS[(at + 1).min(CHANNELS.len() - 1)])
+    } else if resp.secondary_clicked() {
+        Some(CHANNELS[at.saturating_sub(1)])
+    } else {
+        None
+    };
+    if let Some(n) = next.filter(|&n| n != track.channels) {
+        app.edit("Set track channels", |p| p.track_mut(track_id).unwrap().channels = n);
+    }
+    *y += 36.0;
     painter.text(pos2(inner.left(), *y + 8.0), Align2::LEFT_CENTER, "Sends", theme::semibold(12.0), TEXT_DIM);
     *y += 24.0;
     for (i, s) in track.sends.iter().enumerate() {
@@ -590,7 +602,7 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         painter.text(
             pos2(r.left() + 12.0, r.center().y - 8.0),
             Align2::LEFT_CENTER,
-            widgets::truncate(ui, &dest, &theme::regular(13.0), r.width() - 120.0),
+            widgets::truncate(ui, &dest, &theme::regular(13.0), r.width() - 210.0),
             theme::regular(13.0),
             TEXT,
         );
@@ -601,6 +613,25 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
             theme::regular(10.0),
             TEXT_DIM,
         );
+        // Channels: source pair → destination pair.
+        let dest_channels = app.project.track(s.dest).map_or(2, |t| t.channels);
+        let (src, dst) = ((s.src_channels & 1023) as u32, (s.dst_channels & 1023) as u32);
+        let routing = Rect::from_min_size(pos2(r.right() - 190.0, r.center().y - 12.0), vec2(76.0, 24.0));
+        let label = format!("{}/{}→{}/{}", src + 1, src + 2, dst + 1, dst + 2);
+        let resp = text_pill(ui, routing, &label, theme::mono(10.0), BG, TEXT_DIM)
+            .on_hover_text("Channels sent (right-click: source pair) and where they arrive (click: destination pair)");
+        if resp.clicked() {
+            let next = (dst + 2) % dest_channels.max(2);
+            app.edit("Set send destination channels", |p| {
+                p.track_mut(track_id).unwrap().sends[i].dst_channels = next as i64
+            });
+        }
+        if resp.secondary_clicked() {
+            let next = (src + 2) % track.channels.max(2);
+            app.edit("Set send source channels", |p| {
+                p.track_mut(track_id).unwrap().sends[i].src_channels = next as i64
+            });
+        }
         let val = Rect::from_min_size(pos2(r.right() - 108.0, r.center().y - 12.0), vec2(70.0, 24.0));
         widgets::label_pill(ui, val, &format!("{} dB", format_db(s.volume)), BG, if s.muted { TEXT_DIM } else { TEXT });
         let drag = ui

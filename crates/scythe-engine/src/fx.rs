@@ -31,6 +31,8 @@ pub struct ProcessContext<'a> {
     /// (all when `None`) are meant for this track.
     pub live: &'a [LiveMidi],
     pub live_channel: Option<u8>,
+    /// Track channels 3 and 4, for effects with an auxiliary (sidechain) input.
+    pub aux: Option<(&'a [f32], &'a [f32])>,
     /// Project tempo at the block start, in quarter notes per minute.
     pub bpm: f64,
 }

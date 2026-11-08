@@ -30,6 +30,7 @@ fn soft_clipper_runs_and_keeps_its_sliders() {
         notes: None,
         live: &[],
         live_channel: None,
+        aux: None,
         bpm: 120.0,
     };
     let (mut l, mut r): (Vec<f32>, Vec<f32>) = (0..4800).map(|i| ((i as f32 * 0.05).sin(), 0.0)).unzip();

@@ -137,11 +137,17 @@ pub struct RenderTrack {
     pub id: TrackId,
     pub gain_l: f32,
     pub gain_r: f32,
+    /// The fader alone, for channels 3 and up: REAPER pans only the first pair.
+    pub volume: f32,
     pub audible: bool,
     pub items: Vec<RenderItem>,
     pub meter: Arc<Meter>,
-    /// (index into `RenderGraph::tracks`, gain l, gain r)
-    pub sends: Vec<(usize, f32, f32)>,
+    pub sends: Vec<RenderSend>,
+    /// Audio channels; 1 and 2 live in the render scratch, the rest in `aux`.
+    pub channels: usize,
+    pub aux: Option<Arc<AuxChannels>>,
+    /// First channel of the parent (or master) the output goes to.
+    pub main_offset: usize,
     /// Envelopes of each send, when it has any.
     pub send_automation: Vec<Option<Arc<GainAutomation>>>,
     /// Where the post-fader output goes: the parent folder, or the master when `None`.
@@ -171,29 +177,55 @@ pub struct RenderTrack {
     pub main_delay: Option<Arc<DelayLine>>,
 }
 
-/// A stereo delay of a fixed number of frames, used for plugin delay compensation.
+/// One send as the graph plays it.
+#[derive(Debug, Clone)]
+pub struct RenderSend {
+    /// Index into `RenderGraph::tracks`.
+    pub dest: usize,
+    pub gain_l: f32,
+    pub gain_r: f32,
+    /// Source channels (first, count) and the first destination channel, 0-based; a single
+    /// source channel feeds a pair, or one channel with `mono`.
+    pub src: (usize, usize),
+    pub dst: usize,
+    pub mono: bool,
+}
+
+impl RenderSend {
+    /// Source and destination channel of every routed channel, with whether it takes the
+    /// right gain of the pair.
+    fn routes(&self) -> impl Iterator<Item = (usize, usize, bool)> + '_ {
+        let (first, count) = self.src;
+        let pairs: Box<dyn Iterator<Item = (usize, usize, bool)>> = match (count, self.mono) {
+            (_, true) => Box::new((0..count).map(move |k| (first + k, self.dst, false))),
+            (1, false) => Box::new([(first, self.dst, false), (first, self.dst + 1, true)].into_iter()),
+            _ => Box::new((0..count).map(move |k| (first + k, self.dst + k, k % 2 == 1))),
+        };
+        pairs
+    }
+}
+
+/// Channels 3 and up of a track, allocated when the graph is built so rendering never
+/// allocates. Only the track's own render and the routing after it touch them.
+#[derive(Debug)]
+pub struct AuxChannels(std::sync::Mutex<Vec<Vec<f32>>>);
+
+impl AuxChannels {
+    fn new(channels: usize) -> Self {
+        Self(std::sync::Mutex::new((0..channels).map(|_| vec![0.0; RenderScratch::MAX_BLOCK]).collect()))
+    }
+}
+
+/// A delay of a fixed number of frames over a few channels, used for plugin delay
+/// compensation.
 #[derive(Debug)]
 pub struct DelayLine {
-    state: std::sync::Mutex<(Vec<f32>, Vec<f32>, usize)>,
+    state: std::sync::Mutex<(Vec<Vec<f32>>, usize)>,
 }
 
 impl DelayLine {
-    fn new(frames: usize) -> Self {
-        Self { state: std::sync::Mutex::new((vec![0.0; frames], vec![0.0; frames], 0)) }
-    }
-
-    /// Adds the input, delayed and scaled by `gain(frame)`, to the output.
-    fn mix(&self, input: (&[f32], &[f32]), gain: impl Fn(usize) -> (f32, f32), out: (&mut [f32], &mut [f32])) {
-        let Ok(mut guard) = self.state.try_lock() else { return };
-        let (l, r, at) = &mut *guard;
-        for i in 0..input.0.len() {
-            let g = gain(i);
-            out.0[i] += l[*at] * g.0;
-            out.1[i] += r[*at] * g.1;
-            l[*at] = input.0[i];
-            r[*at] = input.1[i];
-            *at = (*at + 1) % l.len();
-        }
+    fn new(frames: usize, channels: usize) -> Self {
+        Self { state: std::sync::Mutex::new(((0..channels.max(1)).map(|_| vec![0.0; frames]).collect(), 0)) }
     }
 }
 
@@ -252,6 +284,14 @@ impl Automation {
     /// REAPER evaluates pan envelopes once per 512-frame processing block and ramps the channel
     /// gains linearly in between; a block cut short by the end of a render ramps to its end.
     const PAN_GRID: i64 = 512;
+
+    /// The volume part alone (fader, volume envelopes, mute), for channels 3 and up.
+    fn volume_at(&self, t: f64) -> f32 {
+        if self.mute.as_ref().and_then(|e| e.value_at(t)).is_some_and(|v| v < 0.5) {
+            return 0.0;
+        }
+        self.gains.iter().fold(self.volume, |v, e| v * e.value_at(t).unwrap_or(1.0)) as f32
+    }
 
     fn gains_at(&self, frame: i64, block_end: i64, sample_rate: f64) -> (f32, f32) {
         let t = frame as f64 / sample_rate;
@@ -511,24 +551,40 @@ impl RenderGraph {
                 let (sends, send_automation): (Vec<_>, Vec<_>) = t
                     .sends
                     .iter()
-                    .filter(|s| !s.muted)
+                    .filter(|s| !s.muted && s.src_channels >= 0)
                     .filter_map(|s| {
                         let (l, r) = project.pan_law.gains(s.pan);
                         let automation = GainAutomation::new(s.volume, s.pan, project.pan_law, &s.envelopes);
-                        Some((
-                            (*index.get(&s.dest)?, (s.volume * l) as f32, (s.volume * r) as f32),
-                            automation.map(Arc::new),
-                        ))
+                        let kind = (s.src_channels >> 10) as usize;
+                        let count = match kind {
+                            0 => 2,
+                            1 => 1,
+                            n => 2 * n,
+                        };
+                        let send = RenderSend {
+                            dest: *index.get(&s.dest)?,
+                            gain_l: (s.volume * l) as f32,
+                            gain_r: (s.volume * r) as f32,
+                            src: ((s.src_channels & 1023) as usize, count),
+                            dst: (s.dst_channels & 1023) as usize,
+                            mono: s.dst_channels & 1024 != 0,
+                        };
+                        Some((send, automation.map(Arc::new)))
                     })
                     .unzip();
+                let channels = (t.channels as usize).max(2);
                 RenderTrack {
                     id: t.id,
                     gain_l: (t.volume * pl) as f32,
                     gain_r: (t.volume * pr) as f32,
+                    volume: t.volume as f32,
                     audible: project.is_audible(t),
                     items,
                     meter: meters.track(t.id),
                     sends,
+                    channels,
+                    aux: (channels > 2).then(|| Arc::new(AuxChannels::new(channels - 2))),
+                    main_offset: t.main_send_offset as usize,
                     send_automation,
                     parent: parents[ti],
                     main_send: t.main_send,
@@ -646,6 +702,13 @@ impl RenderGraph {
             l[..n].fill(0.0);
             r[..n].fill(0.0);
         }
+        for aux in self.tracks.iter().filter_map(|t| t.aux.as_ref()) {
+            if let Ok(mut bufs) = aux.0.try_lock() {
+                for b in bufs.iter_mut() {
+                    b[..n].fill(0.0);
+                }
+            }
+        }
         let tracks = self.tracks.len();
         for level in 0..self.level_count {
             // Tracks within a level do not feed each other, so they render in parallel; routing
@@ -675,6 +738,7 @@ impl RenderGraph {
                     notes: None,
                     live: &[],
                     live_channel: None,
+                    aux: None,
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
                 };
                 fx.process(out_l, out_r, &ctx);
@@ -716,9 +780,20 @@ impl RenderGraph {
         // Plugin latency downstream is compensated by reading this track's material early.
         let read = start + track.read_ahead;
         let items: &[RenderItem] = if input.play_items { &track.items } else { &[] };
+        let mut aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
         for item in items {
             match &item.audio {
-                ItemAudio::Media(audio) => mix_item(item, audio, read, self.sample_rate as f64, tl, tr),
+                ItemAudio::Media(audio) => {
+                    mix_item(item, audio, read, self.sample_rate as f64, tl, tr);
+                    // Source channels beyond the first pair play into the track's further channels.
+                    if audio.channels.len() > 2
+                        && let Some(aux) = aux.as_deref_mut()
+                    {
+                        for (c, out) in aux.iter_mut().enumerate().take(audio.channels.len() - 2) {
+                            mix_item_channel(item, audio, c + 2, read, self.sample_rate as f64, &mut out[..n]);
+                        }
+                    }
+                }
                 ItemAudio::Midi(notes) => notes.render(read, self.sample_rate, (item.gain_l, item.gain_r), tl, tr),
                 ItemAudio::Click => {
                     let from = read.max(item.start);
@@ -734,6 +809,7 @@ impl RenderGraph {
                     sample_rate: self.sample_rate,
                     position,
                     playing: input.play_items,
+                    aux: aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n])),
                     // While stopped the position stands still; feeding notes would retrigger them.
                     notes: if input.play_items { track.notes.as_deref() } else { None },
                     live: if track.midi_input.is_some() { input.midi } else { &[] },
@@ -752,8 +828,12 @@ impl RenderGraph {
                     while at < n {
                         let frame = ctx.position + at as i64;
                         let len = ((SLICE - frame.rem_euclid(SLICE)) as usize).min(n - at);
-                        let slice_ctx =
-                            ProcessContext { position: frame, live: if at == 0 { ctx.live } else { &[] }, ..ctx };
+                        let slice_ctx = ProcessContext {
+                            position: frame,
+                            live: if at == 0 { ctx.live } else { &[] },
+                            aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
+                            ..ctx
+                        };
                         let st = t + at as f64 / self.sample_rate as f64;
                         fx.process_automated(&mut tl[at..at + len], &mut tr[at..at + len], &slice_ctx, automation, st);
                         at += len;
@@ -761,6 +841,19 @@ impl RenderGraph {
                 }
             }
         }
+        if let Some(aux) = aux.as_deref_mut() {
+            let sr_f = self.sample_rate as f64;
+            for b in aux.iter_mut() {
+                for (i, s) in b[..n].iter_mut().enumerate() {
+                    *s *= match (&track.automation, track.audible) {
+                        (_, false) => 0.0,
+                        (Some(auto), true) => auto.volume_at((position + i as i64) as f64 / sr_f),
+                        (None, true) => track.volume,
+                    };
+                }
+            }
+        }
+        drop(aux);
         match (&track.automation, track.audible) {
             (_, false) => {
                 tl.fill(0.0);
@@ -867,49 +960,94 @@ impl RenderGraph {
     ) {
         let track = &self.tracks[ti];
         let (l, r) = std::mem::take(&mut scratch.track_bufs[ti]);
-        let (tl, tr) = (&l[..n], &r[..n]);
-        fn add(
-            input: (&[f32], &[f32]),
-            delay: Option<&Arc<DelayLine>>,
-            gain: impl Fn(usize) -> (f32, f32),
-            dl: &mut [f32],
-            dr: &mut [f32],
+        let own_aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
+        let source = |c: usize| -> Option<&[f32]> {
+            match c {
+                0 => Some(&l[..n]),
+                1 => Some(&r[..n]),
+                c => own_aux.as_ref()?.get(c - 2).map(|b| &b[..n]),
+            }
+        };
+        fn mix(
+            target: &mut [f32],
+            input: &[f32],
+            delay: Option<(&mut Vec<Vec<f32>>, usize, usize)>,
+            gain: &dyn Fn(usize) -> f32,
         ) {
             match delay {
-                Some(line) => line.mix(input, gain, (dl, dr)),
+                Some((lines, k, at)) => {
+                    let Some(line) = lines.get_mut(k) else { return };
+                    let len = line.len();
+                    for i in 0..target.len() {
+                        let p = (at + i) % len;
+                        target[i] += line[p] * gain(i);
+                        line[p] = input[i];
+                    }
+                }
                 None => {
-                    for i in 0..input.0.len() {
-                        let g = gain(i);
-                        dl[i] += input.0[i] * g.0;
-                        dr[i] += input.1[i] * g.1;
+                    for i in 0..target.len() {
+                        target[i] += input[i] * gain(i);
                     }
                 }
             }
         }
+        // Adds source channel `src` to channel `dst` of `dest` (the master when `None`), through
+        // channel `k` of `delay` when there is one.
+        let add = |scratch: &mut RenderScratch,
+                   out: (&mut [f32], &mut [f32]),
+                   dest: Option<usize>,
+                   (src, dst): (usize, usize),
+                   delay: Option<(&mut Vec<Vec<f32>>, usize, usize)>,
+                   gain: &dyn Fn(usize) -> f32| {
+            let Some(input) = source(src) else { return };
+            match (dest, dst) {
+                (None, 0) => mix(&mut out.0[..n], input, delay, gain),
+                (None, 1) => mix(&mut out.1[..n], input, delay, gain),
+                (None, _) => {}
+                (Some(d), 0) => mix(&mut scratch.track_bufs[d].0[..n], input, delay, gain),
+                (Some(d), 1) => mix(&mut scratch.track_bufs[d].1[..n], input, delay, gain),
+                (Some(d), c) => {
+                    let Some(aux) = self.tracks[d].aux.as_ref() else { return };
+                    let Ok(mut guard) = aux.0.try_lock() else { return };
+                    if let Some(b) = guard.get_mut(c - 2) {
+                        mix(&mut b[..n], input, delay, gain);
+                    }
+                }
+            }
+        };
         // The track's output is this far ahead of the master: what its effects did not use up.
         let out_frame = start + track.read_ahead - track.fx_latency.iter().sum::<i64>();
         let sr = self.sample_rate as f64;
-        for (si, &(dest, sgl, sgr)) in track.sends.iter().enumerate() {
-            let (dl, dr) = &mut scratch.track_bufs[dest];
-            let delay = track.send_delays.get(si).and_then(Option::as_ref);
-            match track.send_automation.get(si).and_then(Option::as_ref) {
-                Some(auto) => {
-                    let gain = |i: usize| auto.gains_at((out_frame + i as i64) as f64 / sr);
-                    add((tl, tr), delay, gain, &mut dl[..n], &mut dr[..n]);
-                }
-                None => add((tl, tr), delay, |_| (sgl, sgr), &mut dl[..n], &mut dr[..n]),
+        for (si, send) in track.sends.iter().enumerate() {
+            let auto = track.send_automation.get(si).and_then(Option::as_ref);
+            let mut delay = track.send_delays.get(si).and_then(Option::as_ref).and_then(|d| d.state.try_lock().ok());
+            for (k, (src, dst, right)) in send.routes().enumerate() {
+                let gain = |i: usize| match auto {
+                    Some(a) => {
+                        let g = a.gains_at((out_frame + i as i64) as f64 / sr);
+                        if right { g.1 } else { g.0 }
+                    }
+                    None if right => send.gain_r,
+                    None => send.gain_l,
+                };
+                let line = delay.as_deref_mut().map(|(lines, at)| (lines, k, *at));
+                add(scratch, (&mut *out_l, &mut *out_r), Some(send.dest), (src, dst), line, &gain);
+            }
+            if let Some((lines, at)) = delay.as_deref_mut() {
+                *at = (*at + n) % lines[0].len();
             }
         }
         if track.main_send {
-            let (dl, dr): (&mut [f32], &mut [f32]) = match track.parent {
-                Some(p) => {
-                    let (pl, pr) = &mut scratch.track_bufs[p];
-                    (&mut pl[..n], &mut pr[..n])
-                }
-                None => (&mut *out_l, &mut *out_r),
-            };
-            add((tl, tr), track.main_delay.as_ref(), |_| (1.0, 1.0), dl, dr);
+            let mut delay = track.main_delay.as_ref().and_then(|d| d.state.try_lock().ok());
+            for c in 0..track.channels {
+                let line = delay.as_deref_mut().map(|(lines, at)| (lines, c, *at));
+                add(scratch, (&mut *out_l, &mut *out_r), track.parent, (c, c + track.main_offset), line, &|_| 1.0);
+            }
+            if let Some((lines, at)) = delay.as_deref_mut() {
+                *at = (*at + n) % lines[0].len();
+            }
         }
+        drop(own_aux);
         scratch.track_bufs[ti] = (l, r);
     }
 
@@ -960,12 +1098,15 @@ fn compensate_latency(tracks: &mut [RenderTrack], order: &[usize], master_latenc
     for &ti in order.iter().rev() {
         let t = &tracks[ti];
         let main = t.main_send.then(|| t.parent.map_or(master_latency, |p| read_ahead[p]));
-        let sends: Vec<i64> = t.sends.iter().map(|s| read_ahead[s.0]).collect();
-        let out = sends.iter().copied().chain(main).max().unwrap_or(master_latency);
-        let delay = |dest: i64| (out > dest).then(|| Arc::new(DelayLine::new((out - dest) as usize)));
+        let sends: Vec<(i64, usize)> = t.sends.iter().map(|s| (read_ahead[s.dest], s.routes().count())).collect();
+        let out = sends.iter().map(|s| s.0).chain(main).max().unwrap_or(master_latency);
+        let delay = |dest: i64, channels: usize| {
+            (out > dest).then(|| Arc::new(DelayLine::new((out - dest) as usize, channels)))
+        };
+        let channels = t.channels;
         let t = &mut tracks[ti];
-        t.send_delays = sends.iter().map(|&d| delay(d)).collect();
-        t.main_delay = main.and_then(delay);
+        t.send_delays = sends.iter().map(|&(d, c)| delay(d, c)).collect();
+        t.main_delay = main.and_then(|d| delay(d, channels));
         t.read_ahead = out + t.fx_latency.iter().sum::<i64>();
         read_ahead[ti] = t.read_ahead;
     }
@@ -980,7 +1121,7 @@ fn dependency_levels(tracks: &[RenderTrack], order: &[usize]) -> Vec<usize> {
     let mut level = vec![0usize; tracks.len()];
     for &i in order {
         let t = &tracks[i];
-        for dest in t.sends.iter().map(|s| s.0).chain(t.parent) {
+        for dest in t.sends.iter().map(|s| s.dest).chain(t.parent) {
             level[dest] = level[dest].max(level[i] + 1);
         }
     }
@@ -989,7 +1130,7 @@ fn dependency_levels(tracks: &[RenderTrack], order: &[usize]) -> Vec<usize> {
 
 fn send_order(tracks: &[RenderTrack]) -> Vec<usize> {
     let n = tracks.len();
-    let edges = |t: &RenderTrack| t.sends.iter().map(|s| s.0).chain(t.parent).collect::<Vec<_>>();
+    let edges = |t: &RenderTrack| t.sends.iter().map(|s| s.dest).chain(t.parent).collect::<Vec<_>>();
     let mut indegree = vec![0usize; n];
     for t in tracks {
         for d in edges(t) {
@@ -1099,6 +1240,48 @@ fn mix_item(
         let o = (t - block_start) as usize;
         out_l[o] += sl * gl * fade;
         out_r[o] += sr * gr * fade;
+    }
+}
+
+/// One further source channel (3 and up) of an item into its track channel, with the item's
+/// volume and fades but no pan.
+fn mix_item_channel(
+    item: &RenderItem,
+    audio: &AudioData,
+    channel: usize,
+    block_start: i64,
+    sample_rate: f64,
+    out: &mut [f32],
+) {
+    let Some(src) = audio.channels.get(channel) else { return };
+    let n = out.len() as i64;
+    let (from, to) = (block_start.max(item.start), (block_start + n).min(item.start + item.length));
+    let src_frames = audio.frames() as f64;
+    let sec_start = item.section_start.clamp(0.0, src_frames);
+    let available = src_frames - sec_start;
+    let sec_len = if item.section_len > 0.0 { item.section_len.min(available) } else { available };
+    if from >= to || sec_len <= 0.0 {
+        return;
+    }
+    for t in from..to {
+        let rel = t - item.start;
+        let mut pos = item.source_offset + rel as f64 * item.playrate;
+        if item.looped {
+            pos = pos.rem_euclid(sec_len);
+        }
+        if pos < 0.0 || pos >= sec_len {
+            continue;
+        }
+        let pos = if item.reverse { sec_start + (sec_len - 1.0 - pos).max(0.0) } else { sec_start + pos };
+        let i = pos as usize;
+        let frac = (pos - i as f64) as f32;
+        let next = (i + 1).min(audio.frames() - 1);
+        let s = src[i] + (src[next] - src[i]) * frac;
+        let g = match &item.automation {
+            Some(auto) => auto.gains_at(rel as f64 / sample_rate).0,
+            None => item.gain_l.max(item.gain_r),
+        };
+        out[(t - block_start) as usize] += s * g * fade_gain(rel, item.length, &item.fade_in, &item.fade_out);
     }
 }
 
@@ -1328,5 +1511,38 @@ mod tests {
         item.reverse = true;
         let (l, _) = render(&g, 0, 5);
         assert_eq!(&l[..5], &[5.0, 4.0, 3.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn multichannel_sends_and_folders() {
+        let quad = || AudioData { sample_rate: 100, channels: (1..=4).map(|c| vec![c as f32 / 10.0; 100]).collect() };
+        // A 4-channel item; channels 3/4 sent to a stereo track, nothing else reaches the master.
+        let mut p = project_with_item(0.0, 1.0);
+        let (a, b) = (p.tracks[0].id, p.add_track("b"));
+        let t = p.track_mut(a).unwrap();
+        (t.channels, t.main_send) = (4, false);
+        t.sends.push(Send { src_channels: 2, ..Send::new(b) });
+        let (l, r) = render(&graph_with(&p, quad()), 0, 10);
+        assert!((l[5] - 0.3).abs() < 1e-6 && (r[5] - 0.4).abs() < 1e-6, "{} {}", l[5], r[5]);
+
+        // Channels 3/4 of a child reach the folder's 3/4, which only the send takes on.
+        let mut p = Project::default();
+        let parent = p.add_track("folder");
+        let child = p.add_track("child");
+        let out = p.add_track("out");
+        p.track_mut(child).unwrap().items.push(Item::new(0.0, 1.0, Take::from_file("q.wav".into())));
+        let f = p.track_mut(parent).unwrap();
+        (f.channels, f.folder_depth, f.main_send) = (4, 1, false);
+        f.sends.push(Send { src_channels: 2, ..Send::new(out) });
+        let c = p.track_mut(child).unwrap();
+        (c.channels, c.folder_depth) = (4, -1);
+        let (l, r) = render(&graph_with(&p, quad()), 0, 10);
+        assert!((l[5] - 0.3).abs() < 1e-6 && (r[5] - 0.4).abs() < 1e-6, "{} {}", l[5], r[5]);
+
+        // A stereo child sent into the folder's channels 3/4.
+        p.track_mut(child).unwrap().channels = 2;
+        p.track_mut(child).unwrap().main_send_offset = 2;
+        let (l, r) = render(&graph_with(&p, quad()), 0, 10);
+        assert!((l[5] - 0.1).abs() < 1e-6 && (r[5] - 0.2).abs() < 1e-6, "{} {}", l[5], r[5]);
     }
 }

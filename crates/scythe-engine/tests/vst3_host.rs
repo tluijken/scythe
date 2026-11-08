@@ -55,6 +55,7 @@ fn scans_processes_and_keeps_state() {
         notes: None,
         live: &[],
         live_channel: None,
+        aux: None,
         bpm: 120.0,
     };
     let (mut l, mut r) = (vec![1.0f32; 8], vec![-1.0f32; 8]);

@@ -192,6 +192,7 @@ mod tests {
             notes: Some(&notes),
             live: &[],
             live_channel: None,
+            aux: None,
             bpm: 120.0,
         };
         s.process(&mut l, &mut r, &ctx);

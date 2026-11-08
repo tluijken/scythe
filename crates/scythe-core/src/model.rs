@@ -332,6 +332,11 @@ pub struct Send {
     pub muted: bool,
     /// Send volume, pan and mute envelopes.
     pub envelopes: Vec<Envelope>,
+    /// Source channels as REAPER's `I_SRCCHAN`: the first channel in the low 10 bits, above
+    /// them 0 for a pair, 1 for one channel, n for 2n channels; -1 sends no audio.
+    pub src_channels: i64,
+    /// Destination as `I_DSTCHAN`: the first channel, plus 1024 to mix down to mono.
+    pub dst_channels: i64,
     /// Tokens of the original `AUXRECV` line, so channel mapping, MIDI flags and the rest
     /// survive a save when only volume, pan or mute changed.
     pub raw: Option<Vec<String>>,
@@ -339,7 +344,16 @@ pub struct Send {
 
 impl Send {
     pub fn new(dest: TrackId) -> Self {
-        Self { dest, volume: 1.0, pan: 0.0, muted: false, envelopes: Vec::new(), raw: None }
+        Self {
+            dest,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            envelopes: Vec::new(),
+            src_channels: 0,
+            dst_channels: 0,
+            raw: None,
+        }
     }
 }
 
@@ -418,6 +432,10 @@ pub struct Track {
     /// Hardware MIDI output (`MIDIHWOUT`): device index and channel (0 keeps each message's
     /// own channel, 1-16 forces one).
     pub midi_out: Option<(u8, u8)>,
+    /// Audio channels (`NCHAN`, even, 2-128).
+    pub channels: u32,
+    /// First channel of the parent (or master) the track's output goes to (`MAINSEND`).
+    pub main_send_offset: u32,
     /// The track's items sit in fixed lanes (`FREEMODE 2`), so lane soloing applies.
     pub fixed_lanes: bool,
     /// Fixed lanes that play (`LANESOLO`): a bitmask per 32 lanes; `None` plays every lane.
@@ -465,6 +483,8 @@ impl Track {
             pan_law: -1.0,
             auto_mode: AutoMode::TrimRead,
             midi_out: None,
+            channels: 2,
+            main_send_offset: 0,
             fixed_lanes: false,
             lane_solo: None,
             items: Vec::new(),

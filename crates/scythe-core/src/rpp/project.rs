@@ -294,6 +294,11 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                     "ISBUS" => track.folder_depth = num(&t, 2, 0.0) as i32,
                     "MAINSEND" => {
                         track.main_send = flag(&t, 1);
+                        track.main_send_offset = num(&t, 2, 0.0).max(0.0) as u32;
+                        track.extra.push(node.clone());
+                    }
+                    "NCHAN" => {
+                        track.channels = (num(&t, 1, 2.0) as u32).clamp(2, 128);
                         track.extra.push(node.clone());
                     }
                     "MUTESOLO" => {
@@ -332,6 +337,8 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                             pan: num(&t, 4, 0.0),
                             muted: flag(&t, 5),
                             envelopes: Vec::new(),
+                            src_channels: num(&t, 8, 0.0) as i64,
+                            dst_channels: num(&t, 9, 0.0) as i64,
                             raw: Some(t.clone()),
                         },
                     )),
@@ -468,6 +475,7 @@ const TAKE_KEYS: &[&str] = &["NAME", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "CHANMOD
 fn parse_item(c: &Chunk) -> Item {
     let mut item = Item::new(0.0, 0.0, empty_take());
     item.takes.clear();
+    let mut first_take = None;
     let mut take: Option<Take> = None;
     let mut active = 0;
 
@@ -517,7 +525,13 @@ fn parse_item(c: &Chunk) -> Item {
                     "FADEIN" => item.fade_in = parse_fade(&t),
                     "FADEOUT" => item.fade_out = parse_fade(&t),
                     "MUTE" => item.muted = flag(&t, 1),
-                    "VOLPAN" => item.volume = num(&t, 1, 1.0),
+                    "VOLPAN" => {
+                        item.volume = num(&t, 1, 1.0);
+                        // The first take's pan and volume follow the item's volume.
+                        if t.len() > 3 {
+                            first_take = Some((num(&t, 2, 0.0), num(&t, 3, 1.0)));
+                        }
+                    }
                     "YPOS" => item.ypos = Some((num(&t, 1, 0.0), num(&t, 2, 1.0))),
                     "IGUID" => item.guid = t.get(1).cloned().unwrap_or_default(),
                     _ => match take.as_mut() {
@@ -552,6 +566,11 @@ fn parse_item(c: &Chunk) -> Item {
         item.takes.push(empty_take());
     }
     item.active_take = active.min(item.takes.len() - 1);
+    if let (Some((pan, volume)), Some(t)) = (first_take, item.takes.first_mut())
+        && !t.lines.contains_key("TAKEVOLPAN")
+    {
+        (t.pan, t.volume) = (pan, volume);
+    }
     item
 }
 
@@ -816,6 +835,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     let mut wrote_rec = false;
     let mut wrote_auto = false;
     let mut wrote_midi_out = false;
+    let mut wrote_nchan = false;
     let mut wrote_envs = Vec::new();
     for node in &t.extra {
         match node {
@@ -838,10 +858,14 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             }
             Node::Line(l) if line_key(l) == "MAINSEND" => {
                 let mut toks = tokenize(l);
-                if toks.len() > 1 {
-                    toks[1] = if t.main_send { "1" } else { "0" }.to_owned();
-                }
+                toks.resize(toks.len().max(3), "0".into());
+                toks[1] = if t.main_send { "1" } else { "0" }.to_owned();
+                toks[2] = t.main_send_offset.to_string();
                 c.line(toks);
+            }
+            Node::Line(l) if line_key(l) == "NCHAN" => {
+                c.line(["NCHAN".to_owned(), t.channels.to_string()]);
+                wrote_nchan = true;
             }
             Node::Line(l) if line_key(l) == "REC" => {
                 let mut toks = tokenize(l);
@@ -860,6 +884,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             }
             _ => c.children.push(node.clone()),
         }
+    }
+    if !wrote_nchan && t.channels != 2 {
+        c.line(["NCHAN".to_owned(), t.channels.to_string()]);
     }
     if !wrote_midi_out && t.midi_out.is_some() {
         c.line(["MIDIHWOUT".to_owned(), midi_out_code(t.midi_out).to_string(), "0".to_owned()]);
@@ -885,6 +912,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             toks[3] = fmt_num(s.volume);
             toks[4] = fmt_num(s.pan);
             toks[5] = if s.muted { "1" } else { "0" }.to_owned();
+            toks.resize(toks.len().max(10), "0".into());
+            toks[8] = s.src_channels.to_string();
+            toks[9] = s.dst_channels.to_string();
             c.line(toks);
             for env in &s.envelopes {
                 if let Some(name) = env.kind.send_chunk_name() {
@@ -935,7 +965,17 @@ fn write_item(it: &Item) -> Chunk {
     c.line(fade_line(l, "FADEOUT", &it.fade_out));
     c.line(line_from(l, "MUTE", &["MUTE", "0", "0"], &[(1, bit(it.muted))]));
     c.line(["IGUID", &it.guid]);
-    c.line(line_from(l, "VOLPAN", &["VOLPAN", "1", "0", "1", "-1"], &[(1, fmt_num(it.volume))]));
+    let mut volpan = vec![(1, fmt_num(it.volume))];
+    let had_take_fields = l.get("VOLPAN").is_none_or(|t| t.len() > 3);
+    if let Some(t) = it
+        .takes
+        .first()
+        .filter(|t| !t.lines.contains_key("TAKEVOLPAN"))
+        .filter(|t| had_take_fields || t.pan != 0.0 || t.volume != 1.0)
+    {
+        volpan.extend([(2, fmt_num(t.pan)), (3, fmt_num(t.volume))]);
+    }
+    c.line(line_from(l, "VOLPAN", &["VOLPAN", "1", "0", "1", "-1"], &volpan));
     if let Some((top, height)) = it.ypos {
         c.line(line_from(l, "YPOS", &["YPOS", "0", "1", "2"], &[(1, fmt_num(top)), (2, fmt_num(height))]));
     }
@@ -958,7 +998,8 @@ fn write_item(it: &Item) -> Chunk {
             }
         }
         c.line(line_from(l, "NAME", &["NAME"], &[(1, tk.name.clone())]));
-        if tk.volume != 1.0 || tk.pan != 0.0 || l.contains_key("TAKEVOLPAN") {
+        // The first take keeps its pan and volume in the item's VOLPAN unless it had its own line.
+        if (i > 0 && (tk.volume != 1.0 || tk.pan != 0.0)) || l.contains_key("TAKEVOLPAN") {
             c.line(line_from(
                 l,
                 "TAKEVOLPAN",
@@ -1345,5 +1386,14 @@ mod section_tests {
         let free = Track { fixed_lanes: false, ..t.clone() };
         assert!(free.lane_plays(0), "without fixed lanes every item plays");
         assert!(project_to_rpp(&p).contains("LANESOLO 2 0 0 0 0 0 0 0"));
+    }
+
+    #[test]
+    fn first_take_volume_lives_in_volpan() {
+        let p = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      VOLPAN 0.8 -0.5 0.1 -1\n    >\n  >\n>\n").unwrap();
+        let it = &p.tracks[0].items[0];
+        assert_eq!((it.volume, it.takes[0].pan, it.takes[0].volume), (0.8, -0.5, 0.1));
+        let out = project_to_rpp(&p);
+        assert!(out.contains("VOLPAN 0.8 -0.5 0.1 -1") && !out.contains("TAKEVOLPAN"), "{out}");
     }
 }

@@ -100,6 +100,7 @@ fn compare_real_ir(dir: &Path, reaper: &str, cfg: &Path, ir: &Path, name: &str) 
                 notes: None,
                 live: &[],
                 live_channel: None,
+                aux: None,
                 bpm: 120.0,
             },
         );

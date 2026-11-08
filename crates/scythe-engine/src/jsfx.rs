@@ -453,6 +453,7 @@ mod tests {
             notes: None,
             live: &[],
             live_channel: None,
+            aux: None,
             bpm: 120.0,
         };
         fx.process(&mut l, &mut r, &ctx);

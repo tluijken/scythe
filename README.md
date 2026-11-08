@@ -58,6 +58,11 @@ Working:
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
   preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
   write mode are recorded into the volume and pan envelopes.
+- **Multichannel tracks** (`NCHAN`, up to 32 in the inspector's Sends tab): items with more
+  channels play into channels 3 and up, sends take any channel pair (or one channel) to any
+  pair of the destination (`AUXRECV` source and destination channels), folders carry every
+  channel to their parent, a track can feed its parent from a channel offset (`MAINSEND`),
+  and ReaGate and ReaComp listen to channels 3/4 when their detector input says so (sidechain).
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
   cursor, the bpm control edits the tempo in effect at the cursor.
@@ -181,8 +186,8 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel tracks and routing: everything runs in stereo (every project in the corpus is
-  `NCHAN 2` with plain stereo sends). REAPER's own `.ini` FX presets are not read; presets are
+- Multichannel: effects (other than the ReaGate/ReaComp sidechain) process channels 1/2 only,
+  with no pin mapping, and the master is stereo. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
   (device × 32 + channel); REAPER's file encoding of it is unverified.
 - ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.

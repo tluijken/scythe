@@ -107,6 +107,7 @@ fn plugin_state_survives_save_and_load() {
         notes: None,
         live: &[],
         live_channel: None,
+        aux: None,
         bpm: 120.0,
     };
     chain[0].process(&mut l, &mut r, &ctx);
