@@ -1028,12 +1028,17 @@ impl ScytheApp {
             let Some(path) = dialog.save_file() else { return };
             vec![(self.project.clone(), path)]
         };
-        let pool = self.engine.pool().clone();
-        let rate = self.engine.sample_rate();
+        let mut pool = self.engine.pool().clone();
+        let mut rate = self.engine.sample_rate();
         let tx = self.loader_tx.clone();
         let ctx = self.ctx.clone();
         self.busy = Some("Rendering…".into());
         std::thread::spawn(move || {
+            // CD images and DDP are written at 44.1 kHz; the engine's media may be at another rate.
+            if let (Some(fixed), Some((project, _))) = (encoding.sample_rate().filter(|r| *r != rate), jobs.first()) {
+                rate = fixed;
+                pool = Arc::new(crate::load_media(project, fixed));
+            }
             let mut last = Ok(PathBuf::new());
             for (i, (project, path)) in jobs.into_iter().enumerate() {
                 let range = ranges.get(i).copied().unwrap_or(range);

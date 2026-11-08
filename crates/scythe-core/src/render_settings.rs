@@ -1,5 +1,5 @@
 //! A project's own render settings (`RENDER_FILE`, `RENDER_PATTERN`, `RENDER_FMT`,
-//! `RENDER_RANGE`, `<RENDER_CFG`), turned into concrete render jo            kbps: u32_at(&bytes, 4).unwrap_or(320).clamp(8, 320),s.
+//! `RENDER_RANGE`, `<RENDER_CFG`), turned into concrete render jobs.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +18,7 @@ pub enum Bounds {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Format {
-    /// WAV with this many bits (32 means float).
+    /// WAV with this many bits: 32 is float, 33 is 32-bit integer.
     Wav { bits: u16 },
     /// MP3 at a constant bitrate.
     Mp3 { kbps: u32 },
@@ -32,8 +32,33 @@ pub enum Format {
     /// WavPack lossless with this many bits (32 with `float` for floating point); `mode` 0
     /// normal, 1 and 2 fast, 3 high, 4 very high.
     WavPack { bits: u16, float: bool, mode: u32 },
+    /// Audio CD image: a cue sheet and a raw 44.1 kHz 16-bit stereo `.bin`.
+    CdImage(CdImage),
+    /// DDP 2.00 fileset for CD manufacturing, laid out from `#`, `!` and `@` markers.
+    Ddp,
     /// Another sink, by its four-character id as REAPER prints it (`l3pm` is MP3).
     Other(String),
+}
+
+/// How REAPER's CD image sink splits the render into tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdTracks {
+    /// Each marker starts a track, at least 4 seconds after the previous one.
+    Markers,
+    /// Each region is a track; audio outside regions is left out.
+    Regions,
+    /// The whole render is one track.
+    Single,
+}
+
+/// The CD image sink's settings (`RENDER_CFG` id ` osi`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CdImage {
+    pub tracks: CdTracks,
+    /// Silence before the first track, in milliseconds.
+    pub lead_in_ms: u32,
+    /// Only markers whose names start with `#` start tracks; the `#` is left out of titles.
+    pub hash_markers_only: bool,
 }
 
 /// What a normalised render measures (`RENDER_NORMALIZE` bits 1-3).
@@ -197,6 +222,8 @@ impl RenderSettings {
                     Format::Vorbis { .. } => "ogg",
                     Format::Opus { .. } => "opus",
                     Format::WavPack { .. } => "wv",
+                    Format::CdImage(_) => "cue",
+                    Format::Ddp => "DAT",
                     _ => "wav",
                 };
                 if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
@@ -246,6 +273,18 @@ fn decode_cfg<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Format> {
             };
             Format::WavPack { bits, float, mode: u32_at(&bytes, 4).unwrap_or(0) }
         }
+        // The CD sink stores five integers: lead-in in milliseconds, two burning options,
+        // the track mode and the `#`-only flag.
+        " osi" => Format::CdImage(CdImage {
+            lead_in_ms: u32_at(&bytes, 4).unwrap_or(0),
+            tracks: match u32_at(&bytes, 16).unwrap_or(0) {
+                1 => CdTracks::Regions,
+                2 => CdTracks::Single,
+                _ => CdTracks::Markers,
+            },
+            hash_markers_only: u32_at(&bytes, 20).unwrap_or(0) != 0,
+        }),
+        " pdd" => Format::Ddp,
         _ => Format::Other(id),
     })
 }
@@ -365,6 +404,26 @@ mod tests {
         // REAPER 7.73's defaults for its Opus and WavPack sinks.
         assert_eq!(format("U2dnTwAAAEMACgAAAAAAAAA="), Format::Opus { kbps: 128.0, mode: 0, complexity: 10 });
         assert_eq!(format("a3B2dwAAAAABAAAAAAAAAAAAAAA="), Format::WavPack { bits: 24, float: false, mode: 0 });
+        // 32-bit integer WAV, as REAPER 7.73 stores it.
+        assert_eq!(format("ZXZhdyEAAQ=="), Format::Wav { bits: 33 });
+    }
+
+    #[test]
+    fn cd_image_and_ddp_sinks() {
+        let project = |cfg: &str| project_from_rpp(&PROJECT.replace("ZXZhdxgAAQ==", cfg)).unwrap();
+        let format = |cfg: &str| RenderSettings::from_project(&project(cfg)).format;
+        // REAPER's defaults, then regions with a 333 ms lead-in.
+        assert_eq!(
+            format("IG9zaQAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            Format::CdImage(CdImage { tracks: CdTracks::Markers, lead_in_ms: 0, hash_markers_only: false })
+        );
+        assert_eq!(
+            format("IG9zaU0BAAAAAAAAAAAAAAEAAAABAAAA"),
+            Format::CdImage(CdImage { tracks: CdTracks::Regions, lead_in_ms: 333, hash_markers_only: true })
+        );
+        assert_eq!(format("IHBkZA=="), Format::Ddp);
+        let p = project("IHBkZA==");
+        assert_eq!(RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.DAT"));
     }
 
     #[test]

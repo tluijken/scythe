@@ -4,6 +4,7 @@ pub mod clap_host;
 pub mod clap_presets;
 pub mod convolve;
 pub mod delay;
+pub mod disc;
 pub mod dynamics;
 pub mod editor;
 pub mod eel;

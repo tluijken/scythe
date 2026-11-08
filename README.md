@@ -204,9 +204,19 @@ Working:
   `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC, Ogg Vorbis, Opus and
   WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
   packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
-  complexity; WavPack: 16/24/32-bit float, fast/normal/high/very high), and mono renders mix
-  both channels down as REAPER does. Integer samples are scaled by 2^(bits-1) and rounded half
-  up, as REAPER writes them. Other sinks are written as WAV. The
+  complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and
+  mono renders mix both channels down as REAPER does. WAV is written at 16, 24 or 32 bits,
+  integer or float. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
+  writes them. Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
+  writes them) take their tracks from markers (each at least 4 seconds after the previous track;
+  `PERF=`, `WRIT=` and `ISRC=` markers fill in the track's cue entries; optionally only `#`
+  markers), from regions (audio outside regions left out) or as one track, after an optional
+  lead-in of silence. DDP 2.00 filesets (DDPID, DDPMS, PQDESCR, CDTEXT.BIN, the image and
+  checksum.md5) follow REAPER's DDP sink: `#` markers start tracks, `!` markers set INDEX 0,
+  `@` markers hold the album, `KEY=value|…` metadata becomes ISRC, UPC/EAN and CD-TEXT (title,
+  performer, songwriter, composer, arranger, message, disc identification, genre, language), and
+  the Red Book rules (2 s before the first track, 4 s minimum tracks) move indexes as REAPER
+  moves them. Other sinks are written as WAV. The
   project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
   target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 16- and 24-bit) apply.
 
@@ -238,6 +248,7 @@ compare with scythe's output sample by sample:
 | JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
 | WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
+| CD images and DDP filesets of a test signal: tracks from markers (the 4-second rule, `#`-only, lead-ins of 250, 256 and 333 ms, the first track named by the marker at the start, `PERF=`/`WRIT=`/`ISRC=` markers, a later start), from regions (overlapping, cut by the bounds, gaps left out); DDP with `#`/`!`/`@` markers, Red Book index moves, ISRC, UPC/EAN, every CD-TEXT field, genre and language; 32-bit integer WAV and WavPack | byte-identical files (14 images and filesets); 32-bit integer samples identical |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
@@ -282,8 +293,11 @@ compares the two files.
 - Media is resampled with REAPER's render default (192-point sinc, `RENDER_RESAMPLE 3`, which
   every corpus project uses); its other modes (16/64/384/512/768-point sinc, linear, r8brain)
   are not followed. MP3 samples decode slightly differently from REAPER's decoder.
-- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus and WavPack (video, DDP, CD image);
-  32-bit integer WavPack is written from 24-bit samples.
+- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image and DDP (video,
+  REAPER's FFmpeg and video sinks; WAV's 8-bit, 64-bit float and ADPCM modes). CD image and DDP
+  renders are always 44.1 kHz stereo, where REAPER leaves a mono CD image empty. REAPER ends
+  custom render bounds on a whole millisecond; Scythe renders to the exact time, so a render to
+  17.3333 s is 14 samples longer.
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.

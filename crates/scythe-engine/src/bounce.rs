@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use scythe_core::render_settings::{Format, Normalize, NormalizeSource, RenderSettings};
+use scythe_core::render_settings::{CdImage, Format, Normalize, NormalizeSource, RenderSettings};
 use scythe_core::{Project, TimeRange};
 
 use crate::fx::FxRegistry;
@@ -12,13 +12,16 @@ use crate::render::{MeterRegistry, RenderGraph, RenderScratch};
 pub enum BitDepth {
     Int16,
     Int24,
+    Int32,
     Float32,
 }
 
 impl BitDepth {
+    /// REAPER's WAV bit depths: 32 is float, 33 is 32-bit integer.
     pub fn from_bits(bits: u16) -> Self {
         match bits {
             ..=16 => Self::Int16,
+            33 => Self::Int32,
             32.. => Self::Float32,
             _ => Self::Int24,
         }
@@ -26,7 +29,8 @@ impl BitDepth {
 }
 
 /// How a render is written. Everything but WAV goes through a command-line encoder (`lame`,
-/// `flac`, `oggenc`, `opusenc`, `wavpack`) that reads an intermediate WAV.
+/// `flac`, `oggenc`, `opusenc`, `wavpack`) that reads an intermediate WAV; CD images and DDP
+/// filesets are laid out from a 16-bit WAV by [`crate::disc`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Encoding {
     Wav(BitDepth),
@@ -35,6 +39,8 @@ pub enum Encoding {
     Vorbis { vbr: bool, quality: f32, kbps: u32 },
     Opus { kbps: f32, mode: u8, complexity: u8 },
     WavPack { depth: BitDepth, mode: u32 },
+    CdImage(CdImage),
+    Ddp,
 }
 
 impl Encoding {
@@ -47,10 +53,16 @@ impl Encoding {
             Format::Flac { bits, level } => Self::Flac { depth: BitDepth::from_bits(bits.min(24)), level },
             Format::Vorbis { vbr, quality, kbps } => Self::Vorbis { vbr, quality, kbps },
             Format::Opus { kbps, mode, complexity } => Self::Opus { kbps, mode, complexity },
-            // 32-bit integer WavPack is written from 24-bit samples.
             Format::WavPack { bits, float, mode } => {
-                Self::WavPack { depth: if float { BitDepth::Float32 } else { BitDepth::from_bits(bits.min(24)) }, mode }
+                let depth = match (float, bits) {
+                    (true, _) => BitDepth::Float32,
+                    (false, 32) => BitDepth::Int32,
+                    (false, bits) => BitDepth::from_bits(bits.min(24)),
+                };
+                Self::WavPack { depth, mode }
             }
+            Format::CdImage(cd) => Self::CdImage(cd),
+            Format::Ddp => Self::Ddp,
             Format::Other(_) => Self::Wav(BitDepth::Int24),
         }
     }
@@ -63,7 +75,14 @@ impl Encoding {
             Self::Vorbis { .. } => "ogg",
             Self::Opus { .. } => "opus",
             Self::WavPack { .. } => "wv",
+            Self::CdImage(_) => "cue",
+            Self::Ddp => "DAT",
         }
+    }
+
+    /// The sample rate this encoding is always written at, whatever the project asks for.
+    pub fn sample_rate(self) -> Option<u32> {
+        matches!(self, Self::CdImage(_) | Self::Ddp).then_some(crate::disc::RATE)
     }
 }
 
@@ -75,6 +94,8 @@ pub enum BounceError {
     EmptyRange,
     #[error("{0}")]
     Encoder(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Renders `range` of the project to a stereo WAV file, faster than real time. Media must
@@ -126,17 +147,31 @@ pub fn bounce_finished(
         }
         Encoding::Flac { depth, .. } | Encoding::WavPack { depth, .. } => depth,
         Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
+        Encoding::CdImage(_) | Encoding::Ddp => BitDepth::Int16,
     };
+    if encoding.sample_rate().is_some_and(|r| r != sample_rate) {
+        return Err(BounceError::Encoder(format!(
+            "{} renders are written at {} Hz",
+            encoding.extension().to_uppercase(),
+            crate::disc::RATE
+        )));
+    }
     let wav = path.with_extension("scythe-render.wav");
-    let rendered = render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress);
-    let encoded = rendered.and_then(|()| encode(encoding, channels, &wav, path));
+    let encoded = match encoding {
+        Encoding::CdImage(cd) => render_wav(project, pool, range, sample_rate, 2, depth, &wav, finish, progress)
+            .and_then(|()| Ok(crate::disc::write_cd_image(&project.markers, range, &wav, &cd, path)?)),
+        Encoding::Ddp => render_wav(project, pool, range, sample_rate, 2, depth, &wav, finish, progress)
+            .and_then(|()| Ok(crate::disc::write_ddp(&project.markers, &wav, path)?)),
+        _ => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
+            .and_then(|()| encode(encoding, channels, &wav, path)),
+    };
     let _ = std::fs::remove_file(&wav);
     encoded
 }
 
 fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(), BounceError> {
     let mut cmd = match encoding {
-        Encoding::Wav(_) => unreachable!("WAV is written directly"),
+        Encoding::Wav(_) | Encoding::CdImage(_) | Encoding::Ddp => unreachable!("written without an encoder"),
         Encoding::Mp3 { kbps } => {
             let mut c = std::process::Command::new("lame");
             c.args(["--quiet", "--cbr", "-b", &kbps.to_string()]).arg(wav).arg(out);
@@ -299,11 +334,12 @@ impl SampleWriter {
         let (bits, format) = match depth {
             BitDepth::Int16 => (16, hound::SampleFormat::Int),
             BitDepth::Int24 => (24, hound::SampleFormat::Int),
+            BitDepth::Int32 => (32, hound::SampleFormat::Int),
             BitDepth::Float32 => (32, hound::SampleFormat::Float),
         };
         let channels = channels.clamp(1, 64);
         let spec = hound::WavSpec { channels, sample_rate, bits_per_sample: bits, sample_format: format };
-        let dither = (finish.dither && depth != BitDepth::Float32).then_some(Dither {
+        let dither = (finish.dither && matches!(depth, BitDepth::Int16 | BitDepth::Int24)).then_some(Dither {
             rng: 0x9e37_79b9_7f4a_7c15,
             shape: finish.noise_shape,
             error: [0.0; 64],
@@ -332,6 +368,7 @@ impl SampleWriter {
                     (BitDepth::Int24, Some(d)) => self.writer.write_sample(d.quantize(s, c, 24))?,
                     (BitDepth::Int16, None) => self.writer.write_sample(quantize(s, 16) as i16)?,
                     (BitDepth::Int24, None) => self.writer.write_sample(quantize(s, 24))?,
+                    (BitDepth::Int32, _) => self.writer.write_sample(quantize(s, 32))?,
                 }
             }
         }
