@@ -24,7 +24,9 @@
     "vorbis-tools@latest",
     "opus-tools@latest",
     "wavpack@latest",
-    "ffmpeg@latest"
+    "ffmpeg@latest",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#soundtouch",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#rubberband"
   ],
   "shell": {
     "init_hook": [

@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Rubber Band (GPL-2.0-or-later) as a pitch shifter, loaded from the system library at run time.
+rubberband = []
+
 [dependencies]
 scythe-core.workspace = true
 thiserror.workspace = true

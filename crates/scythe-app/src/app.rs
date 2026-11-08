@@ -72,7 +72,7 @@ enum LoaderMsg {
         result: Result<(), String>,
         then: RenderedItems,
     },
-    /// A time-stretched copy is ready.
+    /// A stretched, pitch-shifted or rate-changed copy is ready.
     Stretched(StretchKey),
 }
 
@@ -84,8 +84,8 @@ enum RenderedItems {
     NewTake { item: ItemId },
 }
 
-/// A file and the time and pitch ratios of a stretched copy, as bits.
-type StretchKey = (PathBuf, u64, u64);
+/// A file and the `Processing::key` of a processed copy.
+type StretchKey = (PathBuf, (u64, u64, u64, i32));
 
 /// What a cached MIDI note layout depends on.
 type MidiKey = (u64, u64, u64, u64, bool, usize, TempoMap);
@@ -220,7 +220,7 @@ pub struct GfxView {
 
 impl ScytheApp {
     pub fn new(ctx: egui::Context, project: Project) -> Self {
-        let pool = Arc::new(MediaPool::default());
+        let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
         let engine = Engine::start(pool);
         let (loader_tx, loader_rx) = channel();
         let mut app = Self {
@@ -441,19 +441,20 @@ impl ScytheApp {
                 self.spawn_load(path, None);
             }
         }
-        let stretches: Vec<(PathBuf, (f64, f64))> = self
+        let default_mode = self.project.default_pitch_mode;
+        let stretches: Vec<(PathBuf, scythe_core::Processing)> = self
             .project
             .tracks
             .iter()
             .flat_map(|t| &t.items)
             .flat_map(|i| &i.takes)
-            .filter_map(|t| Some((resolve_media_path(&self.project, t.source.file()?), t.stretch()?)))
+            .filter_map(|t| Some((resolve_media_path(&self.project, t.source.file()?), t.processing(default_mode)?)))
             .collect();
-        for (path, ratios) in stretches {
-            let key = (path.clone(), ratios.0.to_bits(), ratios.1.to_bits());
+        for (path, processing) in stretches {
+            let key = (path.clone(), processing.key());
             let pool = self.engine.pool().clone();
             if pool.ready(&path).is_none()
-                || pool.stretched(&path, ratios).is_some()
+                || pool.processed(&path, &processing).is_some()
                 || !self.pending_stretch.insert(key.clone())
             {
                 continue;
@@ -461,7 +462,7 @@ impl ScytheApp {
             let tx = self.loader_tx.clone();
             let ctx = self.ctx.clone();
             std::thread::spawn(move || {
-                pool.prepare_stretched(&path, ratios);
+                pool.prepare_processed(&path, &processing);
                 let _ = tx.send(LoaderMsg::Stretched(key));
                 ctx.request_repaint();
             });
@@ -989,10 +990,10 @@ impl ScytheApp {
         let mut encoding = Encoding::Wav(BitDepth::Int24);
         let mut channels = 2;
         let mut finish = Finish::default();
-        let mut resample = ResampleMode::default();
+        // Every render converts with the project's render mode; playback has its own.
+        let resample = scythe_core::render_settings::RenderSettings::from_project(&self.project).resample;
         let jobs: Vec<(Project, PathBuf)> = if kind == RenderKind::ProjectSettings {
             let settings = scythe_core::render_settings::RenderSettings::from_project(&self.project);
-            resample = settings.resample;
             encoding = Encoding::from_format(&settings.format);
             channels = settings.channels;
             finish = Finish::from_settings(&settings);
@@ -1040,7 +1041,7 @@ impl ScytheApp {
             // The engine's media is at its own rate and converted for playback; CD images and DDP
             // are written at 44.1 kHz, and another resample mode needs media of its own.
             let fixed = encoding.sample_rate().filter(|r| *r != rate);
-            if (fixed.is_some() || resample != ResampleMode::default())
+            if (fixed.is_some() || resample != pool.resample_mode())
                 && let Some((project, _)) = jobs.first()
             {
                 rate = fixed.unwrap_or(rate);

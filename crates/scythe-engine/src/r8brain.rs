@@ -13,8 +13,8 @@ const TRANS_BAND: f64 = 2.0;
 const ATTEN: f64 = 206.91;
 
 /// Converts `input` from `from` to `to` Hz, returning `frames` frames.
-pub(crate) fn convert(input: &[f32], from: u32, to: u32, frames: usize) -> Vec<f32> {
-    let stages = plan(from as f64, to as f64);
+pub(crate) fn convert(input: &[f32], from: f64, to: f64, frames: usize) -> Vec<f32> {
+    let stages = plan(from, to);
     let mut needed = vec![frames; stages.len() + 1];
     for (i, stage) in stages.iter().enumerate().rev() {
         needed[i] = stage.input_needed(needed[i + 1]);
@@ -723,7 +723,7 @@ mod tests {
     fn impulse_stays_centred_and_symmetric() {
         let mut x = vec![0.0f32; 4410];
         x[1000] = 1.0;
-        let y = convert(&x, 44100, 48000, 4800);
+        let y = convert(&x, 44100.0, 48000.0, 4800);
         let peak = (0..y.len()).max_by(|&a, &b| y[a].abs().total_cmp(&y[b].abs())).unwrap();
         assert_eq!(peak, 1088);
         assert!((y.iter().map(|&v| v as f64).sum::<f64>() - 48000.0 / 44100.0).abs() < 1e-4);

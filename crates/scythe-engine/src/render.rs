@@ -501,7 +501,7 @@ impl RenderGraph {
                             Source::Section(s) => (s.start, s.length.max(0.0), s.reverse),
                             _ => (0.0, 0.0, false),
                         };
-                        // A stretched copy runs on its own time axis, `time` times the source's.
+                        // A processed copy runs on its own time axis, `time` times the source's.
                         let mut time = 1.0;
                         let audio = match &take.source {
                             Source::Raw(c) if c.args().first().is_some_and(|k| k == "CLICK") => ItemAudio::Click,
@@ -511,11 +511,14 @@ impl RenderGraph {
                             source => {
                                 let path = scythe_core::rpp::resolve_media_path(project, source.file()?);
                                 let base = pool.ready(&path)?;
-                                // Until the stretched copy is ready the take plays resampled.
-                                match take.stretch().and_then(|r| Some((r.0, pool.stretched(&path, r)?))) {
-                                    Some((t, stretched)) => {
+                                // Until the processed copy is ready the take plays resampled.
+                                let processed = take
+                                    .processing(project.default_pitch_mode)
+                                    .and_then(|p| Some((p.length_ratio(), pool.processed(&path, &p)?)));
+                                match processed {
+                                    Some((t, copy)) => {
                                         time = t;
-                                        ItemAudio::Media(stretched)
+                                        ItemAudio::Media(copy)
                                     }
                                     None => ItemAudio::Media(base.audio.clone()),
                                 }

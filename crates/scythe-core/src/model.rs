@@ -132,6 +132,36 @@ impl Source {
     }
 }
 
+/// What a take's source goes through before playback: stretched by `time` and shifted by
+/// `pitch` with the pitch shifter `mode` (`Take::pitch_mode`), then resampled by `rate`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Processing {
+    pub time: f64,
+    pub pitch: f64,
+    pub rate: f64,
+    pub mode: i32,
+}
+
+impl Processing {
+    /// REAPER's default pitch shifter for projects without `DEFPITCHMODE`: élastique 3 Pro.
+    pub const DEFAULT_MODE: i32 = 9 << 16;
+
+    /// The processed copy's length relative to the source's.
+    pub fn length_ratio(&self) -> f64 {
+        self.time / self.rate
+    }
+
+    /// Whether the pitch shifter runs at all (a plain rate change only resamples).
+    pub fn shifts(&self) -> bool {
+        (self.time - 1.0).abs() > 1e-9 || (self.pitch - 1.0).abs() > 1e-9
+    }
+
+    /// Bits identifying the processing, for caches.
+    pub fn key(&self) -> (u64, u64, u64, i32) {
+        (self.time.to_bits(), self.pitch.to_bits(), self.rate.to_bits(), self.mode)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Take {
     pub name: String,
@@ -141,6 +171,9 @@ pub struct Take {
     pub playrate: f64,
     /// Keep the pitch when `playrate` is not 1 (time-stretch instead of resampling).
     pub preserve_pitch: bool,
+    /// The pitch shifter in the high 16 bits and its sub-mode in the low ones (`PLAYRATE` field
+    /// 4); -1 uses the project's default.
+    pub pitch_mode: i32,
     /// Pitch shift in semitones.
     pub pitch: f64,
     pub volume: f64,
@@ -176,14 +209,22 @@ impl Take {
         Some(if reverse { start + len - pos } else { start + pos })
     }
 
-    /// The time-stretch and pitch ratio the source needs before playback, when it needs one:
-    /// a rate change that keeps the pitch stretches the time axis by `1 / playrate`, and a
-    /// pitch shift scales the frequencies. A rate change without `preserve_pitch` stays a
-    /// plain resampling at playback.
-    pub fn stretch(&self) -> Option<(f64, f64)> {
-        let time = if self.preserve_pitch && self.playrate > 0.0 { 1.0 / self.playrate } else { 1.0 };
+    /// How the source is processed before playback, when it is: a rate change that keeps the
+    /// pitch stretches the time axis by `1 / playrate`, a pitch shift scales the frequencies,
+    /// and a rate change without `preserve_pitch` resamples by `playrate`. `default_mode` is the
+    /// project's pitch shifter (`Project::default_pitch_mode`).
+    pub fn processing(&self, default_mode: i32) -> Option<Processing> {
+        let changed = self.playrate > 0.0 && (self.playrate - 1.0).abs() > 1e-9;
+        let time = if self.preserve_pitch && changed { 1.0 / self.playrate } else { 1.0 };
+        let rate = if !self.preserve_pitch && changed { self.playrate } else { 1.0 };
         let pitch = 2f64.powf(self.pitch / 12.0);
-        ((time - 1.0).abs() > 1e-9 || (pitch - 1.0).abs() > 1e-9).then_some((time, pitch))
+        let mode = if self.pitch_mode < 0 { default_mode } else { self.pitch_mode };
+        ((time - 1.0).abs() > 1e-9 || (pitch - 1.0).abs() > 1e-9 || rate != 1.0).then_some(Processing {
+            time,
+            pitch,
+            rate,
+            mode,
+        })
     }
 
     pub fn from_file(path: PathBuf) -> Self {
@@ -194,6 +235,7 @@ impl Take {
             source_offset: 0.0,
             playrate: 1.0,
             preserve_pitch: true,
+            pitch_mode: -1,
             pitch: 0.0,
             volume: 1.0,
             pan: 0.0,
@@ -538,6 +580,8 @@ pub struct Project {
     pub sample_rate: Option<u32>,
     /// Default pan law for tracks that do not set their own (`PANLAW`, `PANLAWFLAGS`).
     pub pan_law: PanLaw,
+    /// The pitch shifter of takes that do not pick one (`DEFPITCHMODE`, as `Take::pitch_mode`).
+    pub default_pitch_mode: i32,
     pub master: Track,
     pub tracks: Vec<Track>,
     pub markers: Vec<Marker>,
@@ -555,6 +599,7 @@ impl Default for Project {
             tempo: TempoMap::default(),
             sample_rate: None,
             pan_law: PanLaw::default(),
+            default_pitch_mode: Processing::DEFAULT_MODE,
             master: Track::new("Master"),
             tracks: Vec::new(),
             markers: Vec::new(),
@@ -888,6 +933,22 @@ mod tests {
         p.track_mut(a).unwrap().sends.push(Send::new(bus));
         p.remove_track(bus);
         assert!(p.track(a).unwrap().sends.is_empty());
+    }
+
+    #[test]
+    fn take_processing() {
+        let mut take = Take::from_file("x.wav".into());
+        assert_eq!(take.processing(7), None);
+        take.playrate = 0.5;
+        let p = take.processing(7).unwrap();
+        assert_eq!((p.time, p.pitch, p.rate, p.mode, p.length_ratio(), p.shifts()), (2.0, 1.0, 1.0, 7, 2.0, true));
+        take.preserve_pitch = false;
+        take.pitch_mode = 3;
+        let p = take.processing(7).unwrap();
+        assert_eq!((p.time, p.rate, p.mode, p.length_ratio(), p.shifts()), (1.0, 0.5, 3, 2.0, false));
+        take.pitch = 12.0;
+        let p = take.processing(7).unwrap();
+        assert_eq!((p.pitch, p.shifts()), (2.0, true));
     }
 
     #[test]

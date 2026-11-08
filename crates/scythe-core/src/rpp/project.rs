@@ -4,8 +4,8 @@ use super::{Chunk, Node, ParseError, line_key, parse, quote_always, tokenize, wr
 use crate::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use crate::fade::Fade;
 use crate::model::{
-    AutoMode, Color, FxSlot, Item, LineMemo, Marker, Project, Section, Send, Source, Take, TimeRange, Track, TrackId,
-    new_guid,
+    AutoMode, Color, FxSlot, Item, LineMemo, Marker, Processing, Project, Section, Send, Source, Take, TimeRange,
+    Track, TrackId, new_guid,
 };
 use crate::tempo::TempoPoint;
 use crate::units::PanTaper;
@@ -162,6 +162,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                     "MARKER" => parse_marker(&t, &mut p.markers, &mut region_starts),
                     "PANLAW" => {
                         p.pan_law.law = num(&t, 1, 1.0);
+                        p.extra.push(node.clone());
+                    }
+                    "DEFPITCHMODE" => {
+                        p.default_pitch_mode = num(&t, 1, Processing::DEFAULT_MODE as f64) as i32;
                         p.extra.push(node.clone());
                     }
                     "PANLAWFLAGS" => {
@@ -515,6 +519,7 @@ fn parse_item(c: &Chunk) -> Item {
                             tk.playrate = num(&t, 1, 1.0);
                             tk.preserve_pitch = num(&t, 2, 1.0) != 0.0;
                             tk.pitch = num(&t, 3, 0.0);
+                            tk.pitch_mode = num(&t, 4, -1.0) as i32;
                         }
                         _ => tk.extra.push(node.clone()),
                     }
@@ -611,6 +616,7 @@ fn empty_take() -> Take {
         source_offset: 0.0,
         playrate: 1.0,
         preserve_pitch: true,
+        pitch_mode: -1,
         pitch: 0.0,
         volume: 1.0,
         pan: 0.0,
@@ -1026,7 +1032,12 @@ fn write_item(it: &Item) -> Chunk {
             l,
             "PLAYRATE",
             &["PLAYRATE", "1", "1", "0", "-1", "0", "0.0025"],
-            &[(1, fmt_num(tk.playrate)), (2, (tk.preserve_pitch as u8).to_string()), (3, fmt_num(tk.pitch))],
+            &[
+                (1, fmt_num(tk.playrate)),
+                (2, (tk.preserve_pitch as u8).to_string()),
+                (3, fmt_num(tk.pitch)),
+                (4, tk.pitch_mode.to_string()),
+            ],
         ));
         c.children.extend(tk.extra.iter().cloned());
         c.push_chunk(write_source(&tk.source, l));
@@ -1420,5 +1431,17 @@ mod section_tests {
         assert_eq!((it.volume, it.takes[0].pan, it.takes[0].volume), (0.8, -0.5, 0.1));
         let out = project_to_rpp(&p);
         assert!(out.contains("VOLPAN 0.8 -0.5 0.1 -1") && !out.contains("TAKEVOLPAN"), "{out}");
+    }
+
+    #[test]
+    fn pitch_modes() {
+        let p = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n  DEFPITCHMODE 851968 0\n  <TRACK\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      PLAYRATE 0.75 1 3 5 0 0.0025\n    >\n    <ITEM\n      POSITION 2\n      LENGTH 1\n    >\n  >\n>\n").unwrap();
+        assert_eq!(p.default_pitch_mode, 13 << 16);
+        let (a, b) = (&p.tracks[0].items[0].takes[0], &p.tracks[0].items[1].takes[0]);
+        assert_eq!((a.pitch_mode, b.pitch_mode), (5, -1));
+        let out = project_to_rpp(&p);
+        assert!(out.contains("PLAYRATE 0.75 1 3 5 0 0.0025") && out.contains("DEFPITCHMODE 851968 0"), "{out}");
+        let plain = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n>\n").unwrap();
+        assert_eq!(plain.default_pitch_mode, Processing::DEFAULT_MODE);
     }
 }

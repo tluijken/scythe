@@ -2,17 +2,26 @@
 //! the other way round. A phase vocoder with identity phase locking (each bin keeps its phase
 //! relation to the nearest spectral peak) stretches the time axis; a pitch shift is a stretch
 //! followed by resampling back to the wanted length. Strong onsets reset the phases so drums
-//! stay crisp.
+//! stay crisp. Takes set to SoundTouch or Rubber Band use those libraries when they are there
+//! (`crate::shifters`); élastique, REAPER's default, is proprietary and stays on the vocoder,
+//! as do REAPER's own shifters (simple windowed, Rrreeeaaa, ReaReaRea).
 
 use std::f32::consts::PI;
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex32;
+use scythe_core::Processing;
 
 use crate::media::{AudioData, resample_by_step};
 
 const FFT: usize = 2048;
 const SYNTH_HOP: usize = FFT / 4;
+
+/// `data` stretched and pitch-shifted as `processing` says (its resampling by `rate` aside).
+pub fn apply(data: &AudioData, processing: &Processing) -> AudioData {
+    crate::shifters::process(data, processing.time, processing.pitch, processing.mode)
+        .unwrap_or_else(|| stretch(data, processing.time, processing.pitch))
+}
 
 /// Returns `data` lasting `time_ratio` times as long, with its pitch scaled by `pitch_ratio`.
 pub fn stretch(data: &AudioData, time_ratio: f64, pitch_ratio: f64) -> AudioData {

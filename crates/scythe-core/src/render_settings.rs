@@ -217,8 +217,9 @@ impl Video {
     }
 }
 
-/// How media at another sample rate is converted for a render (`RENDER_RESAMPLE <mode>`, in
-/// the order of REAPER's `Resample_EnumModes`).
+/// How media at another sample rate, and takes at another play rate without pitch
+/// preservation, are converted (`RENDER_RESAMPLE <mode>` for renders, in the order of REAPER's
+/// `Resample_EnumModes`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResampleMode {
     /// Windowed sinc over `half` input frames each side; `tabled` kernels are read from a table
@@ -245,6 +246,9 @@ impl Default for ResampleMode {
 }
 
 impl ResampleMode {
+    /// REAPER's default playback mode (`playresamplemode=0` in reaper.ini), the 64-point sinc.
+    pub const PLAYBACK: Self = Self::Sinc { half: 32, tabled: true };
+
     pub fn from_reaper(mode: i64) -> Self {
         match mode {
             0 => Self::Sinc { half: 32, tabled: true },

@@ -3,6 +3,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use scythe_core::Processing;
 use scythe_core::render_settings::ResampleMode;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::codecs::audio::well_known::{CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3};
@@ -246,10 +247,31 @@ pub fn resample_with(data: &AudioData, target_rate: u32, mode: ResampleMode) -> 
     if data.sample_rate == target_rate || data.frames() == 0 {
         return Ok(AudioData { sample_rate: target_rate, channels: data.channels.clone() });
     }
-    if data.sample_rate == 0 || target_rate == 0 {
+    resample_rate(data, data.sample_rate as f64, target_rate, mode)
+}
+
+/// Converts `data` as if it ran at `from` Hz to `target_rate`: a take's rate change without
+/// pitch preservation is a conversion from its file's rate times the play rate, with the same
+/// resampler (REAPER's renders at play rates 0.5, 0.9 and 1.5 null against this).
+pub fn resample_rate(
+    data: &AudioData,
+    from: f64,
+    target_rate: u32,
+    mode: ResampleMode,
+) -> Result<AudioData, MediaError> {
+    if from.is_nan() || from <= 0.0 || target_rate == 0 {
         return Err(MediaError::Resample("zero sample rate".into()));
     }
-    let (from, to) = (data.sample_rate as u64, target_rate as u64);
+    // Rates that are not whole numbers become a ratio of scaled integers, exact to well under a
+    // sample over hours.
+    let scale = if (from - from.round()).abs() < 1e-6 { 1 } else { 100_000 };
+    let r8_from = if scale == 1 { from.round() } else { from };
+    let (from, to) = ((from * scale as f64).round() as u64, target_rate as u64 * scale);
+    let unit = gcd(from, to);
+    let (from, to) = (from / unit, to / unit);
+    if from == to || data.frames() == 0 {
+        return Ok(AudioData { sample_rate: target_rate, channels: data.channels.clone() });
+    }
     let out_frames = (data.frames() as f64 * to as f64 / from as f64).round() as usize;
     let step = from as f64 / to as f64;
     let channels = match mode {
@@ -261,7 +283,7 @@ pub fn resample_with(data: &AudioData, target_rate: u32, mode: ResampleMode) -> 
         ResampleMode::R8brain => data
             .channels
             .iter()
-            .map(|ch| crate::r8brain::convert(ch, data.sample_rate, target_rate, out_frames))
+            .map(|ch| crate::r8brain::convert(ch, r8_from, target_rate as f64, out_frames))
             .collect(),
         // The frame before the read position, so a position landing exactly on a frame reads the
         // one before it.
@@ -581,40 +603,63 @@ pub enum MediaState {
 #[derive(Debug, Default)]
 pub struct MediaPool {
     entries: Mutex<HashMap<PathBuf, MediaState>>,
-    /// Time-stretched or pitch-shifted copies, keyed by file and the two ratios' bits.
-    stretched: Mutex<HashMap<(PathBuf, u64, u64), Arc<AudioData>>>,
-    /// How files at another rate are converted to the engine's.
+    /// Stretched, pitch-shifted or rate-changed copies, keyed by file and `Processing::key`.
+    processed: Mutex<HashMap<ProcessedKey, Arc<AudioData>>>,
+    /// How files at another rate are converted to the engine's, and how takes play at another
+    /// rate without keeping their pitch.
     resample: ResampleMode,
 }
 
+type ProcessedKey = (PathBuf, (u64, u64, u64, i32));
+
 impl MediaPool {
-    /// A pool converting media with `mode`, like a render with the project's resample mode.
+    /// A pool converting media with `mode`: the project's render mode for renders, the playback
+    /// mode for playback.
     pub fn with_resample(mode: ResampleMode) -> Self {
         Self { resample: mode, ..Self::default() }
     }
 
-    /// The copy of `path` stretched by `time` and shifted by `pitch`, once prepared.
-    pub fn stretched(&self, path: &Path, (time, pitch): (f64, f64)) -> Option<Arc<AudioData>> {
-        self.stretched.lock().unwrap().get(&(path.to_owned(), time.to_bits(), pitch.to_bits())).cloned()
+    pub fn resample_mode(&self) -> ResampleMode {
+        self.resample
     }
 
-    /// Computes the stretched copy (slow; for worker threads). `None` until the file is loaded.
-    pub fn prepare_stretched(&self, path: &Path, ratios: (f64, f64)) -> Option<Arc<AudioData>> {
-        if let Some(done) = self.stretched(path, ratios) {
+    /// The copy of `path` that went through `processing`, once prepared. It runs on its own time
+    /// axis, `processing.length_ratio()` times the source's, at the engine's rate.
+    pub fn processed(&self, path: &Path, processing: &Processing) -> Option<Arc<AudioData>> {
+        self.processed.lock().unwrap().get(&(path.to_owned(), processing.key())).cloned()
+    }
+
+    /// Computes the processed copy (slow; for worker threads). `None` until the file is loaded.
+    pub fn prepare_processed(&self, path: &Path, processing: &Processing) -> Option<Arc<AudioData>> {
+        if let Some(done) = self.processed(path, processing) {
             return Some(done);
         }
         let base = self.ready(path)?;
-        let audio = Arc::new(crate::stretch::stretch(&base.audio, ratios.0, ratios.1));
-        let key = (path.to_owned(), ratios.0.to_bits(), ratios.1.to_bits());
-        self.stretched.lock().unwrap().insert(key, audio.clone());
+        let rate = base.audio.sample_rate;
+        let audio = if processing.shifts() {
+            let shifted = crate::stretch::apply(&base.audio, processing);
+            if processing.rate == 1.0 {
+                shifted
+            } else {
+                resample_rate(&shifted, rate as f64 * processing.rate, rate, self.resample).ok()?
+            }
+        } else if base.source_rate == rate {
+            resample_rate(&base.audio, rate as f64 * processing.rate, rate, self.resample).ok()?
+        } else {
+            // One conversion from the file's own rate, as REAPER does, rather than two.
+            let raw = decode_file(path).ok()?;
+            resample_rate(&raw, raw.sample_rate as f64 * processing.rate, rate, self.resample).ok()?
+        };
+        let audio = Arc::new(audio);
+        self.processed.lock().unwrap().insert((path.to_owned(), processing.key()), audio.clone());
         Some(audio)
     }
 
-    /// Prepares every stretched copy the project's takes need; their files must be loaded.
+    /// Prepares every processed copy the project's takes need; their files must be loaded.
     pub fn prepare_project(&self, project: &scythe_core::Project) {
         for take in project.tracks.iter().flat_map(|t| &t.items).flat_map(|i| &i.takes) {
-            if let (Some(file), Some(ratios)) = (take.source.file(), take.stretch()) {
-                self.prepare_stretched(&scythe_core::rpp::resolve_media_path(project, file), ratios);
+            if let (Some(file), Some(processing)) = (take.source.file(), take.processing(project.default_pitch_mode)) {
+                self.prepare_processed(&scythe_core::rpp::resolve_media_path(project, file), &processing);
             }
         }
     }
@@ -649,7 +694,7 @@ impl MediaPool {
 
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
-        self.stretched.lock().unwrap().clear();
+        self.processed.lock().unwrap().clear();
     }
 }
 
@@ -721,6 +766,22 @@ mod tests {
             assert!((crossings as i64 - 800).abs() <= 1, "mode {mode}: crossings {crossings}");
             let peak = ch.iter().fold(0.0f32, |m, s| m.max(s.abs()));
             assert!((peak - 0.5).abs() < 0.02, "mode {mode}: peak {peak}");
+        }
+    }
+
+    #[test]
+    fn play_rates_resample_in_every_mode() {
+        let data = AudioData { sample_rate: 48000, channels: vec![sine(48000, 1000.0, 1.0)] };
+        for mode in 0..=10 {
+            // 0.8734 is not a whole number of hertz at 48 kHz.
+            for rate in [0.5, 0.8734, 1.5] {
+                let out = resample_rate(&data, 48000.0 * rate, 48000, ResampleMode::from_reaper(mode)).unwrap();
+                assert_eq!(out.frames(), (48000.0 / rate).round() as usize);
+                let ch = &out.channels[0][4800..out.frames() - 4800];
+                let crossings = ch.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as f64;
+                let expected = 1000.0 * rate * ch.len() as f64 / 48000.0;
+                assert!((crossings - expected).abs() <= 1.5, "mode {mode} rate {rate}: {crossings} vs {expected}");
+            }
         }
     }
 

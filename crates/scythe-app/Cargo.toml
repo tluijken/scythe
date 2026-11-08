@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+rubberband = ["scythe-engine/rubberband"]
+
 [dependencies]
 scythe-core.workspace = true
 scythe-engine.workspace = true

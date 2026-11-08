@@ -15,7 +15,7 @@ pub mod units;
 pub use envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 pub use fade::Fade;
 pub use model::{
-    AutoMode, Color, FxSlot, Item, ItemId, LineMemo, Marker, Project, Section, Send, Source, Take, TimeRange, Track,
-    TrackId,
+    AutoMode, Color, FxSlot, Item, ItemId, LineMemo, Marker, Processing, Project, Section, Send, Source, Take,
+    TimeRange, Track, TrackId,
 };
 pub use tempo::TempoMap;
