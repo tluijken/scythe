@@ -153,6 +153,13 @@ pub trait Effect: Send {
         false
     }
 
+    /// Whether, in a block holding envelope points, the effect gets each envelope's value at
+    /// its first point there (on the frame before it, as REAPER computes the offset), as
+    /// REAPER automates LV2 plugins; other blocks give the value at their start.
+    fn automates_at_first_point(&self) -> bool {
+        false
+    }
+
     /// What a JSFX's `@serialize` writes, stored by REAPER as `<JS_SER` beside the effect.
     fn save_serialized(&mut self) -> Option<Vec<f64>> {
         None
@@ -332,15 +339,30 @@ pub enum FxStatus {
 
 /// Sets the effect's enveloped parameters for time `t`; returns whether a bypass envelope
 /// switches it off.
-/// When in a block of `n` frames from `t` the effect's envelopes are read.
-fn automation_time(fx: &dyn Effect, t: f64, n: usize, sample_rate: u32) -> f64 {
-    if fx.automates_at_block_end() { t + n.saturating_sub(1) as f64 / sample_rate as f64 } else { t }
+/// When in a block of `n` frames from `t` the effect reads `envelope`.
+fn automation_time(fx: &dyn Effect, envelope: &scythe_core::Envelope, t: f64, n: usize, sample_rate: u32) -> f64 {
+    let sr = sample_rate as f64;
+    if fx.automates_at_block_end() {
+        return t + n.saturating_sub(1) as f64 / sr;
+    }
+    if fx.automates_at_first_point() {
+        let start = (t * sr).round();
+        let block = start / sr;
+        let end = (start + n as f64) / sr;
+        if let Some(p) = envelope.points.iter().find(|p| p.time >= block && p.time < end) {
+            // The offset is floored from the point's distance to the block's start time, so a
+            // point a rounding error short of a frame lands on the frame before.
+            return (start + ((p.time - block) * sr).floor()) / sr;
+        }
+    }
+    t
 }
 
-fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64) -> bool {
+fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64, n: usize, sample_rate: u32) -> bool {
     let mut bypassed = false;
     for a in automation {
-        let Some(v) = a.envelope.value_at(t) else { continue };
+        let at = automation_time(fx, &a.envelope, t, n, sample_rate);
+        let Some(v) = a.envelope.value_at(at) else { continue };
         match &a.target {
             Target::Bypass => bypassed = v >= 0.5,
             Target::Named(name) => {
@@ -381,8 +403,7 @@ impl FxInstance {
         t: f64,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
-        let t = automation_time(fx.as_ref(), t, left.len(), ctx.sample_rate);
-        if !apply_automation(fx.as_mut(), automation, t) {
+        if !apply_automation(fx.as_mut(), automation, t, left.len(), ctx.sample_rate) {
             fx.process(left, right, ctx);
         }
     }
@@ -397,8 +418,7 @@ impl FxInstance {
         t: f64,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
-        let t = automation_time(fx.as_ref(), t, range.len(), ctx.sample_rate);
-        if !apply_automation(fx.as_mut(), automation, t) {
+        if !apply_automation(fx.as_mut(), automation, t, range.len(), ctx.sample_rate) {
             fx.process_pins(bufs, range, ctx);
         }
     }
@@ -1555,6 +1575,10 @@ impl Lv2Effect {
 }
 
 impl Effect for Lv2Effect {
+    fn automates_at_first_point(&self) -> bool {
+        true
+    }
+
     fn is_instrument(&self) -> bool {
         self.plugin.info.instrument
     }

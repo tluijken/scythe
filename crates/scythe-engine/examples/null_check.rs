@@ -70,7 +70,7 @@ fn main() {
                 .iter()
                 .zip(&theirs)
                 .enumerate()
-                .map(|(i, (a, b))| ((a.0 - b.0).abs().max((a.1 - b.1).abs()), i))
+                .map(|(i, (a, b))| (sample_diff(a.0, b.0).max(sample_diff(a.1, b.1)), i))
                 .fold((0.0f32, 0), |m, v| if v.0 > m.0 { v } else { m });
             total += 1;
             let name = path.file_stem().map_or(file.clone(), |s| s.to_string_lossy().into_owned());
@@ -82,4 +82,15 @@ fn main() {
         }
     }
     println!("{passed}/{total} within {tolerance}");
+}
+
+/// How far apart two samples are; a NaN or an infinity only matches the same value.
+fn sample_diff(a: f32, b: f32) -> f32 {
+    if a == b || (a.is_nan() && b.is_nan()) {
+        0.0
+    } else if a.is_finite() && b.is_finite() {
+        (a - b).abs()
+    } else {
+        f32::INFINITY
+    }
 }

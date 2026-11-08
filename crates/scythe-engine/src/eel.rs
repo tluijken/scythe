@@ -221,7 +221,8 @@ enum Node {
     Var(usize),
     /// `base[index]`; `gmem[index]` uses the shared memory, which here is the same.
     Mem(Box<Node>, Box<Node>),
-    Assign(Box<Node>, Box<Node>),
+    /// `target = value`; a checked assignment stores through [`assign_filter`].
+    Assign(Box<Node>, Box<Node>, bool),
     OpAssign(Op, Box<Node>, Box<Node>),
     Bin(Op, Box<Node>, Box<Node>),
     Neg(Box<Node>),
@@ -789,20 +790,37 @@ impl Resolver<'_> {
                 }
                 let rhs = Box::new(self.resolve(scope, rhs)?);
                 match op {
-                    None => Node::Assign(Box::new(target), rhs),
+                    None => Node::Assign(Box::new(target), rhs, true),
                     Some(op) => Node::OpAssign(*op, Box::new(target), rhs),
                 }
             }
-            Ast::Bin(op, a, b) => Node::Bin(*op, Box::new(self.resolve(scope, a)?), Box::new(self.resolve(scope, b)?)),
-            Ast::Neg(a) => Node::Neg(Box::new(self.resolve(scope, a)?)),
-            Ast::Not(a) => Node::Not(Box::new(self.resolve(scope, a)?)),
-            Ast::AndAlso(a, b) => Node::AndAlso(Box::new(self.resolve(scope, a)?), Box::new(self.resolve(scope, b)?)),
-            Ast::OrElse(a, b) => Node::OrElse(Box::new(self.resolve(scope, a)?), Box::new(self.resolve(scope, b)?)),
-            Ast::Cond(c, y, n) => Node::Cond(
-                Box::new(self.resolve(scope, c)?),
-                Box::new(self.resolve(scope, y)?),
-                n.as_ref().map(|n| self.resolve(scope, n)).transpose()?.map(Box::new),
-            ),
+            Ast::Bin(op, a, b) => fold_bin(*op, self.resolve(scope, a)?, self.resolve(scope, b)?),
+            Ast::Neg(a) => match self.resolve(scope, a)? {
+                Node::Num(v) => Node::Num(-v),
+                a => Node::Neg(Box::new(a)),
+            },
+            Ast::Not(a) => match self.resolve(scope, a)? {
+                Node::Num(v) => Node::Num((!truth(v)) as u8 as f64),
+                a => Node::Not(Box::new(a)),
+            },
+            Ast::AndAlso(a, b) => match (self.resolve(scope, a)?, self.resolve(scope, b)?) {
+                (Node::Num(a), Node::Num(b)) => Node::Num((truth(a) && truth(b)) as u8 as f64),
+                (a, b) => Node::AndAlso(Box::new(a), Box::new(b)),
+            },
+            Ast::OrElse(a, b) => match (self.resolve(scope, a)?, self.resolve(scope, b)?) {
+                (Node::Num(a), Node::Num(b)) => Node::Num((truth(a) || truth(b)) as u8 as f64),
+                (a, b) => Node::OrElse(Box::new(a), Box::new(b)),
+            },
+            Ast::Cond(c, y, n) => {
+                let c = self.resolve(scope, c)?;
+                let y = self.resolve(scope, y)?;
+                let n = n.as_ref().map(|n| self.resolve(scope, n)).transpose()?;
+                match c {
+                    Node::Num(c) if truth(c) => y,
+                    Node::Num(_) => n.unwrap_or(Node::Num(0.0)),
+                    c => Node::Cond(Box::new(c), Box::new(y), n.map(Box::new)),
+                }
+            }
             Ast::Seq(items) => Node::Seq(items.iter().map(|i| self.resolve(scope, i)).collect::<Result<_, _>>()?),
             Ast::Call(name, args) => self.call(scope, name, args)?,
         })
@@ -823,7 +841,12 @@ impl Resolver<'_> {
             if arity != usize::MAX && args.len() != arity {
                 return Err(format!("{name}() takes {arity} argument(s)"));
             }
-            let args = args.iter().map(|a| self.resolve(scope, a)).collect::<Result<_, _>>()?;
+            let args: Vec<Node> = args.iter().map(|a| self.resolve(scope, a)).collect::<Result<_, _>>()?;
+            let consts: Option<Vec<f64>> =
+                args.iter().map(|a| if let Node::Num(v) = a { Some(*v) } else { None }).collect();
+            if let Some(v) = consts.and_then(|c| folded_math(b, &c)) {
+                return Ok(Node::Num(v));
+            }
             return Ok(Node::Call(b, args));
         }
         if !self.functions.contains_key(name)
@@ -879,7 +902,12 @@ impl Resolver<'_> {
         let mut seq = Vec::new();
         for (p, a) in f.params.iter().zip(args) {
             let value = self.resolve(scope, a)?;
-            seq.push(Node::Assign(Box::new(Node::Var(self.vars.slot(&format!("{fname}#{p}")))), Box::new(value)));
+            // Parameters are bound without the assignment check (measured in REAPER).
+            seq.push(Node::Assign(
+                Box::new(Node::Var(self.vars.slot(&format!("{fname}#{p}")))),
+                Box::new(value),
+                false,
+            ));
         }
         seq.push(self.resolve(&inner, &f.body)?);
         Ok(Node::Seq(seq))
@@ -957,7 +985,7 @@ fn midi_len(status: u8) -> usize {
 /// What an expression used as a target writes to: `(x = 0)` stands for `x`.
 fn place(node: &Node) -> &Node {
     match node {
-        Node::Assign(target, _) => place(target),
+        Node::Assign(target, ..) => place(target),
         n => n,
     }
 }
@@ -1163,9 +1191,9 @@ impl Machine {
                 let at = self.eval(base) + self.eval(idx);
                 self.read(at)
             }
-            Node::Assign(t, v) => {
+            Node::Assign(t, v, checked) => {
                 let v = self.eval(v);
-                self.store(t, v)
+                self.store(t, if *checked { assign_filter(v) } else { v })
             }
             Node::OpAssign(op, t, v) => {
                 let rhs = self.eval(v);
@@ -1232,7 +1260,8 @@ impl Machine {
                         break;
                     }
                 }
-                0.0
+                // What REAPER's `loop()` evaluates to, whatever its count or body.
+                1.0
             }
             Node::Call(b, args) => self.builtin(*b, args),
         }
@@ -1242,46 +1271,15 @@ impl Machine {
         use Builtin::*;
         let arg = |m: &mut Self, i: usize| args.get(i).map_or(0.0, |a| m.eval(a));
         match b {
-            Sin => arg(self, 0).sin(),
-            Cos => arg(self, 0).cos(),
-            Tan => arg(self, 0).tan(),
-            Asin => finite_or_zero(arg(self, 0).asin()),
-            Acos => finite_or_zero(arg(self, 0).acos()),
-            Atan => arg(self, 0).atan(),
-            Atan2 => {
-                let y = arg(self, 0);
-                y.atan2(arg(self, 1))
-            }
-            Sqr => {
+            Sin | Cos | Tan | Asin | Acos | Atan | Sqrt | Exp | Log | Log10 | Floor | Ceil | Abs | Sqr | Sign
+            | Invsqrt => {
                 let x = arg(self, 0);
-                x * x
+                math(b, x, 0.0)
             }
-            Sqrt => arg(self, 0).abs().sqrt(),
-            Pow => {
+            Atan2 | Pow | Min | Max => {
                 let x = arg(self, 0);
-                finite_or_zero(x.powf(arg(self, 1)))
-            }
-            Exp => finite_or_zero(arg(self, 0).exp()),
-            Log => finite_or_zero(arg(self, 0).ln()),
-            Log10 => finite_or_zero(arg(self, 0).log10()),
-            Abs => arg(self, 0).abs(),
-            Min => {
-                let a = arg(self, 0);
-                a.min(arg(self, 1))
-            }
-            Max => {
-                let a = arg(self, 0);
-                a.max(arg(self, 1))
-            }
-            Sign => {
-                let x = arg(self, 0);
-                if x > 0.0 {
-                    1.0
-                } else if x < 0.0 {
-                    -1.0
-                } else {
-                    0.0
-                }
+                let y = arg(self, 1);
+                math(b, x, y)
             }
             Rand => {
                 let x = arg(self, 0);
@@ -1289,12 +1287,6 @@ impl Machine {
                 self.rng ^= self.rng >> 7;
                 self.rng ^= self.rng << 17;
                 (self.rng >> 11) as f64 / (1u64 << 53) as f64 * if x < 1.0 { 1.0 } else { x }
-            }
-            Floor => arg(self, 0).floor(),
-            Ceil => arg(self, 0).ceil(),
-            Invsqrt => {
-                let x = arg(self, 0);
-                if x < 0.0 { f64::INFINITY } else { 1.0 / x.sqrt() }
             }
             Memset => {
                 let (at, v, n) = (arg(self, 0), arg(self, 1), arg(self, 2));
@@ -1759,40 +1751,258 @@ fn truth(x: f64) -> bool {
     x.abs() >= CLOSE
 }
 
+/// A truncating conversion as x86-64's `cvttsd2si` does it: NaN and values out of range
+/// give the most negative integer.
 fn int(x: f64) -> i64 {
-    x as i64
+    let limit = 2f64.powi(63);
+    if x.is_nan() || !(-limit..limit).contains(&x) { i64::MIN } else { x as i64 }
 }
 
-/// REAPER's math functions give 0 where the result would not be a finite number.
-fn finite_or_zero(x: f64) -> f64 {
-    if x.is_finite() { x } else { 0.0 }
+/// The same conversion to 32 bits, which REAPER's compile-time shifts use.
+fn int32(x: f64) -> i32 {
+    if x.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&x) { i32::MIN } else { x as i32 }
 }
 
+/// REAPER runs JSFX with flush-to-zero: arithmetic results too small to be normal become 0.
+fn flush(x: f64) -> f64 {
+    if x.is_subnormal() { 0.0f64.copysign(x) } else { x }
+}
+
+/// What a checked assignment stores: values with the smallest two exponents (zero, subnormal
+/// and the lowest normal binade), infinities and NaN become 0.
+fn assign_filter(v: f64) -> f64 {
+    let e = (v.to_bits() >> 52) & 0x7ff;
+    if e <= 1 || e == 0x7ff { 0.0 } else { v }
+}
+
+/// EEL2's `invsqrt`: the bit-trick estimate with one Newton step, through a 32-bit float.
+fn invsqrt(x: f64) -> f64 {
+    let bits = (x as f32).to_bits() as i32 as i64;
+    let y = f64::from(f32::from_bits((0x5f37_59df - (bits >> 1)) as u32));
+    (x * -0.5 * y * y + 1.5) * y
+}
+
+/// The math functions, shared by evaluation and compile-time folding.
+fn math(b: Builtin, x: f64, y: f64) -> f64 {
+    use Builtin::*;
+    match b {
+        Sin => x.sin(),
+        Cos => x.cos(),
+        Tan => x.tan(),
+        Asin => x.asin(),
+        Acos => x.acos(),
+        Atan => x.atan(),
+        Atan2 => x.atan2(y),
+        Sqr => flush(x * x),
+        Sqrt => x.abs().sqrt(),
+        Pow => x.powf(y),
+        Exp => x.exp(),
+        Log => x.ln(),
+        Log10 => x.log10(),
+        Abs => x.abs(),
+        // Unordered comparisons give the first argument.
+        Min => {
+            if y < x {
+                y
+            } else {
+                x
+            }
+        }
+        Max => {
+            if y > x {
+                y
+            } else {
+                x
+            }
+        }
+        // Zeros come back as they are; anything else, NaN too, by its sign bit.
+        Sign => {
+            if x.to_bits() << 1 == 0 {
+                x
+            } else if x.is_sign_negative() {
+                -1.0
+            } else {
+                1.0
+            }
+        }
+        Floor => x.floor(),
+        Ceil => x.ceil(),
+        Invsqrt => invsqrt(x),
+        _ => 0.0,
+    }
+}
+
+/// Calls REAPER evaluates at compile time when every argument is a constant: the ones backed
+/// by C library functions.
+fn folded_math(b: Builtin, args: &[f64]) -> Option<f64> {
+    use Builtin::*;
+    match (b, args) {
+        (Sin | Cos | Tan | Sqrt | Log | Log10 | Asin | Acos | Atan | Exp | Floor | Ceil, [x]) => Some(math(b, *x, 0.0)),
+        (Atan2 | Pow, [x, y]) => Some(math(b, *x, *y)),
+        _ => None,
+    }
+}
+
+/// An operator as REAPER's JSFX code runs it.
 fn binop(op: Op, a: f64, b: f64) -> f64 {
     use Op::*;
     match op {
-        Add => a + b,
-        Sub => a - b,
-        Mul => a * b,
-        Div => a / b,
+        Add | Sub | Mul | Div => flush(arith(op, a, b)),
+        // 64-bit shifts of the low 32 bits, read back as a signed 32-bit value.
+        Shl => (((int(a) as u64) & 0xffff_ffff) << (int(b) as u64 & 63)) as u32 as i32 as f64,
+        Shr => (((int(a) as u64) & 0xffff_ffff) >> (int(b) as u64 & 63)) as u32 as i32 as f64,
+        _ => common(op, a, b),
+    }
+}
+
+/// An operator as REAPER folds it at compile time, without flush-to-zero and with C's
+/// 32-bit shifts.
+fn fold_value(op: Op, a: f64, b: f64) -> f64 {
+    use Op::*;
+    match op {
+        Add | Sub | Mul | Div => arith(op, a, b),
+        Shl => int32(a).wrapping_shl(int32(b) as u32) as f64,
+        Shr => int32(a).wrapping_shr(int32(b) as u32) as f64,
+        _ => common(op, a, b),
+    }
+}
+
+fn arith(op: Op, a: f64, b: f64) -> f64 {
+    match op {
+        Op::Add => a + b,
+        Op::Sub => a - b,
+        Op::Mul => a * b,
+        _ => a / b,
+    }
+}
+
+/// The operators that run and fold alike. Comparisons follow x86's unordered flags: a NaN
+/// operand makes `<`, `<=`, `==` and `===` true and the others false.
+fn common(op: Op, a: f64, b: f64) -> f64 {
+    use Op::*;
+    let unordered = a.is_nan() || b.is_nan();
+    let r = match op {
         Mod => {
-            let d = int(b.abs());
-            if d == 0 { 0.0 } else { (int(a.abs()) % d) as f64 }
+            let d = int(b.abs()) as u64;
+            return if d == 0 { 0.0 } else { ((int(a.abs()) as u64) % d) as f64 };
         }
-        Pow => finite_or_zero(a.powf(b)),
-        Or => (int(a) | int(b)) as f64,
-        And => (int(a) & int(b)) as f64,
-        Xor => (int(a) ^ int(b)) as f64,
-        Shl => ((int(a) as i32).wrapping_shl(int(b) as u32)) as f64,
-        Shr => ((int(a) as i32).wrapping_shr(int(b) as u32)) as f64,
-        Eq => ((a - b).abs() < CLOSE) as u8 as f64,
-        ExactEq => (a == b) as u8 as f64,
-        Ne => ((a - b).abs() >= CLOSE) as u8 as f64,
-        ExactNe => (a != b) as u8 as f64,
-        Lt => (a < b) as u8 as f64,
-        Gt => (a > b) as u8 as f64,
-        Le => (a <= b) as u8 as f64,
-        Ge => (a >= b) as u8 as f64,
+        Pow => return a.powf(b),
+        Or => return (int(a) | int(b)) as f64,
+        And => return (int(a) & int(b)) as f64,
+        Xor => return (int(a) ^ int(b)) as f64,
+        // Equal infinities differ by NaN, which compares as close.
+        Eq => (a - b).abs() < CLOSE || (a - b).is_nan(),
+        Ne => (a - b).abs() >= CLOSE,
+        ExactEq => a == b || unordered,
+        ExactNe => a != b && !unordered,
+        Lt => a < b || unordered,
+        Gt => a > b,
+        Le => a <= b || unordered,
+        Ge => a >= b,
+        Add | Sub | Mul | Div | Shl | Shr => return binop(op, a, b),
+    };
+    r as u8 as f64
+}
+
+/// Folds an operator over constants and drops the identities REAPER's optimizer removes
+/// (`x + 0`, `0 - x` as `-x`, `x * 1`, `x * 0` as 0, ...).
+fn fold_bin(op: Op, a: Node, b: Node) -> Node {
+    use Op::*;
+    match (op, a, b) {
+        (op, Node::Num(x), Node::Num(y)) => Node::Num(fold_value(op, x, y)),
+        (Add | Sub, a, Node::Num(0.0))
+        | (Add, Node::Num(0.0), a)
+        | (Mul | Div, a, Node::Num(1.0))
+        | (Mul, Node::Num(1.0), a) => a,
+        (Sub, Node::Num(0.0), b) => Node::Neg(Box::new(b)),
+        (Mul, a, Node::Num(0.0)) | (Mul | Div, Node::Num(0.0), a) => {
+            if pure(&a) {
+                Node::Num(0.0)
+            } else {
+                Node::Seq(vec![a, Node::Num(0.0)])
+            }
+        }
+        (op, a, b) => Node::Bin(op, Box::new(a), Box::new(b)),
+    }
+}
+
+fn pure(n: &Node) -> bool {
+    match n {
+        Node::Num(_) | Node::Var(_) => true,
+        Node::Mem(a, b) | Node::Bin(_, a, b) => pure(a) && pure(b),
+        Node::Neg(a) | Node::Not(a) => pure(a),
+        _ => false,
+    }
+}
+
+/// Settles a compiled tree as REAPER emits it: constants that are not finite or are
+/// subnormal become 0, and each assignment learns whether it needs the check.
+fn finish(n: &mut Node) {
+    match n {
+        Node::Num(v) => {
+            if v.is_subnormal() || !v.is_finite() {
+                *v = 0.0;
+            }
+        }
+        Node::Var(_) => {}
+        Node::Mem(a, b)
+        | Node::OpAssign(_, a, b)
+        | Node::Bin(_, a, b)
+        | Node::AndAlso(a, b)
+        | Node::OrElse(a, b)
+        | Node::Loop(a, b) => {
+            finish(a);
+            finish(b);
+        }
+        Node::Assign(t, v, checked) => {
+            // Decided on the constants as folded, before they are emitted.
+            *checked = *checked && could_denormal(v);
+            finish(t);
+            finish(v);
+        }
+        Node::Neg(a) | Node::Not(a) | Node::While(a) => finish(a),
+        Node::Cond(c, y, n) => {
+            finish(c);
+            finish(y);
+            if let Some(n) = n {
+                finish(n);
+            }
+        }
+        Node::Seq(items) | Node::Call(_, items) => items.iter_mut().for_each(finish),
+    }
+}
+
+/// Whether REAPER's compiler checks an assignment of this value: it does unless the value
+/// comes from an operation that cannot produce a subnormal (or infinity or NaN) from clean
+/// inputs. Some operations always give clean results (`+ c` and `- c` with a constant beyond
+/// 1e-50, integer operators, comparisons, `cos`, `floor`, ...), some keep their inputs'
+/// cleanliness (`* c` with |c| >= 1, `/ c` or `c /` with |c| <= 1, negation, `sin`, `sqrt`,
+/// `abs`, `min`, `max`), and the rest may produce anything.
+fn could_denormal(n: &Node) -> bool {
+    use Builtin::*;
+    match n {
+        Node::Bin(op, a, b) => {
+            let c = match (&**a, &**b) {
+                (_, Node::Num(c)) | (Node::Num(c), _) => Some(c.abs()),
+                _ => None,
+            };
+            match op {
+                Op::Add | Op::Sub => !c.is_some_and(|c| c > 1e-50),
+                Op::Mul if c.is_some_and(|c| c >= 1.0) => could_denormal(a) || could_denormal(b),
+                Op::Div if c.is_some_and(|c| c <= 1.0) => could_denormal(a) || could_denormal(b),
+                Op::Mul | Op::Div | Op::Pow => true,
+                _ => false,
+            }
+        }
+        Node::Neg(a) => could_denormal(a),
+        Node::Cond(_, y, n) => could_denormal(y) || n.as_deref().is_some_and(could_denormal),
+        Node::Seq(items) => items.last().is_some_and(could_denormal),
+        Node::Call(b, args) => match b {
+            Sin | Sqrt | Abs | Min | Max => args.iter().any(could_denormal),
+            Tan | Asin | Acos | Atan | Atan2 | Exp | Log | Log10 | Sqr | Invsqrt | Pow => true,
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -1876,14 +2086,39 @@ mod tests {
     }
 
     #[test]
-    fn math_functions_give_zero_where_reaper_does() {
-        // Measured in REAPER: non-finite results of these functions read as 0.
-        let m = run(
-            "a = log(0); b = log(-1); c = exp(1000); d = acos(2); e = pow(-8, 1/3); f = sqrt(-4); g = invsqrt(-4); h = 1/0;",
+    fn assignments_clear_what_could_be_non_finite() {
+        // Measured in REAPER: an assignment drops NaN and infinities unless the value comes
+        // from an operation that cannot make them out of clean inputs.
+        let m = run("z = 0; a = log(z); b = log(z) + 1; c = z / z; d = (z / z) + 1; e = 1 / z; f = 1 / 0; \
+             g = sqrt(z - 4); h = abs(z / z); i = abs(d); j = d * 0.5; k = d * 2; l = 0 - d; \
+             p = min(d, 1); q = max(1, d); r = cos(d); s = tan(d); x = d + 0;");
+        let v = |n: &str| var(&m, n);
+        assert_eq!(
+            (v("a"), v("b"), v("c"), v("e"), v("f"), v("g")),
+            (0.0, f64::NEG_INFINITY, 0.0, f64::INFINITY, 0.0, 2.0)
         );
-        let v: Vec<f64> = ["a", "b", "c", "d", "e", "f"].iter().map(|n| var(&m, n)).collect();
-        assert_eq!(v, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
-        assert_eq!((var(&m, "g"), var(&m, "h")), (f64::INFINITY, f64::INFINITY));
+        assert!(v("d").is_nan() && v("i").is_nan() && v("k").is_nan() && v("l").is_nan() && v("x").is_nan());
+        assert_eq!((v("h"), v("j"), v("s"), v("q")), (0.0, 0.0, 0.0, 1.0));
+        assert!(v("p").is_nan() && v("r").is_nan(), "min and max give their first argument for NaN");
+    }
+
+    #[test]
+    fn nan_comparisons_follow_unordered_flags() {
+        let m = run("z = 0; n = z / z + 1; a = n < 1; b = n <= 1; c = n == 1; d = n === 1; e = n > 1; f = n >= 1; \
+             g = n != 1; h = n ? 1 : 2; i = n | 0; j = n % 7; k = sign(n);");
+        let v: Vec<f64> = ["a", "b", "c", "d", "e", "f", "g", "h"].iter().map(|n| var(&m, n)).collect();
+        assert_eq!(v, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 2.0]);
+        assert_eq!((var(&m, "i"), var(&m, "j"), var(&m, "k")), (i64::MIN as f64, 1.0, -1.0));
+    }
+
+    #[test]
+    fn shifts_flush_to_zero_invsqrt_and_loop() {
+        let m = run("z = 0; a = (z - 8) >> 1; b = (z + 1) << 40; c = -8 >> 1; d = 1 << 40; \
+             t = 1; loop(1022, t *= 0.5); e = t * 0.5 * 4; \
+             f = invsqrt(z + 4); g = loop(3, 0);");
+        assert_eq!((var(&m, "a"), var(&m, "b"), var(&m, "c"), var(&m, "d")), (2147483644.0, 0.0, -4.0, 256.0));
+        assert_eq!(var(&m, "e"), 0.0, "a subnormal product is flushed");
+        assert_eq!((var(&m, "f") as f32, var(&m, "g")), (0.49915358, 1.0));
     }
 
     #[test]

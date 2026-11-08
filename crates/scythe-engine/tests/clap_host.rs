@@ -58,7 +58,7 @@ fn discovers_and_loads_factory_presets() {
     let mut plugin = ClapPlugin::create(lib.clone(), "org.scythe.test-gain", 48000.0, 512).unwrap();
     let presets = plugin.presets();
     let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(names, ["Quiet", "Loud"]);
+    assert_eq!(names, ["Quiet", "Loud"], "only the provider with the plugin's id is asked");
     assert_eq!(presets[1].load_key.as_deref(), Some("0.75"));
     assert!(plugin.load_preset(&presets[1]));
     assert_eq!(plugin.save_state().unwrap(), 0.75f32.to_le_bytes());

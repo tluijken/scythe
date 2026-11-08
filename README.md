@@ -157,8 +157,9 @@ Working:
   import into and export from the preset file. Factory presets follow: a VST 3 plugin's
   `.vstpreset` files under `~/.vst3/presets/<vendor>/<plugin>/`, a VST 2 plugin's own programs
   (REAPER restores the chunk, then selects the stored program) and the presets a CLAP plugin's
-  preset-discovery providers list, loaded through its preset-load extension. Loading a preset
-  does what REAPER does with the `<VST` header: the preset's pin maps and flag bits replace the
+  preset-discovery provider lists, loaded through its preset-load extension; like REAPER, only
+  the provider whose id is the plugin's id is asked. Loading a preset does what REAPER does
+  with the `<VST` header: the preset's pin maps and flag bits replace the
   slot's, and its state is taken only when its state kind matches. Presets saved as `.RfxChain`
   files by earlier versions are still listed. Plugin scans are cached per binary (path, size,
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
@@ -169,6 +170,16 @@ Working:
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
   user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
   bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
+  Arithmetic follows REAPER's compiled EEL2 on x86-64: an assignment stores 0 for NaN,
+  infinities and the smallest values unless its value comes from an operation that cannot make
+  them out of clean inputs (`+ 1`, `cos`, `floor`, integer operators, ... are clean; `* 2`,
+  `abs`, `min`, negation pass their inputs on; `/`, `*` by a variable, `log`, `exp`, `tan` are
+  checked); constant expressions are folded at load (non-finite results become 0, `1 << 40` is
+  a 32-bit shift) and `x + 0`, `x * 1`, `x * 0` are simplified; arithmetic flushes subnormal
+  results to zero; comparisons with NaN take x86's unordered flags (`<`, `<=`, `==` true);
+  `min`/`max` give their first argument for NaN; integer conversions give the most negative
+  integer for NaN and out-of-range values; `<<`/`>>` shift the low 32 bits; `invsqrt` is the
+  bit-trick estimate; `loop()` evaluates to 1.
   File sliders list their folder under `Data` and are stored by file name as REAPER does;
   `@serialize` state is read from and written to `<JS_SER` (32-bit floats) after `@init` and
   `@slider`, as REAPER loads it;
@@ -265,6 +276,8 @@ compare with scythe's output sample by sample:
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
 | ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project), with its voice limit: a note beyond the limit takes over the oldest voice, which fades out over the 512-frame block holding that note (or never sounds when it started in the same block); retriggers within a block, zero-length notes, 1 to 9 voices, a velocity range | exact (18 cases); a 14-sampler drum kit (seven MP3 cymbals) within 1e-4 |
 | FX parameter envelopes on hosted plugins: a ramp, a square step and a jump on CLAP and VST 3 gains (REAPER sends the value at each 512-frame block's last frame) and on a JSFX volume (its first frame, rounded to the slider step, with `@slider` and `@block` running as REAPER runs them) | exact (3 cases) |
+| FX parameter envelopes on an LV2 gain: linear, square, bezier and fast/slow shapes, points on and a rounding error short of block boundaries, several points in a block (REAPER sends a block's start value, or, when the block holds points, the value at its first point's frame, the offset floored from the point's distance to the block's start time) | exact (3 cases) |
+| JSFX arithmetic with NaN, infinities and subnormals: 394 expressions over 9 probes (assignment checks per operator and function, constant folding, simplifications, comparisons, integer conversions and shifts, `min`/`max`, user function parameters, memory, `loop`/`while` values) | exact |
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
@@ -295,15 +308,15 @@ compares the two files.
 
 ### Not there yet
 
-- FX parameter envelopes on LV2 plugins take each block's first value; REAPER gives a block
-  that holds an envelope point the value after it. NAM models at another rate than the project
+- NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: master channels go to the audio device's outputs in order, as many as the
   device offers; channels beyond that reach only multichannel renders.
 - FX presets: VST 3 `.vstpreset` files are looked for only where REAPER 7.73 lists them
-  (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER 7.73 asks CLAP
-  plugins for their preset-discovery factory but lists none of the discovered presets through
-  its preset API, so their order and naming beside REAPER's own presets are unverified.
+  (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER counts a CLAP
+  plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name
+  (`TrackFX_SetPreset`), but not by index or by navigating, so where they sit in its preset
+  menu is unverified; only plugin-internal presets were tested, not preset files.
 - ReaScript covers a subset of the API (above); Python needs `python3` on the PATH. EEL2 `eval`, `extension_api`, `gfx_*`
   windows and EEL file/network functions are not there.
 - JSFX views (`@gfx`): `gfx_showmenu` does not wait inside the script; the run stops at the
@@ -316,10 +329,10 @@ compares the two files.
   and `gfx_getdropfile` do nothing. Audio passes the effect by while its `@gfx` script runs.
   REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
-  that count its runs. Math functions give 0 where the result is not finite (`log(0)`,
-  `exp(1000)`, `acos(2)`, `pow(-8, 1/3)`), as in REAPER; arithmetic NaN (0/0) follows IEEE
-  rules, where REAPER sometimes gives 0 and compares NaN as both less than and equal to
-  anything.
+  that count its runs. Where REAPER compiles `min`/`max` for a pointer result, its `max` gives
+  the second argument for NaN; scythe always gives the first (no probe reached that case).
+  Subnormal results of library math functions are not flushed. Number literals with an
+  exponent (`1e-60`) made REAPER's whole `@init` fail in the probes; scythe reads them.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not

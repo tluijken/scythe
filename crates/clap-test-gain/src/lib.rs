@@ -2,7 +2,8 @@
 //! a gain that round-trips through the state extension, an instrument that writes each held
 //! key number as a constant level (key / 128) so tests can read note timing exactly, and a
 //! delay that reports its delay as latency. The gain offers two factory presets through preset
-//! discovery, loaded with the preset-load extension.
+//! discovery, loaded with the preset-load extension, from a provider with the plugin's id; a
+//! second provider with another id lists one more, which REAPER never asks for.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -681,6 +682,8 @@ unsafe extern "C" fn create_plugin(
 
 /// The gain's factory presets: name and gain, which is also the load key.
 const PRESETS: [(&CStr, &CStr); 2] = [(c"Quiet", c"0.25"), (c"Loud", c"0.75")];
+/// What the provider REAPER passes over lists.
+const OTHER_PRESETS: [(&CStr, &CStr); 1] = [(c"Elsewhere", c"0.5")];
 
 /// Sets the gain from a factory preset's load key.
 unsafe extern "C" fn preset_from_location(
@@ -694,7 +697,11 @@ unsafe extern "C" fn preset_from_location(
     }
     // SAFETY: the host passes a C string.
     let key = unsafe { CStr::from_ptr(load_key) };
-    let Some(gain) = PRESETS.iter().find(|(_, k)| *k == key).and_then(|(_, k)| k.to_str().ok()?.parse::<f32>().ok())
+    let Some(gain) = PRESETS
+        .iter()
+        .chain(&OTHER_PRESETS)
+        .find(|(_, k)| *k == key)
+        .and_then(|(_, k)| k.to_str().ok()?.parse::<f32>().ok())
     else {
         return false;
     };
@@ -705,13 +712,21 @@ unsafe extern "C" fn preset_from_location(
 
 static PRESET_LOAD: clap_plugin_preset_load = clap_plugin_preset_load { from_location: Some(preset_from_location) };
 
-static PROVIDER_DESCRIPTOR: SyncPtr<clap_preset_discovery_provider_descriptor> =
-    SyncPtr(clap_preset_discovery_provider_descriptor {
+/// REAPER only creates a provider whose id is the id of the plugin it lists presets for.
+static PROVIDER_DESCRIPTORS: SyncPtr<[clap_preset_discovery_provider_descriptor; 2]> = SyncPtr([
+    clap_preset_discovery_provider_descriptor {
         clap_version: CLAP_VERSION,
-        id: c"org.scythe.test-gain.presets".as_ptr(),
+        id: ID.as_ptr(),
         name: c"Test Gain presets".as_ptr(),
         vendor: c"Scythe".as_ptr(),
-    });
+    },
+    clap_preset_discovery_provider_descriptor {
+        clap_version: CLAP_VERSION,
+        id: c"org.scythe.test-gain.more".as_ptr(),
+        name: c"More Test Gain presets".as_ptr(),
+        vendor: c"Scythe".as_ptr(),
+    },
+]);
 
 /// The provider's indexer is kept in `provider_data`.
 unsafe extern "C" fn provider_init(provider: *const clap_preset_discovery_provider) -> bool {
@@ -733,7 +748,7 @@ unsafe extern "C" fn provider_destroy(provider: *const clap_preset_discovery_pro
 }
 
 unsafe extern "C" fn provider_metadata(
-    _provider: *const clap_preset_discovery_provider,
+    provider: *const clap_preset_discovery_provider,
     kind: clap_preset_discovery_location_kind,
     _location: *const c_char,
     receiver: *const clap_preset_discovery_metadata_receiver,
@@ -745,7 +760,9 @@ unsafe extern "C" fn provider_metadata(
     unsafe {
         let r = &*receiver;
         let plugin = clap_sys::universal_plugin_id::clap_universal_plugin_id { abi: c"clap".as_ptr(), id: ID.as_ptr() };
-        for (name, key) in PRESETS {
+        let presets: &[(&CStr, &CStr)] =
+            if std::ptr::eq((*provider).desc, &PROVIDER_DESCRIPTORS.0[0]) { &PRESETS } else { &OTHER_PRESETS };
+        for (name, key) in presets {
             if !r.begin_preset.is_some_and(|begin| begin(receiver, name.as_ptr(), key.as_ptr())) {
                 return false;
             }
@@ -768,14 +785,14 @@ unsafe extern "C" fn provider_extension(
 }
 
 unsafe extern "C" fn provider_count(_f: *const clap_preset_discovery_factory) -> u32 {
-    1
+    PROVIDER_DESCRIPTORS.0.len() as u32
 }
 
 unsafe extern "C" fn provider_descriptor(
     _f: *const clap_preset_discovery_factory,
     index: u32,
 ) -> *const clap_preset_discovery_provider_descriptor {
-    if index == 0 { &PROVIDER_DESCRIPTOR.0 } else { std::ptr::null() }
+    PROVIDER_DESCRIPTORS.0.get(index as usize).map_or(std::ptr::null(), |d| d as *const _)
 }
 
 unsafe extern "C" fn create_provider(
@@ -783,12 +800,13 @@ unsafe extern "C" fn create_provider(
     indexer: *const clap_preset_discovery_indexer,
     id: *const c_char,
 ) -> *const clap_preset_discovery_provider {
-    // SAFETY: id is a C string.
-    if unsafe { CStr::from_ptr(id) } != unsafe { CStr::from_ptr(PROVIDER_DESCRIPTOR.0.id) } {
+    // SAFETY: id and the descriptors' ids are C strings.
+    let Some(desc) = PROVIDER_DESCRIPTORS.0.iter().find(|d| unsafe { CStr::from_ptr(id) == CStr::from_ptr(d.id) })
+    else {
         return std::ptr::null();
-    }
+    };
     Box::into_raw(Box::new(clap_preset_discovery_provider {
-        desc: &PROVIDER_DESCRIPTOR.0,
+        desc,
         provider_data: indexer as *mut c_void,
         init: Some(provider_init),
         destroy: Some(provider_destroy),

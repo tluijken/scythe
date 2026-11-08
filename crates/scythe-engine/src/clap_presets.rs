@@ -165,7 +165,8 @@ impl ClapLibrary {
     }
 
     /// The presets the library's preset providers list for plugin `plugin_id`, location by
-    /// location in the order the providers declare them.
+    /// location in the order the providers declare them. Like REAPER, only a provider whose id
+    /// is the plugin's id is asked.
     pub fn presets(&self, plugin_id: &str) -> Vec<ClapPreset> {
         let Some(factory) = self.preset_factory() else { return Vec::new() };
         let (Some(count), Some(describe), Some(create)) = (factory.count, factory.get_descriptor, factory.create)
@@ -178,6 +179,9 @@ impl ClapLibrary {
         unsafe {
             for i in 0..count(factory) {
                 let Some(desc) = describe(factory, i).as_ref() else { continue };
+                if text(desc.id).as_deref() != Some(plugin_id) {
+                    continue;
+                }
                 let mut declared = Declared::default();
                 let indexer = clap_preset_discovery_indexer {
                     clap_version: CLAP_VERSION,
