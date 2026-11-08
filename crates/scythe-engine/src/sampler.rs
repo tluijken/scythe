@@ -185,7 +185,15 @@ mod tests {
         let note = |start, key| SynthNote { start, end: start + 1, cutoff: i64::MAX, channel: 9, key, velocity: 100 };
         let notes = crate::synth::NoteList::new(vec![note(5, 36), note(6, 38)], 100);
         let (mut l, mut r) = (vec![0.0; 20], vec![0.0; 20]);
-        let ctx = ProcessContext { sample_rate: 100, position: 0, playing: true, notes: Some(&notes), bpm: 120.0 };
+        let ctx = ProcessContext {
+            sample_rate: 100,
+            position: 0,
+            playing: true,
+            notes: Some(&notes),
+            live: &[],
+            live_channel: None,
+            bpm: 120.0,
+        };
         s.process(&mut l, &mut r, &ctx);
         assert_eq!(&l[4..8], &[0.0, 1.0, 2.0, 3.0]);
         assert_eq!(l[15], 0.0);

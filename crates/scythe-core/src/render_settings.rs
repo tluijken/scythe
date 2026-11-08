@@ -30,6 +30,46 @@ pub enum Format {
     Other(String),
 }
 
+/// What a normalised render measures (`RENDER_NORMALIZE` bits 1-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NormalizeSource {
+    LufsIntegrated,
+    Rms,
+    Peak,
+    TruePeak,
+    LufsMomentaryMax,
+    LufsShortTermMax,
+}
+
+/// `RENDER_NORMALIZE <flags> <target>`: scale the render so its measure hits the target.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Normalize {
+    pub source: NormalizeSource,
+    /// Target as an amplitude (LUFS and dB values stored as `10^(x/20)`).
+    pub target: f64,
+}
+
+impl Normalize {
+    pub fn parse(flags: i64, target: f64) -> Option<Self> {
+        if flags & 1 == 0 || target.is_nan() || target <= 0.0 {
+            return None;
+        }
+        let source = match (flags >> 1) & 7 {
+            1 => NormalizeSource::Rms,
+            2 => NormalizeSource::Peak,
+            3 => NormalizeSource::TruePeak,
+            4 => NormalizeSource::LufsMomentaryMax,
+            5 => NormalizeSource::LufsShortTermMax,
+            _ => NormalizeSource::LufsIntegrated,
+        };
+        Some(Self { source, target })
+    }
+
+    pub fn target_db(&self) -> f64 {
+        20.0 * self.target.log10()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderSettings {
     pub file: String,
@@ -38,6 +78,10 @@ pub struct RenderSettings {
     pub sample_rate: Option<u32>,
     pub bounds: Bounds,
     pub format: Format,
+    pub normalize: Option<Normalize>,
+    /// `RENDER_DITHER` bit 0: dither the master render; bit 1: noise-shape it.
+    pub dither: bool,
+    pub noise_shape: bool,
 }
 
 impl RenderSettings {
@@ -49,6 +93,9 @@ impl RenderSettings {
             sample_rate: None,
             bounds: Bounds::Project,
             format: Format::Wav { bits: 24 },
+            normalize: None,
+            dither: false,
+            noise_shape: false,
         };
         for node in &p.extra {
             match node {
@@ -61,6 +108,13 @@ impl RenderSettings {
                         "RENDER_FMT" => {
                             s.channels = num(2).map_or(2, |c| c as u16).clamp(1, 2);
                             s.sample_rate = num(3).filter(|r| *r > 0.0).map(|r| r as u32);
+                        }
+                        "RENDER_NORMALIZE" => {
+                            s.normalize = Normalize::parse(num(1).unwrap_or(0.0) as i64, num(2).unwrap_or(0.0));
+                        }
+                        "RENDER_DITHER" => {
+                            let flags = num(1).unwrap_or(0.0) as i64;
+                            (s.dither, s.noise_shape) = (flags & 1 != 0, flags & 2 != 0);
                         }
                         "RENDER_RANGE" => {
                             s.bounds = match num(1).unwrap_or(1.0) as i64 {
@@ -286,5 +340,20 @@ mod tests {
             format("dmdnbwAAAD8AgAAAAIAAAAAgAAAAAAEAAA=="),
             Format::Vorbis { vbr: true, quality: 0.5, kbps: 128 }
         );
+    }
+
+    #[test]
+    fn normalize_and_dither() {
+        let p = crate::rpp::project_from_rpp(
+            "<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_DITHER 3\n  RENDER_NORMALIZE 5 0.891251 0 0 0 1 1\n>\n",
+        )
+        .unwrap();
+        let s = RenderSettings::from_project(&p);
+        let n = s.normalize.unwrap();
+        assert_eq!(n.source, NormalizeSource::Peak);
+        assert!((n.target_db() + 1.0).abs() < 1e-4);
+        assert!(s.dither && s.noise_shape);
+        assert_eq!(Normalize::parse(1, 0.199526).unwrap().source, NormalizeSource::LufsIntegrated);
+        assert_eq!(Normalize::parse(4, 0.5), None);
     }
 }

@@ -55,13 +55,20 @@ Working:
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
   envelopes stored in projects play back: bypass for every effect, wet/dry for ReaVerb and
   ReaDelay, and ReaDelay's per-tap enable, volume and feedback.
+- **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
+  preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
+  write mode are recorded into the volume and pan envelopes.
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
   cursor, the bpm control edits the tempo in effect at the cursor.
 - **Metronome** (`C`), **recording** of armed tracks (`Ctrl+R`, mono or stereo inputs per the
   track's REAPER input setting) and **input monitoring**: an armed track with monitoring on
   hears its input through its FX chain, also while stopped (play guitar through a NAM amp and
-  a cab IR live). Inspector: `In 1` picks the input, `Mon` toggles monitoring.
+  a cab IR live). Inspector: `In 1` picks the input, `Mon` toggles monitoring. Recording with
+  repeat on loops the time selection and makes every pass a take of one item (the last full
+  pass active; incomplete first and last passes are dropped once a full pass exists). Pressing
+  record while playing punches in at the playhead, and the "time selection auto-punch" record
+  mode keeps only what falls inside the time selection.
 - **Editing**: move (snapped, across tracks), trim edges, fade handles, split, copy/cut/paste,
   duplicate, reverse, delete, markers, undo/redo. Several items: Ctrl+click or drag a marquee on
   empty lane space; moving, deleting, muting, copying (with track spacing) and duplicating then
@@ -73,14 +80,28 @@ Working:
   `Alt+G` toggles snap), tracks moved with `Ctrl+↑/↓` and into or out of folders with
   `Ctrl+→/←`, track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
   track's colour dot for a palette; markers jump on click, rename on double-click and delete on
-  right-click.
+  right-click. Razor edits: Alt+drag (over items too) marks a time range on every track it
+  crosses (Shift+Alt adds more); `Delete` removes what lies inside, copy/cut take those pieces
+  and paste keeps the space before them. `Ctrl+G` glues the selected items of a track into one
+  rendered file; "Apply track FX to items as new take" renders each item through its track's
+  effects into a new, active take.
 - **MIDI editor**: double-click a MIDI item (or `E`) for a docked piano roll: click adds a note on
-  the grid, drag moves, drag the right edge resizes, right-click deletes, velocity lane below.
-  Edits are written back into the item's `<SOURCE MIDI` (an edited item leaves its pool).
-- **FX**: chains on tracks and master, rendered in parallel across tracks. ReaEQ, ReaVerb and
+  the grid, drag moves, drag the right edge resizes, right-click deletes. The lane below edits
+  velocity or, picked with its label, CC 1/7/10/11/64 or pitch bend (click or drag paints on the
+  grid, right-click deletes). Edits are written back into the item's `<SOURCE MIDI` (an edited
+  item leaves its pool). Controllers, pitch bend, program changes and aftertouch reach CLAP and
+  LV2 instruments as MIDI and VST 3 instruments through their MIDI mapping.
+- **MIDI files and input**: `.mid` files import (dialog or drag-and-drop) as in-project MIDI
+  items, and "Item: Export MIDI item to file" writes one back out. A track whose record input
+  is MIDI (all inputs, optionally one channel) plays its instrument live while armed with
+  monitoring on, and records an in-project MIDI item; recording around a loop layers the passes
+  into one take, as REAPER's MIDI overdub.
+- **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
+  load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
+  between the saved tracks kept), starting in REAPER's own resource folders. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
-  (the sampler receives the track's MIDI; musical delay lengths follow the tempo map); ReaGate,
-  ReaComp and ReaLimit through approximations. The same effects are offered as built-ins in the plugin
+  (the sampler receives the track's MIDI; musical delay lengths follow the tempo map), as do
+  ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). The same effects are offered as built-ins in the plugin
   browser (equalizer, gate, compressor, delay, convolution reverb) with editable parameters, and
   are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate, ReaComp, ReaDelay
   and ReaVerb. Neural Amp Modeler
@@ -104,7 +125,9 @@ Working:
   project, time selection, custom range or all regions, `RENDER_FILE` and wildcards such as
   `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC and Ogg Vorbis renders go
   through `lame`, `flac` and `oggenc` (in the devbox packages) with the project's settings, and
-  mono renders mix both channels down as REAPER does. Other sinks are written as WAV.
+  mono renders mix both channels down as REAPER does. Other sinks are written as WAV. The
+  project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
+  target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 16- and 24-bit) apply.
 
 ### Verified against REAPER
 
@@ -124,6 +147,9 @@ compare with scythe's output sample by sample:
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry | exact; its low-/high-pass filters approximate (impulse response within 0.04) |
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
+| ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3 (16/17 cases); ReaComp's soft knee approximate (unused in the corpus) |
+| Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
+| Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
@@ -134,8 +160,8 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- MIDI to VST 2 instruments, MIDI controller editing, MIDI input. (MIDI items do play through
-  CLAP instruments, the built-in sampler and the preview synth.)
+- MIDI to VST 2 instruments and MIDI hardware outputs (`MIDIHWOUT`). (MIDI plays through CLAP,
+  LV2 and VST 3 instruments, the built-in sampler and the preview synth.)
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not

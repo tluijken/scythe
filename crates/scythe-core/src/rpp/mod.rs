@@ -5,8 +5,8 @@
 mod project;
 
 pub use project::{
-    ProjectIoError, autosave_path, fmt_num, project_from_rpp, project_to_rpp, read_project, resolve_media_path,
-    save_project, write_project,
+    ProjectIoError, autosave_path, fmt_num, fx_chain_from_text, fx_chain_to_text, project_from_rpp, project_to_rpp,
+    read_project, resolve_media_path, save_project, track_template, tracks_from_template, write_project,
 };
 
 use std::fmt::Write as _;
@@ -173,6 +173,13 @@ pub fn parse(text: &str) -> Result<Chunk, ParseError> {
 pub fn write(chunk: &Chunk) -> String {
     let mut out = String::new();
     write_chunk(&mut out, chunk, 0);
+    out
+}
+
+/// Writes nodes without an enclosing chunk, as REAPER's `.RfxChain` files hold an FX chain.
+pub fn write_body(nodes: &[Node]) -> String {
+    let mut out = String::new();
+    write_nodes(&mut out, nodes, 0);
     out
 }
 

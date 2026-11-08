@@ -7,7 +7,7 @@ use std::path::Path;
 
 use scythe_core::render_settings::RenderSettings;
 use scythe_engine::MediaPool;
-use scythe_engine::bounce::{BitDepth, bounce_to_wav};
+use scythe_engine::bounce::{BitDepth, Encoding, Finish, bounce_finished};
 
 fn read(path: &Path) -> Option<Vec<(f32, f32)>> {
     let mut r = hound::WavReader::open(path).ok()?;
@@ -61,7 +61,10 @@ fn main() {
                 continue;
             };
             let ours_path = reaper_out.with_extension("scythe.wav");
-            bounce_to_wav(&project, &pool, range, rate, BitDepth::Float32, &ours_path, |_| {}).unwrap();
+            // Dither is noise and cannot null; normalisation is compared.
+            let finish = Finish { dither: false, noise_shape: false, ..Finish::from_settings(&settings) };
+            let wav = Encoding::Wav(BitDepth::Float32);
+            bounce_finished(&project, &pool, range, rate, 2, wav, &ours_path, finish, |_| {}).unwrap();
             let ours = read(&ours_path).unwrap();
             let (diff, at) = ours
                 .iter()

@@ -350,10 +350,15 @@ impl Class for ParamChanges {
 
 impl ParamChanges {
     fn push(&self, id: ParamID, value: ParamValue) {
+        self.push_at(id, 0, value);
+    }
+
+    /// Adds a change `offset` frames into the block; changes of one parameter come in order.
+    fn push_at(&self, id: ParamID, offset: i32, value: ParamValue) {
         let mut queues = self.queues.borrow_mut();
         let mut used = self.used.borrow_mut();
         if let Some(q) = queues[..*used].iter().find(|q| *q.id.borrow() == id) {
-            q.points.borrow_mut().push((0, value));
+            q.points.borrow_mut().push((offset, value));
             return;
         }
         if *used == queues.len() {
@@ -362,7 +367,7 @@ impl ParamChanges {
         let q = &queues[*used];
         *q.id.borrow_mut() = id;
         q.points.borrow_mut().clear();
-        q.points.borrow_mut().push((0, value));
+        q.points.borrow_mut().push((offset, value));
         *used += 1;
     }
 
@@ -610,7 +615,24 @@ pub struct Vst3Plugin {
     sample_rate: f64,
     block: usize,
     pub instrument: bool,
+    /// Parameter each MIDI channel's controllers drive (`IMidiMapping`), indexed by
+    /// `channel * MIDI_CONTROLLERS + controller`.
+    midi_map: Vec<Option<ParamID>>,
     _module: Arc<Vst3Module>,
+}
+
+/// Controllers 0-127, then channel aftertouch (128) and pitch bend (129), as VST 3 numbers them.
+const MIDI_CONTROLLERS: usize = 130;
+
+/// What a controller number and value a MIDI message sets, in VST 3 terms.
+fn midi_controller(bytes: [u8; 3]) -> Option<(u8, usize, f64)> {
+    let channel = bytes[0] & 0x0f;
+    match bytes[0] & 0xf0 {
+        0xb0 => Some((channel, bytes[1] as usize & 0x7f, bytes[2] as f64 / 127.0)),
+        0xd0 => Some((channel, 128, bytes[1] as f64 / 127.0)),
+        0xe0 => Some((channel, 129, ((bytes[2] as u32) << 7 | bytes[1] as u32) as f64 / 16383.0)),
+        _ => None,
+    }
 }
 
 // SAFETY: the instance is only ever used by one thread at a time (behind the FX mutex).
@@ -697,7 +719,20 @@ impl Vst3Plugin {
             component.setActive(1);
             processor.setProcessing(1);
 
+            let mut midi_map = vec![None; 16 * MIDI_CONTROLLERS];
+            if let Some(mapping) = controller.as_ref().and_then(|c| c.cast::<IMidiMapping>()) {
+                for (i, slot) in midi_map.iter_mut().enumerate() {
+                    let mut id: ParamID = 0;
+                    let (channel, ctrl) = (i / MIDI_CONTROLLERS, i % MIDI_CONTROLLERS);
+                    if mapping.getMidiControllerAssignment(0, channel as int16, ctrl as CtrlNumber, &mut id)
+                        == kResultOk
+                    {
+                        *slot = Some(id);
+                    }
+                }
+            }
             let mut plugin = Self {
+                midi_map,
                 controller,
                 processor,
                 component,
@@ -844,18 +879,27 @@ impl Vst3Plugin {
         self.changes.push(id, value);
     }
 
-    /// Processes a stereo block in place. `notes` are `(offset, on, channel, key, velocity)`.
+    /// Processes a stereo block in place. `notes` are `(offset, on, channel, key, velocity)`;
+    /// `controls` are other MIDI messages, which reach the parameters the plugin maps them to.
     pub fn process(
         &mut self,
         left: &mut [f32],
         right: &mut [f32],
         notes: &[(i32, bool, u8, u8, u8)],
+        controls: &[(i32, [u8; 3])],
         position: i64,
         bpm: f64,
     ) {
         let n = left.len().min(right.len()).min(self.block);
         for (edit_id, value) in self.handler.edits.borrow_mut().drain(..) {
             self.changes.push(edit_id, value);
+        }
+        for &(offset, bytes) in controls {
+            if let Some((channel, ctrl, value)) = midi_controller(bytes)
+                && let Some(id) = self.midi_map[channel as usize * MIDI_CONTROLLERS + ctrl]
+            {
+                self.changes.push_at(id, offset, value);
+            }
         }
         {
             let mut events = self.events.events.borrow_mut();

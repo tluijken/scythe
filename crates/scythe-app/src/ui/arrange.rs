@@ -329,6 +329,62 @@ fn ruler_timeline(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, axis: TimeAxis) 
     }
 }
 
+const RAZOR_ANCHOR: &str = "razor-anchor";
+
+fn razor_dragging(ui: &Ui) -> bool {
+    ui.data(|d| d.get_temp::<Pos2>(Id::unique(RAZOR_ANCHOR))).is_some()
+}
+
+/// Razor edits: Alt+drag anywhere on the lanes, over items too, marks the same time range on
+/// every track it crosses; Shift+Alt adds to the existing areas. Read from the raw pointer, so
+/// it works whichever widget is under it.
+fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: Rect, row_h: f32, scroll: f32) {
+    let id = Id::unique(RAZOR_ANCHOR);
+    let (pressed, down, alt, shift, pos) = ui.input(|i| {
+        (
+            i.pointer.primary_pressed(),
+            i.pointer.primary_down(),
+            i.modifiers.alt,
+            i.modifiers.shift,
+            i.pointer.interact_pos(),
+        )
+    });
+    if pressed
+        && alt
+        && let Some(p) = pos.filter(|p| lanes.contains(*p))
+    {
+        ui.data_mut(|d| d.insert_temp(id, p));
+        ui.data_mut(|d| d.insert_temp(id.with("base"), if shift { app.razor.clone() } else { Vec::new() }));
+    }
+    let Some(anchor) = ui.data(|d| d.get_temp::<Pos2>(id)) else { return };
+    if let Some(p) = pos {
+        let (t0, t1) =
+            (app.snap(axis.t(anchor.x.min(p.x)).max(0.0), false), app.snap(axis.t(anchor.x.max(p.x)), false));
+        let row_of = |y: f32| ((y - rows.top() + scroll) / (row_h + ROW_GAP)).floor().max(0.0) as usize;
+        let (first, last) = (row_of(anchor.y.min(p.y)), row_of(anchor.y.max(p.y)));
+        let mut areas: Vec<(TrackId, TimeRange)> = ui.data(|d| d.get_temp(id.with("base"))).unwrap_or_default();
+        if t1 > t0 {
+            let range = TimeRange::new(t0, t1);
+            areas.extend(
+                app.project
+                    .tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| (first..=last).contains(i))
+                    .map(|(_, t)| (t.id, range)),
+            );
+        }
+        app.razor = areas;
+    }
+    if !down {
+        ui.data_mut(|d| d.remove::<Pos2>(id));
+        if !app.razor.is_empty() {
+            app.multi.clear();
+            app.sel.item = None;
+        }
+    }
+}
+
 fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip: &egui::Painter) {
     let levels = app.project.folder_levels();
     let any_solo = app.project.any_solo();
@@ -348,7 +404,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let lanes_area = Rect::from_min_max(pos2(axis.left, rows.top()), rows.max);
     let marquee = ui.interact(lanes_area, Id::unique("lanes-marquee"), Sense::drag());
     let anchor_id = Id::unique("marquee-anchor");
+    razor_drag(app, ui, lanes_area, axis, rows, row_h, scroll);
     if marquee.drag_started()
+        && !razor_dragging(ui)
         && let Some(p) = marquee.interact_pointer_pos()
     {
         ui.data_mut(|d| d.insert_temp(anchor_id, p));
@@ -504,8 +562,12 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         if let Some(rec) = app.recording.as_ref().filter(|r| r.tracks.contains(&track.id)) {
             let now = app.engine.transport().position_seconds();
-            let r =
-                Rect::from_min_max(pos2(axis.x(rec.start), lane.top() + 4.0), pos2(axis.x(now), lane.bottom() - 4.0));
+            // After the transport wrapped, the current pass runs from the loop start.
+            let from = match rec.pass.looped {
+                Some(r) if now < rec.pass.start => r.start,
+                _ => rec.pass.start,
+            };
+            let r = Rect::from_min_max(pos2(axis.x(from), lane.top() + 4.0), pos2(axis.x(now), lane.bottom() - 4.0));
             lane_painter.rect_filled(r, CornerRadius::same(10), with_alpha(theme::PINK, 0x40));
             lane_painter.rect_stroke(r, CornerRadius::same(10), Stroke::new(1.5, theme::PINK), StrokeKind::Inside);
             lane_painter.text(
@@ -519,6 +581,14 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         envelopes(app, ui, &lane_painter, lane, axis, track.id);
     }
 
+    for &(track, range) in &app.razor {
+        let Some(i) = app.project.track_index(track) else { continue };
+        let row = row_rect(i);
+        let r = Rect::from_min_max(pos2(axis.x(range.start), row.top()), pos2(axis.x(range.end), row.bottom()));
+        clip.rect_filled(r, CornerRadius::same(4), with_alpha(theme::PINK, 0x30));
+        clip.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, theme::PINK), StrokeKind::Inside);
+    }
+
     if let Some(r) = marquee_rect {
         clip.rect_filled(r, CornerRadius::same(4), with_alpha(ACCENT, 0x22));
         clip.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
@@ -527,6 +597,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     if let Some((track, t)) = clicked_track {
         app.sel = Selection { track: Some(track), item: None };
         app.multi.clear();
+        app.razor.clear();
         if let Some(t) = t {
             let bypass = ui.ctx().input(|i| i.modifiers.shift);
             app.set_cursor(app.snap(t.max(0.0), bypass));
@@ -719,7 +790,7 @@ fn draw_item(
     }
 
     let hit = outer.intersect(painter.clip_rect());
-    if hit.width() <= 0.0 || hit.height() <= 0.0 {
+    if hit.width() <= 0.0 || hit.height() <= 0.0 || razor_dragging(ui) {
         return;
     }
     let resp = ui.interact(hit, Id::unique(("item", id)), Sense::click_and_drag());

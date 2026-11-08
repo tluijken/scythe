@@ -138,6 +138,8 @@ fn main() {
                     position: 0,
                     playing: true,
                     notes: None,
+                    live: &[],
+                    live_channel: None,
                     bpm: 120.0,
                 },
             );

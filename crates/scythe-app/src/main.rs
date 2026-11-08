@@ -19,6 +19,7 @@ impl eframe::App for Shell {
         self.app.poll();
         self.app.update_meters();
         self.app.tick_editors();
+        self.app.tick_automation();
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
         // Meters and the clock need a steady frame rate even when nothing is playing.
@@ -43,7 +44,9 @@ fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        scythe_engine::bounce::bounce(&project, &pool, range, rate, settings.channels, encoding, &out, |_| {})
+        let finish = scythe_engine::bounce::Finish::from_settings(&settings);
+        let channels = settings.channels;
+        scythe_engine::bounce::bounce_finished(&project, &pool, range, rate, channels, encoding, &out, finish, |_| {})
             .map_err(|e| e.to_string())?;
         eprintln!("rendered {:.1}-{:.1} s to {}", range.start, range.end, out.display());
     }

@@ -428,7 +428,8 @@ impl ReaperVstState {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let header = b64.decode(lines.first()?.trim()).ok()?;
-        if header.len() < 8 || u32::from_le_bytes(header[4..8].try_into().ok()?) != 0xfeed_5eee {
+        // 0xfeed5eef marks a plugin with extra (sidechain) pins; the layout is the same.
+        if header.len() < 8 || !matches!(u32::from_le_bytes(header[4..8].try_into().ok()?), 0xfeed_5eee | 0xfeed_5eef) {
             return None;
         }
         let unique_id = u32::from_le_bytes(header[0..4].try_into().ok()?);

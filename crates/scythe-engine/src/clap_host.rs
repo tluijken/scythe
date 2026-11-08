@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, clap_event_header,
-    clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
 };
 use clap_sys::ext::gui::{
     CLAP_EXT_GUI, CLAP_WINDOW_API_X11, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle, clap_xwnd,
@@ -407,6 +407,21 @@ pub fn note_event(on: bool, offset: u32, channel: u8, key: u8, velocity: u8) -> 
         velocity: velocity as f64 / 127.0,
     }
 }
+/// A raw MIDI message for `process`, `offset` frames into the block.
+pub fn midi_event(offset: u32, data: [u8; 3]) -> clap_event_midi {
+    clap_event_midi {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_midi>() as u32,
+            time: offset,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_MIDI,
+            flags: 0,
+        },
+        port_index: 0,
+        data,
+    }
+}
+
 unsafe extern "C" fn drop_event(_list: *const clap_output_events, _event: *const clap_event_header) -> bool {
     true
 }
@@ -438,6 +453,8 @@ pub struct ClapPlugin {
     scratch: [Vec<f32>; 2],
     /// Note events for the next `process` call, sorted by time; capacity is reserved up front.
     pub events: Vec<clap_event_note>,
+    /// Other MIDI messages (controllers, pitch bend) for the next `process` call.
+    pub midi: Vec<clap_event_midi>,
     /// Parameter changes to apply at the start of the next `process` call.
     pending_params: Vec<clap_event_param_value>,
     /// All events of a `process` call in time order, as handed to the plugin.
@@ -480,6 +497,7 @@ impl ClapPlugin {
             processing: false,
             scratch: [Vec::new(), Vec::new()],
             events: Vec::with_capacity(1024),
+            midi: Vec::with_capacity(256),
             pending_params: Vec::with_capacity(64),
             order: Vec::with_capacity(1100),
         };
@@ -638,6 +656,19 @@ impl ClapPlugin {
         self.order.clear();
         self.order.extend(self.pending_params.iter().map(|e| &e.header as *const clap_event_header));
         self.order.extend(self.events.iter().map(|e| &e.header as *const clap_event_header));
+        if !self.midi.is_empty() {
+            self.order.extend(self.midi.iter().map(|e| &e.header as *const clap_event_header));
+            // Insertion sort: stable without allocating on the audio thread, and the lists are
+            // each sorted already. SAFETY: every pointer refers into the event vectors above.
+            let time = |e: *const clap_event_header| unsafe { (*e).time };
+            for i in 1..self.order.len() {
+                let mut j = i;
+                while j > 0 && time(self.order[j - 1]) > time(self.order[j]) {
+                    self.order.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+        }
         let in_events = clap_input_events {
             ctx: &self.order as *const Vec<*const clap_event_header> as *mut c_void,
             size: Some(events_size),
@@ -660,6 +691,7 @@ impl ClapPlugin {
             unsafe { f(self.plugin, &process) };
         }
         self.events.clear();
+        self.midi.clear();
         self.pending_params.clear();
         self.order.clear();
     }

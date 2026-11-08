@@ -142,7 +142,15 @@ fn main() {
             eq.process(
                 cl,
                 cr,
-                &ProcessContext { sample_rate: SR, position: 0, playing: true, notes: None, bpm: 120.0 },
+                &ProcessContext {
+                    sample_rate: SR,
+                    position: 0,
+                    playing: true,
+                    notes: None,
+                    live: &[],
+                    live_channel: None,
+                    bpm: 120.0,
+                },
             );
         }
         let row = |ir: &[f32]| FREQS.iter().map(|&f| format!("{:>8.2}", magnitude(ir, f))).collect::<String>();

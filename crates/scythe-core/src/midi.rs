@@ -167,6 +167,88 @@ impl MidiSource {
     }
 }
 
+/// One kind of channel message edited as a lane of values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlLane {
+    Cc(u8),
+    PitchBend,
+    ChannelPressure,
+}
+
+/// A lane value in quarter notes from the source start: 0-127, or 0-16383 for pitch bend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlPoint {
+    pub qn: f64,
+    pub value: u16,
+    pub channel: u8,
+}
+
+impl ControlLane {
+    pub fn max(self) -> u16 {
+        if self == Self::PitchBend { 16383 } else { 127 }
+    }
+
+    fn matches(self, e: &MidiEvent) -> bool {
+        match self {
+            Self::Cc(n) => e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == n,
+            Self::PitchBend => e.bytes[0] & 0xf0 == 0xe0,
+            Self::ChannelPressure => e.bytes[0] & 0xf0 == 0xd0,
+        }
+    }
+
+    fn value(self, e: &MidiEvent) -> u16 {
+        match self {
+            Self::Cc(_) => e.bytes[2] as u16,
+            Self::PitchBend => (e.bytes[2] as u16) << 7 | e.bytes[1] as u16,
+            Self::ChannelPressure => e.bytes[1] as u16,
+        }
+    }
+
+    fn event(self, tick: u64, channel: u8, value: u16) -> MidiEvent {
+        let value = value.min(self.max());
+        let ch = channel & 0x0f;
+        match self {
+            Self::Cc(n) => MidiEvent { tick, bytes: [0xb0 | ch, n, value as u8], len: 3 },
+            Self::PitchBend => MidiEvent { tick, bytes: [0xe0 | ch, (value & 0x7f) as u8, (value >> 7) as u8], len: 3 },
+            Self::ChannelPressure => MidiEvent { tick, bytes: [0xd0 | ch, value as u8, 0], len: 2 },
+        }
+    }
+}
+
+impl MidiSource {
+    /// REAPER's end-of-source marker: all notes off at the very end.
+    fn is_end_marker(&self, e: &MidiEvent) -> bool {
+        e.tick == self.length_ticks && e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == 0x7b
+    }
+
+    pub fn controls(&self, lane: ControlLane) -> Vec<ControlPoint> {
+        let ppq = self.ticks_per_qn as f64;
+        self.events
+            .iter()
+            .filter(|e| lane.matches(e) && !self.is_end_marker(e))
+            .map(|e| ControlPoint { qn: e.tick as f64 / ppq, value: lane.value(e), channel: e.bytes[0] & 0x0f })
+            .collect()
+    }
+
+    /// The same source with the lane's events replaced by `points`; the source grows if a
+    /// point lies past its end.
+    pub fn with_controls(&self, lane: ControlLane, points: &[ControlPoint]) -> MidiSource {
+        let ppq = self.ticks_per_qn as f64;
+        let tick = |qn: f64| (qn.max(0.0) * ppq).round() as u64;
+        let length = self.length_ticks.max(points.iter().map(|p| tick(p.qn)).max().unwrap_or(0));
+        let mut events: Vec<MidiEvent> = self
+            .events
+            .iter()
+            .filter(|e| !lane.matches(e) || self.is_end_marker(e))
+            .map(|e| if self.is_end_marker(e) { MidiEvent { tick: length, ..e.clone() } } else { e.clone() })
+            .collect();
+        events.extend(points.iter().map(|p| lane.event(tick(p.qn), p.channel, p.value)));
+        // Stable, so the end marker stays after anything placed at the very end.
+        events.sort_by_key(|e| (e.tick, e.tick == length && e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == 0x7b));
+        MidiSource { ticks_per_qn: self.ticks_per_qn, events, length_ticks: length }
+    }
+}
+
 /// A note placed on the project timeline, in seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimedNote {
@@ -177,31 +259,59 @@ pub struct TimedNote {
     pub velocity: u8,
 }
 
+/// A channel message other than a note (controller, pitch bend, program change, aftertouch)
+/// placed on the project timeline, in seconds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimedEvent {
+    pub time: f64,
+    pub bytes: [u8; 3],
+    pub len: u8,
+}
+
+/// Where the passes of a placed take start, in quarter notes of the project.
+struct Placement {
+    item_qn: f64,
+    end_qn: f64,
+    rate: f64,
+    bases: Vec<f64>,
+}
+
 impl MidiSource {
+    fn placement(&self, item: &crate::Item, take: &crate::Take, timeline: &crate::tempo::Timeline) -> Placement {
+        let item_qn = timeline.qn_at(item.position);
+        let rate = if take.playrate > 0.0 { take.playrate } else { 1.0 };
+        let offset_qn = take.source_offset * timeline.bpm_at(item.position) / 60.0;
+        let end_qn = timeline.qn_at(item.end());
+        let loop_len = self.length_qn();
+        let mut bases = Vec::new();
+        loop {
+            let base = item_qn + (bases.len() as f64 * loop_len - offset_qn) / rate;
+            if base >= end_qn {
+                break;
+            }
+            bases.push(base);
+            if !item.looped || loop_len <= 0.0 || bases.len() > 100_000 {
+                break;
+            }
+        }
+        Placement { item_qn, end_qn, rate, bases }
+    }
+
     /// Places the notes of a take on the timeline: the source plays in quarter notes of the
     /// tempo map from the item start, shifted by the take offset, scaled by the play rate and
     /// repeated when the item loops. Notes starting outside the item are dropped and notes are
     /// cut at the item end.
     pub fn place(&self, item: &crate::Item, take: &crate::Take, timeline: &crate::tempo::Timeline) -> Vec<TimedNote> {
         let notes = self.notes();
-        let item_qn = timeline.qn_at(item.position);
-        let rate = if take.playrate > 0.0 { take.playrate } else { 1.0 };
-        let offset_qn = take.source_offset * timeline.bpm_at(item.position) / 60.0;
-        let end_qn = timeline.qn_at(item.end());
-        let loop_len = self.length_qn();
+        let p = self.placement(item, take, timeline);
         let mut out = Vec::new();
-        let mut k = 0.0;
-        loop {
-            let base = item_qn + (k * loop_len - offset_qn) / rate;
-            if base >= end_qn {
-                break;
-            }
+        for base in &p.bases {
             for n in &notes {
-                let start = base + n.start_qn / rate;
-                if start < item_qn - 1e-9 || start >= end_qn {
+                let start = base + n.start_qn / p.rate;
+                if start < p.item_qn - 1e-9 || start >= p.end_qn {
                     continue;
                 }
-                let end = (base + n.end_qn / rate).min(end_qn);
+                let end = (base + n.end_qn / p.rate).min(p.end_qn);
                 out.push(TimedNote {
                     start: timeline.time_at_qn(start),
                     end: timeline.time_at_qn(end),
@@ -210,10 +320,41 @@ impl MidiSource {
                     velocity: n.velocity,
                 });
             }
-            if !item.looped || loop_len <= 0.0 || out.len() > 1_000_000 {
+            if out.len() > 1_000_000 {
                 break;
             }
-            k += 1.0;
+        }
+        out
+    }
+
+    /// The take's channel messages other than notes, placed like [`MidiSource::place`]. REAPER's
+    /// end-of-source marker (all notes off at the very end) is left out.
+    pub fn place_events(
+        &self,
+        item: &crate::Item,
+        take: &crate::Take,
+        timeline: &crate::tempo::Timeline,
+    ) -> Vec<TimedEvent> {
+        let ppq = self.ticks_per_qn as f64;
+        let controls: Vec<&MidiEvent> = self
+            .events
+            .iter()
+            .filter(|e| matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0))
+            .filter(|e| !self.is_end_marker(e))
+            .collect();
+        let p = self.placement(item, take, timeline);
+        let mut out = Vec::new();
+        for base in &p.bases {
+            for e in &controls {
+                let at = base + e.tick as f64 / ppq / p.rate;
+                if at < p.item_qn - 1e-9 || at >= p.end_qn {
+                    continue;
+                }
+                out.push(TimedEvent { time: timeline.time_at_qn(at), bytes: e.bytes, len: e.len });
+            }
+            if out.len() > 1_000_000 {
+                break;
+            }
         }
         out
     }
@@ -255,5 +396,42 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!((notes[0].start_qn, notes[0].end_qn, notes[0].channel, notes[0].key), (1.0, 1.5, 9, 0x24));
         assert_eq!((notes[1].start_qn, notes[1].end_qn, notes[1].velocity), (1.5, 2.5, 0x50));
+    }
+
+    #[test]
+    fn places_controllers_with_the_item() {
+        let c = parse("<SOURCE MIDI\n  HASDATA 1 960 QN\n  E 0 b0 07 64\n  E 480 e0 00 50\n  E 480 90 3c 50\n  E 960 80 3c 00\n  E 0 b0 7b 00\n>\n")
+            .unwrap();
+        let m = MidiSource::parse(&c).unwrap();
+        let mut take = crate::Take::from_file("x.mid".into());
+        take.source = crate::Source::Raw(c);
+        let mut item = crate::Item::new(1.0, 2.0, take.clone());
+        item.looped = true;
+        // 120 bpm: a quarter note lasts half a second, the source is 2 qn (1 s) long.
+        let tempo = crate::TempoMap::default();
+        let events = m.place_events(&item, &take, &tempo.timeline());
+        let times: Vec<(f64, u8)> = events.iter().map(|e| (e.time, e.bytes[0])).collect();
+        assert_eq!(times, [(1.0, 0xb0), (1.25, 0xe0), (2.0, 0xb0), (2.25, 0xe0)]);
+    }
+
+    #[test]
+    fn edits_controller_lanes() {
+        let c = parse("<SOURCE MIDI\n  HASDATA 1 960 QN\n  E 0 b0 01 10\n  E 480 e0 00 40\n  E 480 90 3c 50\n  E 960 80 3c 00\n  E 0 b0 7b 00\n>\n")
+            .unwrap();
+        let m = MidiSource::parse(&c).unwrap();
+        assert_eq!(m.controls(ControlLane::Cc(1)), [ControlPoint { qn: 0.0, value: 16, channel: 0 }]);
+        assert_eq!(m.controls(ControlLane::PitchBend), [ControlPoint { qn: 0.5, value: 8192, channel: 0 }]);
+        assert!(m.controls(ControlLane::Cc(0x7b)).is_empty(), "the end marker is not a lane value");
+        let points =
+            [ControlPoint { qn: 0.25, value: 100, channel: 0 }, ControlPoint { qn: 3.0, value: 0, channel: 0 }];
+        let edited = m.with_controls(ControlLane::Cc(1), &points);
+        assert_eq!(edited.controls(ControlLane::Cc(1)), points);
+        assert_eq!(edited.length_qn(), 3.0);
+        assert_eq!(edited.controls(ControlLane::PitchBend), m.controls(ControlLane::PitchBend));
+        assert_eq!(edited.notes(), m.notes());
+        let last = edited.events.last().unwrap();
+        assert_eq!((last.tick, last.bytes), (2880, [0xb0, 0x7b, 0]));
+        let back = MidiSource::parse(&edited.write_chunk(&c)).unwrap();
+        assert_eq!(back, edited);
     }
 }

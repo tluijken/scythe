@@ -1,8 +1,9 @@
 //! Docked piano roll for one MIDI item: add notes by clicking, drag to move, drag the right
-//! edge to resize, right-click to delete, drag the velocity bars below.
+//! edge to resize, right-click to delete. The lane below edits velocities or, picked with its
+//! label, a controller lane: click or drag paints values on the grid, right-click deletes.
 
 use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
-use scythe_core::midi::{MidiSource, Note};
+use scythe_core::midi::{ControlLane, ControlPoint, MidiSource, Note};
 use scythe_core::{ItemId, Source};
 
 use crate::app::ScytheApp;
@@ -14,12 +15,25 @@ const ROW_H: f32 = 10.0;
 const VEL_H: f32 = 56.0;
 const EDGE: f32 = 5.0;
 
+/// Lanes below the roll: label, full name and what they edit (`None` for velocity).
+const LANES: [(&str, &str, Option<ControlLane>); 7] = [
+    ("Vel", "Velocity", None),
+    ("Mod", "CC 1 modulation", Some(ControlLane::Cc(1))),
+    ("Vol", "CC 7 volume", Some(ControlLane::Cc(7))),
+    ("Pan", "CC 10 pan", Some(ControlLane::Cc(10))),
+    ("Expr", "CC 11 expression", Some(ControlLane::Cc(11))),
+    ("Sus", "CC 64 sustain", Some(ControlLane::Cc(64))),
+    ("Pitch", "Pitch bend", Some(ControlLane::PitchBend)),
+];
+
 /// Grid choices in quarter notes.
 const GRIDS: [(&str, f64); 4] = [("1/4", 1.0), ("1/8", 0.5), ("1/16", 0.25), ("1/32", 0.125)];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EditorState {
     pub grid: usize,
+    /// Index into `LANES`.
+    pub lane: usize,
     /// Highest visible key.
     pub top_key: Option<u8>,
 }
@@ -48,6 +62,19 @@ fn apply(app: &mut ScytheApp, id: ItemId, notes: Vec<Note>, gesture: bool) {
         take.source = Source::Raw(chunk);
     };
     if gesture { app.gesture(label, f) } else { app.edit(label, f) }
+}
+
+fn apply_controls(app: &mut ScytheApp, id: ItemId, lane: ControlLane, points: Vec<ControlPoint>, gesture: bool) {
+    let f = move |p: &mut scythe_core::Project| {
+        let Some(item) = p.tracks.iter_mut().find_map(|t| t.item_mut(id)) else { return };
+        let active = item.active_take;
+        let Some(take) = item.takes.get_mut(active) else { return };
+        let Source::Raw(chunk) = &take.source else { return };
+        let Some(src) = MidiSource::parse(chunk) else { return };
+        let chunk = src.with_controls(lane, &points).write_chunk(chunk);
+        take.source = Source::Raw(chunk);
+    };
+    if gesture { app.gesture("Edit MIDI controllers", f) } else { app.edit("Edit MIDI controllers", f) }
 }
 
 fn is_black(key: u8) -> bool {
@@ -232,16 +259,28 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         );
     }
 
-    // Velocity lane.
+    // Lane picker, then the velocity or controller lane.
+    let (short, full, lane) = LANES[state.lane.min(LANES.len() - 1)];
+    let pick = Rect::from_min_size(pos2(body.left(), vel.top()), vec2(KEYS_W - 4.0, 24.0));
+    if text_pill(ui, pick, short, theme::mono(10.0), RAISED, TEXT)
+        .on_hover_text(format!("{full} (click for the next lane)"))
+        .clicked()
+    {
+        state.lane = (state.lane + 1) % LANES.len();
+    }
     painter.rect_filled(vel, CornerRadius::same(8), LANE);
     let vresp = ui.interact(vel, Id::unique(("midi-vel", id)), Sense::click_and_drag());
-    for n in &notes {
+    if let Some(lane) = lane {
+        control_lane(app, &painter, vel, &vresp, id, lane, &source, &notes, grid, &qn_x, &x_qn);
+    }
+    for n in notes.iter().filter(|_| lane.is_none()) {
         let x = qn_x(n.start_qn);
         let h = (vel.height() - 6.0) * n.velocity as f32 / 127.0;
         let bar = Rect::from_min_max(pos2(x, vel.bottom() - 3.0 - h), pos2(x + 3.0, vel.bottom() - 3.0));
         painter.rect_filled(bar, CornerRadius::same(1), ACCENT.gamma_multiply(0.8));
     }
-    if (vresp.dragged() || vresp.clicked())
+    if lane.is_none()
+        && (vresp.dragged() || vresp.clicked())
         && let Some(p) = vresp.interact_pointer_pos()
     {
         let near = notes
@@ -275,4 +314,69 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         app.view.midi_editor = None;
     }
     app.view.midi_state = state;
+}
+
+/// Draws a controller lane as bars held until the next value, and paints or deletes values.
+#[allow(clippy::too_many_arguments)]
+fn control_lane(
+    app: &mut ScytheApp,
+    painter: &egui::Painter,
+    lane_rect: Rect,
+    resp: &egui::Response,
+    id: ItemId,
+    lane: ControlLane,
+    source: &MidiSource,
+    notes: &[Note],
+    grid: f64,
+    qn_x: &dyn Fn(f64) -> f32,
+    x_qn: &dyn Fn(f32) -> f64,
+) {
+    let max = lane.max() as f32;
+    let inner = lane_rect.shrink2(vec2(0.0, 3.0));
+    let value_y = |v: u16| inner.bottom() - inner.height() * v as f32 / max;
+    let mut points = source.controls(lane);
+    if lane == ControlLane::PitchBend {
+        painter.hline(inner.x_range(), value_y(8192), Stroke::new(1.0, RAISED_HI));
+    }
+    for (i, p) in points.iter().enumerate() {
+        let x = qn_x(p.qn);
+        let next = points.get(i + 1).map_or(lane_rect.right(), |n| qn_x(n.qn));
+        let y = value_y(p.value);
+        painter.hline(x..=next, y, Stroke::new(1.5, ACCENT.gamma_multiply(0.6)));
+        let bar = Rect::from_min_max(pos2(x, y), pos2(x + 3.0, inner.bottom()));
+        painter.rect_filled(bar, CornerRadius::same(1), ACCENT.gamma_multiply(0.8));
+    }
+    let Some(p) = resp.interact_pointer_pos() else { return };
+    if resp.secondary_clicked() {
+        let near = points
+            .iter()
+            .enumerate()
+            .min_by(|a, b| (qn_x(a.1.qn) - p.x).abs().total_cmp(&(qn_x(b.1.qn) - p.x).abs()))
+            .filter(|(_, c)| (qn_x(c.qn) - p.x).abs() < 8.0)
+            .map(|(i, _)| i);
+        if let Some(i) = near {
+            points.remove(i);
+            apply_controls(app, id, lane, points, false);
+        }
+        return;
+    }
+    if resp.dragged() || resp.clicked() {
+        let qn = (x_qn(p.x) / grid).floor() * grid;
+        let value = (((inner.bottom() - p.y) / inner.height()).clamp(0.0, 1.0) * max).round() as u16;
+        let channel = points.first().map(|c| c.channel).or(notes.first().map(|n| n.channel)).unwrap_or(0);
+        let changed = match points.iter_mut().find(|c| (c.qn - qn).abs() < 1e-9) {
+            Some(c) => std::mem::replace(&mut c.value, value) != value,
+            None => {
+                points.push(ControlPoint { qn, value, channel });
+                points.sort_by(|a, b| a.qn.total_cmp(&b.qn));
+                true
+            }
+        };
+        if changed {
+            apply_controls(app, id, lane, points, true);
+        }
+    }
+    if resp.drag_stopped() || resp.clicked() {
+        app.end_gesture();
+    }
 }

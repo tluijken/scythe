@@ -23,12 +23,21 @@ const RELEASE: f64 = 0.15;
 /// Longest ring-out after note-off (drums ignore note-off and ring for at most this long).
 pub const MAX_TAIL_SECONDS: f64 = 2.0;
 
+/// A channel message other than a note (controller, pitch bend…) at a project frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ControlEvent {
+    pub frame: i64,
+    pub bytes: [u8; 3],
+    pub len: u8,
+}
+
 /// Notes sorted by start, with the longest sounding span so a block can find the notes that
-/// overlap it with a binary search.
+/// overlap it with a binary search, and the controller events sorted by frame.
 #[derive(Debug, Default)]
 pub struct NoteList {
     pub notes: Vec<SynthNote>,
     max_span: i64,
+    controls: Vec<ControlEvent>,
 }
 
 impl NoteList {
@@ -36,7 +45,24 @@ impl NoteList {
         notes.sort_by_key(|n| n.start);
         let tail = (MAX_TAIL_SECONDS * sample_rate as f64) as i64;
         let max_span = notes.iter().map(|n| n.end - n.start + tail).max().unwrap_or(0);
-        Self { notes, max_span }
+        Self { notes, max_span, controls: Vec::new() }
+    }
+
+    pub fn with_controls(mut self, mut controls: Vec<ControlEvent>) -> Self {
+        controls.sort_by_key(|c| c.frame);
+        self.controls = controls;
+        self
+    }
+
+    pub fn controls(&self) -> &[ControlEvent] {
+        &self.controls
+    }
+
+    /// Controller events in `range` (project frames).
+    pub fn controls_in(&self, range: std::ops::Range<i64>) -> &[ControlEvent] {
+        let first = self.controls.partition_point(|c| c.frame < range.start);
+        let last = self.controls.partition_point(|c| c.frame < range.end);
+        &self.controls[first..last.max(first)]
     }
 
     /// Longest time from a note's start to the end of its sound, in frames.

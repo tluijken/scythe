@@ -119,8 +119,15 @@ fn plays_controls_and_state_from_a_reaper_chunk() {
     let chain = fx.chain(Some(id), &project.tracks[0].fx);
     assert_eq!(chain.len(), 1, "{:?}", fx.status(Some(id), &project.tracks[0].fx[0], 0));
     let (mut l, mut r) = (vec![1.0f32; 16], vec![-1.0f32; 16]);
-    let ctx =
-        scythe_engine::fx::ProcessContext { sample_rate: 1000, position: 0, playing: true, notes: None, bpm: 120.0 };
+    let ctx = scythe_engine::fx::ProcessContext {
+        sample_rate: 1000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        bpm: 120.0,
+    };
     chain[0].process(&mut l, &mut r, &ctx);
     assert_eq!((l[0], r[15]), (0.25, -0.25));
 
@@ -212,8 +219,15 @@ fn opens_the_x11_ui_and_takes_its_control_changes() {
     assert_eq!(editor.open(parent).unwrap(), (320, 200));
     assert_eq!(editor.idle(), None);
 
-    let ctx =
-        scythe_engine::fx::ProcessContext { sample_rate: 1000, position: 0, playing: true, notes: None, bpm: 120.0 };
+    let ctx = scythe_engine::fx::ProcessContext {
+        sample_rate: 1000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        bpm: 120.0,
+    };
     let (mut l, mut r) = (vec![1.0f32; 4], vec![1.0f32; 4]);
     chain[0].process(&mut l, &mut r, &ctx);
     assert_eq!(l[0], 0.8, "the UI's control change reached the plugin");

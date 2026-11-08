@@ -33,6 +33,36 @@ impl EnvelopeKind {
         Self::ALL.into_iter().find(|k| k.chunk_name() == name)
     }
 
+    /// A send's envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV` after its `AUXRECV`) use the
+    /// volume, pan and mute kinds.
+    pub fn from_send_chunk_name(name: &str) -> Option<Self> {
+        [Self::Volume, Self::Pan, Self::Mute].into_iter().find(|k| k.send_chunk_name() == Some(name))
+    }
+
+    pub fn send_chunk_name(self) -> Option<&'static str> {
+        match self {
+            Self::Volume => Some("AUXVOLENV"),
+            Self::Pan => Some("AUXPANENV"),
+            Self::Mute => Some("AUXMUTEENV"),
+            _ => None,
+        }
+    }
+
+    /// A take's envelopes (`VOLENV`, `PANENV`, `MUTEENV` after its source) use the volume, pan
+    /// and mute kinds.
+    pub fn from_take_chunk_name(name: &str) -> Option<Self> {
+        [Self::Volume, Self::Pan, Self::Mute].into_iter().find(|k| k.take_chunk_name() == Some(name))
+    }
+
+    pub fn take_chunk_name(self) -> Option<&'static str> {
+        match self {
+            Self::Volume => Some("VOLENV"),
+            Self::Pan => Some("PANENV"),
+            Self::Mute => Some("MUTEENV"),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Volume => "Volume",

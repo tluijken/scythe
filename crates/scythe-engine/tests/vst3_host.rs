@@ -48,7 +48,15 @@ fn scans_processes_and_keeps_state() {
     let mut fx = registry(&root, 1000);
     let chain = fx.chain(Some(id), &project.tracks[0].fx);
     assert_eq!(chain.len(), 1, "{:?}", fx.status(Some(id), &project.tracks[0].fx[0], 0));
-    let ctx = ProcessContext { sample_rate: 1000, position: 0, playing: true, notes: None, bpm: 120.0 };
+    let ctx = ProcessContext {
+        sample_rate: 1000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        bpm: 120.0,
+    };
     let (mut l, mut r) = (vec![1.0f32; 8], vec![-1.0f32; 8]);
     chain[0].process(&mut l, &mut r, &ctx);
     assert_eq!((l[0], r[7]), (0.5, -0.5));
@@ -95,5 +103,60 @@ fn midi_items_play_through_a_vst3_instrument() {
     assert_eq!(l[499], 0.0);
     assert!((l[500] - level).abs() < 1e-6 && (l[999] - level).abs() < 1e-6, "{} {}", l[500], l[999]);
     assert_eq!(l[1000], 0.0);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn midi_controllers_reach_mapped_vst3_parameters() {
+    let Some(root) = bundle("cc") else {
+        eprintln!("vst3-test-plugin not built; skipping");
+        return;
+    };
+    let mut fx = registry(&root, 1000);
+    let synth = fx.vst3_plugins().iter().find(|p| p.name == "Test Synth").unwrap().clone();
+    // Key 64 from 0 to 1 s; controller 7 drops to 32 at 0.25 s.
+    let mut project = project_from_rpp(
+        "<REAPER_PROJECT 0.1 \"7.73\" 0\n  TEMPO 120 4 4\n  <TRACK\n    <ITEM\n      POSITION 0\n      LENGTH 2\n      <SOURCE MIDI\n        HASDATA 1 960 QN\n        E 0 90 40 64\n        E 480 b0 07 20\n        E 1440 80 40 00\n        E 1920 b0 7b 00\n      >\n    >\n  >\n>\n",
+    )
+    .unwrap();
+    project.tracks[0].fx.push(vst3_slot(&synth));
+    let graph = RenderGraph::build(&project, &MediaPool::default(), &mut MeterRegistry::default(), &mut fx, 1000);
+    let (mut l, mut r) = (vec![0.0f32; 600], vec![0.0f32; 600]);
+    graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
+    let level = 64.0 / 128.0;
+    assert!((l[249] - level).abs() < 1e-6, "{}", l[249]);
+    assert!((l[250] - level * 32.0 / 127.0).abs() < 1e-6, "{}", l[250]);
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn live_midi_plays_an_armed_vst3_instrument() {
+    use scythe_engine::midi_io::{ALL_MIDI_INPUTS, LiveMidi};
+    use scythe_engine::render::LiveInput;
+    let Some(root) = bundle("live") else {
+        eprintln!("vst3-test-plugin not built; skipping");
+        return;
+    };
+    let mut fx = registry(&root, 1000);
+    let synth = fx.vst3_plugins().iter().find(|p| p.name == "Test Synth").unwrap().clone();
+    let mut project = Project::default();
+    let mut track = Track::new("keys");
+    track.fx.push(vst3_slot(&synth));
+    (track.armed, track.monitor, track.rec_input) = (true, true, ALL_MIDI_INPUTS + 2);
+    project.tracks.push(track);
+    let graph = RenderGraph::build(&project, &MediaPool::default(), &mut MeterRegistry::default(), &mut fx, 1000);
+    assert!(graph.monitoring());
+    let mut scratch = RenderScratch::new(4);
+    let render = |midi: &[LiveMidi], scratch: &mut RenderScratch| {
+        let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+        let input = LiveInput { midi, play_items: false, ..LiveInput::default() };
+        graph.render_with(0, &mut l, &mut r, scratch, &input);
+        l[63]
+    };
+    let on = |ch: u8| LiveMidi { bytes: [0x90 | ch, 64, 100], len: 3 };
+    assert_eq!(render(&[on(0)], &mut scratch), 0.0, "channel 1 is not the track's input channel 2");
+    assert_eq!(render(&[on(1)], &mut scratch), 0.5, "note held from the live input");
+    assert_eq!(render(&[], &mut scratch), 0.5, "and still held in the next block");
+    assert_eq!(render(&[LiveMidi { bytes: [0x81, 64, 0], len: 3 }], &mut scratch), 0.0);
     std::fs::remove_dir_all(root).ok();
 }

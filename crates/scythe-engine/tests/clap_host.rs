@@ -100,8 +100,15 @@ fn plugin_state_survives_save_and_load() {
     assert_eq!(chain.len(), 1);
     chain[0].with(|e| e.set_param(7, 0.3));
     let (mut l, mut r) = (vec![1.0f32; 8], vec![1.0f32; 8]);
-    let ctx =
-        scythe_engine::fx::ProcessContext { sample_rate: 48000, position: 0, playing: true, notes: None, bpm: 120.0 };
+    let ctx = scythe_engine::fx::ProcessContext {
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        bpm: 120.0,
+    };
     chain[0].process(&mut l, &mut r, &ctx);
     fx.store_states(&mut project);
     // Storing must not make the registry think the slot changed.

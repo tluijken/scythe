@@ -11,6 +11,7 @@ pub mod loudness;
 pub mod lv2;
 pub mod media;
 pub mod meter;
+pub mod midi_io;
 pub mod nam;
 pub mod normalized;
 pub mod reaeq;

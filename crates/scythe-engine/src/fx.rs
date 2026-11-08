@@ -11,6 +11,7 @@ use scythe_core::{FxSlot, Project, TrackId};
 use crate::clap_host::{ClapDescriptor, ClapLibrary, ClapPlugin, ParamInfo};
 use crate::delay::{Limiter, ReaDelayCompat, ReaDelaySettings};
 use crate::dynamics::{Compressor, Gate};
+use crate::midi_io::LiveMidi;
 use crate::nam::NamEffect;
 use crate::reaeq::ReaEqCompat;
 use crate::reaverb::{ReaVerbCompat, ReaVerbSettings};
@@ -26,8 +27,19 @@ pub struct ProcessContext<'a> {
     pub playing: bool,
     /// The track's MIDI notes, for instruments.
     pub notes: Option<&'a NoteList>,
+    /// Live MIDI input, due at the start of the block; only the messages on `live_channel`
+    /// (all when `None`) are meant for this track.
+    pub live: &'a [LiveMidi],
+    pub live_channel: Option<u8>,
     /// Project tempo at the block start, in quarter notes per minute.
     pub bpm: f64,
+}
+
+impl ProcessContext<'_> {
+    /// Live MIDI messages for this track.
+    pub fn live_midi(&self) -> impl Iterator<Item = &LiveMidi> {
+        self.live.iter().filter(|m| self.live_channel.is_none_or(|c| m.channel() == c))
+    }
 }
 
 /// An audio effect working in place on a stereo block.
@@ -529,19 +541,19 @@ impl FxRegistry {
                     let state = state.ok_or("unreadable ReaLimit state")?;
                     let limiter =
                         Limiter::from_realimit(&state.chunk, self.sample_rate).ok_or("unreadable ReaLimit settings")?;
-                    return Ok((Box::new(limiter), FxStatus::Native("ReaLimit-compatible limiter (approximate)")));
+                    return Ok((Box::new(limiter), FxStatus::Native("ReaLimit-compatible limiter")));
                 }
                 if display.contains("ReaGate (Cockos)") {
                     let state = state.ok_or("unreadable ReaGate state")?;
                     let gate =
                         Gate::from_reagate(&state.chunk, self.sample_rate).ok_or("unreadable ReaGate settings")?;
-                    return Ok((Box::new(gate), FxStatus::Native("ReaGate-compatible gate (approximate)")));
+                    return Ok((Box::new(gate), FxStatus::Native("ReaGate-compatible gate")));
                 }
                 if display.contains("ReaComp (Cockos)") {
                     let state = state.ok_or("unreadable ReaComp state")?;
                     let comp = Compressor::from_reacomp(&state.chunk, self.sample_rate)
                         .ok_or("unreadable ReaComp settings")?;
-                    return Ok((Box::new(comp), FxStatus::Native("ReaComp-compatible compressor (approximate)")));
+                    return Ok((Box::new(comp), FxStatus::Native("ReaComp-compatible compressor")));
                 }
                 if display.contains("ReaVerb (Cockos)") {
                     let state = state.ok_or("unreadable ReaVerb state")?;
@@ -816,6 +828,28 @@ impl Effect for ClapEffect {
                     self.plugin.events.push(e);
                 }
             }
+            for c in notes.controls_in(start..end) {
+                self.plugin.midi.push(crate::clap_host::midi_event((c.frame - start) as u32, c.bytes));
+            }
+        }
+        if self.instrument {
+            // Live messages go first, in the order they came in.
+            let (mut notes_at, mut midi_at) = (0, 0);
+            for m in ctx.live_midi() {
+                let (status, key, vel) = (m.bytes[0] & 0xf0, m.bytes[1], m.bytes[2]);
+                match status {
+                    0x90 | 0x80 => {
+                        let on = status == 0x90 && vel > 0;
+                        let e = crate::clap_host::note_event(on, 0, m.channel(), key, if on { vel } else { 0 });
+                        self.plugin.events.insert(notes_at, e);
+                        notes_at += 1;
+                    }
+                    _ => {
+                        self.plugin.midi.insert(midi_at, crate::clap_host::midi_event(0, m.bytes));
+                        midi_at += 1;
+                    }
+                }
+            }
             self.plugin
                 .events
                 .sort_by_key(|e| (e.header.time, e.header.type_ != clap_sys::events::CLAP_EVENT_NOTE_OFF));
@@ -853,11 +887,12 @@ pub fn vst3_slot(info: &crate::vst3_host::Vst3Info) -> FxSlot {
 struct Vst3Effect {
     plugin: crate::vst3_host::Vst3Plugin,
     notes: Vec<(i32, bool, u8, u8, u8)>,
+    controls: Vec<(i32, [u8; 3])>,
 }
 
 impl Vst3Effect {
     fn new(plugin: crate::vst3_host::Vst3Plugin) -> Self {
-        Self { plugin, notes: Vec::with_capacity(256) }
+        Self { plugin, notes: Vec::with_capacity(256), controls: Vec::with_capacity(256) }
     }
 }
 
@@ -882,6 +917,7 @@ impl Effect for Vst3Effect {
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         self.notes.clear();
+        self.controls.clear();
         if let Some(notes) = ctx.notes {
             let (start, end) = (ctx.position, ctx.position + left.len() as i64);
             for note in notes.starting_in(start - notes.max_span()..end) {
@@ -894,8 +930,26 @@ impl Effect for Vst3Effect {
                 }
             }
             self.notes.sort_by_key(|e| (e.0, e.1));
+            for c in notes.controls_in(start..end) {
+                self.controls.push(((c.frame - start) as i32, c.bytes));
+            }
         }
-        self.plugin.process(left, right, &self.notes, ctx.position, ctx.bpm);
+        let (mut notes_at, mut controls_at) = (0, 0);
+        for m in ctx.live_midi() {
+            let (status, key, vel) = (m.bytes[0] & 0xf0, m.bytes[1], m.bytes[2]);
+            match status {
+                0x90 | 0x80 => {
+                    let on = status == 0x90 && vel > 0;
+                    self.notes.insert(notes_at, (0, on, m.channel(), key, if on { vel } else { 0 }));
+                    notes_at += 1;
+                }
+                _ => {
+                    self.controls.insert(controls_at, (0, m.bytes));
+                    controls_at += 1;
+                }
+            }
+        }
+        self.plugin.process(left, right, &self.notes, &self.controls, ctx.position, ctx.bpm);
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -958,7 +1012,13 @@ impl Effect for Lv2Effect {
                     self.midi.push(((off - start) as u32, [0x80 | note.channel, note.key, 0]));
                 }
             }
+            for c in notes.controls_in(start..end) {
+                self.midi.push(((c.frame - start) as u32, c.bytes));
+            }
             self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
+        }
+        for (i, m) in ctx.live_midi().enumerate() {
+            self.midi.insert(i, (0, m.bytes));
         }
         for (l, r) in left
             .chunks_mut(crate::render::RenderScratch::MAX_BLOCK)

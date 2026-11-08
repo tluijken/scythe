@@ -4,7 +4,8 @@ use super::{Chunk, Node, ParseError, line_key, parse, quote_always, tokenize, wr
 use crate::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use crate::fade::Fade;
 use crate::model::{
-    Color, FxSlot, Item, LineMemo, Marker, Project, Section, Send, Source, Take, TimeRange, Track, TrackId, new_guid,
+    AutoMode, Color, FxSlot, Item, LineMemo, Marker, Project, Section, Send, Source, Take, TimeRange, Track, TrackId,
+    new_guid,
 };
 use crate::tempo::TempoPoint;
 use crate::units::PanTaper;
@@ -299,6 +300,10 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.muted = flag(&t, 1);
                         track.solo = flag(&t, 2);
                     }
+                    "AUTOMODE" => {
+                        track.auto_mode = AutoMode::from_rpp(num(&t, 1, 0.0) as i64);
+                        track.extra.push(node.clone());
+                    }
                     "REC" => {
                         track.armed = flag(&t, 1);
                         track.rec_input = num(&t, 2, 0.0) as i64;
@@ -312,6 +317,7 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                             volume: num(&t, 3, 1.0),
                             pan: num(&t, 4, 0.0),
                             muted: flag(&t, 5),
+                            envelopes: Vec::new(),
                             raw: Some(t.clone()),
                         },
                     )),
@@ -319,6 +325,13 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                 }
             }
             Node::Chunk(ch) if ch.name() == "ITEM" => track.items.push(parse_item(ch)),
+            // A send's envelopes follow its `AUXRECV` line.
+            Node::Chunk(ch)
+                if let (Some(kind), Some((_, send))) =
+                    (EnvelopeKind::from_send_chunk_name(ch.name()), receives.last_mut()) =>
+            {
+                send.envelopes.push(parse_envelope(kind, ch));
+            }
             Node::Chunk(ch) if let Some(kind) = EnvelopeKind::from_chunk_name(ch.name()) => {
                 track.envelopes.push(parse_envelope(kind, ch));
                 track.extra.push(node.clone());
@@ -358,8 +371,14 @@ fn parse_envelope(kind: EnvelopeKind, c: &Chunk) -> Envelope {
 }
 
 fn write_envelope(env: &Envelope) -> Chunk {
+    write_envelope_named(env, env.kind.chunk_name())
+}
+
+/// Writes an envelope under `name` when it has no original chunk (send and take envelopes
+/// share the track kinds but not their chunk names).
+fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
     let mut c = env.raw.clone().unwrap_or_else(|| {
-        let mut c = Chunk::new(env.kind.chunk_name(), &[]);
+        let mut c = Chunk::new(name, &[]);
         c.line(["EGUID", &new_guid()]);
         c.line(["ACT", "1", "-1"]);
         c.line(["VIS", "1", "1", "1"]);
@@ -503,6 +522,11 @@ fn parse_item(c: &Chunk) -> Item {
                     }
                 }
             }
+            Node::Chunk(ch)
+                if let (Some(kind), Some(tk)) = (EnvelopeKind::from_take_chunk_name(ch.name()), take.as_mut()) =>
+            {
+                tk.envelopes.push(parse_envelope(kind, ch));
+            }
             Node::Chunk(_) => match take.as_mut() {
                 Some(tk) => tk.extra.push(node.clone()),
                 None => item.extra.push(node.clone()),
@@ -552,6 +576,7 @@ fn empty_take() -> Take {
         pitch: 0.0,
         volume: 1.0,
         pan: 0.0,
+        envelopes: Vec::new(),
         lines: LineMemo::new(),
         extra: Vec::new(),
     }
@@ -775,6 +800,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     }
 
     let mut wrote_rec = false;
+    let mut wrote_auto = false;
     let mut wrote_envs = Vec::new();
     for node in &t.extra {
         match node {
@@ -783,6 +809,10 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                     c.push_chunk(write_envelope(env));
                 }
                 wrote_envs.push(kind);
+            }
+            Node::Line(l) if line_key(l) == "AUTOMODE" => {
+                c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
+                wrote_auto = true;
             }
             Node::Line(l) if line_key(l) == "MAINSEND" => {
                 let mut toks = tokenize(l);
@@ -809,6 +839,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             _ => c.children.push(node.clone()),
         }
     }
+    if !wrote_auto && t.auto_mode != AutoMode::TrimRead {
+        c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
+    }
     if !wrote_rec && t.armed {
         c.line(["REC", "1", &t.rec_input.to_string(), &bit(t.monitor), "0", "0", "0", "0", "0"]);
     }
@@ -828,6 +861,11 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             toks[4] = fmt_num(s.pan);
             toks[5] = if s.muted { "1" } else { "0" }.to_owned();
             c.line(toks);
+            for env in &s.envelopes {
+                if let Some(name) = env.kind.send_chunk_name() {
+                    c.push_chunk(write_envelope_named(env, name));
+                }
+            }
         }
     }
 
@@ -908,6 +946,11 @@ fn write_item(it: &Item) -> Chunk {
         ));
         c.children.extend(tk.extra.iter().cloned());
         c.push_chunk(write_source(&tk.source, l));
+        for env in &tk.envelopes {
+            if let Some(name) = env.kind.take_chunk_name() {
+                c.push_chunk(write_envelope_named(env, name));
+            }
+        }
     }
     c
 }
@@ -938,6 +981,54 @@ fn write_source(source: &Source, l: &LineMemo) -> Chunk {
     }
 }
 
+/// The body of a `.RfxChain` file: the track's FX chain without its enclosing chunk.
+pub fn fx_chain_to_text(t: &Track) -> String {
+    super::write_body(&write_fx_chain("FXCHAIN", t).children)
+}
+
+/// The effects of a `.RfxChain` file, ready to append to a track's chain.
+pub fn fx_chain_from_text(text: &str) -> Result<Vec<FxSlot>, ParseError> {
+    let chunk = parse(&format!("<FXCHAIN\n{text}\n>\n"))?;
+    Ok(parse_fx_chain(&chunk).0)
+}
+
+/// A `.RTrackTemplate` of `ids`, in project order, without their items. Sends between the
+/// chosen tracks are kept; sends to other tracks are left out.
+pub fn track_template(p: &Project, ids: &[TrackId]) -> String {
+    let mut sub =
+        Project { tracks: p.tracks.iter().filter(|t| ids.contains(&t.id)).cloned().collect(), ..Project::default() };
+    let kept: Vec<TrackId> = sub.tracks.iter().map(|t| t.id).collect();
+    for t in &mut sub.tracks {
+        t.items.clear();
+        t.sends.retain(|s| kept.contains(&s.dest));
+    }
+    sub.tracks.iter().map(|t| super::write(&write_track(&sub, t))).collect()
+}
+
+/// The tracks of a `.RTrackTemplate`, with fresh identities and the sends between them.
+pub fn tracks_from_template(text: &str) -> Result<Vec<Track>, ParseError> {
+    let root = parse(&format!("<TEMPLATE\n{text}\n>\n"))?;
+    let mut tracks = Vec::new();
+    let mut receives = Vec::new();
+    for node in &root.children {
+        if let Node::Chunk(c) = node
+            && c.name() == "TRACK"
+        {
+            let (mut track, recvs) = parse_track(c);
+            track.guid = new_guid();
+            receives.extend(recvs.into_iter().map(|(src, send)| (src, tracks.len(), send)));
+            tracks.push(track);
+        }
+    }
+    for (src, dest, mut send) in receives {
+        if let (Some(dest_id), true) = (tracks.get(dest).map(|t: &Track| t.id), src < tracks.len()) {
+            send.dest = dest_id;
+            tracks[src].sends.push(send);
+        }
+    }
+    Ok(tracks)
+}
+
 /// Resolves a take's source path against the project directory, as REAPER stores media
 /// relative to the project file when it lives below it.
 pub fn resolve_media_path(project: &Project, path: &Path) -> PathBuf {
@@ -954,7 +1045,7 @@ pub fn resolve_media_path(project: &Project, path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = r#"<REAPER_PROJECT 0.1 "7.73/linux-x86_64" 1762500000
+    pub(super) const SAMPLE: &str = r#"<REAPER_PROJECT 0.1 "7.73/linux-x86_64" 1762500000
   RIPPLE 0
   TEMPO 168 4 4
   LOOP 1
@@ -1088,7 +1179,7 @@ mod tests {
 
     #[test]
     fn edits_survive_round_trip() {
-        let mut p = project_from_rpp(SAMPLE).unwrap();
+        let mut p = project_from_rpp(super::tests::SAMPLE).unwrap();
         p.tracks[0].fx[1].enabled = true;
         p.tracks[0].armed = false;
         p.tracks[0].items[0].position = 70.0;
@@ -1169,5 +1260,47 @@ mod section_tests {
         let again = project_from_rpp(&text).unwrap();
         let Source::Section(s) = &again.tracks[0].items[0].takes[0].source else { panic!() };
         assert_eq!((s.start, s.reverse), (3.0, false));
+    }
+
+    #[test]
+    fn send_and_take_envelopes_round_trip_in_place() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    NAME src\n    <ITEM\n      POSITION 0\n      LENGTH 2\n      NAME a\n      <SOURCE WAVE\n        FILE \"a.wav\"\n      >\n      <VOLENV\n        ACT 1 -1\n        PT 0 0 0\n        PT 2 1 0\n      >\n    >\n  >\n  <TRACK\n    NAME bus\n    AUXRECV 0 0 1 0 0 0 0 0 0 -1:U 4177951 -1 ''\n    <AUXPANENV\n      ACT 1 -1\n      PT 0 1 0\n      PT 2 -1 0\n    >\n  >\n>\n";
+        let p = project_from_rpp(text).unwrap();
+        let send = &p.tracks[0].sends[0];
+        assert_eq!(send.envelopes.len(), 1);
+        assert_eq!((send.envelopes[0].kind, send.envelopes[0].points.len()), (EnvelopeKind::Pan, 2));
+        let take = &p.tracks[0].items[0].takes[0];
+        assert_eq!((take.envelopes[0].kind, take.envelopes[0].value_at(1.0)), (EnvelopeKind::Volume, Some(0.5)));
+        assert!(p.tracks[1].extra.iter().all(|n| !matches!(n, Node::Chunk(c) if c.name() == "AUXPANENV")));
+
+        let out = project_to_rpp(&p);
+        let at = |needle: &str| out.find(needle).unwrap_or_else(|| panic!("{needle} missing:\n{out}"));
+        assert!(at("AUXRECV") < at("<AUXPANENV"), "{out}");
+        assert!(at("<SOURCE WAVE") < at("<VOLENV"), "{out}");
+        let again = project_from_rpp(&out).unwrap();
+        assert_eq!(again.tracks[0].sends[0].envelopes[0].points, send.envelopes[0].points);
+        assert_eq!(again.tracks[0].items[0].takes[0].envelopes[0].points, take.envelopes[0].points);
+    }
+
+    #[test]
+    fn fx_chains_and_track_templates() {
+        let mut p = project_from_rpp(super::tests::SAMPLE).unwrap();
+        let with_fx = p.tracks.iter().position(|t| !t.fx.is_empty()).expect("sample has FX");
+        let text = fx_chain_to_text(&p.tracks[with_fx]);
+        assert!(!text.starts_with("<FXCHAIN"));
+        let slots = fx_chain_from_text(&text).unwrap();
+        assert_eq!(slots.len(), p.tracks[with_fx].fx.len());
+        assert_eq!(slots[0].raw, p.tracks[with_fx].fx[0].raw);
+
+        let (a, b) = (p.tracks[0].id, p.tracks[1].id);
+        p.tracks[0].sends = vec![Send::new(b)];
+        let template = track_template(&p, &[a, b]);
+        let tracks = tracks_from_template(&template).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert!(tracks.iter().all(|t| t.items.is_empty()));
+        assert_eq!(tracks[0].name, p.tracks[0].name);
+        assert_eq!(tracks[0].sends.len(), 1);
+        assert_eq!(tracks[0].sends[0].dest, tracks[1].id);
+        assert_ne!(tracks[0].guid, p.tracks[0].guid);
     }
 }

@@ -21,6 +21,7 @@ base64.workspace = true
 cpal.workspace = true
 symphonia.workspace = true
 hound.workspace = true
+midir.workspace = true
 
 [dev-dependencies]
 x11rb.workspace = true

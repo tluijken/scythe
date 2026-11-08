@@ -90,7 +90,19 @@ fn compare_real_ir(dir: &Path, reaper: &str, cfg: &Path, ir: &Path, name: &str) 
         (0..len).map(|i| ((i as u64).wrapping_mul(2654435761) % 1000) as f32 / 1000.0 - 0.5).collect();
     let mut r = l.clone();
     for (a, b) in l.chunks_mut(512).zip(r.chunks_mut(512)) {
-        fx.process(a, b, &ProcessContext { sample_rate: SR, position: 0, playing: true, notes: None, bpm: 120.0 });
+        fx.process(
+            a,
+            b,
+            &ProcessContext {
+                sample_rate: SR,
+                position: 0,
+                playing: true,
+                notes: None,
+                live: &[],
+                live_channel: None,
+                bpm: 120.0,
+            },
+        );
     }
     let diff = l.iter().zip(&theirs).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     let peak = theirs.iter().map(|v| v.abs()).fold(0.0f32, f32::max);

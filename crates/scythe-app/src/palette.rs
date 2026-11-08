@@ -11,8 +11,13 @@ pub enum Action {
     ToggleRepeat,
     ToggleMetronome,
     Record,
+    ToggleAutoPunch,
     ToggleArm,
     AddTrack,
+    SaveFxChain,
+    LoadFxChain,
+    SaveTrackTemplate,
+    InsertTrackTemplate,
     ImportMedia,
     DeleteSelection,
     SplitItem,
@@ -25,8 +30,11 @@ pub enum Action {
     PasteItem,
     DuplicateItem,
     ReverseItem,
+    GlueItems,
+    ApplyTrackFx,
     NextTake,
     OpenMidiEditor,
+    ExportMidi,
     ToggleItemMute,
     PreviousMarker,
     NextMarker,
@@ -76,8 +84,13 @@ impl Action {
         Action::ToggleRepeat,
         Action::ToggleMetronome,
         Action::Record,
+        Action::ToggleAutoPunch,
         Action::ToggleArm,
         Action::AddTrack,
+        Action::SaveFxChain,
+        Action::LoadFxChain,
+        Action::SaveTrackTemplate,
+        Action::InsertTrackTemplate,
         Action::ImportMedia,
         Action::DeleteSelection,
         Action::SplitItem,
@@ -90,8 +103,11 @@ impl Action {
         Action::PasteItem,
         Action::DuplicateItem,
         Action::ReverseItem,
+        Action::GlueItems,
+        Action::ApplyTrackFx,
         Action::NextTake,
         Action::OpenMidiEditor,
+        Action::ExportMidi,
         Action::ToggleItemMute,
         Action::PreviousMarker,
         Action::NextMarker,
@@ -137,8 +153,13 @@ impl Action {
             Action::ToggleRepeat => "Transport: Toggle repeat",
             Action::ToggleMetronome => "Options: Toggle metronome",
             Action::Record => "Transport: Record",
+            Action::ToggleAutoPunch => "Record mode: Toggle time selection auto-punch",
             Action::ToggleArm => "Track: Toggle record arm for selected track",
             Action::AddTrack => "Track: Insert new track",
+            Action::SaveFxChain => "FX: Save track FX chain",
+            Action::LoadFxChain => "FX: Add FX chain to track",
+            Action::SaveTrackTemplate => "Track: Save track as track template",
+            Action::InsertTrackTemplate => "Track: Insert track from template",
             Action::ImportMedia => "Insert media files…",
             Action::DeleteSelection => "Edit: Delete selected item or track",
             Action::SplitItem => "Item: Split at cursor",
@@ -151,8 +172,11 @@ impl Action {
             Action::PasteItem => "Edit: Paste at cursor",
             Action::DuplicateItem => "Item: Duplicate",
             Action::ReverseItem => "Item: Reverse",
+            Action::GlueItems => "Item: Glue items",
+            Action::ApplyTrackFx => "Item: Apply track FX to items as new take",
             Action::NextTake => "Take: Switch items to next take",
             Action::OpenMidiEditor => "Item: Open in MIDI editor",
+            Action::ExportMidi => "Item: Export MIDI item to file",
             Action::ToggleItemMute => "Item: Toggle mute",
             Action::PreviousMarker => "Markers: Go to previous marker or region",
             Action::NextMarker => "Markers: Go to next marker or region",
@@ -200,8 +224,10 @@ impl Action {
             Action::ToggleRepeat => k(Modifiers::NONE, Key::R),
             Action::ToggleMetronome => k(Modifiers::NONE, Key::C),
             Action::Record => k(CMD, Key::R),
+            Action::ToggleAutoPunch => None,
             Action::ToggleArm => k(Modifiers::ALT, Key::R),
             Action::AddTrack => k(CMD, Key::T),
+            Action::SaveFxChain | Action::LoadFxChain | Action::SaveTrackTemplate | Action::InsertTrackTemplate => None,
             Action::ImportMedia => k(Modifiers::NONE, Key::Insert),
             Action::DeleteSelection => k(Modifiers::NONE, Key::Delete),
             Action::SplitItem => k(Modifiers::NONE, Key::S),
@@ -214,8 +240,11 @@ impl Action {
             Action::PasteItem => k(CMD, Key::V),
             Action::DuplicateItem => k(CMD, Key::D),
             Action::ReverseItem => None,
+            Action::GlueItems => k(CMD, Key::G),
+            Action::ApplyTrackFx => None,
             Action::NextTake => k(Modifiers::NONE, Key::T),
             Action::OpenMidiEditor => k(Modifiers::NONE, Key::E),
+            Action::ExportMidi => None,
             Action::ToggleItemMute => k(Modifiers::NONE, Key::U),
             Action::PreviousMarker => k(Modifiers::NONE, Key::OpenBracket),
             Action::NextMarker => k(Modifiers::NONE, Key::CloseBracket),
@@ -262,6 +291,14 @@ impl Action {
             Action::ToggleRepeat => app.toggle_loop(),
             Action::ToggleMetronome => app.toggle_metronome(),
             Action::Record => app.toggle_record(),
+            Action::ToggleAutoPunch => {
+                app.auto_punch ^= true;
+                app.notify(if app.auto_punch {
+                    "Record mode: time selection auto-punch"
+                } else {
+                    "Record mode: normal"
+                });
+            }
             Action::ToggleArm => {
                 if let Some(t) = app.sel.track {
                     app.edit("Toggle record arm", |p| {
@@ -272,6 +309,10 @@ impl Action {
                 }
             }
             Action::AddTrack => app.add_track(),
+            Action::SaveFxChain => app.save_fx_chain(),
+            Action::LoadFxChain => app.load_fx_chain(),
+            Action::SaveTrackTemplate => app.save_track_template(),
+            Action::InsertTrackTemplate => app.insert_track_template(),
             Action::ImportMedia => app.import_dialog(),
             Action::DeleteSelection => app.delete_selection(),
             Action::SplitItem => app.split_selected_item(),
@@ -299,6 +340,8 @@ impl Action {
             Action::PasteItem => app.paste_item(),
             Action::DuplicateItem => app.duplicate_item(),
             Action::ReverseItem => app.reverse_item(),
+            Action::GlueItems => app.glue_selected(),
+            Action::ApplyTrackFx => app.apply_track_fx(),
             Action::NextTake => {
                 if let Some(id) = app.sel.item {
                     app.edit("Next take", |p| {
@@ -310,6 +353,7 @@ impl Action {
                     });
                 }
             }
+            Action::ExportMidi => app.export_midi(),
             Action::OpenMidiEditor => {
                 let midi = app.sel.item.and_then(|id| app.project.find_item(id)).is_some_and(|(_, it)| {
                     it.take().is_some_and(|t| matches!(&t.source, scythe_core::Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI")))

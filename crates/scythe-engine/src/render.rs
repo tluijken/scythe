@@ -12,7 +12,8 @@ use rayon::prelude::*;
 
 use crate::loudness::Loudness;
 use crate::meter::Meter;
-use crate::synth::{NoteList, SynthNote};
+use crate::midi_io::{LiveMidi, midi_input_channel};
+use crate::synth::{ControlEvent, NoteList, SynthNote};
 
 /// One item, pre-resolved to frames at the engine rate.
 #[derive(Debug, Clone)]
@@ -32,6 +33,70 @@ pub struct RenderItem {
     pub section_len: f64,
     pub reverse: bool,
     pub audio: ItemAudio,
+    /// Take envelopes, in seconds from the item start; they replace `gain_l` and `gain_r`.
+    pub automation: Option<Arc<GainAutomation>>,
+}
+
+/// Volume, pan and mute envelopes around a fixed volume and pan, as sends and takes have them.
+/// REAPER follows them sample by sample.
+#[derive(Debug)]
+pub struct GainAutomation {
+    volume: f64,
+    pan: f64,
+    pan_law: PanLaw,
+    vol_env: Option<Envelope>,
+    pan_env: Option<Envelope>,
+    mute_env: Option<Envelope>,
+}
+
+/// A mute envelope's gain at `t`: REAPER does not switch at a point but crossfades over 4 ms
+/// with a raised cosine.
+fn mute_gain(env: &Envelope, t: f64) -> f64 {
+    const RAMP: f64 = 0.004;
+    let plays = |v: f64| v >= 0.5;
+    let i = env.points.partition_point(|p| p.time <= t);
+    let Some(at) = i.checked_sub(1) else {
+        return env.points.first().map_or(1.0, |p| plays(p.value) as u8 as f64);
+    };
+    let now = plays(env.points[at].value);
+    let before = at.checked_sub(1).map_or(now, |b| plays(env.points[b].value));
+    let x = (t - env.points[at].time) / RAMP;
+    if before == now || x >= 1.0 {
+        return now as u8 as f64;
+    }
+    let fading = 0.5 * (1.0 + (std::f64::consts::PI * x).cos());
+    if now { 1.0 - fading } else { fading }
+}
+
+impl GainAutomation {
+    /// `None` when no envelope is active.
+    pub fn new(volume: f64, pan: f64, pan_law: PanLaw, envelopes: &[Envelope]) -> Option<Self> {
+        let find =
+            |kind: EnvelopeKind| envelopes.iter().find(|e| e.kind == kind && e.active && !e.points.is_empty()).cloned();
+        let (vol_env, pan_env, mute_env) =
+            (find(EnvelopeKind::Volume), find(EnvelopeKind::Pan), find(EnvelopeKind::Mute));
+        (vol_env.is_some() || pan_env.is_some() || mute_env.is_some()).then_some(Self {
+            volume,
+            pan,
+            pan_law,
+            vol_env,
+            pan_env,
+            mute_env,
+        })
+    }
+
+    /// Channel gains at `t` seconds. Pan envelopes store positive values for left, as REAPER
+    /// does for tracks.
+    pub fn gains_at(&self, t: f64) -> (f32, f32) {
+        let mute = self.mute_env.as_ref().map_or(1.0, |e| mute_gain(e, t));
+        if mute == 0.0 {
+            return (0.0, 0.0);
+        }
+        let vol = mute * self.volume * self.vol_env.as_ref().and_then(|e| e.value_at(t)).unwrap_or(1.0);
+        let pan = self.pan - self.pan_env.as_ref().and_then(|e| e.value_at(t)).unwrap_or(0.0);
+        let (l, r) = self.pan_law.gains(pan.clamp(-1.0, 1.0));
+        ((vol * l) as f32, (vol * r) as f32)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +142,8 @@ pub struct RenderTrack {
     pub meter: Arc<Meter>,
     /// (index into `RenderGraph::tracks`, gain l, gain r)
     pub sends: Vec<(usize, f32, f32)>,
+    /// Envelopes of each send, when it has any.
+    pub send_automation: Vec<Option<Arc<GainAutomation>>>,
     /// Where the post-fader output goes: the parent folder, or the master when `None`.
     pub parent: Option<usize>,
     pub main_send: bool,
@@ -88,6 +155,9 @@ pub struct RenderTrack {
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
     pub monitor: Option<(usize, Option<usize>)>,
+    /// Live MIDI for an armed, monitored track with a MIDI input: the channel it listens to,
+    /// `None` for all.
+    pub midi_input: Option<Option<u8>>,
     /// Frames between this track's input and the master output, including plugin latency
     /// downstream. Items are read this far ahead so they come out on time.
     pub read_ahead: i64,
@@ -110,13 +180,14 @@ impl DelayLine {
         Self { state: std::sync::Mutex::new((vec![0.0; frames], vec![0.0; frames], 0)) }
     }
 
-    /// Adds the input, delayed and scaled, to the output.
-    fn mix(&self, input: (&[f32], &[f32]), gain: (f32, f32), out: (&mut [f32], &mut [f32])) {
+    /// Adds the input, delayed and scaled by `gain(frame)`, to the output.
+    fn mix(&self, input: (&[f32], &[f32]), gain: impl Fn(usize) -> (f32, f32), out: (&mut [f32], &mut [f32])) {
         let Ok(mut guard) = self.state.try_lock() else { return };
         let (l, r, at) = &mut *guard;
         for i in 0..input.0.len() {
-            out.0[i] += l[*at] * gain.0;
-            out.1[i] += r[*at] * gain.1;
+            let g = gain(i);
+            out.0[i] += l[*at] * g.0;
+            out.1[i] += r[*at] * g.1;
             l[*at] = input.0[i];
             r[*at] = input.1[i];
             *at = (*at + 1) % l.len();
@@ -127,12 +198,14 @@ impl DelayLine {
 /// Live input for one render call: per hardware channel, the samples aligned with the output.
 pub struct LiveInput<'a> {
     pub channels: [Option<&'a [f32]>; LiveInput::MAX_CHANNELS],
+    /// MIDI from the inputs, due at the start of the block.
+    pub midi: &'a [LiveMidi],
     pub play_items: bool,
 }
 
 impl Default for LiveInput<'_> {
     fn default() -> Self {
-        Self { channels: [None; Self::MAX_CHANNELS], play_items: true }
+        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true }
     }
 }
 
@@ -142,6 +215,7 @@ impl<'a> LiveInput<'a> {
     fn slice(&self, from: usize, len: usize) -> LiveInput<'a> {
         LiveInput {
             channels: self.channels.map(|c| c.and_then(|s| s.get(from..(from + len).min(s.len())))),
+            midi: if from == 0 { self.midi } else { &[] },
             play_items: self.play_items,
         }
     }
@@ -384,6 +458,13 @@ impl RenderGraph {
                             gain_r: g * tr as f32,
                             fade_in: ((it.fade_in.effective_length() * sr).round() as i64, it.fade_in),
                             fade_out: ((it.fade_out.effective_length() * sr).round() as i64, it.fade_out),
+                            automation: GainAutomation::new(
+                                it.volume * take.volume,
+                                take.pan,
+                                scythe_core::units::PanLaw::default(),
+                                &take.envelopes,
+                            )
+                            .map(Arc::new),
                             looped: it.looped,
                             section_start: section_start * src_sr,
                             section_len: section_len * src_sr,
@@ -397,26 +478,32 @@ impl RenderGraph {
                 let (items, notes) = if chain.iter().any(|f| f.instrument) {
                     let (midi, audio): (Vec<_>, Vec<_>) =
                         items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)));
-                    let merged = midi
+                    let lists: Vec<&NoteList> = midi
                         .iter()
-                        .flat_map(|i| match &i.audio {
-                            ItemAudio::Midi(list) => list.notes.clone(),
-                            _ => Vec::new(),
+                        .filter_map(|i| match &i.audio {
+                            ItemAudio::Midi(list) => Some(list.as_ref()),
+                            _ => None,
                         })
                         .collect();
-                    (audio, Some(Arc::new(NoteList::new(merged, sample_rate))))
+                    let notes = lists.iter().flat_map(|l| l.notes.iter().copied()).collect();
+                    let controls = lists.iter().flat_map(|l| l.controls().iter().copied()).collect();
+                    (audio, Some(Arc::new(NoteList::new(notes, sample_rate).with_controls(controls))))
                 } else {
                     (items, None)
                 };
-                let sends = t
+                let (sends, send_automation): (Vec<_>, Vec<_>) = t
                     .sends
                     .iter()
                     .filter(|s| !s.muted)
                     .filter_map(|s| {
                         let (l, r) = project.pan_law.gains(s.pan);
-                        Some((*index.get(&s.dest)?, (s.volume * l) as f32, (s.volume * r) as f32))
+                        let automation = GainAutomation::new(s.volume, s.pan, project.pan_law, &s.envelopes);
+                        Some((
+                            (*index.get(&s.dest)?, (s.volume * l) as f32, (s.volume * r) as f32),
+                            automation.map(Arc::new),
+                        ))
                     })
-                    .collect();
+                    .unzip();
                 RenderTrack {
                     id: t.id,
                     gain_l: (t.volume * pl) as f32,
@@ -425,6 +512,7 @@ impl RenderGraph {
                     items,
                     meter: meters.track(t.id),
                     sends,
+                    send_automation,
                     parent: parents[ti],
                     main_send: t.main_send,
                     automation: Automation::from_track(t, project.pan_law_for(t)).map(Arc::new),
@@ -437,6 +525,7 @@ impl RenderGraph {
                             (first, (t.rec_input & 1024 != 0).then_some(first + 1))
                         },
                     ),
+                    midi_input: (t.armed && t.monitor).then(|| midi_input_channel(t.rec_input)).flatten(),
                     read_ahead: 0,
                     fx_latency: Vec::new(),
                     send_delays: Vec::new(),
@@ -483,8 +572,15 @@ impl RenderGraph {
     }
 
     /// Whether any track listens to the live input.
+    /// Frames of plugin latency the graph compensates by reading ahead; a render starting
+    /// anywhere should first run this many frames so the effects have heard them.
+    pub fn latency(&self) -> i64 {
+        let master: i64 = self.master_fx_latency.iter().sum();
+        self.tracks.iter().map(|t| t.read_ahead).max().unwrap_or(0).max(master)
+    }
+
     pub fn monitoring(&self) -> bool {
-        self.tracks.iter().any(|t| t.monitor.is_some())
+        self.tracks.iter().any(|t| t.monitor.is_some() || t.midi_input.is_some())
     }
 
     /// Like `render`, with live input for monitored tracks. With `play_items` false only the
@@ -547,7 +643,7 @@ impl RenderGraph {
                 self.process_track(i, start, &mut l[..n], &mut r[..n], input);
             }
             for &ti in self.order.iter().filter(|&&i| in_level(i)) {
-                self.route_track(ti, n, scratch, out_l, out_r);
+                self.route_track(ti, start, n, scratch, out_l, out_r);
             }
         }
         if !self.master_fx.is_empty() {
@@ -559,6 +655,8 @@ impl RenderGraph {
                     position,
                     playing: true,
                     notes: None,
+                    live: &[],
+                    live_channel: None,
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
                 };
                 fx.process(out_l, out_r, &ctx);
@@ -599,7 +697,7 @@ impl RenderGraph {
         let items: &[RenderItem] = if input.play_items { &track.items } else { &[] };
         for item in items {
             match &item.audio {
-                ItemAudio::Media(audio) => mix_item(item, audio, read, tl, tr),
+                ItemAudio::Media(audio) => mix_item(item, audio, read, self.sample_rate as f64, tl, tr),
                 ItemAudio::Midi(notes) => notes.render(read, self.sample_rate, (item.gain_l, item.gain_r), tl, tr),
                 ItemAudio::Click => {
                     let from = read.max(item.start);
@@ -617,6 +715,8 @@ impl RenderGraph {
                     playing: true,
                     // While stopped the position stands still; feeding notes would retrigger them.
                     notes: if input.play_items { track.notes.as_deref() } else { None },
+                    live: if track.midi_input.is_some() { input.midi } else { &[] },
+                    live_channel: track.midi_input.flatten(),
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
                 };
                 let t = position as f64 / self.sample_rate as f64;
@@ -631,7 +731,8 @@ impl RenderGraph {
                     while at < n {
                         let frame = ctx.position + at as i64;
                         let len = ((SLICE - frame.rem_euclid(SLICE)) as usize).min(n - at);
-                        let slice_ctx = ProcessContext { position: frame, ..ctx };
+                        let slice_ctx =
+                            ProcessContext { position: frame, live: if at == 0 { ctx.live } else { &[] }, ..ctx };
                         let st = t + at as f64 / self.sample_rate as f64;
                         fx.process_automated(&mut tl[at..at + len], &mut tr[at..at + len], &slice_ctx, automation, st);
                         at += len;
@@ -687,22 +788,51 @@ impl RenderGraph {
     }
 
     /// Adds a rendered track to its send destinations and its parent folder or the master.
-    fn route_track(&self, ti: usize, n: usize, scratch: &mut RenderScratch, out_l: &mut [f32], out_r: &mut [f32]) {
+    /// Mixes a track's output into its send destinations and its parent or the master.
+    /// `start` is the block's project frame at the master.
+    fn route_track(
+        &self,
+        ti: usize,
+        start: i64,
+        n: usize,
+        scratch: &mut RenderScratch,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
         let track = &self.tracks[ti];
         let (l, r) = std::mem::take(&mut scratch.track_bufs[ti]);
         let (tl, tr) = (&l[..n], &r[..n]);
-        let add = |delay: Option<&Arc<DelayLine>>, gain: (f32, f32), dl: &mut [f32], dr: &mut [f32]| match delay {
-            Some(line) => line.mix((tl, tr), gain, (dl, dr)),
-            None => {
-                for i in 0..n {
-                    dl[i] += tl[i] * gain.0;
-                    dr[i] += tr[i] * gain.1;
+        fn add(
+            input: (&[f32], &[f32]),
+            delay: Option<&Arc<DelayLine>>,
+            gain: impl Fn(usize) -> (f32, f32),
+            dl: &mut [f32],
+            dr: &mut [f32],
+        ) {
+            match delay {
+                Some(line) => line.mix(input, gain, (dl, dr)),
+                None => {
+                    for i in 0..input.0.len() {
+                        let g = gain(i);
+                        dl[i] += input.0[i] * g.0;
+                        dr[i] += input.1[i] * g.1;
+                    }
                 }
             }
-        };
+        }
+        // The track's output is this far ahead of the master: what its effects did not use up.
+        let out_frame = start + track.read_ahead - track.fx_latency.iter().sum::<i64>();
+        let sr = self.sample_rate as f64;
         for (si, &(dest, sgl, sgr)) in track.sends.iter().enumerate() {
             let (dl, dr) = &mut scratch.track_bufs[dest];
-            add(track.send_delays.get(si).and_then(Option::as_ref), (sgl, sgr), &mut dl[..n], &mut dr[..n]);
+            let delay = track.send_delays.get(si).and_then(Option::as_ref);
+            match track.send_automation.get(si).and_then(Option::as_ref) {
+                Some(auto) => {
+                    let gain = |i: usize| auto.gains_at((out_frame + i as i64) as f64 / sr);
+                    add((tl, tr), delay, gain, &mut dl[..n], &mut dr[..n]);
+                }
+                None => add((tl, tr), delay, |_| (sgl, sgr), &mut dl[..n], &mut dr[..n]),
+            }
         }
         if track.main_send {
             let (dl, dr): (&mut [f32], &mut [f32]) = match track.parent {
@@ -712,7 +842,7 @@ impl RenderGraph {
                 }
                 None => (&mut *out_l, &mut *out_r),
             };
-            add(track.main_delay.as_ref(), (1.0, 1.0), dl, dr);
+            add((tl, tr), track.main_delay.as_ref(), |_| (1.0, 1.0), dl, dr);
         }
         scratch.track_bufs[ti] = (l, r);
     }
@@ -843,10 +973,22 @@ fn midi_notes(
             velocity: n.velocity,
         })
         .collect();
-    Some(NoteList::new(notes, sample_rate))
+    let controls = source
+        .place_events(item, take, timeline)
+        .into_iter()
+        .map(|e| ControlEvent { frame: (e.time * sr).round() as i64, bytes: e.bytes, len: e.len })
+        .collect();
+    Some(NoteList::new(notes, sample_rate).with_controls(controls))
 }
 
-fn mix_item(item: &RenderItem, audio: &AudioData, block_start: i64, out_l: &mut [f32], out_r: &mut [f32]) {
+fn mix_item(
+    item: &RenderItem,
+    audio: &AudioData,
+    block_start: i64,
+    sample_rate: f64,
+    out_l: &mut [f32],
+    out_r: &mut [f32],
+) {
     let n = out_l.len() as i64;
     let from = block_start.max(item.start);
     let to = (block_start + n).min(item.start + item.length);
@@ -884,9 +1026,13 @@ fn mix_item(item: &RenderItem, audio: &AudioData, block_start: i64, out_l: &mut 
             (left[i] + (left[next] - left[i]) * frac, right[i] + (right[next] - right[i]) * frac)
         };
         let fade = fade_gain(rel, item.length, &item.fade_in, &item.fade_out);
+        let (gl, gr) = match &item.automation {
+            Some(auto) => auto.gains_at(rel as f64 / sample_rate),
+            None => (item.gain_l, item.gain_r),
+        };
         let o = (t - block_start) as usize;
-        out_l[o] += sl * item.gain_l * fade;
-        out_r[o] += sr * item.gain_r * fade;
+        out_l[o] += sl * gl * fade;
+        out_r[o] += sr * gr * fade;
     }
 }
 
@@ -933,6 +1079,7 @@ mod tests {
                     section_len: 0.0,
                     reverse: false,
                     audio: ItemAudio::Media(audio.clone()),
+                    automation: None,
                 })
                 .collect();
         }
@@ -1094,10 +1241,10 @@ mod tests {
         channels[1] = Some(&input_ch1[..]);
         let (mut l, mut r) = (vec![0.0; 10], vec![0.0; 10]);
         let mut s = RenderScratch::new(8);
-        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, play_items: false });
+        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, midi: &[], play_items: false });
         // Stopped: only the input, on both sides; the item on the other track stays quiet.
         assert_eq!((l[3], r[3]), (0.25, 0.25));
-        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, play_items: true });
+        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, midi: &[], play_items: true });
         assert_eq!(l[3], 1.25);
         p.track_mut(live_track).unwrap().monitor = false;
         assert!(!graph_with(&p, ones(100)).monitoring());

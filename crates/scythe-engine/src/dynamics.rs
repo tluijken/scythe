@@ -1,6 +1,6 @@
-//! Gate and compressor that read the parameters ReaGate and ReaComp store.
-//! Parameter layouts and scalings come from REAPER's parameter API; the detectors themselves
-//! are textbook designs, so the result is close to REAPER but not sample identical.
+//! ReaGate and ReaComp, from the parameters they store. Both follow REAPER 7.73 renders
+//! sample for sample for the detector, timing and gain settings measured (see the tests);
+//! sidechain filters, soft knee and auto make-up are not modelled exactly.
 
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
@@ -38,9 +38,35 @@ pub(crate) fn ms_value(ms: f64) -> (f64, String) {
     (ms, if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) } else { format!("{ms:.1} ms") })
 }
 
-/// One-pole smoothing coefficient for a time constant in milliseconds.
-fn coeff(ms: f32, sample_rate: u32) -> f32 {
-    if ms <= 0.0 { 0.0 } else { (-1.0 / (ms * 0.001 * sample_rate as f32)).exp() }
+/// A stored time (normalised parameter × full scale in ms) in samples, kept fractional for
+/// ramps; REAPER counts whole samples from the f32 value it stores.
+fn samples(raw: f32, full_ms: f64, sample_rate: u32) -> f64 {
+    raw as f64 * full_ms * 0.001 * sample_rate as f64
+}
+
+/// A delay of the stereo signal by a fixed number of frames (ReaGate's pre-open lookahead).
+struct Lookahead {
+    l: Vec<f32>,
+    r: Vec<f32>,
+    at: usize,
+}
+
+impl Lookahead {
+    fn new(frames: usize) -> Self {
+        Self { l: vec![0.0; frames], r: vec![0.0; frames], at: 0 }
+    }
+
+    /// Pushes the newest frame and returns the one `frames` ago.
+    fn swap(&mut self, l: f32, r: f32) -> (f32, f32) {
+        if self.l.is_empty() {
+            return (l, r);
+        }
+        let out = (self.l[self.at], self.r[self.at]);
+        self.l[self.at] = l;
+        self.r[self.at] = r;
+        self.at = (self.at + 1) % self.l.len();
+        out
+    }
 }
 
 pub struct Gate {
@@ -48,35 +74,43 @@ pub struct Gate {
     sample_rate: u32,
     threshold: f32,
     close_threshold: f32,
-    attack: f32,
-    release: f32,
-    hold: usize,
+    /// Frames the gain takes to open or close fully (linear ramps).
+    attack: f64,
+    release: f64,
+    /// Frames below the threshold before the gate starts closing.
+    close_after: usize,
+    lookahead: Lookahead,
     dry: f32,
     wet: f32,
-    gain: f32,
-    held: usize,
+    gain: f64,
+    below: usize,
     open: bool,
 }
 
 impl Gate {
     /// Parameters 0..: threshold, attack, release, pre-open, hold, lowpass, hipass, …, dry (9),
-    /// wet (10), noise (11), hysteresis (12).
+    /// wet (10), noise (11), hysteresis (12). Gains are amplitudes; times are fractions of
+    /// 500 ms (attack), 5 s (release), 250 ms (pre-open) and 1 s (hold).
     pub fn from_reagate(chunk: &[u8], sample_rate: u32) -> Option<Self> {
         let p = marked_params(chunk)?;
         let get = |i: usize, d: f32| p.get(i).copied().unwrap_or(d);
         let threshold = get(0, 0.0);
+        let attack = samples(get(1, 0.006), 500.0, sample_rate);
+        let pre = samples(get(3, 0.0), 250.0, sample_rate) as usize;
+        let hold = samples(get(4, 0.0), 1000.0, sample_rate) as usize;
         Some(Self {
             params: p.clone(),
             sample_rate,
             threshold,
             close_threshold: threshold * get(12, 1.0),
-            attack: coeff(get(1, 0.006) * 500.0, sample_rate),
-            release: coeff(get(2, 0.02) * 5000.0, sample_rate),
-            hold: (get(4, 0.0) * 1.0 * sample_rate as f32) as usize,
+            attack,
+            release: samples(get(2, 0.02), 5000.0, sample_rate),
+            close_after: hold + attack as usize + pre,
+            lookahead: Lookahead::new(pre),
             dry: get(9, 0.0),
             wet: get(10, 1.0),
             gain: 0.0,
-            held: 0,
+            below: 0,
             open: false,
         })
     }
@@ -111,7 +145,8 @@ impl Effect for Gate {
         if let Some(slot) = self.params.get_mut(id as usize) {
             *slot = raw as f32;
             if let Some(fresh) = Gate::from_reagate(&marked_chunk(&self.params), self.sample_rate) {
-                *self = Gate { gain: self.gain, open: self.open, held: self.held, ..fresh };
+                let lookahead = std::mem::replace(&mut self.lookahead, Lookahead::new(0));
+                *self = Gate { gain: self.gain, open: self.open, below: self.below, lookahead, ..fresh };
             }
         }
     }
@@ -127,79 +162,103 @@ impl Effect for Gate {
         true
     }
 
+    fn latency(&mut self) -> usize {
+        self.lookahead.l.len()
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         Some(marked_chunk(&self.params))
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            // The detector sees the incoming signal; with pre-open the audio is delayed so
+            // the gate is already open when a hit arrives.
             let level = l.abs().max(r.abs());
             if level >= self.threshold {
                 self.open = true;
-                self.held = self.hold;
-            } else if level < self.close_threshold {
-                if self.held > 0 {
-                    self.held -= 1;
-                } else {
+                self.below = 0;
+            } else if self.open && level < self.close_threshold {
+                self.below += 1;
+                if self.below >= self.close_after {
                     self.open = false;
                 }
             }
-            let (target, c) = if self.open { (1.0, self.attack) } else { (0.0, self.release) };
-            self.gain = target + (self.gain - target) * c;
-            let g = self.dry + self.wet * self.gain;
-            *l *= g;
-            *r *= g;
+            self.gain = if self.open {
+                if self.attack < 1.0 { 1.0 } else { (self.gain + 1.0 / self.attack).min(1.0) }
+            } else if self.release < 1.0 {
+                0.0
+            } else {
+                (self.gain - 1.0 / self.release).max(0.0)
+            };
+            let (dl, dr) = self.lookahead.swap(*l, *r);
+            let g = self.dry + self.wet * self.gain as f32;
+            *l = dl * g;
+            *r = dr * g;
         }
     }
 
     fn reset(&mut self) {
         self.gain = 0.0;
         self.open = false;
+        self.below = 0;
+        self.lookahead = Lookahead::new(self.lookahead.l.len());
     }
 }
 
 pub struct Compressor {
     params: Vec<f32>,
     sample_rate: u32,
-    threshold_db: f32,
-    ratio: f32,
-    knee_db: f32,
-    attack: f32,
-    release: f32,
+    threshold: f64,
+    threshold_db: f64,
+    ratio: f64,
+    knee_db: f64,
+    attack: f64,
+    release: f64,
     dry: f32,
     wet: f32,
-    env_db: f32,
+    /// Squared levels over the RMS window, with their running sum.
+    window: Vec<f64>,
+    window_at: usize,
+    window_sum: f64,
+    env: f64,
 }
 
 impl Compressor {
     /// Parameters 0..: threshold, ratio, attack, release, pre-comp, reserved, lowpass, hipass,
-    /// …, dry (10), wet (11), …, knee (14).
+    /// …, dry (10), wet (11), …, RMS size (13, fraction of 100 ms), knee (14).
     pub fn from_reacomp(chunk: &[u8], sample_rate: u32) -> Option<Self> {
         let p = marked_params(chunk)?;
         let get = |i: usize, d: f32| p.get(i).copied().unwrap_or(d);
+        let threshold = get(0, 1.0).max(1e-9) as f64;
+        let coeff = |frames: f64| if frames <= 0.0 { 0.0 } else { (-1.0 / frames).exp() };
+        let window = (samples(get(13, 0.05), 100.0, sample_rate) as usize).max(1);
         Some(Self {
             params: p.clone(),
             sample_rate,
-            threshold_db: 20.0 * get(0, 1.0).max(1e-9).log10(),
-            ratio: 1.0 + get(1, 0.0303) * 99.0,
-            knee_db: get(14, 0.0) * 24.0,
-            attack: coeff(get(2, 0.006) * 500.0, sample_rate),
-            release: coeff(get(3, 0.02) * 5000.0, sample_rate),
+            threshold,
+            threshold_db: 20.0 * threshold.log10(),
+            // The top of the range is infinity rather than 100:1.
+            ratio: if get(1, 0.0303) >= 1.0 { f64::INFINITY } else { 1.0 + get(1, 0.0303) as f64 * 99.0 },
+            knee_db: get(14, 0.0) as f64 * 24.0,
+            attack: coeff(samples(get(2, 0.006), 500.0, sample_rate)),
+            release: coeff(samples(get(3, 0.02), 5000.0, sample_rate)),
             dry: get(10, 0.0),
             wet: get(11, 1.0),
-            env_db: -150.0,
+            window: vec![0.0; window],
+            window_at: 0,
+            window_sum: 0.0,
+            env: 0.0,
         })
     }
 
-    fn gain_reduction_db(&self, level_db: f32) -> f32 {
+    fn gain_reduction_db(&self, level_db: f64) -> f64 {
         let over = level_db - self.threshold_db;
         let slope = 1.0 - 1.0 / self.ratio;
         if self.knee_db > 0.0 && over.abs() < self.knee_db / 2.0 {
-            -slope * (over + self.knee_db / 2.0).powi(2) / (2.0 * self.knee_db)
-        } else if over > 0.0 {
-            -slope * over
+            slope * (over + self.knee_db / 2.0).powi(2) / (2.0 * self.knee_db)
         } else {
-            0.0
+            slope * over.max(0.0)
         }
     }
 }
@@ -238,7 +297,14 @@ impl Effect for Compressor {
         if let Some(slot) = self.params.get_mut(id as usize) {
             *slot = raw as f32;
             if let Some(fresh) = Compressor::from_reacomp(&marked_chunk(&self.params), self.sample_rate) {
-                *self = Compressor { env_db: self.env_db, ..fresh };
+                let window = std::mem::take(&mut self.window);
+                *self = Compressor {
+                    env: self.env,
+                    window,
+                    window_at: self.window_at,
+                    window_sum: self.window_sum,
+                    ..fresh
+                };
             }
         }
     }
@@ -260,11 +326,26 @@ impl Effect for Compressor {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
+        let n = self.window.len();
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            let level_db = 20.0 * l.abs().max(r.abs()).max(1e-8).log10();
-            let c = if level_db > self.env_db { self.attack } else { self.release };
-            self.env_db = level_db + (self.env_db - level_db) * c;
-            let g = 10f32.powf(self.gain_reduction_db(self.env_db) / 20.0);
+            let sq = (*l as f64 * *l as f64).max(*r as f64 * *r as f64);
+            self.window_sum += sq - self.window[self.window_at];
+            self.window[self.window_at] = sq;
+            self.window_at = (self.window_at + 1) % n;
+            if self.window_at == 0 {
+                // Resum now and then so rounding cannot drift.
+                self.window_sum = self.window.iter().sum();
+            }
+            let level = (self.window_sum.max(0.0) / n as f64).sqrt();
+            // Rising levels start from the threshold: below it the envelope is irrelevant.
+            if level > self.env {
+                self.env = self.env.max(self.threshold);
+                self.env = level + self.attack * (self.env - level);
+            } else {
+                self.env = level + self.release * (self.env - level);
+            }
+            let db = 20.0 * self.env.max(1e-9).log10();
+            let g = 10f64.powf(-self.gain_reduction_db(db) / 20.0) as f32;
             let out = self.dry + self.wet * g;
             *l *= out;
             *r *= out;
@@ -272,7 +353,9 @@ impl Effect for Compressor {
     }
 
     fn reset(&mut self) {
-        self.env_db = -150.0;
+        self.env = 0.0;
+        self.window.fill(0.0);
+        self.window_sum = 0.0;
     }
 }
 
@@ -290,37 +373,77 @@ mod tests {
         d
     }
 
-    #[test]
-    fn gate_silences_below_threshold() {
-        let mut params = vec![0.0; 24];
-        params[0] = 0.1;
-        params[1] = 0.0;
-        params[2] = 0.0002;
-        params[10] = 1.0;
-        params[12] = 1.0;
-        let mut g = Gate::from_reagate(&chunk(&params), 48000).unwrap();
-        let ctx = ProcessContext { sample_rate: 48000, position: 0, playing: true, notes: None, bpm: 120.0 };
-        let (mut l, mut r) = (vec![0.01f32; 4800], vec![0.01f32; 4800]);
-        g.process(&mut l, &mut r, &ctx);
-        assert!(l[4799].abs() < 1e-4);
-        let (mut l, mut r) = (vec![0.5f32; 4800], vec![0.5f32; 4800]);
-        g.process(&mut l, &mut r, &ctx);
-        assert!((l[4799] - 0.5).abs() < 1e-3);
+    /// DC at 0.1, then 0.5 from 0.3 s to 0.7 s, then 0.1: REAPER's test signal.
+    fn steps() -> Vec<f32> {
+        (0..57600).map(|i| if (14400..33600).contains(&i) { 0.5 } else { 0.1 }).collect()
+    }
+
+    fn run(fx: &mut dyn Effect) -> Vec<f32> {
+        let ctx = ProcessContext {
+            sample_rate: 48000,
+            position: 0,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            bpm: 120.0,
+        };
+        let input = steps();
+        let (mut l, mut r) = (input.clone(), input.clone());
+        fx.process(&mut l, &mut r, &ctx);
+        l.iter().zip(&input).map(|(o, i)| o / i).collect()
+    }
+
+    /// Gains REAPER 7.73 rendered at these frames (threshold -12 dB).
+    fn check(gain: &[f32], expect: &[(usize, f32)]) {
+        for &(i, want) in expect {
+            assert!((gain[i] - want).abs() < 2e-4, "frame {i}: {} vs {want}", gain[i]);
+        }
     }
 
     #[test]
-    fn compressor_reduces_by_ratio() {
+    fn gate_matches_reaper() {
+        // Attack 10 ms, release 100 ms, then the same with 100 ms hold.
         let mut params = vec![0.0; 24];
-        params[0] = 0.1;
-        params[1] = 3.0 / 99.0;
-        params[2] = 0.0;
-        params[3] = 0.0;
-        params[11] = 1.0;
-        let mut c = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
-        let ctx = ProcessContext { sample_rate: 48000, position: 0, playing: true, notes: None, bpm: 120.0 };
-        let (mut l, mut r) = (vec![1.0f32; 100], vec![1.0f32; 100]);
-        c.process(&mut l, &mut r, &ctx);
-        // 20 dB over the threshold at 4:1 leaves 5 dB over: -15 dB.
-        assert!((20.0 * l[99].log10() + 15.0).abs() < 0.1, "{}", 20.0 * l[99].log10());
+        (params[0], params[1], params[2], params[10], params[12]) = (0.2512, 0.02, 0.02, 1.0, 1.0);
+        let gain = run(&mut Gate::from_reagate(&chunk(&params), 48000).unwrap());
+        check(
+            &gain,
+            &[
+                (14399, 0.0),
+                (14400, 0.0021),
+                (14480, 0.1688),
+                (14640, 0.5021),
+                (14880, 1.0),
+                (34080, 0.9994),
+                (34560, 0.8994),
+                (36000, 0.5994),
+                (43200, 0.0),
+            ],
+        );
+        params[4] = 0.1;
+        let gain = run(&mut Gate::from_reagate(&chunk(&params), 48000).unwrap());
+        check(&gain, &[(38400, 1.0), (43200, 0.0994)]);
+    }
+
+    #[test]
+    fn compressor_matches_reaper() {
+        // 4:1, attack 10 ms, release 100 ms, RMS 5 ms.
+        let mut params = vec![0.0; 24];
+        (params[0], params[1], params[2], params[3], params[11], params[13]) = (0.2512, 0.0303, 0.02, 0.02, 1.0, 0.05);
+        let gain = run(&mut Compressor::from_reacomp(&chunk(&params), 48000).unwrap());
+        check(
+            &gain,
+            &[
+                (14420, 1.0),
+                (14480, 0.9954),
+                (14640, 0.8777),
+                (15360, 0.6404),
+                (24000, 0.5968),
+                (34080, 0.622),
+                (36000, 0.7796),
+                (38400, 0.9986),
+            ],
+        );
     }
 }

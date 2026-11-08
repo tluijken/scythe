@@ -12,6 +12,7 @@ use scythe_core::{Project, TimeRange};
 
 use crate::fx::FxRegistry;
 use crate::media::MediaPool;
+use crate::midi_io::{LiveMidi, MidiInputs};
 use crate::render::{LiveInput, MeterRegistry, RenderGraph, RenderScratch};
 
 const NO_SEEK: i64 = i64::MIN;
@@ -110,6 +111,34 @@ impl Transport {
 /// Renders one output buffer. Shared by the device callback and the null output thread.
 /// Live input delivered to the audio callback: interleaved samples and their channel count.
 type InputFeed = (rtrb::Consumer<f32>, usize);
+/// One ring per open MIDI input.
+type MidiFeed = Vec<rtrb::Consumer<LiveMidi>>;
+/// MIDI that arrived while playing, with the project frame of the block it was played in.
+type RecordedMidi = (i64, LiveMidi);
+
+/// The audio callback's ends of the channels to the main thread.
+struct Feeds {
+    input_rx: Receiver<Option<InputFeed>>,
+    midi_rx: Receiver<MidiFeed>,
+    recorded: rtrb::Producer<RecordedMidi>,
+}
+
+/// The main thread's ends.
+struct FeedSenders {
+    input_tx: Sender<Option<InputFeed>>,
+    midi_tx: Sender<MidiFeed>,
+    recorded: rtrb::Consumer<RecordedMidi>,
+}
+
+fn feeds() -> (FeedSenders, Feeds) {
+    let (input_tx, input_rx) = channel();
+    let (midi_tx, midi_rx) = channel();
+    let (producer, consumer) = rtrb::RingBuffer::new(16_384);
+    (FeedSenders { input_tx, midi_tx, recorded: consumer }, Feeds { input_rx, midi_rx, recorded: producer })
+}
+
+/// Most live MIDI messages one block takes; the rest wait for the next block.
+const MAX_LIVE_MIDI: usize = 512;
 
 struct Processor {
     graph: Arc<ArcSwap<RenderGraph>>,
@@ -121,20 +150,45 @@ struct Processor {
     input: Option<InputFeed>,
     /// De-interleaved input for the current block.
     in_bufs: Vec<Vec<f32>>,
+    midi_rx: Receiver<MidiFeed>,
+    midi_in: MidiFeed,
+    /// Live MIDI for the current block.
+    live: Vec<LiveMidi>,
+    recorded: rtrb::Producer<RecordedMidi>,
 }
 
 impl Processor {
-    fn new(graph: Arc<ArcSwap<RenderGraph>>, transport: Arc<Transport>, input_rx: Receiver<Option<InputFeed>>) -> Self {
+    fn new(graph: Arc<ArcSwap<RenderGraph>>, transport: Arc<Transport>, feeds: Feeds) -> Self {
         Self {
             graph,
             transport,
             scratch: RenderScratch::new(MAX_TRACKS),
             left: vec![0.0; RenderScratch::MAX_BLOCK],
             right: vec![0.0; RenderScratch::MAX_BLOCK],
-            input_rx,
+            input_rx: feeds.input_rx,
             input: None,
             in_bufs: (0..LiveInput::MAX_CHANNELS).map(|_| vec![0.0; RenderScratch::MAX_BLOCK]).collect(),
+            midi_rx: feeds.midi_rx,
+            midi_in: Vec::new(),
+            live: Vec::with_capacity(MAX_LIVE_MIDI),
+            recorded: feeds.recorded,
         }
+    }
+
+    /// Collects the MIDI that arrived since the last block. Returns whether MIDI inputs are open.
+    fn read_midi(&mut self) -> bool {
+        while let Ok(feed) = self.midi_rx.try_recv() {
+            // Dropping the old rings here is rare (inputs reopened) and frees little.
+            self.midi_in = feed;
+        }
+        self.live.clear();
+        for rx in &mut self.midi_in {
+            while self.live.len() < MAX_LIVE_MIDI {
+                let Ok(m) = rx.pop() else { break };
+                self.live.push(m);
+            }
+        }
+        !self.midi_in.is_empty()
     }
 
     /// Pulls `frames` frames of live input, keeping at most a little more than a block queued
@@ -176,6 +230,12 @@ impl Processor {
         let n = self.transport.advance(frames, &mut segments);
         let graph = self.graph.load();
         let has_input = self.read_input(frames);
+        let has_midi = self.read_midi();
+        if let Some(&(pos, _, _)) = segments[..n].first() {
+            for &m in &self.live {
+                let _ = self.recorded.push((pos, m));
+            }
+        }
         let (l, r) = (&mut self.left[..frames], &mut self.right[..frames]);
         let channels = |from: usize, len: usize| -> [Option<&[f32]>; LiveInput::MAX_CHANNELS] {
             std::array::from_fn(|c| has_input.then(|| &self.in_bufs[c][from..from + len]))
@@ -184,13 +244,14 @@ impl Processor {
         // few seconds after stopping or a parameter change, so tails ring out and changes apply
         // without heavy chains burning CPU while idle.
         let awake = self.transport.wake_frames.fetch_sub(frames as i64, Ordering::Relaxed) > 0;
-        if n == 0 && ((has_input && graph.monitoring()) || awake) {
+        if n == 0 && (((has_input || has_midi) && graph.monitoring()) || awake) {
             let pos = self.transport.position.load(Ordering::Relaxed);
-            let live = LiveInput { channels: channels(0, frames), play_items: false };
+            let live = LiveInput { channels: channels(0, frames), midi: &self.live, play_items: false };
             graph.render_with(pos, l, r, &mut self.scratch, &live);
         }
-        for &(pos, off, len) in &segments[..n] {
-            let live = LiveInput { channels: channels(off, len), play_items: true };
+        for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
+            let midi: &[LiveMidi] = if i == 0 { &self.live } else { &[] };
+            let live = LiveInput { channels: channels(off, len), midi, play_items: true };
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
@@ -256,6 +317,9 @@ pub struct Engine {
     input_tx: Sender<Option<InputFeed>>,
     /// Open while a track monitors its input.
     input_stream: Option<cpal::Stream>,
+    midi_tx: Sender<MidiFeed>,
+    midi_inputs: Option<MidiInputs>,
+    recorded_midi: rtrb::Consumer<RecordedMidi>,
     _output: Output,
 }
 
@@ -284,8 +348,8 @@ impl Engine {
         let sample_rate = config.sample_rate;
         let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
         let transport = Arc::new(Transport::new(sample_rate));
-        let (input_tx, input_rx) = channel();
-        let proc = Processor::new(graph.clone(), transport.clone(), input_rx);
+        let (senders, feeds) = feeds();
+        let proc = Processor::new(graph.clone(), transport.clone(), feeds);
         let stream = match format {
             SampleFormat::F32 => build::<f32>(device, &config, proc, transport.clone()),
             SampleFormat::I16 => build::<i16>(device, &config, proc, transport.clone()),
@@ -307,8 +371,11 @@ impl Engine {
             fx: FxRegistry::new(sample_rate),
             retired: VecDeque::new(),
             metronome: 0.0,
-            input_tx,
+            input_tx: senders.input_tx,
             input_stream: None,
+            midi_tx: senders.midi_tx,
+            midi_inputs: None,
+            recorded_midi: senders.recorded,
             info: DeviceInfo { name, sample_rate, block_size, fallback_reason: None },
             _output: Output::Device { _stream: stream },
         })
@@ -318,8 +385,8 @@ impl Engine {
         const BLOCK: usize = 512;
         let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
         let transport = Arc::new(Transport::new(sample_rate));
-        let (input_tx, input_rx) = channel();
-        let mut proc = Processor::new(graph.clone(), transport.clone(), input_rx);
+        let (senders, feeds) = feeds();
+        let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = stop.clone();
         let period = Duration::from_secs_f64(BLOCK as f64 / sample_rate as f64);
@@ -346,8 +413,11 @@ impl Engine {
             fx: FxRegistry::new(sample_rate),
             retired: VecDeque::new(),
             metronome: 0.0,
-            input_tx,
+            input_tx: senders.input_tx,
             input_stream: None,
+            midi_tx: senders.midi_tx,
+            midi_inputs: None,
+            recorded_midi: senders.recorded,
             info: DeviceInfo {
                 name: "No audio device".into(),
                 sample_rate,
@@ -436,6 +506,40 @@ impl Engine {
         let _ = self.input_tx.send(Some((rx, channels)));
         self.input_stream = Some(stream);
         Ok(())
+    }
+
+    /// Opens every MIDI input for live play and recording, or closes them.
+    pub fn set_midi_input(&mut self, on: bool) -> Result<(), String> {
+        if on == self.midi_inputs.is_some() {
+            return Ok(());
+        }
+        if !on {
+            self.midi_inputs = None;
+            let _ = self.midi_tx.send(Vec::new());
+            return Ok(());
+        }
+        let (inputs, rings) = MidiInputs::open_all()?;
+        if rings.is_empty() {
+            return Err("no MIDI input".into());
+        }
+        let _ = self.midi_tx.send(rings);
+        self.midi_inputs = Some(inputs);
+        Ok(())
+    }
+
+    /// Names of the open MIDI inputs.
+    pub fn midi_input_names(&self) -> &[String] {
+        self.midi_inputs.as_ref().map_or(&[], |m| &m.names)
+    }
+
+    /// MIDI played since the last call while the transport ran, with the project frame of the
+    /// block it arrived in.
+    pub fn take_recorded_midi(&mut self) -> Vec<(i64, LiveMidi)> {
+        let mut out = Vec::with_capacity(self.recorded_midi.slots());
+        while let Ok(e) = self.recorded_midi.pop() {
+            out.push(e);
+        }
+        out
     }
 
     /// Metronome gain while playing; takes effect on the next `sync`.

@@ -1,6 +1,7 @@
 //! Minimal VST 3 plugins used to test scythe's VST 3 host. "Test Gain" scales stereo audio by
 //! its one parameter, keeps that gain in its component state and has a separate controller.
-//! "Test Synth" is an instrument that writes the held key / 128 as a constant level.
+//! "Test Synth" is an instrument that writes the held key / 128 times its gain as a constant
+//! level; controller 7 is mapped to the gain.
 
 #![allow(non_snake_case)]
 
@@ -59,9 +60,6 @@ impl IPluginBaseTrait for Processor {
 
 impl IComponentTrait for Processor {
     unsafe fn getControllerClassId(&self, class_id: *mut TUID) -> tresult {
-        if self.instrument {
-            return kNotImplemented;
-        }
         unsafe { *class_id = CONTROLLER_CID };
         kResultOk
     }
@@ -146,17 +144,32 @@ impl IAudioProcessorTrait for Processor {
         // SAFETY: the host passes valid process data for `numSamples` frames.
         unsafe {
             let data = &*data;
+            let mut gain_queue = None;
             if let Some(changes) = ComRef::from_raw(data.inputParameterChanges) {
                 for i in 0..changes.getParameterCount() {
                     if let Some(queue) = ComRef::from_raw(changes.getParameterData(i))
                         && queue.getParameterId() == 0
                     {
-                        let (mut offset, mut value) = (0, 0.0);
-                        if queue.getPoint(queue.getPointCount() - 1, &mut offset, &mut value) == kResultTrue {
-                            self.gain.set(value);
-                        }
+                        gain_queue = Some(queue);
                     }
                 }
+            }
+            // The synth follows gain changes sample by sample; the gain effect per block.
+            let mut point = 0;
+            let mut apply_gain_until = |frame: i32| {
+                let Some(queue) = &gain_queue else { return };
+                while point < queue.getPointCount() {
+                    let (mut offset, mut value) = (0, 0.0);
+                    queue.getPoint(point, &mut offset, &mut value);
+                    if offset > frame {
+                        break;
+                    }
+                    self.gain.set(value);
+                    point += 1;
+                }
+            };
+            if !self.instrument {
+                apply_gain_until(i32::MAX);
             }
             let n = data.numSamples as usize;
             let out = slice::from_raw_parts(data.outputs, data.numOutputs as usize);
@@ -167,6 +180,7 @@ impl IAudioProcessorTrait for Processor {
                 let count = events.as_ref().map_or(0, |e| e.getEventCount());
                 let mut next = 0;
                 for i in 0..n {
+                    apply_gain_until(i as i32);
                     while next < count {
                         let mut e: Event = std::mem::zeroed();
                         events.as_ref().unwrap().getEvent(next, &mut e);
@@ -182,7 +196,7 @@ impl IAudioProcessorTrait for Processor {
                         }
                         next += 1;
                     }
-                    let v = self.key.get().map_or(0.0, |k| k as f32 / 128.0);
+                    let v = self.key.get().map_or(0.0, |k| k as f32 / 128.0) * self.gain.get() as f32;
                     *outs[0].add(i) = v;
                     *outs[1].add(i) = v;
                 }
@@ -209,7 +223,24 @@ struct Controller {
 }
 
 impl Class for Controller {
-    type Interfaces = (IEditController,);
+    type Interfaces = (IEditController, IMidiMapping);
+}
+
+/// Controller 7 (volume) on any channel drives the gain.
+impl IMidiMappingTrait for Controller {
+    unsafe fn getMidiControllerAssignment(
+        &self,
+        bus: int32,
+        _channel: int16,
+        controller: CtrlNumber,
+        id: *mut ParamID,
+    ) -> tresult {
+        if bus != 0 || controller != 7 {
+            return kResultFalse;
+        }
+        unsafe { *id = 0 };
+        kResultOk
+    }
 }
 
 impl IPluginBaseTrait for Controller {

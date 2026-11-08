@@ -145,6 +145,8 @@ pub struct Take {
     pub pitch: f64,
     pub volume: f64,
     pub pan: f64,
+    /// Take volume, pan and mute envelopes, in seconds from the item start.
+    pub envelopes: Vec<Envelope>,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
@@ -195,6 +197,7 @@ impl Take {
             pitch: 0.0,
             volume: 1.0,
             pan: 0.0,
+            envelopes: Vec::new(),
             lines: LineMemo::new(),
             extra: Vec::new(),
         }
@@ -319,6 +322,8 @@ pub struct Send {
     pub volume: f64,
     pub pan: f64,
     pub muted: bool,
+    /// Send volume, pan and mute envelopes.
+    pub envelopes: Vec<Envelope>,
     /// Tokens of the original `AUXRECV` line, so channel mapping, MIDI flags and the rest
     /// survive a save when only volume, pan or mute changed.
     pub raw: Option<Vec<String>>,
@@ -326,7 +331,54 @@ pub struct Send {
 
 impl Send {
     pub fn new(dest: TrackId) -> Self {
-        Self { dest, volume: 1.0, pan: 0.0, muted: false, raw: None }
+        Self { dest, volume: 1.0, pan: 0.0, muted: false, envelopes: Vec::new(), raw: None }
+    }
+}
+
+/// REAPER's track automation modes, in `AUTOMODE` order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AutoMode {
+    /// Envelopes play; the fader trims on top of them.
+    #[default]
+    TrimRead,
+    /// Envelopes play and drive the controls.
+    Read,
+    /// Moving a control writes while it is held, then the envelope takes over again.
+    Touch,
+    /// Every control writes its current value for the whole pass.
+    Write,
+    /// Moving a control writes from then on until playback stops.
+    Latch,
+    /// Like latch, but only remembers the values for writing later.
+    LatchPreview,
+}
+
+impl AutoMode {
+    pub const ALL: [AutoMode; 6] =
+        [Self::TrimRead, Self::Read, Self::Touch, Self::Write, Self::Latch, Self::LatchPreview];
+
+    pub fn from_rpp(v: i64) -> Self {
+        Self::ALL.get(v.max(0) as usize).copied().unwrap_or_default()
+    }
+
+    pub fn rpp_code(self) -> i64 {
+        Self::ALL.iter().position(|m| *m == self).unwrap_or(0) as i64
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TrimRead => "Trim/Read",
+            Self::Read => "Read",
+            Self::Touch => "Touch",
+            Self::Write => "Write",
+            Self::Latch => "Latch",
+            Self::LatchPreview => "Latch preview",
+        }
+    }
+
+    /// Whether moving a control while playing writes envelope points.
+    pub fn writes(self) -> bool {
+        matches!(self, Self::Touch | Self::Write | Self::Latch)
     }
 }
 
@@ -353,6 +405,8 @@ pub struct Track {
     pub main_send: bool,
     /// Track pan law (`VOLPAN` field 3); negative means the project default.
     pub pan_law: f64,
+    /// Automation mode (`AUTOMODE`): what moving a control does while playing.
+    pub auto_mode: AutoMode,
     pub items: Vec<Item>,
     pub fx: Vec<FxSlot>,
     /// FX-chain level lines (window state and such) that precede the first plugin.
@@ -380,6 +434,7 @@ impl Track {
             folder_depth: 0,
             main_send: true,
             pan_law: -1.0,
+            auto_mode: AutoMode::TrimRead,
             items: Vec::new(),
             fx: Vec::new(),
             fx_chain_prelude: Vec::new(),
@@ -650,6 +705,34 @@ impl Project {
         }
     }
 
+    /// Copies of the parts of items inside each area (razor edits), cropped to it, with fresh
+    /// identities.
+    pub fn pieces_in(&self, areas: &[(TrackId, TimeRange)]) -> Vec<(TrackId, Item)> {
+        let mut out = Vec::new();
+        for &(track, range) in areas {
+            let Some(t) = self.track(track) else { continue };
+            for it in t.items.iter().filter(|it| it.end() > range.start && it.position < range.end) {
+                let mut piece = it.duplicate();
+                let end = piece.end().min(range.end);
+                if piece.position < range.start {
+                    piece.trim_start(range.start);
+                }
+                piece.length = end - piece.position;
+                if piece.length > MIN_ITEM_LENGTH {
+                    out.push((track, piece));
+                }
+            }
+        }
+        out
+    }
+
+    /// Removes what lies inside each area (razor edits), splitting items at the edges.
+    pub fn remove_areas(&mut self, areas: &[(TrackId, TimeRange)]) {
+        for &(track, range) in areas {
+            self.remove_range(range, Some(&[track]), false);
+        }
+    }
+
     /// Opens a gap of `range` at `range.start` on every track: items there are split and
     /// everything later, markers and envelope points included, moves right.
     pub fn insert_space(&mut self, range: TimeRange) {
@@ -867,5 +950,45 @@ mod tests {
         let g = new_guid();
         assert_eq!(g.len(), 38);
         assert_ne!(g, new_guid());
+    }
+}
+
+#[cfg(test)]
+mod auto_mode_tests {
+    use crate::rpp::{project_from_rpp, project_to_rpp};
+
+    #[test]
+    fn automation_mode_round_trips() {
+        let mut p = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    AUTOMODE 2\n  >\n>\n").unwrap();
+        assert_eq!(p.tracks[0].auto_mode, super::AutoMode::Touch);
+        p.tracks[0].auto_mode = super::AutoMode::Latch;
+        p.add_track("new");
+        let text = project_to_rpp(&p);
+        assert_eq!(text.matches("AUTOMODE 4").count(), 1, "{text}");
+        assert!(!text.contains("AUTOMODE 0"), "the default is not written for new tracks");
+    }
+}
+
+#[cfg(test)]
+mod razor_tests {
+    use super::*;
+
+    #[test]
+    fn areas_copy_and_remove_per_track() {
+        let mut p = Project::default();
+        let a = p.add_track("a");
+        let b = p.add_track("b");
+        p.track_mut(a).unwrap().items.push(Item::new(0.0, 10.0, Take::from_file("a.wav".into())));
+        p.track_mut(b).unwrap().items.push(Item::new(2.0, 2.0, Take::from_file("b.wav".into())));
+        let areas = [(a, TimeRange::new(3.0, 5.0)), (b, TimeRange::new(3.0, 8.0))];
+        let pieces = p.pieces_in(&areas);
+        assert_eq!(pieces.len(), 2);
+        assert_eq!((pieces[0].1.position, pieces[0].1.length, pieces[0].1.takes[0].source_offset), (3.0, 2.0, 3.0));
+        assert_eq!((pieces[1].1.position, pieces[1].1.length), (3.0, 1.0));
+        assert_ne!(pieces[0].1.id, p.track(a).unwrap().items[0].id);
+        p.remove_areas(&areas);
+        let spans = |t: TrackId| p.track(t).unwrap().items.iter().map(|i| (i.position, i.end())).collect::<Vec<_>>();
+        assert_eq!(spans(a), [(0.0, 3.0), (5.0, 10.0)]);
+        assert_eq!(spans(b), [(2.0, 3.0)]);
     }
 }

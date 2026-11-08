@@ -3,7 +3,7 @@ use scythe_core::TrackId;
 use scythe_core::fader::{db_to_slider, slider_to_db};
 use scythe_core::units::{db_to_gain, format_db, format_pan, gain_to_db};
 
-use crate::app::{ScytheApp, Selection};
+use crate::app::{AutoTarget, ScytheApp, Selection};
 use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW, track_color};
 use crate::ui::arrange::meter_fraction;
 use crate::ui::widgets;
@@ -76,8 +76,8 @@ fn strip(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, are
             (
                 t.name.clone(),
                 track_color(t.color),
-                t.volume,
-                t.pan,
+                app.automation_value(id, AutoTarget::Volume).unwrap_or(t.volume),
+                app.automation_value(id, AutoTarget::Pan).unwrap_or(t.pan),
                 app.sel.track == Some(id),
                 app.levels.get(&id).copied().unwrap_or_default(),
                 app.project.is_audible(t),
@@ -137,16 +137,27 @@ fn strip(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, are
         .on_hover_text("Drag to pan, double-click to center");
     if pan_hit.dragged() {
         let d = pan_hit.drag_delta().x as f64 / pan_rect.width() as f64 * 2.0;
-        app.gesture("Adjust pan", |p| {
-            let t = match target {
-                StripTarget::Track(id) => p.track_mut(id).unwrap(),
-                StripTarget::Master => &mut p.master,
-            };
-            t.pan = (t.pan + d).clamp(-1.0, 1.0);
-        });
+        let written = match target {
+            StripTarget::Track(id) => app.automate(id, AutoTarget::Pan, (pan + d).clamp(-1.0, 1.0)),
+            StripTarget::Master => false,
+        };
+        if !written {
+            app.gesture("Adjust pan", |p| {
+                let t = match target {
+                    StripTarget::Track(id) => p.track_mut(id).unwrap(),
+                    StripTarget::Master => &mut p.master,
+                };
+                t.pan = (t.pan + d).clamp(-1.0, 1.0);
+            });
+        }
     }
     if pan_hit.drag_stopped() {
-        app.end_gesture();
+        match target {
+            StripTarget::Track(id) if app.automation_value(id, AutoTarget::Pan).is_some() => {
+                app.release_automation(id, AutoTarget::Pan)
+            }
+            _ => app.end_gesture(),
+        }
     }
     if pan_hit.double_clicked() {
         app.edit("Center pan", |p| match target {
@@ -183,13 +194,24 @@ fn strip(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, are
         let fine = ui.ctx().input(|i| i.modifiers.shift);
         let d = -fader_hit.drag_delta().y / fader.height() * if fine { 0.1 } else { 1.0 };
         let new_gain = fader_gain(pos + d);
-        app.gesture("Adjust volume", |p| match target {
-            StripTarget::Track(id) => p.track_mut(id).unwrap().volume = new_gain,
-            StripTarget::Master => p.master.volume = new_gain,
-        });
+        let written = match target {
+            StripTarget::Track(id) => app.automate(id, AutoTarget::Volume, new_gain),
+            StripTarget::Master => false,
+        };
+        if !written {
+            app.gesture("Adjust volume", |p| match target {
+                StripTarget::Track(id) => p.track_mut(id).unwrap().volume = new_gain,
+                StripTarget::Master => p.master.volume = new_gain,
+            });
+        }
     }
     if fader_hit.drag_stopped() {
-        app.end_gesture();
+        match target {
+            StripTarget::Track(id) if app.automation_value(id, AutoTarget::Volume).is_some() => {
+                app.release_automation(id, AutoTarget::Volume)
+            }
+            _ => app.end_gesture(),
+        }
     }
     if fader_hit.double_clicked() {
         app.edit("Reset volume", |p| match target {

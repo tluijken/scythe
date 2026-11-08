@@ -1,8 +1,8 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
 use scythe_core::units::format_db;
 use scythe_core::{EnvelopeKind, Send, TrackId};
-
 use scythe_engine::fx::FxStatus;
+use scythe_engine::midi_io::{ALL_MIDI_INPUTS, midi_input_channel};
 
 use crate::app::{InspectorTab, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
@@ -35,16 +35,30 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let mut name = track.name.clone();
     let name_rect =
         Rect::from_min_size(pos2(badge.right() + 12.0, badge.top() + 2.0), vec2(inner.width() - 56.0 - 76.0, 24.0));
-    // Record input: cycles through mono inputs 1-4 and stereo pairs 1/2, 3/4.
-    const INPUTS: [i64; 6] = [0, 1, 2, 3, 1024, 1026];
-    let input_label = match track.rec_input {
-        v if v < 0 => "No input".to_owned(),
-        v if v & 1024 != 0 => format!("In {}/{}", (v & 511) + 1, (v & 511) + 2),
-        v => format!("In {}", (v & 511) + 1),
+    // Record input: cycles through mono inputs 1-4, stereo pairs 1/2, 3/4 and all MIDI inputs.
+    const INPUTS: [i64; 7] = [0, 1, 2, 3, 1024, 1026, ALL_MIDI_INPUTS];
+    let input_label = match (track.rec_input, midi_input_channel(track.rec_input)) {
+        (v, _) if v < 0 => "No input".to_owned(),
+        (_, Some(None)) => "MIDI".to_owned(),
+        (_, Some(Some(ch))) => format!("MIDI {}", ch + 1),
+        (v, None) if v & 1024 != 0 => format!("In {}/{}", (v & 511) + 1, (v & 511) + 2),
+        (v, None) => format!("In {}", (v & 511) + 1),
     };
     let input_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 2.0), vec2(70.0, 24.0));
     let mon_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 28.0), vec2(70.0, 18.0));
     let mon_fg = if track.monitor { if track.armed { theme::PINK } else { TEXT } } else { TEXT_DIM };
+    let auto_pill = Rect::from_min_size(pos2(inner.right() - 150.0, badge.top() + 28.0), vec2(74.0, 18.0));
+    let mode = track.auto_mode;
+    let auto_fg = if mode.writes() { theme::PINK } else { TEXT_DIM };
+    if text_pill(ui, auto_pill, mode.label(), theme::mono(10.0), BG, auto_fg)
+        .on_hover_text(
+            "Automation mode (click to change). Touch, Latch and Write record fader and pan moves while playing.",
+        )
+        .clicked()
+    {
+        let next = scythe_core::AutoMode::ALL[(mode.rpp_code() as usize + 1) % scythe_core::AutoMode::ALL.len()];
+        app.edit("Automation mode", |p| p.track_mut(track_id).unwrap().auto_mode = next);
+    }
     if text_pill(ui, mon_pill, if track.monitor { "Mon on" } else { "Mon off" }, theme::mono(10.0), BG, mon_fg)
         .on_hover_text("Hear the input through this track while it is armed")
         .clicked()
@@ -55,7 +69,9 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         });
     }
     if text_pill(ui, input_pill, &input_label, theme::mono(11.0), BG, if track.armed { theme::PINK } else { TEXT_DIM })
-        .on_hover_text("Record input (click to change)")
+        .on_hover_text(
+            "Record input (click to change). MIDI plays the track's instrument while armed with monitoring on",
+        )
         .clicked()
     {
         let next = INPUTS[(INPUTS.iter().position(|&v| v == track.rec_input).map_or(0, |i| i + 1)) % INPUTS.len()];
@@ -77,6 +93,7 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         Some(p) => format!("Track {} · in folder {p}", index + 1),
         None => format!("Track {} · {} items", index + 1, track.items.len()),
     };
+    let sub = widgets::truncate(ui, &sub, &theme::regular(12.0), auto_pill.left() - badge.right() - 20.0);
     clip.text(
         pos2(badge.right() + 12.0, badge.bottom() - 9.0),
         Align2::LEFT_CENTER,

@@ -124,9 +124,93 @@ impl Loudness {
     }
 }
 
+/// Loudness of a whole render after BS.1770-4: mean squares of 100 ms blocks, from which the
+/// 400 ms gating blocks (75 % overlap) and 3 s windows are formed.
+pub struct LoudnessScan {
+    filters: [[Biquad; 2]; 2],
+    acc: f64,
+    count: usize,
+    block_len: usize,
+    blocks: Vec<f64>,
+}
+
+impl LoudnessScan {
+    pub fn new(sample_rate: u32) -> Self {
+        let k = k_weighting(sample_rate as f64);
+        Self { filters: [k, k], acc: 0.0, count: 0, block_len: (sample_rate / 10).max(1) as usize, blocks: Vec::new() }
+    }
+
+    pub fn push(&mut self, left: &[f32], right: &[f32]) {
+        for (&l, &r) in left.iter().zip(right) {
+            let [fl, fr] = &mut self.filters;
+            let kl = fl[0].run(l as f64);
+            let kl = fl[1].run(kl);
+            let kr = fr[0].run(r as f64);
+            let kr = fr[1].run(kr);
+            self.acc += kl * kl + kr * kr;
+            self.count += 1;
+            if self.count == self.block_len {
+                self.blocks.push(self.acc / self.count as f64);
+                (self.acc, self.count) = (0.0, 0);
+            }
+        }
+    }
+
+    /// Mean squares of the windows of `n` 100 ms blocks ending at every block. As in REAPER's
+    /// measurement, the first windows reach back before the start, where it is silent.
+    fn windows(&self, n: usize) -> impl Iterator<Item = f64> + '_ {
+        (1..=self.blocks.len()).map(move |end| self.blocks[end.saturating_sub(n)..end].iter().sum::<f64>() / n as f64)
+    }
+
+    /// Integrated loudness in LUFS: 400 ms blocks above -70 LUFS, then above the mean of
+    /// those less 10 LU.
+    pub fn integrated(&self) -> f64 {
+        let gated: Vec<f64> = self.windows(4).filter(|&m| lufs(m) as f64 > -70.0).collect();
+        if gated.is_empty() {
+            return f64::NEG_INFINITY;
+        }
+        let relative = lufs(gated.iter().sum::<f64>() / gated.len() as f64) as f64 - 10.0;
+        let kept: Vec<f64> = gated.into_iter().filter(|&m| lufs(m) as f64 > relative).collect();
+        if kept.is_empty() {
+            return f64::NEG_INFINITY;
+        }
+        lufs(kept.iter().sum::<f64>() / kept.len() as f64) as f64
+    }
+
+    pub fn max_momentary(&self) -> f64 {
+        self.windows(4).map(|m| lufs(m) as f64).fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    pub fn max_short_term(&self) -> f64 {
+        self.windows(30).map(|m| lufs(m) as f64).fold(f64::NEG_INFINITY, f64::max)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sine(amp: f32, seconds: f32, sr: u32) -> Vec<f32> {
+        (0..(seconds * sr as f32) as usize)
+            .map(|i| amp * (std::f32::consts::TAU * 1000.0 * i as f32 / sr as f32).sin())
+            .collect()
+    }
+
+    #[test]
+    fn integrated_loudness_with_gating() {
+        // A 1 kHz sine at -20 dBFS reads -23 LUFS per channel (EBU Tech 3341); two add 3 dB.
+        // The three lead-in windows, partly before the start, pull 10 s of it down by 0.06 LU.
+        let s = sine(0.1, 10.0, 48000);
+        let mut scan = LoudnessScan::new(48000);
+        scan.push(&s, &s);
+        assert!((scan.integrated() + 20.06).abs() < 0.01, "{}", scan.integrated());
+        // A much quieter second half falls under the relative gate; only the windows across the
+        // step still count, by another 0.06 LU.
+        let quiet = sine(0.001, 10.0, 48000);
+        scan.push(&quiet, &quiet);
+        assert!((scan.integrated() + 20.12).abs() < 0.02, "{}", scan.integrated());
+        assert!((scan.max_momentary() + 20.0).abs() < 0.2);
+    }
 
     /// BS.1770 calibration: a full-scale 997 Hz sine on one channel reads -3.01 LUFS, so the
     /// same sine at -20 dBFS on both channels reads -20.0 LUFS.
