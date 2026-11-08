@@ -45,14 +45,19 @@ pub fn midi_input_channel(rec_input: i64) -> Option<Option<u8>> {
     Some((ch > 0).then(|| ch - 1))
 }
 
+/// Ports scythe opens itself show up in the system's lists too; using them would loop.
+fn foreign(name: &str) -> bool {
+    !name.contains("scythe")
+}
+
 pub fn input_names() -> Vec<String> {
     let Ok(input) = MidiInput::new("scythe") else { return Vec::new() };
-    input.ports().iter().filter_map(|p| input.port_name(p).ok()).collect()
+    input.ports().iter().filter_map(|p| input.port_name(p).ok()).filter(|n| foreign(n)).collect()
 }
 
 pub fn output_names() -> Vec<String> {
     let Ok(output) = MidiOutput::new("scythe") else { return Vec::new() };
-    output.ports().iter().filter_map(|p| output.port_name(p).ok()).collect()
+    output.ports().iter().filter_map(|p| output.port_name(p).ok()).filter(|n| foreign(n)).collect()
 }
 
 /// Open connections to every MIDI input. Dropping it closes them.
@@ -72,8 +77,7 @@ impl MidiInputs {
         let mut names = Vec::new();
         for port in &ports {
             let name = probe.port_name(port).unwrap_or_else(|_| "MIDI input".into());
-            // Our own output ports show up as inputs too; listening to them would loop.
-            if name.contains("scythe") {
+            if !foreign(&name) {
                 continue;
             }
             let input = MidiInput::new("scythe").map_err(|e| e.to_string())?;

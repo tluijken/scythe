@@ -302,6 +302,14 @@ impl Item {
         self.takes.get(self.active_take)
     }
 
+    /// The fixed lane the item sits in, from its vertical placement.
+    pub fn lane(&self) -> usize {
+        match self.ypos {
+            Some((top, height)) if height > 0.0 => (top / height).round().max(0.0) as usize,
+            _ => 0,
+        }
+    }
+
     pub fn name(&self) -> &str {
         self.take().map(|t| t.name.as_str()).unwrap_or("")
     }
@@ -410,6 +418,10 @@ pub struct Track {
     /// Hardware MIDI output (`MIDIHWOUT`): device index and channel (0 keeps each message's
     /// own channel, 1-16 forces one).
     pub midi_out: Option<(u8, u8)>,
+    /// The track's items sit in fixed lanes (`FREEMODE 2`), so lane soloing applies.
+    pub fixed_lanes: bool,
+    /// Fixed lanes that play (`LANESOLO`): a bitmask per 32 lanes; `None` plays every lane.
+    pub lane_solo: Option<Vec<u32>>,
     pub items: Vec<Item>,
     pub fx: Vec<FxSlot>,
     /// FX-chain level lines (window state and such) that precede the first plugin.
@@ -421,6 +433,20 @@ pub struct Track {
 }
 
 impl Track {
+    /// Whether items in `lane` play: every lane does unless the track has fixed lanes and
+    /// some are soloed.
+    pub fn lane_plays(&self, lane: usize) -> bool {
+        if !self.fixed_lanes {
+            return true;
+        }
+        match &self.lane_solo {
+            Some(words) if words.iter().any(|w| *w != 0) => {
+                words.get(lane / 32).is_some_and(|w| w & (1 << (lane % 32)) != 0)
+            }
+            _ => true,
+        }
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             id: TrackId::new(),
@@ -439,6 +465,8 @@ impl Track {
             pan_law: -1.0,
             auto_mode: AutoMode::TrimRead,
             midi_out: None,
+            fixed_lanes: false,
+            lane_solo: None,
             items: Vec::new(),
             fx: Vec::new(),
             fx_chain_prelude: Vec::new(),

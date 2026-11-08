@@ -88,9 +88,10 @@ Working:
 - **MIDI editor**: double-click a MIDI item (or `E`) for a docked piano roll: click adds a note on
   the grid, drag moves, drag the right edge resizes, right-click deletes. The lane below edits
   velocity or, picked with its label, CC 1/7/10/11/64 or pitch bend (click or drag paints on the
-  grid, right-click deletes). Edits are written back into the item's `<SOURCE MIDI` (an edited
-  item leaves its pool). Controllers, pitch bend, program changes and aftertouch reach CLAP and
-  LV2 instruments as MIDI and VST 3 instruments through their MIDI mapping.
+  grid, right-click deletes); "Quantize" moves note starts onto the grid. Edits are written back
+  into the item's `<SOURCE MIDI` (an edited item leaves its pool). Controllers, pitch bend,
+  program changes and aftertouch reach CLAP and LV2 instruments as MIDI and VST 3 instruments
+  through their MIDI mapping.
 - **MIDI files and input**: `.mid` files import (dialog or drag-and-drop) as in-project MIDI
   items, and "Item: Export MIDI item to file" writes one back out. A track whose record input
   is MIDI (all inputs, optionally one channel) plays its instrument live while armed with
@@ -116,7 +117,11 @@ Working:
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
   (the sampler receives the track's MIDI; musical delay lengths follow the tempo map), as do
-  ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). The same effects are offered as built-ins in the plugin
+  ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). JSFX run from their own
+  source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
+  user functions with locals and instances, memory, strings, MIDI): every JSFX in the corpus
+  and 201 of REAPER's 219 stock effects; they are read from `~/.config/REAPER/Effects` and the
+  installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
   browser (equalizer, gate, compressor, delay, convolution reverb) with editable parameters, and
   are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate, ReaComp, ReaDelay
   and ReaVerb. Neural Amp Modeler
@@ -165,7 +170,8 @@ compare with scythe's output sample by sample:
 | ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3, ReaComp's soft knee (a fit to REAPER's curve) within 2e-3 (19/20 cases) |
 | Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
-| Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
+| JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
+| Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.
@@ -180,6 +186,8 @@ compares the two files.
   kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
   (device × 32 + channel); REAPER's file encoding of it is unverified.
 - ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.
+- JSFX: no FFT/MDCT, file access (`file_open`) or graphics (`@gfx`), and MIDI a JSFX sends does
+  not reach the next effect.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not

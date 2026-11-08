@@ -249,6 +249,22 @@ impl MidiSource {
     }
 }
 
+/// Moves note starts to the nearest multiple of `grid` (quarter notes) by `strength` (0-1),
+/// keeping each note's length.
+pub fn quantize(notes: &[Note], grid: f64, strength: f64) -> Vec<Note> {
+    if grid <= 0.0 {
+        return notes.to_vec();
+    }
+    notes
+        .iter()
+        .map(|n| {
+            let target = (n.start_qn / grid).round() * grid;
+            let shift = (target - n.start_qn) * strength.clamp(0.0, 1.0);
+            Note { start_qn: (n.start_qn + shift).max(0.0), end_qn: (n.end_qn + shift).max(n.start_qn + shift), ..*n }
+        })
+        .collect()
+}
+
 /// A note placed on the project timeline, in seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimedNote {
@@ -433,5 +449,16 @@ mod tests {
         assert_eq!((last.tick, last.bytes), (2880, [0xb0, 0x7b, 0]));
         let back = MidiSource::parse(&edited.write_chunk(&c)).unwrap();
         assert_eq!(back, edited);
+    }
+
+    #[test]
+    fn quantizes_starts_and_keeps_lengths() {
+        let n = |s: f64, e: f64| Note { start_qn: s, end_qn: e, channel: 0, key: 60, velocity: 90 };
+        let q = quantize(&[n(0.1, 0.6), n(0.95, 1.2), n(1.4, 2.0)], 0.5, 1.0);
+        let spans: Vec<(f64, f64)> =
+            q.iter().map(|n| ((n.start_qn * 1e9).round() / 1e9, (n.end_qn * 1e9).round() / 1e9)).collect();
+        assert_eq!(spans, [(0.0, 0.5), (1.0, 1.25), (1.5, 2.1)]);
+        let half = quantize(&[n(0.2, 0.4)], 0.5, 0.5);
+        assert!((half[0].start_qn - 0.1).abs() < 1e-12);
     }
 }

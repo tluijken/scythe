@@ -114,6 +114,15 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         }
     }
     let grid = GRIDS[state.grid.min(GRIDS.len() - 1)].1;
+    x -= 92.0;
+    let q = Rect::from_min_size(pos2(x, head.top()), vec2(84.0, 30.0));
+    if text_pill(ui, q, "Quantize", theme::regular(12.0), RAISED, TEXT)
+        .on_hover_text("Move note starts onto the grid, keeping their lengths")
+        .clicked()
+    {
+        apply(app, id, scythe_core::midi::quantize(&notes, grid, 1.0), false);
+        notes = scythe_core::midi::quantize(&notes, grid, 1.0);
+    }
 
     let body = Rect::from_min_max(
         pos2(rect.left() + 12.0, head.bottom() + 8.0),

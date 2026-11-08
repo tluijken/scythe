@@ -306,6 +306,14 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.midi_out = (v >= 0).then_some(((v >> 5) as u8, (v & 31) as u8));
                         track.extra.push(node.clone());
                     }
+                    "FREEMODE" => {
+                        track.fixed_lanes = num(&t, 1, 0.0) as i64 == 2;
+                        track.extra.push(node.clone());
+                    }
+                    "LANESOLO" => {
+                        track.lane_solo = Some(t[1..].iter().map(|v| v.parse::<i64>().unwrap_or(0) as u32).collect());
+                        track.extra.push(node.clone());
+                    }
                     "AUTOMODE" => {
                         track.auto_mode = AutoMode::from_rpp(num(&t, 1, 0.0) as i64);
                         track.extra.push(node.clone());
@@ -1323,5 +1331,19 @@ mod section_tests {
         assert_eq!(tracks[0].sends.len(), 1);
         assert_eq!(tracks[0].sends[0].dest, tracks[1].id);
         assert_ne!(tracks[0].guid, p.tracks[0].guid);
+    }
+
+    #[test]
+    fn lane_soloing() {
+        let p = project_from_rpp(
+            "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    FREEMODE 2\n    FIXEDLANES 9 0 0 0 0\n    LANESOLO 2 0 0 0 0 0 0 0\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      YPOS 0 0.5 2\n    >\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      YPOS 0.5 0.5 2\n    >\n  >\n>\n",
+        )
+        .unwrap();
+        let t = &p.tracks[0];
+        assert_eq!(t.items.iter().map(|i| i.lane()).collect::<Vec<_>>(), [0, 1]);
+        assert!(t.fixed_lanes && !t.lane_plays(0) && t.lane_plays(1));
+        let free = Track { fixed_lanes: false, ..t.clone() };
+        assert!(free.lane_plays(0), "without fixed lanes every item plays");
+        assert!(project_to_rpp(&p).contains("LANESOLO 2 0 0 0 0 0 0 0"));
     }
 }

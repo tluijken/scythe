@@ -432,6 +432,8 @@ impl RenderGraph {
                     .items
                     .iter()
                     .filter(|it| !it.muted && it.length > 0.0)
+                    // Fixed lanes that are not soloed stay silent, like REAPER's comp lanes.
+                    .filter(|it| t.lane_plays(it.lane()))
                     .filter_map(|it| {
                         let take = it.take()?;
                         let (section_start, section_len, reverse) = match &take.source {
@@ -669,7 +671,7 @@ impl RenderGraph {
                 let ctx = ProcessContext {
                     sample_rate: self.sample_rate,
                     position,
-                    playing: true,
+                    playing: input.play_items,
                     notes: None,
                     live: &[],
                     live_channel: None,
@@ -731,7 +733,7 @@ impl RenderGraph {
                 let ctx = ProcessContext {
                     sample_rate: self.sample_rate,
                     position,
-                    playing: true,
+                    playing: input.play_items,
                     // While stopped the position stands still; feeding notes would retrigger them.
                     notes: if input.play_items { track.notes.as_deref() } else { None },
                     live: if track.midi_input.is_some() { input.midi } else { &[] },

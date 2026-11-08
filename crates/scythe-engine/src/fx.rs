@@ -270,6 +270,7 @@ pub struct FxRegistry {
     entries: HashMap<(Owner, String), Entry>,
     sample_rate: u32,
     search_paths: Vec<PathBuf>,
+    jsfx_paths: std::sync::OnceLock<Vec<PathBuf>>,
     /// Relative file references in plugin state (impulse responses) resolve against this.
     pub project_dir: Option<PathBuf>,
     clap_cache: std::sync::OnceLock<Vec<ClapDescriptor>>,
@@ -285,6 +286,7 @@ impl FxRegistry {
             entries: HashMap::new(),
             sample_rate,
             search_paths: vst_search_paths(),
+            jsfx_paths: Default::default(),
             project_dir: None,
             clap_cache: Default::default(),
             lv2_cache: Default::default(),
@@ -364,11 +366,22 @@ impl FxRegistry {
                         Node::Line(l) => line_key(l).to_owned(),
                         Node::Chunk(c) => format!("<{}", c.name()),
                     };
-                    for node in nodes {
+                    // A JSFX keeps its slider values as the first, unnamed line.
+                    let js = chunk.name() == "JS";
+                    for node in nodes.into_iter().filter(|_| !js) {
                         let k = key(&node);
                         match chunk.children.iter_mut().find(|n| key(n) == k) {
                             Some(existing) => *existing = node,
                             None => chunk.children.push(node),
+                        }
+                    }
+                    if js
+                        && let Some(Node::Line(values)) =
+                            inst.with(|e| e.save_nodes()).flatten().and_then(|n| n.into_iter().next())
+                    {
+                        match chunk.children.iter_mut().find(|n| matches!(n, Node::Line(_))) {
+                            Some(existing) => *existing = Node::Line(values),
+                            None => chunk.children.insert(0, Node::Line(values)),
                         }
                     }
                     let key = (owner.map_or(Owner::Master, Owner::Track), slot_key(slot, i));
@@ -577,6 +590,15 @@ impl FxRegistry {
                 }
                 plugin.resume();
                 Ok((Box::new(Vst2Effect::new(plugin)), FxStatus::Hosted(path)))
+            }
+            "JS" => {
+                let name = args.first().cloned().unwrap_or_default();
+                let roots = self.jsfx_paths.get_or_init(crate::jsfx::search_paths);
+                let path = crate::jsfx::find(&name, roots).ok_or_else(|| format!("JSFX {name} not found"))?;
+                let script = crate::jsfx::Script::load(&path, roots)?;
+                let values = lines.first().map(|l| crate::jsfx::parse_values(l, &script.sliders)).unwrap_or_default();
+                let fx = crate::jsfx::JsfxEffect::new(script, &values, self.sample_rate)?;
+                Ok((Box::new(fx), FxStatus::Native("JSFX run from its source")))
             }
             "LV2" if args.first().is_some_and(|n| n.contains("Neural Amp Modeler")) => {
                 let state = plugin_chunk.chunks("STATE").next().ok_or("NAM slot without state")?;

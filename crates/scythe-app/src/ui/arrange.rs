@@ -558,7 +558,8 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
 
         let dim = !audible || (any_solo && !track.solo && !audible);
         for item in &track.items {
-            draw_item(app, ui, &lane_painter, lane, axis, track.id, item.id, color, dim);
+            let silent = !track.lane_plays(item.lane());
+            draw_item(app, ui, &lane_painter, lane, axis, track.id, item.id, color, dim || silent);
         }
         if let Some(rec) = app.recording.as_ref().filter(|r| r.tracks.contains(&track.id)) {
             let now = app.engine.transport().position_seconds();
