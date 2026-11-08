@@ -1231,8 +1231,8 @@ impl Machine {
             Sin => arg(self, 0).sin(),
             Cos => arg(self, 0).cos(),
             Tan => arg(self, 0).tan(),
-            Asin => arg(self, 0).asin(),
-            Acos => arg(self, 0).acos(),
+            Asin => finite_or_zero(arg(self, 0).asin()),
+            Acos => finite_or_zero(arg(self, 0).acos()),
             Atan => arg(self, 0).atan(),
             Atan2 => {
                 let y = arg(self, 0);
@@ -1245,11 +1245,11 @@ impl Machine {
             Sqrt => arg(self, 0).abs().sqrt(),
             Pow => {
                 let x = arg(self, 0);
-                x.powf(arg(self, 1))
+                finite_or_zero(x.powf(arg(self, 1)))
             }
-            Exp => arg(self, 0).exp(),
-            Log => arg(self, 0).ln(),
-            Log10 => arg(self, 0).log10(),
+            Exp => finite_or_zero(arg(self, 0).exp()),
+            Log => finite_or_zero(arg(self, 0).ln()),
+            Log10 => finite_or_zero(arg(self, 0).log10()),
             Abs => arg(self, 0).abs(),
             Min => {
                 let a = arg(self, 0);
@@ -1278,7 +1278,10 @@ impl Machine {
             }
             Floor => arg(self, 0).floor(),
             Ceil => arg(self, 0).ceil(),
-            Invsqrt => 1.0 / arg(self, 0).abs().sqrt(),
+            Invsqrt => {
+                let x = arg(self, 0);
+                if x < 0.0 { f64::INFINITY } else { 1.0 / x.sqrt() }
+            }
             Memset => {
                 let (at, v, n) = (arg(self, 0), arg(self, 1), arg(self, 2));
                 for k in 0..(n.max(0.0) as usize).min(MEM_SIZE) {
@@ -1745,6 +1748,11 @@ fn int(x: f64) -> i64 {
     x as i64
 }
 
+/// REAPER's math functions give 0 where the result would not be a finite number.
+fn finite_or_zero(x: f64) -> f64 {
+    if x.is_finite() { x } else { 0.0 }
+}
+
 fn binop(op: Op, a: f64, b: f64) -> f64 {
     use Op::*;
     match op {
@@ -1756,7 +1764,7 @@ fn binop(op: Op, a: f64, b: f64) -> f64 {
             let d = int(b.abs());
             if d == 0 { 0.0 } else { (int(a.abs()) % d) as f64 }
         }
-        Pow => a.powf(b),
+        Pow => finite_or_zero(a.powf(b)),
         Or => (int(a) | int(b)) as f64,
         And => (int(a) & int(b)) as f64,
         Xor => (int(a) ^ int(b)) as f64,
@@ -1850,6 +1858,17 @@ mod tests {
         m.run(&code);
         assert_eq!((var(&m, "n"), var(&m, "at"), var(&m, "c")), (3.0, 4.0, 0.0), "a 2-byte message does not fit 1");
         assert_eq!(m.midi_out, [(5.0, MidiMsg::Short([0x90, 60, 100]))]);
+    }
+
+    #[test]
+    fn math_functions_give_zero_where_reaper_does() {
+        // Measured in REAPER: non-finite results of these functions read as 0.
+        let m = run(
+            "a = log(0); b = log(-1); c = exp(1000); d = acos(2); e = pow(-8, 1/3); f = sqrt(-4); g = invsqrt(-4); h = 1/0;",
+        );
+        let v: Vec<f64> = ["a", "b", "c", "d", "e", "f"].iter().map(|n| var(&m, n)).collect();
+        assert_eq!(v, [0.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
+        assert_eq!((var(&m, "g"), var(&m, "h")), (f64::INFINITY, f64::INFINITY));
     }
 
     #[test]

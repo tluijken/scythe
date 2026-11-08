@@ -240,8 +240,10 @@ compares the two files.
   fixed-width grid in the UI's monospace font rather than the font asked for. System exclusive reaches VST 2, CLAP and LV2 plugins but not
   VST 3 ones. REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
-  that count its runs. NaN follows IEEE rules; REAPER compares it as both less than and equal
-  to anything.
+  that count its runs. Math functions give 0 where the result is not finite (`log(0)`,
+  `exp(1000)`, `acos(2)`, `pow(-8, 1/3)`), as in REAPER; arithmetic NaN (0/0) follows IEEE
+  rules, where REAPER sometimes gives 0 and compares NaN as both less than and equal to
+  anything.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
