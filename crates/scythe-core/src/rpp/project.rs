@@ -300,6 +300,12 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.muted = flag(&t, 1);
                         track.solo = flag(&t, 2);
                     }
+                    // REAPER packs the device and channel as `device * 32 + channel`, -1 for none.
+                    "MIDIHWOUT" => {
+                        let v = num(&t, 1, -1.0) as i64;
+                        track.midi_out = (v >= 0).then_some(((v >> 5) as u8, (v & 31) as u8));
+                        track.extra.push(node.clone());
+                    }
                     "AUTOMODE" => {
                         track.auto_mode = AutoMode::from_rpp(num(&t, 1, 0.0) as i64);
                         track.extra.push(node.clone());
@@ -801,6 +807,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
 
     let mut wrote_rec = false;
     let mut wrote_auto = false;
+    let mut wrote_midi_out = false;
     let mut wrote_envs = Vec::new();
     for node in &t.extra {
         match node {
@@ -809,6 +816,13 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                     c.push_chunk(write_envelope(env));
                 }
                 wrote_envs.push(kind);
+            }
+            Node::Line(l) if line_key(l) == "MIDIHWOUT" => {
+                let mut toks = tokenize(l);
+                toks.resize(toks.len().max(2), "0".into());
+                toks[1] = midi_out_code(t.midi_out).to_string();
+                c.line(toks);
+                wrote_midi_out = true;
             }
             Node::Line(l) if line_key(l) == "AUTOMODE" => {
                 c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
@@ -838,6 +852,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             }
             _ => c.children.push(node.clone()),
         }
+    }
+    if !wrote_midi_out && t.midi_out.is_some() {
+        c.line(["MIDIHWOUT".to_owned(), midi_out_code(t.midi_out).to_string(), "0".to_owned()]);
     }
     if !wrote_auto && t.auto_mode != AutoMode::TrimRead {
         c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
@@ -876,6 +893,10 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         c.push_chunk(write_item(item));
     }
     c
+}
+
+fn midi_out_code(out: Option<(u8, u8)>) -> i64 {
+    out.map_or(-1, |(dev, ch)| (dev as i64) << 5 | ch as i64)
 }
 
 fn write_fx_chain(name: &str, t: &Track) -> Chunk {

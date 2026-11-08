@@ -2,6 +2,7 @@ mod app;
 mod demo;
 mod palette;
 mod plugin_window;
+mod script;
 mod theme;
 mod ui;
 

@@ -407,6 +407,9 @@ pub struct Track {
     pub pan_law: f64,
     /// Automation mode (`AUTOMODE`): what moving a control does while playing.
     pub auto_mode: AutoMode,
+    /// Hardware MIDI output (`MIDIHWOUT`): device index and channel (0 keeps each message's
+    /// own channel, 1-16 forces one).
+    pub midi_out: Option<(u8, u8)>,
     pub items: Vec<Item>,
     pub fx: Vec<FxSlot>,
     /// FX-chain level lines (window state and such) that precede the first plugin.
@@ -435,6 +438,7 @@ impl Track {
             main_send: true,
             pan_law: -1.0,
             auto_mode: AutoMode::TrimRead,
+            midi_out: None,
             items: Vec::new(),
             fx: Vec::new(),
             fx_chain_prelude: Vec::new(),

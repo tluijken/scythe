@@ -58,7 +58,7 @@ pub struct ClapLibrary {
 unsafe impl Send for ClapLibrary {}
 unsafe impl Sync for ClapLibrary {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClapDescriptor {
     pub id: String,
     pub name: String,
@@ -143,8 +143,10 @@ impl Drop for ClapLibrary {
     }
 }
 
-/// Every `.clap` in `CLAP_PATH` and the standard locations.
+/// Every `.clap` in `CLAP_PATH` and the standard locations; unchanged files come from the scan
+/// cache instead of being loaded.
 pub fn scan() -> Vec<ClapDescriptor> {
+    let mut cache = crate::scan_cache::ScanCache::open(crate::scan_cache::default_path("clap"));
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("CLAP_PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -156,13 +158,12 @@ pub fn scan() -> Vec<ClapDescriptor> {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for e in entries.flatten() {
             let p = e.path();
-            if p.extension().is_some_and(|x| x == "clap")
-                && let Ok(lib) = ClapLibrary::load(&p)
-            {
-                out.extend(lib.descriptors());
+            if p.extension().is_some_and(|x| x == "clap") {
+                out.extend(cache.get(&p, || ClapLibrary::load(&p).map(|lib| lib.descriptors()).unwrap_or_default()));
             }
         }
     }
+    cache.save();
     out
 }
 

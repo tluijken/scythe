@@ -1,0 +1,9 @@
+[package]
+name = "vst2-test-plugin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]

@@ -95,10 +95,25 @@ Working:
   items, and "Item: Export MIDI item to file" writes one back out. A track whose record input
   is MIDI (all inputs, optionally one channel) plays its instrument live while armed with
   monitoring on, and records an in-project MIDI item; recording around a loop layers the passes
-  into one take, as REAPER's MIDI overdub.
+  into one take, as REAPER's MIDI overdub. A track can also send its MIDI (items and monitored
+  input, optionally forced to one channel) to a hardware output (Sends tab), timed to sound
+  with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
+- **ReaScript (Lua 5.4)**: "Script: Run ReaScript" runs a `.lua` file against the project as one
+  undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg` output in a console window. The
+  `reaper.*` subset: tracks (`CountTracks`, `GetTrack`, `GetMasterTrack`, `GetSelectedTrack`,
+  `InsertTrackAtIndex`, `DeleteTrack`, `GetTrackName`, `GetSetMediaTrackInfo_String`,
+  `Get/SetMediaTrackInfo_Value`, `TrackFX_GetCount/GetFXName/GetEnabled/SetEnabled`), items
+  (`CountMediaItems`, `GetMediaItem`, `CountTrackMediaItems`, `GetTrackMediaItem`,
+  `GetSelectedMediaItem`, `Get/SetMediaItemInfo_Value`, `SplitMediaItem`, `DeleteTrackMediaItem`),
+  markers (`AddProjectMarker`, `CountProjectMarkers`, `EnumProjectMarkers`), transport and time
+  (`GetCursorPosition`, `SetEditCurPos`, `GetPlayState`, `OnPlayButton`, `OnStopButton`,
+  `GetProjectLength`, `Master_GetTempo`, `TimeMap2_timeToQN/QNToTime`) and undo/console calls.
 - **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
   load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
-  between the saved tracks kept), starting in REAPER's own resource folders. ReaEQ, ReaVerb and
+  between the saved tracks kept), starting in REAPER's own resource folders. FX presets: the
+  slot's context menu saves the plugin's current settings under a name and loads them back
+  (`~/.local/share/scythe/presets/<plugin>/`). Plugin scans are cached per binary (path, size,
+  modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
   (the sampler receives the track's MIDI; musical delay lengths follow the tempo map), as do
   ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). The same effects are offered as built-ins in the plugin
@@ -147,7 +162,7 @@ compare with scythe's output sample by sample:
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry | exact; its low-/high-pass filters approximate (impulse response within 0.04) |
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
-| ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3 (16/17 cases); ReaComp's soft knee approximate (unused in the corpus) |
+| ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3, ReaComp's soft knee (a fit to REAPER's curve) within 2e-3 (19/20 cases) |
 | Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
@@ -160,8 +175,11 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- MIDI to VST 2 instruments and MIDI hardware outputs (`MIDIHWOUT`). (MIDI plays through CLAP,
-  LV2 and VST 3 instruments, the built-in sampler and the preview synth.)
+- Multichannel tracks and routing: everything runs in stereo (every project in the corpus is
+  `NCHAN 2` with plain stereo sends). REAPER's own `.ini` FX presets are not read; presets are
+  kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
+  (device × 32 + channel); REAPER's file encoding of it is unverified.
+- ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not

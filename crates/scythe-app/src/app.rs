@@ -135,6 +135,11 @@ pub struct ScytheApp {
     pub auto_punch: bool,
     /// The last MIDI input error shown, so it is not repeated on every edit.
     midi_error: Option<String>,
+    /// Hardware MIDI outputs, listed once.
+    midi_out_names: Option<Vec<String>>,
+    pub last_script: Option<PathBuf>,
+    /// What the last script printed (`ShowConsoleMsg`) or its error, until closed.
+    pub script_console: Option<String>,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
     autosaved_at: Instant,
@@ -224,6 +229,9 @@ impl ScytheApp {
             recording: None,
             auto_punch: false,
             midi_error: None,
+            midi_out_names: None,
+            last_script: None,
+            script_console: None,
             no_input: false,
             autosaved_at: Instant::now(),
             midi_cache: HashMap::new(),
@@ -373,6 +381,10 @@ impl ScytheApp {
         let monitor = !self.no_input && self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t));
         if let Err(e) = self.engine.set_monitoring(monitor) {
             self.notify(format!("Input monitoring unavailable: {e}"));
+        }
+        let outputs = self.project.tracks.iter().any(|t| t.midi_out.is_some());
+        if let Err(e) = self.engine.set_midi_outputs(outputs) {
+            self.notify(format!("MIDI output unavailable: {e}"));
         }
         let midi = !self.no_input && self.project.tracks.iter().any(|t| t.armed && is_midi(t));
         match self.engine.set_midi_input(midi) {
@@ -1484,6 +1496,111 @@ impl ScytheApp {
         self.sel = Selection { track: Some(id), item: None };
     }
 
+    /// Where presets of the plugin in `slot` live: one single-effect `.RfxChain` per preset.
+    fn preset_dir(slot: &scythe_core::FxSlot) -> PathBuf {
+        let safe: String =
+            slot.name.chars().map(|c| if c.is_alphanumeric() || " -_().".contains(c) { c } else { '_' }).collect();
+        crate::demo::data_dir().join("presets").join(safe.trim())
+    }
+
+    /// Presets saved for the plugin in `slot`, by name.
+    pub fn fx_presets(slot: &scythe_core::FxSlot) -> Vec<(String, PathBuf)> {
+        let Ok(entries) = std::fs::read_dir(Self::preset_dir(slot)) else { return Vec::new() };
+        let mut out: Vec<(String, PathBuf)> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "RfxChain"))
+            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().into_owned(), p)))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// Saves the current settings of a track's effect as a named preset.
+    pub fn save_fx_preset(&mut self, track: TrackId, index: usize) {
+        let mut project = self.project.clone();
+        self.engine.store_plugin_states(&mut project);
+        let Some(slot) = project.track(track).and_then(|t| t.fx.get(index)).cloned() else { return };
+        let dir = Self::preset_dir(&slot);
+        let _ = std::fs::create_dir_all(&dir);
+        let name = format!("Preset {}", Self::fx_presets(&slot).len() + 1);
+        let dialog = rfd::FileDialog::new()
+            .set_directory(&dir)
+            .add_filter("Preset", &["RfxChain"])
+            .set_file_name(format!("{name}.RfxChain"));
+        let Some(path) = dialog.save_file() else { return };
+        let mut holder = scythe_core::Track::new("");
+        holder.fx = vec![slot];
+        match std::fs::write(&path, scythe_core::rpp::fx_chain_to_text(&holder)) {
+            Ok(()) => self.notify(format!("Saved preset {}", path.file_stem().unwrap_or_default().to_string_lossy())),
+            Err(e) => self.notify(format!("Could not save: {e}")),
+        }
+    }
+
+    /// Loads a preset into a track's effect, keeping the slot's identity, bypass and envelopes.
+    pub fn load_fx_preset(&mut self, track: TrackId, index: usize, path: &Path) {
+        let preset = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| scythe_core::rpp::fx_chain_from_text(&t).map_err(|e| e.to_string()));
+        let plugin = match preset {
+            Ok(slots) => slots
+                .into_iter()
+                .next()
+                .and_then(|s| s.raw.into_iter().find(|n| matches!(n, scythe_core::rpp::Node::Chunk(_)))),
+            Err(e) => return self.notify(format!("Could not load {}: {e}", path.display())),
+        };
+        let Some(plugin) = plugin else { return self.notify("The preset holds no plugin") };
+        self.edit("Load FX preset", |p| {
+            let Some(slot) = p.track_mut(track).and_then(|t| t.fx.get_mut(index)) else { return };
+            if let Some(chunk) = slot.raw.iter_mut().find(|n| matches!(n, scythe_core::rpp::Node::Chunk(_))) {
+                *chunk = plugin;
+            }
+        });
+    }
+
+    pub fn run_script_dialog(&mut self) {
+        let Some(path) = resource_dialog("Scripts").add_filter("ReaScript", &["lua"]).pick_file() else { return };
+        self.run_script(&path);
+    }
+
+    /// Runs a Lua ReaScript on the project; its changes become one undo step.
+    pub fn run_script(&mut self, path: &Path) {
+        self.last_script = Some(path.to_owned());
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => return self.notify(format!("Could not read {}: {e}", path.display())),
+        };
+        let ctx = crate::script::ScriptContext {
+            selected_track: self.sel.track,
+            selected_items: self.selected_items(),
+            cursor: self.project.cursor,
+            playing: self.is_playing(),
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        match crate::script::run(&source, &name, &self.project, ctx) {
+            Ok(out) => {
+                if let Some(project) = out.project {
+                    let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
+                    self.edit(&label, |p| *p = project);
+                }
+                if let Some(t) = out.cursor {
+                    self.set_cursor(t);
+                }
+                match out.play {
+                    Some(true) if !self.is_playing() => self.toggle_play(),
+                    Some(false) => self.stop(),
+                    _ => {}
+                }
+                self.script_console = (!out.console.is_empty()).then_some(out.console);
+                self.notify(format!("Ran {name}"));
+            }
+            Err(e) => {
+                self.script_console = Some(e);
+                self.notify(format!("{name} failed"));
+            }
+        }
+    }
+
     /// Saves the selected track's effects as a REAPER `.RfxChain` file.
     pub fn save_fx_chain(&mut self) {
         let Some(track) = self.sel.track.and_then(|id| self.project.track(id)) else {
@@ -1571,6 +1688,10 @@ impl ScytheApp {
             }
         });
         self.sel = Selection { track: Some(first), item: None };
+    }
+
+    pub fn midi_output_names(&mut self) -> &[String] {
+        self.midi_out_names.get_or_insert_with(scythe_engine::midi_io::output_names)
     }
 
     pub fn split_selected_item(&mut self) {

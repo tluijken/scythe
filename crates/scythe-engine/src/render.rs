@@ -12,7 +12,7 @@ use rayon::prelude::*;
 
 use crate::loudness::Loudness;
 use crate::meter::Meter;
-use crate::midi_io::{LiveMidi, midi_input_channel};
+use crate::midi_io::{LiveMidi, OutMessage, midi_input_channel};
 use crate::synth::{ControlEvent, NoteList, SynthNote};
 
 /// One item, pre-resolved to frames at the engine rate.
@@ -158,6 +158,8 @@ pub struct RenderTrack {
     /// Live MIDI for an armed, monitored track with a MIDI input: the channel it listens to,
     /// `None` for all.
     pub midi_input: Option<Option<u8>>,
+    /// Hardware MIDI output: port and channel (0 keeps each message's own channel).
+    pub midi_out: Option<(u8, u8)>,
     /// Frames between this track's input and the master output, including plugin latency
     /// downstream. Items are read this far ahead so they come out on time.
     pub read_ahead: i64,
@@ -201,11 +203,21 @@ pub struct LiveInput<'a> {
     /// MIDI from the inputs, due at the start of the block.
     pub midi: &'a [LiveMidi],
     pub play_items: bool,
+    pub midi_out: Option<MidiOutClock<'a>>,
+}
+
+/// Where hardware MIDI goes, and when a project frame is heard.
+#[derive(Clone, Copy)]
+pub struct MidiOutClock<'a> {
+    pub queue: &'a std::sync::Mutex<rtrb::Producer<OutMessage>>,
+    /// The master frame `frame` leaves the speakers at `at`.
+    pub at: std::time::Instant,
+    pub frame: i64,
 }
 
 impl Default for LiveInput<'_> {
     fn default() -> Self {
-        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true }
+        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true, midi_out: None }
     }
 }
 
@@ -217,6 +229,7 @@ impl<'a> LiveInput<'a> {
             channels: self.channels.map(|c| c.and_then(|s| s.get(from..(from + len).min(s.len())))),
             midi: if from == 0 { self.midi } else { &[] },
             play_items: self.play_items,
+            midi_out: self.midi_out,
         }
     }
 }
@@ -475,7 +488,9 @@ impl RenderGraph {
                     .collect::<Vec<_>>();
                 let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx);
                 // With an instrument in the chain, MIDI items feed it instead of the preview synth.
-                let (items, notes) = if chain.iter().any(|f| f.instrument) {
+                // MIDI items feed an instrument in the chain or a hardware output instead of the
+                // preview synth.
+                let (items, notes) = if chain.iter().any(|f| f.instrument) || t.midi_out.is_some() {
                     let (midi, audio): (Vec<_>, Vec<_>) =
                         items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)));
                     let lists: Vec<&NoteList> = midi
@@ -526,6 +541,7 @@ impl RenderGraph {
                         },
                     ),
                     midi_input: (t.armed && t.monitor).then(|| midi_input_channel(t.rec_input)).flatten(),
+                    midi_out: t.midi_out,
                     read_ahead: 0,
                     fx_latency: Vec::new(),
                     send_delays: Vec::new(),
@@ -683,6 +699,9 @@ impl RenderGraph {
     fn process_track(&self, ti: usize, start: i64, tl: &mut [f32], tr: &mut [f32], input: &LiveInput) {
         let track = &self.tracks[ti];
         let n = tl.len();
+        if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
+            self.send_midi(track, out, clock, start, n as i64, input);
+        }
         if let Some((cl, cr)) = track.monitor
             && let Some(left) = input.channels.get(cl).copied().flatten()
         {
@@ -788,6 +807,51 @@ impl RenderGraph {
     }
 
     /// Adds a rendered track to its send destinations and its parent folder or the master.
+    /// Queues the MIDI a track sends to its hardware output in this block: its items' messages
+    /// (read as far ahead as its audio, so they sound with it) and live input it monitors.
+    fn send_midi(
+        &self,
+        track: &RenderTrack,
+        (port, channel): (u8, u8),
+        clock: MidiOutClock,
+        start: i64,
+        n: i64,
+        input: &LiveInput,
+    ) {
+        let Ok(mut queue) = clock.queue.try_lock() else { return };
+        let sr = self.sample_rate as f64;
+        let mut push = |frame: i64, mut bytes: [u8; 3], len: u8| {
+            if channel > 0 {
+                bytes[0] = bytes[0] & 0xf0 | (channel - 1);
+            }
+            let ahead = ((frame - clock.frame) as f64 / sr).max(0.0);
+            let due = clock.at + std::time::Duration::from_secs_f64(ahead);
+            let _ = queue.push(OutMessage { due, port, midi: LiveMidi { bytes, len } });
+        };
+        let read = start + track.read_ahead;
+        if input.play_items
+            && let Some(notes) = &track.notes
+        {
+            for note in notes.starting_in(read - notes.max_span()..read + n) {
+                if (read..read + n).contains(&note.start) {
+                    push(note.start - track.read_ahead, [0x90 | note.channel, note.key, note.velocity], 3);
+                }
+                let off = note.end.min(note.cutoff);
+                if (read..read + n).contains(&off) {
+                    push(off - track.read_ahead, [0x80 | note.channel, note.key, 0], 3);
+                }
+            }
+            for c in notes.controls_in(read..read + n) {
+                push(c.frame - track.read_ahead, c.bytes, c.len);
+            }
+        }
+        if let Some(listen) = track.midi_input {
+            for m in input.midi.iter().filter(|m| listen.is_none_or(|c| m.channel() == c)) {
+                push(start, m.bytes, m.len);
+            }
+        }
+    }
+
     /// Mixes a track's output into its send destinations and its parent or the master.
     /// `start` is the block's project frame at the master.
     fn route_track(
@@ -1241,10 +1305,10 @@ mod tests {
         channels[1] = Some(&input_ch1[..]);
         let (mut l, mut r) = (vec![0.0; 10], vec![0.0; 10]);
         let mut s = RenderScratch::new(8);
-        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, midi: &[], play_items: false });
+        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, play_items: false, ..LiveInput::default() });
         // Stopped: only the input, on both sides; the item on the other track stays quiet.
         assert_eq!((l[3], r[3]), (0.25, 0.25));
-        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, midi: &[], play_items: true });
+        g.render_with(0, &mut l, &mut r, &mut s, &LiveInput { channels, ..LiveInput::default() });
         assert_eq!(l[3], 1.25);
         p.track_mut(live_track).unwrap().monitor = false;
         assert!(!graph_with(&p, ones(100)).monitoring());

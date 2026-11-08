@@ -33,7 +33,7 @@
       ],
       "test": [
         ". scripts/env.sh",
-        "cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin",
+        "cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin",
         "cargo test --workspace"
       ],
       "app": [

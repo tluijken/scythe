@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin"]
+members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,6 +28,7 @@ cpal = "0.18.2"
 symphonia = { version = "0.6.1", features = ["all"] }
 hound = "3.5.1"
 midir = "0.11.1"
+mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 eframe = "0.37.0"
 egui = "0.37.0"
 rfd = "0.18.0"

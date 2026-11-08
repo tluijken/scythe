@@ -456,7 +456,9 @@ impl FxRegistry {
 
     /// Installed VST 3 plugins, scanned on first use.
     pub fn vst3_plugins(&self) -> &[crate::vst3_host::Vst3Info] {
-        self.vst3_cache.get_or_init(|| crate::vst3_host::scan(&crate::vst3_host::search_paths()))
+        self.vst3_cache.get_or_init(|| {
+            crate::vst3_host::scan_cached(&crate::vst3_host::search_paths(), crate::scan_cache::default_path("vst3"))
+        })
     }
 
     fn vst3_module(&self, path: &Path) -> Result<Arc<crate::vst3_host::Vst3Module>, String> {
@@ -1079,6 +1081,8 @@ struct Vst2Effect {
     plugin: Vst2Plugin,
     inputs: Vec<Vec<f32>>,
     outputs: Vec<Vec<f32>>,
+    /// MIDI for the next block: frame offset and message.
+    midi: Vec<(usize, [u8; 3])>,
 }
 
 impl Vst2Effect {
@@ -1086,11 +1090,15 @@ impl Vst2Effect {
         let n = crate::render::RenderScratch::MAX_BLOCK;
         let inputs = (0..plugin.num_inputs()).map(|_| vec![0.0; n]).collect();
         let outputs = (0..plugin.num_outputs()).map(|_| vec![0.0; n]).collect();
-        Self { plugin, inputs, outputs }
+        Self { plugin, inputs, outputs, midi: Vec::with_capacity(512) }
     }
 }
 
 impl Effect for Vst2Effect {
+    fn is_instrument(&self) -> bool {
+        self.plugin.is_synth()
+    }
+
     fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
         self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
     }
@@ -1099,8 +1107,30 @@ impl Effect for Vst2Effect {
         self.plugin.latency()
     }
 
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         let n = left.len().min(crate::render::RenderScratch::MAX_BLOCK);
+        self.midi.clear();
+        self.midi.extend(ctx.live_midi().map(|m| (0, m.bytes)));
+        if let Some(notes) = ctx.notes {
+            let (start, end) = (ctx.position, ctx.position + n as i64);
+            for note in notes.starting_in(start - notes.max_span()..end) {
+                if (start..end).contains(&note.start) {
+                    self.midi.push(((note.start - start) as usize, [0x90 | note.channel, note.key, note.velocity]));
+                }
+                let off = note.end.min(note.cutoff);
+                if (start..end).contains(&off) {
+                    self.midi.push(((off - start) as usize, [0x80 | note.channel, note.key, 0]));
+                }
+            }
+            for c in notes.controls_in(start..end) {
+                self.midi.push(((c.frame - start) as usize, c.bytes));
+            }
+            // Offsets in order, note-offs before note-ons at the same frame.
+            self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
+        }
+        if !self.midi.is_empty() {
+            self.plugin.send_midi(self.midi.iter().copied());
+        }
         for (c, buf) in self.inputs.iter_mut().enumerate() {
             match c {
                 0 => buf[..n].copy_from_slice(&left[..n]),

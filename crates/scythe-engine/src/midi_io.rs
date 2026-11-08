@@ -121,6 +121,72 @@ impl MidiOut {
     }
 }
 
+/// A message for a hardware output, due at an instant. Port `ALL_PORTS` with no bytes asks for
+/// all notes off everywhere (the transport stopped).
+#[derive(Debug, Clone, Copy)]
+pub struct OutMessage {
+    pub due: std::time::Instant,
+    pub port: u8,
+    pub midi: LiveMidi,
+}
+
+pub const ALL_PORTS: u8 = u8::MAX;
+
+/// Sends queued messages to the hardware outputs when they fall due, on its own thread: the
+/// audio callback only stamps and queues them.
+pub struct MidiSender {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    pub names: Vec<String>,
+}
+
+impl MidiSender {
+    /// Opens the outputs named in `names` (their order gives the port numbers) and returns the
+    /// sender with the queue the audio callback writes to.
+    pub fn open(names: &[String]) -> Result<(Self, rtrb::Producer<OutMessage>), String> {
+        let mut ports = names.iter().map(|n| MidiOut::open(n)).collect::<Result<Vec<_>, _>>()?;
+        let (tx, mut rx) = rtrb::RingBuffer::<OutMessage>::new(8192);
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_t = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("scythe-midi-out".into())
+            .spawn(move || {
+                let mut pending: Vec<OutMessage> = Vec::new();
+                while !stop_t.load(std::sync::atomic::Ordering::Relaxed) {
+                    while let Ok(m) = rx.pop() {
+                        pending.push(m);
+                    }
+                    let now = std::time::Instant::now();
+                    pending.sort_by_key(|m| m.due);
+                    let due = pending.partition_point(|m| m.due <= now);
+                    for m in pending.drain(..due) {
+                        if m.port == ALL_PORTS {
+                            for port in &mut ports {
+                                for ch in 0..16u8 {
+                                    let _ = port.send(&[0xb0 | ch, 0x7b, 0]);
+                                }
+                            }
+                        } else if let Some(port) = ports.get_mut(m.port as usize) {
+                            let _ = port.send(&m.midi.bytes[..m.midi.len as usize]);
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok((Self { stop, thread: Some(thread), names: names.to_vec() }, tx))
+    }
+}
+
+impl Drop for MidiSender {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

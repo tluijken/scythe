@@ -70,6 +70,8 @@ pub enum Action {
     TallerTracks,
     ShorterTracks,
     ShowPalette,
+    RunScript,
+    RunLastScript,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -143,6 +145,8 @@ impl Action {
         Action::TallerTracks,
         Action::ShorterTracks,
         Action::ShowPalette,
+        Action::RunScript,
+        Action::RunLastScript,
     ];
 
     pub fn label(self) -> &'static str {
@@ -212,6 +216,8 @@ impl Action {
             Action::TallerTracks => "View: Increase track height",
             Action::ShorterTracks => "View: Decrease track height",
             Action::ShowPalette => "Actions: Search actions",
+            Action::RunScript => "Script: Run ReaScript (Lua)",
+            Action::RunLastScript => "Script: Run last script again",
         }
     }
 
@@ -280,6 +286,7 @@ impl Action {
             Action::TallerTracks => k(Modifiers::NONE, Key::PageUp),
             Action::ShorterTracks => k(Modifiers::NONE, Key::PageDown),
             Action::ShowPalette => k(CMD, Key::K),
+            Action::RunScript | Action::RunLastScript => None,
         }
     }
 
@@ -507,6 +514,11 @@ impl Action {
             Action::TallerTracks => app.view.row_h = (app.view.row_h * 1.25).min(240.0),
             Action::ShorterTracks => app.view.row_h = (app.view.row_h / 1.25).max(30.0),
             Action::ShowPalette => app.palette = Some(PaletteState::default()),
+            Action::RunScript => app.run_script_dialog(),
+            Action::RunLastScript => match app.last_script.clone() {
+                Some(path) => app.run_script(&path),
+                None => app.notify("No script run yet"),
+            },
         }
     }
 }

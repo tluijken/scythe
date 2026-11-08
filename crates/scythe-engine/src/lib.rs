@@ -19,6 +19,7 @@ pub mod reaverb;
 pub mod record;
 pub mod render;
 pub mod sampler;
+pub mod scan_cache;
 pub mod stretch;
 pub mod synth;
 pub mod turtle;

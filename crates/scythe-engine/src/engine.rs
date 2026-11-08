@@ -12,8 +12,8 @@ use scythe_core::{Project, TimeRange};
 
 use crate::fx::FxRegistry;
 use crate::media::MediaPool;
-use crate::midi_io::{LiveMidi, MidiInputs};
-use crate::render::{LiveInput, MeterRegistry, RenderGraph, RenderScratch};
+use crate::midi_io::{ALL_PORTS, LiveMidi, MidiInputs, MidiSender, OutMessage};
+use crate::render::{LiveInput, MeterRegistry, MidiOutClock, RenderGraph, RenderScratch};
 
 const NO_SEEK: i64 = i64::MIN;
 /// Upper bound on tracks the audio callback preallocates scratch buffers for.
@@ -121,6 +121,7 @@ struct Feeds {
     input_rx: Receiver<Option<InputFeed>>,
     midi_rx: Receiver<MidiFeed>,
     recorded: rtrb::Producer<RecordedMidi>,
+    midi_out_rx: Receiver<Option<MidiOutQueue>>,
 }
 
 /// The main thread's ends.
@@ -128,13 +129,18 @@ struct FeedSenders {
     input_tx: Sender<Option<InputFeed>>,
     midi_tx: Sender<MidiFeed>,
     recorded: rtrb::Consumer<RecordedMidi>,
+    midi_out_tx: Sender<Option<MidiOutQueue>>,
 }
 
 fn feeds() -> (FeedSenders, Feeds) {
     let (input_tx, input_rx) = channel();
     let (midi_tx, midi_rx) = channel();
+    let (midi_out_tx, midi_out_rx) = channel();
     let (producer, consumer) = rtrb::RingBuffer::new(16_384);
-    (FeedSenders { input_tx, midi_tx, recorded: consumer }, Feeds { input_rx, midi_rx, recorded: producer })
+    (
+        FeedSenders { input_tx, midi_tx, recorded: consumer, midi_out_tx },
+        Feeds { input_rx, midi_rx, recorded: producer, midi_out_rx },
+    )
 }
 
 /// Most live MIDI messages one block takes; the rest wait for the next block.
@@ -155,7 +161,13 @@ struct Processor {
     /// Live MIDI for the current block.
     live: Vec<LiveMidi>,
     recorded: rtrb::Producer<RecordedMidi>,
+    midi_out_rx: Receiver<Option<MidiOutQueue>>,
+    midi_out: Option<MidiOutQueue>,
+    was_playing: bool,
 }
+
+/// The queue hardware MIDI outputs are fed through.
+type MidiOutQueue = Arc<std::sync::Mutex<rtrb::Producer<OutMessage>>>;
 
 impl Processor {
     fn new(graph: Arc<ArcSwap<RenderGraph>>, transport: Arc<Transport>, feeds: Feeds) -> Self {
@@ -172,11 +184,17 @@ impl Processor {
             midi_in: Vec::new(),
             live: Vec::with_capacity(MAX_LIVE_MIDI),
             recorded: feeds.recorded,
+            midi_out_rx: feeds.midi_out_rx,
+            midi_out: None,
+            was_playing: false,
         }
     }
 
     /// Collects the MIDI that arrived since the last block. Returns whether MIDI inputs are open.
     fn read_midi(&mut self) -> bool {
+        while let Ok(out) = self.midi_out_rx.try_recv() {
+            self.midi_out = out;
+        }
         while let Ok(feed) = self.midi_rx.try_recv() {
             // Dropping the old rings here is rare (inputs reopened) and frees little.
             self.midi_in = feed;
@@ -244,14 +262,37 @@ impl Processor {
         // few seconds after stopping or a parameter change, so tails ring out and changes apply
         // without heavy chains burning CPU while idle.
         let awake = self.transport.wake_frames.fetch_sub(frames as i64, Ordering::Relaxed) > 0;
+        // What leaves the speakers now was rendered one output latency ago.
+        let heard = Instant::now() + Duration::from_secs_f64(self.transport.output_latency());
+        let sr = self.transport.sample_rate as f64;
+        let clock = |frame: i64, off: usize| {
+            self.midi_out.as_deref().map(|queue| MidiOutClock {
+                queue,
+                at: heard + Duration::from_secs_f64(off as f64 / sr),
+                frame,
+            })
+        };
+        if self.was_playing
+            && n == 0
+            && let Some(queue) = &self.midi_out
+            && let Ok(mut q) = queue.try_lock()
+        {
+            let _ = q.push(OutMessage { due: heard, port: ALL_PORTS, midi: LiveMidi { bytes: [0; 3], len: 0 } });
+        }
+        self.was_playing = n > 0;
         if n == 0 && (((has_input || has_midi) && graph.monitoring()) || awake) {
             let pos = self.transport.position.load(Ordering::Relaxed);
-            let live = LiveInput { channels: channels(0, frames), midi: &self.live, play_items: false };
+            let live = LiveInput {
+                channels: channels(0, frames),
+                midi: &self.live,
+                play_items: false,
+                midi_out: clock(pos, 0),
+            };
             graph.render_with(pos, l, r, &mut self.scratch, &live);
         }
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 { &self.live } else { &[] };
-            let live = LiveInput { channels: channels(off, len), midi, play_items: true };
+            let live = LiveInput { channels: channels(off, len), midi, play_items: true, midi_out: clock(pos, off) };
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
@@ -320,6 +361,8 @@ pub struct Engine {
     midi_tx: Sender<MidiFeed>,
     midi_inputs: Option<MidiInputs>,
     recorded_midi: rtrb::Consumer<RecordedMidi>,
+    midi_out_tx: Sender<Option<MidiOutQueue>>,
+    midi_sender: Option<MidiSender>,
     _output: Output,
 }
 
@@ -376,6 +419,8 @@ impl Engine {
             midi_tx: senders.midi_tx,
             midi_inputs: None,
             recorded_midi: senders.recorded,
+            midi_out_tx: senders.midi_out_tx,
+            midi_sender: None,
             info: DeviceInfo { name, sample_rate, block_size, fallback_reason: None },
             _output: Output::Device { _stream: stream },
         })
@@ -418,6 +463,8 @@ impl Engine {
             midi_tx: senders.midi_tx,
             midi_inputs: None,
             recorded_midi: senders.recorded,
+            midi_out_tx: senders.midi_out_tx,
+            midi_sender: None,
             info: DeviceInfo {
                 name: "No audio device".into(),
                 sample_rate,
@@ -524,6 +571,23 @@ impl Engine {
         }
         let _ = self.midi_tx.send(rings);
         self.midi_inputs = Some(inputs);
+        Ok(())
+    }
+
+    /// Opens every hardware MIDI output (device numbers follow `midi_io::output_names`) for
+    /// tracks that send to one, or closes them.
+    pub fn set_midi_outputs(&mut self, on: bool) -> Result<(), String> {
+        if on == self.midi_sender.is_some() {
+            return Ok(());
+        }
+        if !on {
+            let _ = self.midi_out_tx.send(None);
+            self.midi_sender = None;
+            return Ok(());
+        }
+        let (sender, queue) = MidiSender::open(&crate::midi_io::output_names())?;
+        let _ = self.midi_out_tx.send(Some(Arc::new(std::sync::Mutex::new(queue))));
+        self.midi_sender = Some(sender);
         Ok(())
     }
 

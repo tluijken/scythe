@@ -59,6 +59,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
 
     arrange::color_picker(app, ui);
     toast(app, ui, full);
+    script_console(app, ui);
     palette::show(app, ui);
 }
 
@@ -289,6 +290,20 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     if rail_button(ui, next(44.0), Icon::Settings, false, ACCENT, "Settings").clicked() {
         let info = app.engine.info().clone();
         app.notify(format!("Audio: {} · {} Hz", info.name, info.sample_rate));
+    }
+}
+
+/// What the last script printed, in a window until closed.
+fn script_console(app: &mut ScytheApp, ui: &mut Ui) {
+    let Some(text) = app.script_console.clone() else { return };
+    let mut open = true;
+    egui::Window::new("ReaScript console").open(&mut open).default_width(480.0).show(ui.ctx(), |ui| {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(text).font(theme::mono(12.0))).wrap());
+        });
+    });
+    if !open {
+        app.script_console = None;
     }
 }
 

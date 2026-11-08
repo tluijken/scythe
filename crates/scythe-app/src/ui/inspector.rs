@@ -273,6 +273,21 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 app.toggle_editor(Some(track_id), i);
                 ui.close();
             }
+            if ui.button("Save preset…").clicked() {
+                app.save_fx_preset(track_id, i);
+                ui.close();
+            }
+            let presets = ScytheApp::fx_presets(fx);
+            ui.add_enabled_ui(!presets.is_empty(), |ui| {
+                ui.menu_button("Load preset", |ui| {
+                    for (name, path) in &presets {
+                        if ui.button(name).clicked() {
+                            app.load_fx_preset(track_id, i, path);
+                            ui.close();
+                        }
+                    }
+                });
+            });
             if ui.button("Remove plugin").clicked() {
                 app.edit("Remove plugin", |p| {
                     p.track_mut(track_id).unwrap().fx.remove(i);
@@ -539,6 +554,33 @@ fn split_plugin_name(full: &str) -> (String, String) {
 
 fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect, y: &mut f32, track_id: TrackId) {
     let track = app.project.track(track_id).unwrap().clone();
+    // Hardware MIDI output: click cycles through none and every output port.
+    painter.text(
+        pos2(inner.left(), *y + 12.0),
+        Align2::LEFT_CENTER,
+        "MIDI hardware out",
+        theme::semibold(12.0),
+        TEXT_DIM,
+    );
+    let names = app.midi_output_names().to_vec();
+    let label = match track.midi_out {
+        None => "None".to_owned(),
+        Some((dev, _)) => names.get(dev as usize).cloned().unwrap_or_else(|| format!("Device {}", dev + 1)),
+    };
+    let pill = Rect::from_min_size(pos2(inner.right() - 200.0, *y), vec2(200.0, 24.0));
+    let label = widgets::truncate(ui, &label, &theme::mono(10.0), pill.width() - 16.0);
+    if text_pill(ui, pill, &label, theme::mono(10.0), BG, if track.midi_out.is_some() { TEXT } else { TEXT_DIM })
+        .on_hover_text("Where this track's MIDI goes besides its instrument (click to change)")
+        .clicked()
+    {
+        let next = match track.midi_out {
+            None if !names.is_empty() => Some((0, 0)),
+            Some((dev, ch)) if (dev as usize + 1) < names.len() => Some((dev + 1, ch)),
+            _ => None,
+        };
+        app.edit("Set MIDI hardware output", |p| p.track_mut(track_id).unwrap().midi_out = next);
+    }
+    *y += 36.0;
     painter.text(pos2(inner.left(), *y + 8.0), Align2::LEFT_CENTER, "Sends", theme::semibold(12.0), TEXT_DIM);
     *y += 24.0;
     for (i, s) in track.sends.iter().enumerate() {

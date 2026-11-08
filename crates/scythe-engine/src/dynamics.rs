@@ -1,6 +1,6 @@
 //! ReaGate and ReaComp, from the parameters they store. Both follow REAPER 7.73 renders
 //! sample for sample for the detector, timing and gain settings measured (see the tests);
-//! sidechain filters, soft knee and auto make-up are not modelled exactly.
+//! sidechain filters and auto make-up are not modelled; the soft knee follows a fit.
 
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
@@ -253,13 +253,24 @@ impl Compressor {
     }
 
     fn gain_reduction_db(&self, level_db: f64) -> f64 {
+        /// Inside REAPER's knee the slope grows with the level by this many dB per full slope,
+        /// whatever the knee width (fitted to 6 and 12 dB knees, within 0.06 dB).
+        const KNEE_RAMP_DB: f64 = 36.0;
         let over = level_db - self.threshold_db;
         let slope = 1.0 - 1.0 / self.ratio;
-        if self.knee_db > 0.0 && over.abs() < self.knee_db / 2.0 {
-            slope * (over + self.knee_db / 2.0).powi(2) / (2.0 * self.knee_db)
+        let k = self.knee_db;
+        if k > 0.0 && over.abs() < k {
+            // The knee reaches the knee setting either side of the threshold; at its ends it
+            // meets the flat and the hard curve, with a bend in slope.
+            slope * (0.5 * (over + k) + (over * over - k * k) / (2.0 * KNEE_RAMP_DB))
         } else {
             slope * over.max(0.0)
         }
+    }
+
+    /// The level gain reduction starts at: the threshold, or the bottom of the knee.
+    fn onset(&self) -> f64 {
+        self.threshold * 10f64.powf(-self.knee_db / 20.0)
     }
 }
 
@@ -337,9 +348,9 @@ impl Effect for Compressor {
                 self.window_sum = self.window.iter().sum();
             }
             let level = (self.window_sum.max(0.0) / n as f64).sqrt();
-            // Rising levels start from the threshold: below it the envelope is irrelevant.
+            // Rising levels start from where reduction begins: below it the envelope is irrelevant.
             if level > self.env {
-                self.env = self.env.max(self.threshold);
+                self.env = self.env.max(self.onset());
                 self.env = level + self.attack * (self.env - level);
             } else {
                 self.env = level + self.release * (self.env - level);

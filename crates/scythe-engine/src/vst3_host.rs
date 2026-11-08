@@ -440,7 +440,7 @@ impl IComponentHandlerTrait for ComponentHandler {
 
 // ---- modules and discovery ---------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Vst3Info {
     pub name: String,
     pub vendor: String,
@@ -569,6 +569,12 @@ fn module_binary(entry: &Path) -> Option<PathBuf> {
 }
 
 pub fn scan(dirs: &[PathBuf]) -> Vec<Vst3Info> {
+    scan_cached(dirs, None)
+}
+
+/// Like [`scan`], taking unchanged modules from the scan cache at `cache`.
+pub fn scan_cached(dirs: &[PathBuf], cache: Option<PathBuf>) -> Vec<Vst3Info> {
+    let mut cache = crate::scan_cache::ScanCache::open(cache);
     let mut found = Vec::new();
     let mut stack: Vec<PathBuf> = dirs.to_vec();
     while let Some(dir) = stack.pop() {
@@ -578,15 +584,19 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<Vst3Info> {
             if path.extension().is_some_and(|e| e == "vst3") {
                 let Some(binary) = module_binary(&path) else { continue };
                 let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                match Vst3Module::load(&binary) {
-                    Ok(module) => found.extend(module.classes(&file_name)),
-                    Err(e) => eprintln!("vst3: {}: {e}", binary.display()),
-                }
+                found.extend(cache.get(&binary, || match Vst3Module::load(&binary) {
+                    Ok(module) => module.classes(&file_name),
+                    Err(e) => {
+                        eprintln!("vst3: {}: {e}", binary.display());
+                        Vec::new()
+                    }
+                }));
             } else if path.is_dir() {
                 stack.push(path);
             }
         }
     }
+    cache.save();
     found.sort_by_key(|p| p.name.to_lowercase());
     found
 }
