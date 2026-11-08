@@ -93,6 +93,11 @@ pub trait Effect: Send {
         (2, 2)
     }
 
+    /// What a JSFX's `@serialize` writes, stored by REAPER as `<JS_SER` beside the effect.
+    fn save_serialized(&mut self) -> Option<Vec<f64>> {
+        None
+    }
+
     /// Moves the MIDI the effect passed on since the last call into `out`, as offsets from the
     /// chain's block; false when the effect leaves the chain's MIDI as it is.
     fn take_midi(&mut self, _out: &mut Vec<(usize, [u8; 3])>) -> bool {
@@ -480,6 +485,9 @@ impl FxRegistry {
                             None => chunk.children.insert(0, Node::Line(values)),
                         }
                     }
+                    if js && let Some(state) = inst.with(|e| e.save_serialized()).flatten() {
+                        set_js_serialized(slot, &state);
+                    }
                     let key = (owner.map_or(Owner::Master, Owner::Track), slot_key(slot, i));
                     if let Some(entry) = self.entries.get_mut(&key) {
                         entry.state = plugin_state(slot);
@@ -698,7 +706,10 @@ impl FxRegistry {
                 let path = crate::jsfx::find(&name, roots).ok_or_else(|| format!("JSFX {name} not found"))?;
                 let script = crate::jsfx::Script::load(&path, roots)?;
                 let values = lines.first().map(|l| crate::jsfx::parse_values(l, &script.sliders)).unwrap_or_default();
-                let fx = crate::jsfx::JsfxEffect::new(script, &values, self.sample_rate)?;
+                let mut fx = crate::jsfx::JsfxEffect::new(script, &values, self.sample_rate)?;
+                if let Some(state) = js_serialized(slot) {
+                    fx.restore_serialized(state);
+                }
                 Ok((Box::new(fx), FxStatus::Native("JSFX run from its source")))
             }
             "LV2" if args.first().is_some_and(|n| n.contains("Neural Amp Modeler")) => {
@@ -930,6 +941,45 @@ pub fn pin_map(slot: &FxSlot) -> Option<PinMap> {
         _ => return None,
     };
     (!map.is_plain()).then_some(map)
+}
+
+/// A JSFX's `<JS_SER` state: base64 of little-endian 32-bit floats.
+fn js_serialized(slot: &FxSlot) -> Option<Vec<f64>> {
+    use base64::Engine as _;
+    let chunk = slot.raw.iter().find_map(|n| match n {
+        Node::Chunk(c) if c.name() == "JS_SER" => Some(c),
+        _ => None,
+    })?;
+    let text: String = chunk
+        .children
+        .iter()
+        .filter_map(|n| match n {
+            Node::Line(l) => Some(l.trim()),
+            Node::Chunk(_) => None,
+        })
+        .collect();
+    let bytes = base64::engine::general_purpose::STANDARD.decode(text).ok()?;
+    Some(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_le_bytes(b) as f64).collect())
+}
+
+/// Replaces or adds the `<JS_SER` chunk after the effect's own chunk.
+fn set_js_serialized(slot: &mut FxSlot, values: &[f64]) {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = values.iter().flat_map(|&v| (v as f32).to_le_bytes()).collect();
+    let text = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let mut chunk = Chunk::new("JS_SER", &[]);
+    for line in text.as_bytes().chunks(128) {
+        chunk.children.push(Node::Line(String::from_utf8_lossy(line).into_owned()));
+    }
+    let existing = slot.raw.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "JS_SER"));
+    match existing {
+        Some(i) => slot.raw[i] = Node::Chunk(chunk),
+        None => {
+            let after =
+                slot.raw.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "JS")).map_or(0, |i| i + 1);
+            slot.raw.insert(after, Node::Chunk(chunk));
+        }
+    }
 }
 
 /// `<JS_PINMAP`: a version word, then an input and an output block, each its byte size

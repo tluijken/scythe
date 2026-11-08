@@ -863,6 +863,24 @@ pub struct Machine {
     /// Where `file_open` looks for a file named by a string.
     pub data_dirs: Vec<std::path::PathBuf>,
     files: Vec<Option<files::OpenFile>>,
+    /// The `@serialize` stream (file handle 0) while that section runs.
+    pub serial: Option<Serial>,
+}
+
+/// Values `@serialize` reads back (`writing` false) or writes.
+#[derive(Debug, Default)]
+pub struct Serial {
+    pub values: Vec<f64>,
+    pub pos: usize,
+    pub writing: bool,
+}
+
+impl Serial {
+    fn next(&mut self) -> Option<f64> {
+        let v = self.values.get(self.pos).copied()?;
+        self.pos += 1;
+        Some(v)
+    }
 }
 
 /// Bytes in a channel message with this status byte.
@@ -899,6 +917,7 @@ impl Machine {
             file_sliders: Vec::new(),
             data_dirs: Vec::new(),
             files: Vec::new(),
+            serial: None,
         }
     }
 
@@ -1339,6 +1358,9 @@ impl Machine {
             }
             FileAvail => {
                 let h = arg(self, 0);
+                if let Some(serial) = self.serial.as_ref().filter(|_| h.round() == 0.0) {
+                    return if serial.writing { -1.0 } else { (serial.values.len() - serial.pos) as f64 };
+                }
                 match self.file_slot(h) {
                     Some(Some(f)) => f.avail(),
                     _ => 0.0,
@@ -1346,6 +1368,16 @@ impl Machine {
             }
             FileVar => {
                 let h = arg(self, 0);
+                if h.round() == 0.0 && self.serial.is_some() {
+                    let v = arg(self, 1);
+                    let serial = self.serial.as_mut().unwrap();
+                    if serial.writing {
+                        serial.values.push(v);
+                    } else if let Some(v) = serial.next() {
+                        self.store(&args[1], v);
+                    }
+                    return 1.0;
+                }
                 let Some(Some(f)) = self.file_slot(h) else { return 0.0 };
                 match f.next() {
                     Some(v) => {
@@ -1357,8 +1389,25 @@ impl Machine {
             }
             FileMem => {
                 let (h, at, len) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                let len = (len.max(0.0) as usize).min(MEM_SIZE);
+                if h.round() == 0.0 && self.serial.as_ref().is_some_and(|s| s.writing) {
+                    let values: Vec<f64> = (0..len).map(|k| self.read(at + k as f64)).collect();
+                    self.serial.as_mut().unwrap().values.extend(values);
+                    return len as f64;
+                }
+                if h.round() == 0.0 && self.serial.is_some() {
+                    let mut read = 0;
+                    while read < len {
+                        let Some(v) = self.serial.as_mut().unwrap().next() else { break };
+                        if let Some(c) = self.cell(at + read as f64) {
+                            *c = v;
+                        }
+                        read += 1;
+                    }
+                    return read as f64;
+                }
                 let mut read = 0;
-                for k in 0..(len.max(0.0) as usize).min(MEM_SIZE) {
+                for k in 0..len {
                     let Some(Some(f)) = self.file_slot(h) else { break };
                     let Some(v) = f.next() else { break };
                     if let Some(c) = self.cell(at + k as f64) {

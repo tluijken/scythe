@@ -91,3 +91,49 @@ fn jsfx_midi_reaches_the_next_effect() {
     let l = render_midi_chain(&scripts, &["half", "level"]);
     assert_eq!(l[700], 0.5);
 }
+
+#[test]
+fn serialized_state_is_saved_and_restored_like_reaper() {
+    use scythe_core::rpp::{project_from_rpp, project_to_rpp};
+    let dir = std::env::temp_dir().join(format!("scythe-jsfx-ser-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("ser"),
+        "desc:ser\n@init\next_noinit = 1;\nx = 1.5; y = -2; buf = 100; buf[0] = 7; buf[1] = 8.25; buf[2] = 1/3;\n\
+         @serialize\nfile_var(0, x);\nfile_var(0, y);\nfile_mem(0, buf, 3);\n@sample\nspl0 = x; spl1 = buf[1];\n",
+    )
+    .unwrap();
+    let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    <FXCHAIN\n      BYPASS 0 0 0\n      <JS ser \"\"\n      >\n      WAK 0 0\n    >\n  >\n>\n";
+    let mut project = project_from_rpp(text).unwrap();
+    let mut fx = FxRegistry::new(48000);
+    fx.set_jsfx_paths(vec![dir.clone()]);
+    let id = project.tracks[0].id;
+    fx.chain(Some(id), &project.tracks[0].fx);
+    fx.store_states(&mut project);
+    let saved = project_to_rpp(&project);
+    // What REAPER 7.73 wrote for the same effect.
+    assert!(saved.contains("<JS_SER\n        AADAPwAAAMAAAOBAAAAEQauqqj4=\n      >"), "{saved}");
+
+    // A stored state is read back after @init and @slider.
+    let changed = saved.replace("AADAPwAAAMAAAOBAAAAEQauqqj4=", "AACAQAAAAMAAAOBAAAAoQauqqj4=");
+    let project = project_from_rpp(&changed).unwrap();
+    let mut fx = FxRegistry::new(48000);
+    fx.set_jsfx_paths(vec![dir.clone()]);
+    let chain = fx.chain(Some(id), &project.tracks[0].fx);
+    let ctx = ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let (mut l, mut r) = (vec![0.0f32; 4], vec![0.0f32; 4]);
+    chain[0].process(&mut l, &mut r, &ctx);
+    assert_eq!((l[0], r[0]), (4.0, 10.5));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

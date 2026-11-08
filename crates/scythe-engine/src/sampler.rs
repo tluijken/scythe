@@ -60,6 +60,18 @@ pub struct Rs5kCompat {
     sample: Arc<AudioData>,
     gain: (f32, f32),
     range: (usize, usize),
+    /// Notes started by MIDI messages (live input, or an earlier effect's output) rather than
+    /// the track's own notes.
+    voices: Vec<Voice>,
+    events: Vec<(usize, [u8; 3])>,
+}
+
+struct Voice {
+    channel: u8,
+    key: u8,
+    /// Frames played so far.
+    played: usize,
+    gain: (f32, f32),
 }
 
 impl Rs5kCompat {
@@ -82,12 +94,68 @@ impl Rs5kCompat {
         let range = ((settings.start * frames as f64) as usize, ((settings.end * frames as f64) as usize).min(frames));
         let (l, r) = PanLaw::default().gains(settings.pan * 2.0 - 1.0);
         let gain = ((l * settings.volume) as f32, (r * settings.volume) as f32);
-        Ok(Self { settings, sample: Arc::new(audio), gain, range })
+        Ok(Self { settings, sample: Arc::new(audio), gain, range, voices: Vec::new(), events: Vec::new() })
     }
 
     fn velocity_gain(&self, velocity: u8) -> f32 {
         let t = (velocity.max(1) as f64 - 1.0) / 126.0;
         (self.settings.min_velocity_gain + (1.0 - self.settings.min_velocity_gain) * t) as f32
+    }
+}
+
+impl Rs5kCompat {
+    fn accepts(&self, channel: u8, key: u8) -> bool {
+        (self.settings.channel == 0 || channel + 1 == self.settings.channel)
+            && (self.settings.note_lo..=self.settings.note_hi).contains(&key)
+    }
+
+    /// Starts and stops voices at the messages' frames and mixes every sounding voice.
+    fn play_events(&mut self, events: &[(usize, [u8; 3])], left: &mut [f32], right: &mut [f32], sample_rate: u32) {
+        if events.is_empty() && self.voices.is_empty() {
+            return;
+        }
+        let n = left.len();
+        let mut at = 0;
+        for i in 0..=events.len() {
+            let until = events.get(i).map_or(n, |e| e.0.min(n));
+            self.mix_voices(at..until, left, right, sample_rate);
+            at = until;
+            let Some(&(_, [status, key, vel])) = events.get(i) else { break };
+            let channel = status & 0x0f;
+            match status & 0xf0 {
+                0x90 if vel > 0 => {
+                    if self.accepts(channel, key) {
+                        let vg = self.velocity_gain(vel);
+                        let gain = (self.gain.0 * vg, self.gain.1 * vg);
+                        self.voices.push(Voice { channel, key, played: 0, gain });
+                    }
+                }
+                0x80 | 0x90 if self.settings.obey_note_offs => {
+                    self.voices.retain(|v| v.channel != channel || v.key != key);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn mix_voices(&mut self, frames: std::ops::Range<usize>, left: &mut [f32], right: &mut [f32], sample_rate: u32) {
+        let len = self.range.1.saturating_sub(self.range.0);
+        let attack = (self.settings.attack * sample_rate as f64) as usize;
+        let lc = &self.sample.channels[0];
+        let rc = self.sample.channels.get(1).unwrap_or(lc);
+        for v in &mut self.voices {
+            for o in frames.clone() {
+                if v.played >= len {
+                    break;
+                }
+                let s = self.range.0 + v.played;
+                let env = if v.played < attack { v.played as f32 / attack as f32 } else { 1.0 };
+                left[o] += lc[s] * v.gain.0 * env;
+                right[o] += rc[s] * v.gain.1 * env;
+                v.played += 1;
+            }
+        }
+        self.voices.retain(|v| v.played < len);
     }
 }
 
@@ -97,16 +165,24 @@ impl Effect for Rs5kCompat {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        let mut events = std::mem::take(&mut self.events);
+        events.clear();
+        match ctx.chain_midi(left.len()) {
+            Some(chain) => events.extend(chain),
+            None => events.extend(ctx.live_midi().map(|m| (0, m.bytes))),
+        }
+        self.play_events(&events, left, right, ctx.sample_rate);
+        self.events = events;
+        if ctx.midi.is_some() {
+            return;
+        }
         let Some(notes) = ctx.notes else { return };
         let len = self.range.1.saturating_sub(self.range.0) as i64;
         let n = left.len() as i64;
         let (block_start, block_end) = (ctx.position, ctx.position + n);
         let lc = &self.sample.channels[0];
         let rc = self.sample.channels.get(1).unwrap_or(lc);
-        let plays = |note: &crate::synth::SynthNote| {
-            (self.settings.channel == 0 || note.channel + 1 == self.settings.channel)
-                && (self.settings.note_lo..=self.settings.note_hi).contains(&note.key)
-        };
+        let plays = |note: &crate::synth::SynthNote| self.accepts(note.channel, note.key);
         for note in notes.starting_in(block_start - len..block_end) {
             if !plays(note) {
                 continue;
@@ -181,7 +257,14 @@ mod tests {
             end: 1.0,
         };
         let audio = AudioData { sample_rate: 100, channels: vec![(1..=10).map(|i| i as f32).collect()] };
-        let mut s = Rs5kCompat { settings, sample: Arc::new(audio), gain: (1.0, 1.0), range: (0, 10) };
+        let mut s = Rs5kCompat {
+            settings,
+            sample: Arc::new(audio),
+            gain: (1.0, 1.0),
+            range: (0, 10),
+            voices: Vec::new(),
+            events: Vec::new(),
+        };
         let note = |start, key| SynthNote { start, end: start + 1, cutoff: i64::MAX, channel: 9, key, velocity: 100 };
         let notes = crate::synth::NoteList::new(vec![note(5, 36), note(6, 38)], 100);
         let (mut l, mut r) = (vec![0.0; 20], vec![0.0; 20]);
@@ -200,5 +283,15 @@ mod tests {
         s.process(&mut l, &mut r, &ctx);
         assert_eq!(&l[4..8], &[0.0, 1.0, 2.0, 3.0]);
         assert_eq!(l[15], 0.0);
+
+        // MIDI an earlier effect sent replaces the track's notes, and voices carry on into the
+        // next block.
+        let chain = [(3usize, [0x99u8, 36, 100]), (4, [0x99, 38, 100])];
+        let (mut l, mut r) = (vec![0.0; 6], vec![0.0; 6]);
+        s.process(&mut l, &mut r, &ProcessContext { midi: Some(&chain), ..ctx });
+        assert_eq!(l, [0.0, 0.0, 0.0, 1.0, 2.0, 3.0]);
+        let (mut l, mut r) = (vec![0.0; 10], vec![0.0; 10]);
+        s.process(&mut l, &mut r, &ProcessContext { midi: Some(&[]), position: 6, ..ctx });
+        assert_eq!(&l[..8], &[4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 0.0]);
     }
 }

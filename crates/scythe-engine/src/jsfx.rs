@@ -281,6 +281,7 @@ pub struct JsfxEffect {
     slider: Vec<Code>,
     block: Vec<Code>,
     sample: Vec<Code>,
+    serialize: Vec<Code>,
     slider_vars: Vec<usize>,
     values: Vec<f64>,
     sample_rate: u32,
@@ -309,7 +310,7 @@ impl JsfxEffect {
         let mut functions = HashMap::new();
         let mut sections: HashMap<&str, Vec<Code>> = HashMap::new();
         let all: Vec<&HashMap<String, String>> = script.imported.iter().chain([&script.sections]).collect();
-        for name in ["init", "slider", "block", "sample"] {
+        for name in ["init", "slider", "block", "sample", "serialize"] {
             for secs in &all {
                 if let Some(src) = secs.get(name) {
                     let code = compile(src, &mut vars, &mut functions).map_err(|e| format!("@{name}: {e}"))?;
@@ -343,6 +344,7 @@ impl JsfxEffect {
             slider: take("slider"),
             block: take("block"),
             sample: take("sample"),
+            serialize: take("serialize"),
             machine: Machine::new(vars),
             script,
             slider_vars,
@@ -485,6 +487,20 @@ impl JsfxEffect {
         self.pass_midi(n, ctx);
     }
 
+    /// Gives `@serialize` the values REAPER stored (`<JS_SER`) to read back, after `@init` and
+    /// `@slider` as REAPER loads it.
+    pub fn restore_serialized(&mut self, values: Vec<f64>) {
+        self.run_serialize(crate::eel::Serial { values, pos: 0, writing: false });
+    }
+
+    fn run_serialize(&mut self, serial: crate::eel::Serial) -> Vec<f64> {
+        self.machine.serial = Some(serial);
+        for code in &self.serialize {
+            self.machine.run(code);
+        }
+        self.machine.serial.take().map(|s| s.values).unwrap_or_default()
+    }
+
     fn receive_midi(&mut self, n: usize, ctx: &ProcessContext) {
         if self.uses_midi {
             ctx.block_midi(n, &mut self.midi_in);
@@ -537,6 +553,13 @@ impl Effect for JsfxEffect {
 
     fn pins(&self) -> (usize, usize) {
         (self.script.in_pins.unwrap_or(2), self.script.out_pins.unwrap_or(2))
+    }
+
+    fn save_serialized(&mut self) -> Option<Vec<f64>> {
+        if self.serialize.is_empty() {
+            return None;
+        }
+        Some(self.run_serialize(crate::eel::Serial { writing: true, ..Default::default() }))
     }
 
     fn take_midi(&mut self, out: &mut Vec<(usize, [u8; 3])>) -> bool {

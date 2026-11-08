@@ -133,12 +133,15 @@ Working:
   (`~/.local/share/scythe/presets/<plugin>/`). Plugin scans are cached per binary (path, size,
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
-  (the sampler receives the track's MIDI; musical delay lengths follow the tempo map), as do
+  (the sampler receives the track's MIDI, live input and MIDI an earlier effect sends; musical
+  delay lengths follow the tempo map), as do
   ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). JSFX run from their own
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
   user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
   bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
   File sliders list their folder under `Data` and are stored by file name as REAPER does;
+  `@serialize` state is read from and written to `<JS_SER` (32-bit floats) after `@init` and
+  `@slider`, as REAPER loads it;
   `file_open` reads WAV files as samples and text one value per item. They
   run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
   next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
@@ -195,6 +198,7 @@ compare with scythe's output sample by sample:
 | JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
 | JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
+| JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
@@ -211,10 +215,10 @@ compares the two files.
   are not requested. The audio device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead.
 - ReaScript covers a subset of the API (below), in Lua only; no EEL or Python.
-- JSFX: no graphics (`@gfx`) or `@serialize` state; system exclusive (`midisyx`) is not
-  passed on, and the built-in ReaSamplOmatic5000 plays the track's notes rather than MIDI an
-  earlier JSFX sent. NaN follows IEEE rules; REAPER compares it as both less than and equal to
-  anything.
+- JSFX: no graphics (`@gfx`); system exclusive (`midisyx`) is not passed on. REAPER runs
+  `@serialize` a few more times after loading (to save state), which only matters to scripts
+  that count its runs. NaN follows IEEE rules; REAPER compares it as both less than and equal
+  to anything.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
