@@ -212,7 +212,7 @@ compares the two files.
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: VST 3 buses are set to the plugin's own arrangements; other speaker layouts
-  are not requested. The audio device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
+  are not requested. Master channels go to the audio device's outputs in order, as many as the device offers; channels beyond that reach only multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead.
 - ReaScript covers a subset of the API (below), in Lua only; no EEL or Python.
 - JSFX: no graphics (`@gfx`); system exclusive (`midisyx`) is not passed on. REAPER runs

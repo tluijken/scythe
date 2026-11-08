@@ -387,7 +387,7 @@ pub struct RenderGraph {
     pub master_fx: Vec<Arc<FxInstance>>,
     /// Latency of each master effect, in frames.
     pub master_fx_latency: Vec<i64>,
-    /// Master channels; 3 and up live in `master_aux` and only reach multichannel renders.
+    /// Master channels; 3 and up live in `master_aux`.
     pub master_channels: usize,
     pub master_aux: Option<Arc<AuxChannels>>,
     pub master_volume: f32,
@@ -683,12 +683,17 @@ impl RenderGraph {
     }
 
     /// Master channels 3 and up of the block just rendered (at most `RenderScratch::MAX_BLOCK`
-    /// frames), for multichannel renders.
+    /// frames), for multichannel renders and outputs.
     pub fn master_extra(&self, n: usize, out: &mut [Vec<f32>]) {
+        self.master_extra_at(0, n, out);
+    }
+
+    /// Like `master_extra`, written from frame `at` of each buffer in `out`.
+    pub fn master_extra_at(&self, at: usize, n: usize, out: &mut [Vec<f32>]) {
         let Some(aux) = self.master_aux.as_ref() else { return };
         let Ok(bufs) = aux.0.try_lock() else { return };
         for (dst, src) in out.iter_mut().zip(bufs.iter()) {
-            dst[..n].copy_from_slice(&src[..n]);
+            dst[at..at + n].copy_from_slice(&src[..n]);
         }
     }
 

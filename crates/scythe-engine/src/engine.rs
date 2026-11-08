@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -152,6 +152,8 @@ struct Processor {
     scratch: RenderScratch,
     left: Vec<f32>,
     right: Vec<f32>,
+    /// Master channels 3 and up for the device outputs past the first pair.
+    extra: Vec<Vec<f32>>,
     input_rx: Receiver<Option<InputFeed>>,
     input: Option<InputFeed>,
     /// De-interleaved input for the current block.
@@ -177,6 +179,7 @@ impl Processor {
             scratch: RenderScratch::new(MAX_TRACKS),
             left: vec![0.0; RenderScratch::MAX_BLOCK],
             right: vec![0.0; RenderScratch::MAX_BLOCK],
+            extra: Vec::new(),
             input_rx: feeds.input_rx,
             input: None,
             in_bufs: (0..LiveInput::MAX_CHANNELS).map(|_| vec![0.0; RenderScratch::MAX_BLOCK]).collect(),
@@ -188,6 +191,11 @@ impl Processor {
             midi_out: None,
             was_playing: false,
         }
+    }
+
+    /// Sizes the buffers for a device with `channels` outputs. Not for the audio thread.
+    fn set_outputs(&mut self, channels: usize) {
+        self.extra.resize_with(channels.saturating_sub(2), || vec![0.0; RenderScratch::MAX_BLOCK]);
     }
 
     /// Collects the MIDI that arrived since the last block. Returns whether MIDI inputs are open.
@@ -244,6 +252,9 @@ impl Processor {
         let (l, r) = (&mut self.left[..frames], &mut self.right[..frames]);
         l.fill(0.0);
         r.fill(0.0);
+        for b in &mut self.extra {
+            b[..frames].fill(0.0);
+        }
         let mut segments = [(0i64, 0usize, 0usize); 8];
         let n = self.transport.advance(frames, &mut segments);
         let graph = self.graph.load();
@@ -289,11 +300,13 @@ impl Processor {
                 midi_out: clock(pos, 0),
             };
             graph.render_with(pos, l, r, &mut self.scratch, &live);
+            graph.master_extra_at(0, frames, &mut self.extra);
         }
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 { &self.live } else { &[] };
             let live = LiveInput { channels: channels(off, len), midi, play_items: true, midi_out: clock(pos, off) };
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
+            graph.master_extra_at(off, len, &mut self.extra);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
@@ -304,22 +317,34 @@ impl Processor {
         for chunk in out.chunks_mut(channels * RenderScratch::MAX_BLOCK) {
             let frames = chunk.len() / channels;
             self.process(frames);
-            for (i, frame) in chunk.chunks_mut(channels).enumerate() {
-                for (c, s) in frame.iter_mut().enumerate() {
-                    let v = match c {
-                        0 => self.left[i],
-                        1 => self.right[i],
-                        _ => 0.0,
-                    };
-                    *s = T::from_sample(v);
-                }
-            }
+            interleave(chunk, channels, &self.left, &self.right, &self.extra);
+        }
+    }
+}
+
+/// Writes the master's channels to the device's in order; outputs past the master's last
+/// channel stay silent.
+fn interleave<T: SizedSample + FromSample<f32>>(
+    out: &mut [T],
+    channels: usize,
+    left: &[f32],
+    right: &[f32],
+    extra: &[Vec<f32>],
+) {
+    for (i, frame) in out.chunks_mut(channels).enumerate() {
+        for (c, s) in frame.iter_mut().enumerate() {
+            let v = match c {
+                0 => left[i],
+                1 => right[i],
+                _ => extra.get(c - 2).map_or(0.0, |b| b[i]),
+            };
+            *s = T::from_sample(v);
         }
     }
 }
 
 enum Output {
-    Device { _stream: cpal::Stream },
+    Device(DeviceOutput),
     Null { stop: Arc<AtomicBool>, thread: Option<JoinHandle<()>> },
 }
 
@@ -329,6 +354,50 @@ impl Drop for Output {
             stop.store(true, Ordering::Relaxed);
             if let Some(t) = thread.take() {
                 let _ = t.join();
+            }
+        }
+    }
+}
+
+/// An open output device. The stream is reopened with more channels when the master has more
+/// than the device's default configuration.
+struct DeviceOutput {
+    stream: Option<cpal::Stream>,
+    device: cpal::Device,
+    config: StreamConfig,
+    format: SampleFormat,
+    default_channels: u16,
+    /// Channel counts the device offers at this rate and format, queried on first need.
+    supported: Option<Vec<u16>>,
+    proc: Arc<Mutex<Processor>>,
+}
+
+impl DeviceOutput {
+    fn match_master(&mut self, master_channels: usize, transport: &Arc<Transport>) {
+        let want = if master_channels <= self.default_channels as usize {
+            self.default_channels
+        } else {
+            let (device, format, rate) = (&self.device, self.format, self.config.sample_rate);
+            let supported = self.supported.get_or_insert_with(|| supported_channels(device, format, rate));
+            output_channels(supported, self.default_channels, master_channels)
+        };
+        let previous = self.config.channels;
+        if want == previous {
+            return;
+        }
+        // Many devices allow only one open stream, so the old one goes first.
+        self.stream = None;
+        for channels in [want, previous] {
+            self.config.channels = channels;
+            if let Ok(mut proc) = self.proc.lock() {
+                proc.set_outputs(channels as usize);
+            }
+            match open_stream(&self.device, &self.config, self.format, self.proc.clone(), transport.clone()) {
+                Ok(stream) => {
+                    self.stream = Some(stream);
+                    return;
+                }
+                Err(e) => eprintln!("audio output with {channels} channels: {e}"),
             }
         }
     }
@@ -363,7 +432,7 @@ pub struct Engine {
     recorded_midi: rtrb::Consumer<RecordedMidi>,
     midi_out_tx: Sender<Option<MidiOutQueue>>,
     midi_sender: Option<MidiSender>,
-    _output: Output,
+    output: Output,
 }
 
 impl Engine {
@@ -392,16 +461,10 @@ impl Engine {
         let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
         let transport = Arc::new(Transport::new(sample_rate));
         let (senders, feeds) = feeds();
-        let proc = Processor::new(graph.clone(), transport.clone(), feeds);
-        let stream = match format {
-            SampleFormat::F32 => build::<f32>(device, &config, proc, transport.clone()),
-            SampleFormat::I16 => build::<i16>(device, &config, proc, transport.clone()),
-            SampleFormat::I32 => build::<i32>(device, &config, proc, transport.clone()),
-            SampleFormat::U16 => build::<u16>(device, &config, proc, transport.clone()),
-            SampleFormat::F64 => build::<f64>(device, &config, proc, transport.clone()),
-            other => return Err(format!("unsupported sample format {other}")),
-        }?;
-        stream.play().map_err(|e| e.to_string())?;
+        let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
+        proc.set_outputs(config.channels as usize);
+        let proc = Arc::new(Mutex::new(proc));
+        let stream = open_stream(device, &config, format, proc.clone(), transport.clone())?;
         let block_size = match config.buffer_size {
             cpal::BufferSize::Fixed(n) => Some(n),
             cpal::BufferSize::Default => None,
@@ -422,7 +485,15 @@ impl Engine {
             midi_out_tx: senders.midi_out_tx,
             midi_sender: None,
             info: DeviceInfo { name, sample_rate, block_size, fallback_reason: None },
-            _output: Output::Device { _stream: stream },
+            output: Output::Device(DeviceOutput {
+                stream: Some(stream),
+                device: device.clone(),
+                config,
+                format,
+                default_channels: config.channels,
+                supported: None,
+                proc,
+            }),
         })
     }
 
@@ -471,7 +542,7 @@ impl Engine {
                 block_size: Some(BLOCK as u32),
                 fallback_reason: reason,
             },
-            _output: Output::Null { stop, thread: Some(thread) },
+            output: Output::Null { stop, thread: Some(thread) },
         }
     }
 
@@ -511,6 +582,9 @@ impl Engine {
         self.fx.project_dir = project.path.as_deref().and_then(std::path::Path::parent).map(Into::into);
         let mut graph = RenderGraph::build(project, &self.pool, &mut self.meters, &mut self.fx, self.info.sample_rate);
         graph.metronome = self.metronome;
+        if let Output::Device(out) = &mut self.output {
+            out.match_master(graph.master_channels, &self.transport);
+        }
         let old = self.graph.swap(Arc::new(graph));
         let now = Instant::now();
         self.retired.push_back((now, old));
@@ -652,10 +726,53 @@ fn open_device() -> Result<(cpal::Device, StreamConfig, SampleFormat, String), S
     Ok((device, supported.into(), format, name))
 }
 
+/// Channel counts `device` can play at `rate` in `format`, ascending.
+fn supported_channels(device: &cpal::Device, format: SampleFormat, rate: u32) -> Vec<u16> {
+    let mut channels: Vec<u16> = device
+        .supported_output_configs()
+        .map(|configs| {
+            configs
+                .filter(|c| c.sample_format() == format && (c.min_sample_rate()..=c.max_sample_rate()).contains(&rate))
+                .map(|c| c.channels())
+                .collect()
+        })
+        .unwrap_or_default();
+    channels.sort_unstable();
+    channels.dedup();
+    channels
+}
+
+/// The output channel count for a master of `master_channels`: the fewest the device offers
+/// that carry every master channel, else as many as it has, never fewer than its default.
+fn output_channels(supported: &[u16], default: u16, master_channels: usize) -> u16 {
+    let want = u16::try_from(master_channels).unwrap_or(u16::MAX).max(default);
+    let fitting = supported.iter().copied().filter(|&c| c >= want).min();
+    fitting.or_else(|| supported.iter().copied().max()).map_or(default, |c| c.max(default))
+}
+
+fn open_stream(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    format: SampleFormat,
+    proc: Arc<Mutex<Processor>>,
+    transport: Arc<Transport>,
+) -> Result<cpal::Stream, String> {
+    let stream = match format {
+        SampleFormat::F32 => build::<f32>(device, config, proc, transport),
+        SampleFormat::I16 => build::<i16>(device, config, proc, transport),
+        SampleFormat::I32 => build::<i32>(device, config, proc, transport),
+        SampleFormat::U16 => build::<u16>(device, config, proc, transport),
+        SampleFormat::F64 => build::<f64>(device, config, proc, transport),
+        other => return Err(format!("unsupported sample format {other}")),
+    }?;
+    stream.play().map_err(|e| e.to_string())?;
+    Ok(stream)
+}
+
 fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
     device: &cpal::Device,
     config: &StreamConfig,
-    mut proc: Processor,
+    proc: Arc<Mutex<Processor>>,
     transport: Arc<Transport>,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
@@ -666,7 +783,11 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
                 let t = info.timestamp();
                 let latency = t.playback.duration_since(t.callback);
                 transport.output_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
-                proc.write_interleaved(data, channels)
+                // Only contended while the main thread swaps the stream.
+                match proc.try_lock() {
+                    Ok(mut proc) => proc.write_interleaved(data, channels),
+                    Err(_) => data.fill(T::EQUILIBRIUM),
+                }
             },
             |err| eprintln!("audio stream error: {err}"),
             None,
@@ -723,6 +844,72 @@ mod tests {
         assert_eq!(segs(&t, 8), [(0, 0, 8)]);
         assert_eq!(segs(&t, 8), [(8, 0, 8)]);
         assert_eq!(segs(&t, 8), [(16, 0, 4), (10, 4, 4)]);
+    }
+
+    #[test]
+    fn output_channels_follow_the_master_within_the_device() {
+        assert_eq!(output_channels(&[1, 2, 4, 6, 8], 2, 2), 2);
+        assert_eq!(output_channels(&[1, 2, 4, 6, 8], 2, 4), 4);
+        assert_eq!(output_channels(&[2, 6, 8], 2, 4), 6);
+        assert_eq!(output_channels(&[2, 6, 8], 2, 16), 8);
+        assert_eq!(output_channels(&[2], 2, 6), 2);
+        assert_eq!(output_channels(&[], 2, 6), 2);
+        assert_eq!(output_channels(&[2, 4, 8], 8, 4), 8);
+    }
+
+    #[test]
+    fn interleave_maps_master_channels_to_outputs() {
+        let (l, r) = ([1.0, 2.0], [3.0, 4.0]);
+        let extra = [vec![5.0, 6.0]];
+        let mut out = [9.0f32; 8];
+        interleave(&mut out, 4, &l, &r, &extra);
+        assert_eq!(out, [1.0, 3.0, 5.0, 0.0, 2.0, 4.0, 6.0, 0.0]);
+        let mut stereo = [9.0f32; 4];
+        interleave(&mut stereo, 2, &l, &r, &extra);
+        assert_eq!(stereo, [1.0, 3.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn processor_sends_every_master_channel_to_the_device() {
+        use scythe_core::{Item, Take};
+        let dir = std::env::temp_dir().join(format!("scythe-engine-mc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("quad.wav");
+        let spec = hound::WavSpec {
+            channels: 4,
+            sample_rate: 8000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for _ in 0..8000 {
+            for c in 1..=4 {
+                w.write_sample(c as f32 / 10.0).unwrap();
+            }
+        }
+        w.finalize().unwrap();
+
+        let mut p = Project::default();
+        p.master.channels = 4;
+        let t = p.add_track("t");
+        p.track_mut(t).unwrap().channels = 4;
+        let mut item = Item::new(0.0, 1.0, Take::from_file(src.clone()));
+        (item.fade_in, item.fade_out) = (scythe_core::Fade::default(), scythe_core::Fade::default());
+        p.track_mut(t).unwrap().items.push(item);
+        let pool = MediaPool::default();
+        pool.load(&src, 8000).unwrap();
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let transport = Arc::new(Transport::new(8000));
+        transport.playing.store(true, Ordering::Relaxed);
+        let (_senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport, feeds);
+        proc.set_outputs(6);
+        let mut out = vec![0.0f32; 6 * 1000];
+        proc.write_interleaved(&mut out, 6);
+        let frame = &out[6 * 500..6 * 501];
+        let expected = [0.1, 0.2, 0.3, 0.4, 0.0, 0.0];
+        assert!(frame.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{frame:?}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
