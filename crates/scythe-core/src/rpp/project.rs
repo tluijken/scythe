@@ -155,6 +155,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         let v = num(&t, 1, 0.0) as i64;
                         p.master.muted = v & 1 != 0;
                     }
+                    "MASTER_NCH" => {
+                        p.master.channels = (num(&t, 1, 2.0) as u32).clamp(2, 128);
+                        p.extra.push(node.clone());
+                    }
                     "MARKER" => parse_marker(&t, &mut p.markers, &mut region_starts),
                     "PANLAW" => {
                         p.pan_law.law = num(&t, 1, 1.0);
@@ -737,9 +741,16 @@ pub fn project_to_rpp(p: &Project) -> String {
         &[(1, fmt_num(m.volume)), (2, fmt_num(m.pan))],
     ));
     root.line(line_from(l, "MASTERMUTESOLO", &["MASTERMUTESOLO"], &[(1, bit(m.muted))]));
-    let (mut wrote_law, mut wrote_flags, mut wrote_tempo) = (false, false, false);
+    let (mut wrote_law, mut wrote_flags, mut wrote_tempo, mut wrote_nch) = (false, false, false, false);
     for node in &p.extra {
         match node {
+            Node::Line(l) if line_key(l) == "MASTER_NCH" => {
+                let mut toks = tokenize(l);
+                toks.resize(toks.len().max(2), String::new());
+                toks[1] = m.channels.to_string();
+                root.line(toks);
+                wrote_nch = true;
+            }
             Node::Line(l) if line_key(l) == "PANLAW" => {
                 let mut toks = tokenize(l);
                 toks.resize(toks.len().max(2), String::new());
@@ -757,6 +768,9 @@ pub fn project_to_rpp(p: &Project) -> String {
             }
             _ => root.children.push(node.clone()),
         }
+    }
+    if !wrote_nch && m.channels != 2 {
+        root.line(["MASTER_NCH".to_owned(), m.channels.to_string(), "2".to_owned()]);
     }
     if !wrote_tempo && !p.tempo.points.is_empty() {
         root.push_chunk(write_tempo_env(None, &p.tempo.points));

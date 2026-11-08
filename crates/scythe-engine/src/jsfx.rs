@@ -33,6 +33,10 @@ pub struct Script {
     pub sections: HashMap<String, String>,
     /// Sections of imported files, run before the effect's own.
     pub imported: Vec<HashMap<String, String>>,
+    /// Declared `in_pin`/`out_pin` lines (`in_pin:none` declares none); `None` when the
+    /// effect declares nothing and gets a stereo pair.
+    pub in_pins: Option<usize>,
+    pub out_pins: Option<usize>,
 }
 
 fn parse_slider(index: usize, spec: &str) -> Option<Slider> {
@@ -137,6 +141,12 @@ impl Script {
                 {
                     script.sliders.push(s);
                 }
+            } else if let Some(pin) = line.strip_prefix("in_pin:") {
+                let n = script.in_pins.get_or_insert(0);
+                *n += (!pin.trim().eq_ignore_ascii_case("none")) as usize;
+            } else if let Some(pin) = line.strip_prefix("out_pin:") {
+                let n = script.out_pins.get_or_insert(0);
+                *n += (!pin.trim().eq_ignore_ascii_case("none")) as usize;
             } else if let Some(file) = line.strip_prefix("import") {
                 let file = file.trim();
                 let found = path
@@ -357,6 +367,48 @@ impl Effect for JsfxEffect {
             }
             *l = self.machine.vars.values[s0] as f32;
             *r = self.machine.vars.values[s1] as f32;
+        }
+    }
+
+    fn pins(&self) -> (usize, usize) {
+        (self.script.in_pins.unwrap_or(2), self.script.out_pins.unwrap_or(2))
+    }
+
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        let (ins, outs) = self.pins();
+        if ins <= 2 && outs <= 2 {
+            if let [l, r, ..] = bufs {
+                self.process(&mut l[range.clone()], &mut r[range], ctx);
+            }
+            return;
+        }
+        if ctx.playing && !self.was_playing && self.machine.vars.values[self.ext_noinit] == 0.0 {
+            self.initialise();
+        }
+        self.was_playing = ctx.playing;
+        let channels = ins.max(outs).min(bufs.len()).min(64);
+        let v = &mut self.machine.vars.values;
+        v[self.samplesblock] = range.len() as f64;
+        v[self.play_state] = if ctx.playing { 1.0 } else { 0.0 };
+        v[self.tempo] = ctx.bpm;
+        v[self.num_ch] = channels as f64;
+        for code in &self.block {
+            self.machine.run(code);
+        }
+        if self.sample.is_empty() {
+            return;
+        }
+        for i in range {
+            for (c, buf) in bufs.iter().enumerate().take(channels) {
+                let slot = self.machine.spl_slots[c];
+                self.machine.vars.values[slot] = if c < ins { buf[i] as f64 } else { 0.0 };
+            }
+            for code in &self.sample {
+                self.machine.run(code);
+            }
+            for (c, buf) in bufs.iter_mut().enumerate().take(outs.min(channels)) {
+                buf[i] = self.machine.vars.values[self.machine.spl_slots[c]] as f32;
+            }
         }
     }
 

@@ -47,6 +47,19 @@ impl ProcessContext<'_> {
 /// An audio effect working in place on a stereo block.
 pub trait Effect: Send {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext);
+
+    /// Audio input and output pins, for effects with more than a stereo pair.
+    fn pins(&self) -> (usize, usize) {
+        (2, 2)
+    }
+
+    /// Processes frames `range` of `bufs` in place: input pin `k` arrives in `bufs[k]`, output
+    /// pin `k` leaves in it. Effects with more than two pins override this.
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        if let [l, r, ..] = bufs {
+            self.process(&mut l[range.clone()], &mut r[range], ctx);
+        }
+    }
     /// Instruments turn the track's MIDI into audio; the built-in preview synth stays quiet
     /// on tracks that have one.
     fn is_instrument(&self) -> bool {
@@ -194,12 +207,41 @@ pub enum FxStatus {
     Unavailable(String),
 }
 
+/// Sets the effect's enveloped parameters for time `t`; returns whether a bypass envelope
+/// switches it off.
+fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64) -> bool {
+    let mut bypassed = false;
+    for a in automation {
+        let Some(v) = a.envelope.value_at(t) else { continue };
+        match &a.target {
+            Target::Bypass => bypassed = v >= 0.5,
+            Target::Named(name) => {
+                let span = a.range.1 - a.range.0;
+                let normalized = if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 };
+                if !fx.set_named_param(name, v)
+                    && !fx.set_normalized(a.index, normalized)
+                    && let Some(m) = &a.fallback
+                {
+                    fx.set_param(m.id, m.map(v));
+                }
+            }
+        }
+    }
+    bypassed
+}
+
 pub struct FxInstance {
     effect: Mutex<Box<dyn Effect>>,
     pub instrument: bool,
+    /// Audio input and output pins.
+    pub pins: (usize, usize),
 }
 
 impl FxInstance {
+    pub fn new(fx: Box<dyn Effect>) -> Self {
+        Self { instrument: fx.is_instrument(), pins: fx.pins(), effect: Mutex::new(fx) }
+    }
+
     /// Runs the effect with its parameter envelopes applied at time `t` (seconds). A bypass
     /// envelope above 0.5 skips the effect.
     pub fn process_automated(
@@ -211,25 +253,29 @@ impl FxInstance {
         t: f64,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
-        let mut bypassed = false;
-        for a in automation {
-            let Some(v) = a.envelope.value_at(t) else { continue };
-            match &a.target {
-                Target::Bypass => bypassed = v >= 0.5,
-                Target::Named(name) => {
-                    let span = a.range.1 - a.range.0;
-                    let normalized = if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 };
-                    if !fx.set_named_param(name, v)
-                        && !fx.set_normalized(a.index, normalized)
-                        && let Some(m) = &a.fallback
-                    {
-                        fx.set_param(m.id, m.map(v));
-                    }
-                }
-            }
-        }
-        if !bypassed {
+        if !apply_automation(fx.as_mut(), automation, t) {
             fx.process(left, right, ctx);
+        }
+    }
+
+    /// Like `process_automated`, over the effect's pins.
+    pub fn process_pins_automated(
+        &self,
+        bufs: &mut [Vec<f32>],
+        range: std::ops::Range<usize>,
+        ctx: &ProcessContext,
+        automation: &[ParamAutomation],
+        t: f64,
+    ) {
+        let Ok(mut fx) = self.effect.try_lock() else { return };
+        if !apply_automation(fx.as_mut(), automation, t) {
+            fx.process_pins(bufs, range, ctx);
+        }
+    }
+
+    pub fn process_pins(&self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        if let Ok(mut fx) = self.effect.try_lock() {
+            fx.process_pins(bufs, range, ctx);
         }
     }
 
@@ -318,9 +364,7 @@ impl FxRegistry {
             let stale = self.entries.get(&key).is_none_or(|e| e.state != state);
             if stale {
                 let (instance, status) = match self.create(slot) {
-                    Ok((fx, status)) => {
-                        (Some(Arc::new(FxInstance { instrument: fx.is_instrument(), effect: Mutex::new(fx) })), status)
-                    }
+                    Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
                     Err(reason) => (None, FxStatus::Unavailable(reason)),
                 };
                 self.entries.insert(key.clone(), Entry { state, instance, status });
@@ -800,6 +844,34 @@ pub fn pin_map(slot: &FxSlot) -> Option<PinMap> {
             let bytes = base64::engine::general_purpose::STANDARD.decode(text).ok()?;
             js_pin_blocks(&bytes)?
         }
+        // `<IN_PINS` / `<OUT_PINS` with `PIN <pin> <channel> …` lines (0-based); pins not
+        // listed keep their default channel.
+        "LV2" | "CLAP" => {
+            let pins = |name: &str| -> Option<Vec<u64>> {
+                let c = plugin.chunks(name).next()?;
+                let mut masks: Vec<u64> = vec![1, 2];
+                for node in &c.children {
+                    let Node::Line(l) = node else { continue };
+                    let t = tokenize(l);
+                    let Some(pin) = t.get(1).and_then(|v| v.parse::<usize>().ok()) else { continue };
+                    let mask = t[2..]
+                        .iter()
+                        .filter_map(|v| v.parse::<u32>().ok())
+                        .filter(|&c| c < 64)
+                        .fold(0u64, |m, c| m | 1 << c);
+                    if masks.len() <= pin {
+                        masks.extend((masks.len()..=pin).map(|p| 1u64 << p.min(63)));
+                    }
+                    masks[pin] = mask;
+                }
+                Some(masks)
+            };
+            let (inputs, outputs) = (pins("IN_PINS"), pins("OUT_PINS"));
+            if inputs.is_none() && outputs.is_none() {
+                return None;
+            }
+            PinMap { inputs: inputs.unwrap_or(vec![1, 2]), outputs: outputs.unwrap_or(vec![1, 2]) }
+        }
         _ => return None,
     };
     (!map.is_plain()).then_some(map)
@@ -1199,29 +1271,8 @@ struct Vst2Effect {
 }
 
 impl Vst2Effect {
-    fn new(plugin: Vst2Plugin) -> Self {
-        let n = crate::render::RenderScratch::MAX_BLOCK;
-        let inputs = (0..plugin.num_inputs()).map(|_| vec![0.0; n]).collect();
-        let outputs = (0..plugin.num_outputs()).map(|_| vec![0.0; n]).collect();
-        Self { plugin, inputs, outputs, midi: Vec::with_capacity(512) }
-    }
-}
-
-impl Effect for Vst2Effect {
-    fn is_instrument(&self) -> bool {
-        self.plugin.is_synth()
-    }
-
-    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
-        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
-    }
-
-    fn latency(&mut self) -> usize {
-        self.plugin.latency()
-    }
-
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        let n = left.len().min(crate::render::RenderScratch::MAX_BLOCK);
+    /// Collects the block's MIDI (live input, the track's notes and controllers) in `midi`.
+    fn queue_midi(&mut self, n: usize, ctx: &ProcessContext) {
         self.midi.clear();
         self.midi.extend(ctx.live_midi().map(|m| (0, m.bytes)));
         if let Some(notes) = ctx.notes {
@@ -1241,6 +1292,67 @@ impl Effect for Vst2Effect {
             // Offsets in order, note-offs before note-ons at the same frame.
             self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
         }
+    }
+
+    fn new(plugin: Vst2Plugin) -> Self {
+        let n = crate::render::RenderScratch::MAX_BLOCK;
+        let inputs = (0..plugin.num_inputs()).map(|_| vec![0.0; n]).collect();
+        let outputs = (0..plugin.num_outputs()).map(|_| vec![0.0; n]).collect();
+        Self { plugin, inputs, outputs, midi: Vec::with_capacity(512) }
+    }
+}
+
+impl Effect for Vst2Effect {
+    fn is_instrument(&self) -> bool {
+        self.plugin.is_synth()
+    }
+
+    fn pins(&self) -> (usize, usize) {
+        (self.inputs.len(), self.outputs.len())
+    }
+
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        let n = range.len().min(crate::render::RenderScratch::MAX_BLOCK);
+        if self.pins().0 <= 2 && self.pins().1 <= 2 {
+            if let [l, r, ..] = bufs {
+                self.process(&mut l[range.clone()], &mut r[range], ctx);
+            }
+            return;
+        }
+        self.queue_midi(n, ctx);
+        if !self.midi.is_empty() {
+            self.plugin.send_midi(self.midi.iter().copied());
+        }
+        for (c, buf) in self.inputs.iter_mut().enumerate() {
+            match bufs.get(c) {
+                Some(src) => buf[..n].copy_from_slice(&src[range.start..range.start + n]),
+                None => buf[..n].fill(0.0),
+            }
+        }
+        let ins: [*const f32; 64] =
+            std::array::from_fn(|c| self.inputs.get(c).map_or(std::ptr::null(), |b| b.as_ptr()));
+        let mut outs: [*mut f32; 64] =
+            std::array::from_fn(|c| self.outputs.get_mut(c).map_or(std::ptr::null_mut(), |b| b.as_mut_ptr()));
+        let (ni, no) = (self.inputs.len().min(64), self.outputs.len().min(64));
+        self.plugin.process(&ins[..ni], &mut outs[..no], n);
+        for (c, out) in self.outputs.iter().enumerate() {
+            if let Some(dst) = bufs.get_mut(c) {
+                dst[range.start..range.start + n].copy_from_slice(&out[..n]);
+            }
+        }
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
+    }
+
+    fn latency(&mut self) -> usize {
+        self.plugin.latency()
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        let n = left.len().min(crate::render::RenderScratch::MAX_BLOCK);
+        self.queue_midi(n, ctx);
         if !self.midi.is_empty() {
             self.plugin.send_midi(self.midi.iter().copied());
         }

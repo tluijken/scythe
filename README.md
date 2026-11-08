@@ -63,9 +63,13 @@ Working:
   pair of the destination (`AUXRECV` source and destination channels), folders carry every
   channel to their parent, a track can feed its parent from a channel offset (`MAINSEND`),
   and ReaGate and ReaComp listen to channels 3/4 when their detector input says so (sidechain).
-  Effects follow their pin maps (VST and VST 3 state headers, `<JS_PINMAP`): input pins sum
-  the channels mapped to them, output pins replace theirs, other channels pass through, and
-  input pins 3/4 are the sidechain (JSFX see it as `spl2`/`spl3`).
+  Effects follow their pin maps (VST and VST 3 state headers, `<JS_PINMAP`, LV2's `<IN_PINS`
+  and `<OUT_PINS`): input pins sum the channels mapped to them, output pins replace theirs,
+  other channels pass through, and input pins 3/4 of a stereo effect are its sidechain (JSFX
+  see it as `spl2`/`spl3`). Effects with more pins (JSFX band splitters and mixers, VST 2 with
+  more inputs or outputs) work on all of them, by default pin n on channel n. The master can
+  have more channels too ("Master: More channels"): master effects work across them, and a
+  render with more channels (`RENDER_CHANNELS`) writes them all.
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
   cursor, the bpm control edits the tempo in effect at the cursor.
@@ -177,7 +181,7 @@ compare with scythe's output sample by sample:
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
 | ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3, ReaComp's soft knee (a fit to REAPER's curve) within 2e-3 (19/20 cases) |
 | Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
-| Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels, VST and JSFX) | exact (16 cases) |
+| Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels; VST, JSFX and LV2), JSFX with more pins (3-band splitter, 8-into-2 mixer, expander with sidechain) | exact (21 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
 | JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
@@ -190,8 +194,9 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel: effects process two audio pins (plus a sidechain pair); pin maps of CLAP and LV2
-  slots are not read, and the master is stereo. REAPER's own `.ini` FX presets are not read; presets are
+- Multichannel: VST 3 and CLAP plugins are hosted with one stereo bus, so their extra pins stay
+  unused; CLAP pin maps are read like LV2's but could not be checked against REAPER. The audio
+  device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
   (device × 32 + channel); REAPER's file encoding of it is unverified.
 - ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.

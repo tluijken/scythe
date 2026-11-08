@@ -72,6 +72,8 @@ pub enum Action {
     ShowPalette,
     RunScript,
     RunLastScript,
+    MasterMoreChannels,
+    MasterFewerChannels,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -147,6 +149,8 @@ impl Action {
         Action::ShowPalette,
         Action::RunScript,
         Action::RunLastScript,
+        Action::MasterMoreChannels,
+        Action::MasterFewerChannels,
     ];
 
     pub fn label(self) -> &'static str {
@@ -218,6 +222,8 @@ impl Action {
             Action::ShowPalette => "Actions: Search actions",
             Action::RunScript => "Script: Run ReaScript (Lua)",
             Action::RunLastScript => "Script: Run last script again",
+            Action::MasterMoreChannels => "Master: More channels",
+            Action::MasterFewerChannels => "Master: Fewer channels",
         }
     }
 
@@ -287,6 +293,7 @@ impl Action {
             Action::ShorterTracks => k(Modifiers::NONE, Key::PageDown),
             Action::ShowPalette => k(CMD, Key::K),
             Action::RunScript | Action::RunLastScript => None,
+            Action::MasterMoreChannels | Action::MasterFewerChannels => None,
         }
     }
 
@@ -514,6 +521,18 @@ impl Action {
             Action::TallerTracks => app.view.row_h = (app.view.row_h * 1.25).min(240.0),
             Action::ShorterTracks => app.view.row_h = (app.view.row_h / 1.25).max(30.0),
             Action::ShowPalette => app.palette = Some(PaletteState::default()),
+            Action::MasterMoreChannels | Action::MasterFewerChannels => {
+                const CHANNELS: [u32; 7] = [2, 4, 6, 8, 12, 16, 32];
+                let now = app.project.master.channels;
+                let at = CHANNELS.iter().position(|&c| c >= now).unwrap_or(0);
+                let next = if self == Action::MasterMoreChannels {
+                    CHANNELS[(at + 1).min(CHANNELS.len() - 1)]
+                } else {
+                    CHANNELS[at.saturating_sub(1)]
+                };
+                app.edit("Set master channels", |p| p.master.channels = next);
+                app.notify(format!("Master: {next} channels"));
+            }
             Action::RunScript => app.run_script_dialog(),
             Action::RunLastScript => match app.last_script.clone() {
                 Some(path) => app.run_script(&path),

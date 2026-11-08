@@ -182,7 +182,7 @@ fn render_mix(
     pool: &MediaPool,
     range: TimeRange,
     sample_rate: u32,
-    mut sink: impl FnMut(&[f32], &[f32]) -> Result<(), BounceError>,
+    mut sink: impl FnMut(&[f32], &[f32], &[Vec<f32>]) -> Result<(), BounceError>,
     mut progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
     if range.is_empty() {
@@ -196,6 +196,8 @@ fn render_mix(
     let mut scratch = RenderScratch::new(project.tracks.len());
     let mut l = vec![0.0f32; RenderScratch::MAX_BLOCK];
     let mut r = vec![0.0f32; RenderScratch::MAX_BLOCK];
+    // Master channels 3 and up, for multichannel renders.
+    let mut extra = vec![vec![0.0f32; RenderScratch::MAX_BLOCK]; graph.master_channels - 2];
     let mut done = 0i64;
     // Pre-roll through the plugin latency so lookahead effects have heard the first frames.
     let mut pre = graph.latency();
@@ -207,7 +209,8 @@ fn render_mix(
     while done < total {
         let n = ((total - done) as usize).min(l.len());
         graph.render(start + done, &mut l[..n], &mut r[..n], &mut scratch);
-        sink(&l[..n], &r[..n])?;
+        graph.master_extra(n, &mut extra);
+        sink(&l[..n], &r[..n], &extra)?;
         done += n as i64;
         progress(done as f32 / total as f32);
     }
@@ -219,7 +222,7 @@ fn render_mix(
 struct Dither {
     rng: u64,
     shape: bool,
-    error: [f32; 2],
+    error: [f32; 64],
 }
 
 impl Dither {
@@ -262,21 +265,31 @@ impl SampleWriter {
             BitDepth::Int24 => (24, hound::SampleFormat::Int),
             BitDepth::Float32 => (32, hound::SampleFormat::Float),
         };
-        let channels = channels.clamp(1, 2);
+        let channels = channels.clamp(1, 64);
         let spec = hound::WavSpec { channels, sample_rate, bits_per_sample: bits, sample_format: format };
         let dither = (finish.dither && depth != BitDepth::Float32).then_some(Dither {
             rng: 0x9e37_79b9_7f4a_7c15,
             shape: finish.noise_shape,
-            error: [0.0; 2],
+            error: [0.0; 64],
         });
         Ok(Self { writer: hound::WavWriter::create(path, spec)?, depth, channels, gain: 1.0, dither })
     }
 
-    fn write(&mut self, l: &[f32], r: &[f32]) -> Result<(), BounceError> {
+    /// Writes a block: the master's first pair, and `extra` channels for renders with more.
+    fn write(&mut self, l: &[f32], r: &[f32], extra: &[Vec<f32>]) -> Result<(), BounceError> {
         for i in 0..l.len() {
-            let frame = [l[i] * self.gain, r[i] * self.gain];
-            let mono = [0.5 * (frame[0] + frame[1])];
-            for (c, &s) in if self.channels == 1 { &mono[..] } else { &frame[..] }.iter().enumerate() {
+            let sample = |c: usize| match c {
+                0 => l[i],
+                1 => r[i],
+                c => extra.get(c - 2).map_or(0.0, |b| b[i]),
+            };
+            let mono = [0.5 * (l[i] + r[i]) * self.gain];
+            let mut frame = [0.0f32; 64];
+            for (c, f) in frame.iter_mut().enumerate().take(self.channels as usize) {
+                *f = sample(c) * self.gain;
+            }
+            let samples = if self.channels == 1 { &mono[..] } else { &frame[..self.channels as usize] };
+            for (c, &s) in samples.iter().enumerate() {
                 match (self.depth, &mut self.dither) {
                     (BitDepth::Float32, _) => self.writer.write_sample(s)?,
                     (BitDepth::Int16, Some(d)) => self.writer.write_sample(d.quantize(s, c, 16) as i16)?,
@@ -371,23 +384,25 @@ fn render_wav(
 ) -> Result<(), BounceError> {
     let Some(normalize) = finish.normalize else {
         let mut out = SampleWriter::create(path, sample_rate, channels, depth, finish)?;
-        render_mix(project, pool, range, sample_rate, |l, r| out.write(l, r), progress)?;
+        render_mix(project, pool, range, sample_rate, |l, r, extra| out.write(l, r, extra), progress)?;
         return Ok(out.writer.finalize()?);
     };
     // Normalising needs the whole render measured first; it is kept in a float file rather
     // than rendered twice, so effects that do not repeat themselves cannot miss the target.
     let raw = path.with_extension("scythe-unnormalized.wav");
+    // The temporary file keeps every channel the output needs (a mono output is mixed later).
+    let kept = channels.max(2);
     let mut measure = Measure::new(sample_rate);
     let first = (|| {
-        let mut tmp = SampleWriter::create(&raw, sample_rate, 2, BitDepth::Float32, Finish::default())?;
+        let mut tmp = SampleWriter::create(&raw, sample_rate, kept, BitDepth::Float32, Finish::default())?;
         render_mix(
             project,
             pool,
             range,
             sample_rate,
-            |l, r| {
+            |l, r, extra| {
                 measure.push(l, r);
-                tmp.write(l, r)
+                tmp.write(l, r, extra)
             },
             progress,
         )?;
@@ -398,20 +413,23 @@ fn render_wav(
         out.gain = measure.gain(normalize);
         let mut reader = hound::WavReader::open(&raw)?;
         let mut samples = reader.samples::<f32>();
-        let (mut l, mut r) =
-            (Vec::with_capacity(RenderScratch::MAX_BLOCK), Vec::with_capacity(RenderScratch::MAX_BLOCK));
-        loop {
-            l.clear();
-            r.clear();
-            while l.len() < RenderScratch::MAX_BLOCK {
-                let (Some(a), Some(b)) = (samples.next(), samples.next()) else { break };
-                l.push(a?);
-                r.push(b?);
+        let mut chans: Vec<Vec<f32>> = (0..kept).map(|_| Vec::with_capacity(RenderScratch::MAX_BLOCK)).collect();
+        'blocks: loop {
+            chans.iter_mut().for_each(Vec::clear);
+            while chans[0].len() < RenderScratch::MAX_BLOCK {
+                for c in chans.iter_mut() {
+                    let Some(s) = samples.next() else { break 'blocks };
+                    c.push(s?);
+                }
             }
-            if l.is_empty() {
-                break;
-            }
-            out.write(&l, &r)?;
+            let (pair, extra) = chans.split_at(2);
+            out.write(&pair[0], &pair[1], extra)?;
+        }
+        if !chans[0].is_empty() {
+            let len = chans.iter().map(Vec::len).min().unwrap_or(0);
+            chans.iter_mut().for_each(|c| c.truncate(len));
+            let (pair, extra) = chans.split_at(2);
+            out.write(&pair[0], &pair[1], extra)?;
         }
         Ok(out.writer.finalize()?)
     });
@@ -550,7 +568,7 @@ mod tests {
         let finish = Finish { dither: true, ..Finish::default() };
         let mut w = SampleWriter::create(&path, 8000, 1, BitDepth::Int16, finish).unwrap();
         let level = 1000.25 / 32767.0;
-        w.write(&[level; 4000], &[level; 4000]).unwrap();
+        w.write(&[level; 4000], &[level; 4000], &[]).unwrap();
         w.writer.finalize().unwrap();
         let samples: Vec<i32> =
             hound::WavReader::open(&path).unwrap().samples::<i16>().map(|s| s.unwrap() as i32).collect();
@@ -558,6 +576,49 @@ mod tests {
         assert!(samples.iter().all(|s| (999..=1002).contains(s)), "TPDF stays within a step either side");
         let mean = samples.iter().sum::<i32>() as f64 / samples.len() as f64;
         assert!((mean - 1000.25).abs() < 0.05, "the level survives on average: {mean}");
+    }
+
+    #[test]
+    fn multichannel_master_renders_every_channel() {
+        let dir = std::env::temp_dir().join(format!("scythe-bounce-mc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("quad.wav");
+        let spec = hound::WavSpec {
+            channels: 4,
+            sample_rate: 8000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for _ in 0..8000 {
+            for c in 1..=4 {
+                w.write_sample(c as f32 / 10.0).unwrap();
+            }
+        }
+        w.finalize().unwrap();
+
+        let mut p = Project::default();
+        p.master.channels = 4;
+        p.master.volume = 0.5;
+        let t = p.add_track("t");
+        p.track_mut(t).unwrap().channels = 4;
+        let mut item = Item::new(0.0, 1.0, Take::from_file(src.clone()));
+        (item.fade_in, item.fade_out) = (scythe_core::Fade::default(), scythe_core::Fade::default());
+        p.track_mut(t).unwrap().items.push(item);
+        let pool = MediaPool::default();
+        pool.load(&src, 8000).unwrap();
+        let out = dir.join("out.wav");
+        let wav = Encoding::Wav(BitDepth::Float32);
+        bounce(&p, &pool, TimeRange::new(0.0, 1.0), 8000, 4, wav, &out, |_| {}).unwrap();
+        let data = decode_file(&out).unwrap();
+        assert_eq!(data.channels.len(), 4);
+        let at = |c: usize| data.channels[c][4000];
+        assert!(
+            (0..4).all(|c| (at(c) - (c + 1) as f32 / 20.0).abs() < 1e-6),
+            "{:?}",
+            (0..4).map(at).collect::<Vec<_>>()
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

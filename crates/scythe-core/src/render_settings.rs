@@ -106,7 +106,7 @@ impl RenderSettings {
                         "RENDER_FILE" => s.file = t.get(1).cloned().unwrap_or_default(),
                         "RENDER_PATTERN" => s.pattern = t.get(1).cloned().unwrap_or_default(),
                         "RENDER_FMT" => {
-                            s.channels = num(2).map_or(2, |c| c as u16).clamp(1, 2);
+                            s.channels = num(2).map_or(2, |c| c as u16).clamp(1, 64);
                             s.sample_rate = num(3).filter(|r| *r > 0.0).map(|r| r as u32);
                         }
                         "RENDER_NORMALIZE" => {
