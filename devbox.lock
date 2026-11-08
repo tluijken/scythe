@@ -1,6 +1,122 @@
 {
   "lockfile_version": "1",
   "packages": {
+    "flac@latest": {
+      "last_modified": "2026-10-08T19:21:32Z",
+      "resolved": "github:NixOS/nixpkgs/8edc0c72e3a38faf5434e40d1f19431125fe4b30#flac",
+      "source": "devbox-search",
+      "version": "1.5.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "bin",
+              "path": "/nix/store/sz5hj0xkmf17rp3q8v3x3rv6xd8w08jl-flac-1.5.0-bin",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/3dlbl871ik29pymbaf0d1cszrdkbkpdm-flac-1.5.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/4cqvq9z1qdwh6378nqwvlm2qf5qkpkn6-flac-1.5.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/l5kbqc9hk36902w9vrr1pxghfwry818m-flac-1.5.0-doc"
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/3g40aqwnbhkvgcz48kwia5wnd98z5n2n-flac-1.5.0"
+            }
+          ],
+          "store_path": "/nix/store/sz5hj0xkmf17rp3q8v3x3rv6xd8w08jl-flac-1.5.0-bin"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "bin",
+              "path": "/nix/store/5b6ip00snik6fqsphk30icqr1nsz99xy-flac-1.5.0-bin",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/5d549hc5rn0nsdp7gvlbbswfnc30gh4y-flac-1.5.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/03spx0azrv1qlswbb93c0gp1xf82h96v-flac-1.5.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/96i9dj3shbdb7gsgf5bj5p60ga8k6lg5-flac-1.5.0-doc"
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/41xkq3fdlnk0d4rcsfsr97dkd68i387h-flac-1.5.0"
+            }
+          ],
+          "store_path": "/nix/store/5b6ip00snik6fqsphk30icqr1nsz99xy-flac-1.5.0-bin"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "bin",
+              "path": "/nix/store/bi9zx8915lx4yrdb40pjii1kxld5asfc-flac-1.5.0-bin",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/fcfs1dwia0l13d17hjks6yn0qddhaanh-flac-1.5.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/kd541fsy02vgwmk35b9imm8jx6hw91a9-flac-1.5.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/xxm67qjk11fhgbr9c095mhmha7nij0az-flac-1.5.0-doc"
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/i0qykrs4zdh7icrfs6ynjk10wgkym33g-flac-1.5.0"
+            }
+          ],
+          "store_path": "/nix/store/bi9zx8915lx4yrdb40pjii1kxld5asfc-flac-1.5.0-bin"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "bin",
+              "path": "/nix/store/j3ib7v7crd07v5ndyh9k091l8wp5xxqv-flac-1.5.0-bin",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/zjsyphyjcrnl4g5jclh40r2c39ih4ccr-flac-1.5.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/j8gv2kdi9p1aq4bqw96p441zg1clz5c9-flac-1.5.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/6dd2dy5p5i5gqiz55r7302mvxvbn5v7a-flac-1.5.0-doc"
+            },
+            {
+              "name": "out",
+              "path": "/nix/store/3lgd2133qg3pxlpkb5gqgyq7z9riz8p9-flac-1.5.0"
+            }
+          ],
+          "store_path": "/nix/store/j3ib7v7crd07v5ndyh9k091l8wp5xxqv-flac-1.5.0-bin"
+        }
+      }
+    },
     "github:NixOS/nixpkgs/nixpkgs-unstable": {
       "last_modified": "2026-11-06T15:06:19Z",
       "resolved": "github:NixOS/nixpkgs/4fe25e12eb9f4c744966dd3de5a05246cf098601?lastModified=1793977579&narHash=sha256-WrSODdZFVIs%2FHh2NzC0bY%2BROByi0bATg8WfePX8dPj8%3D"
@@ -182,6 +298,54 @@
             }
           ],
           "store_path": "/nix/store/1x1p9srrm7a4fa6nqaw2b4jlfsqv9chq-procps-4.0.7"
+        }
+      }
+    },
+    "vorbis-tools@latest": {
+      "last_modified": "2026-10-02T22:55:44Z",
+      "resolved": "github:NixOS/nixpkgs/55ba7f49ef2962b42cbd126522b7df5f95037679#vorbis-tools",
+      "source": "devbox-search",
+      "version": "1.4.3",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/idm37gr3i29hyl16464n3q7vrcl1rgh7-vorbis-tools-1.4.3",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/idm37gr3i29hyl16464n3q7vrcl1rgh7-vorbis-tools-1.4.3"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/f9dvznfy31pf3pr653lyma8lc23m5sl1-vorbis-tools-1.4.3",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/f9dvznfy31pf3pr653lyma8lc23m5sl1-vorbis-tools-1.4.3"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/3cp54xzrwjdjqj9hr1lzdr0x4q4rpwgl-vorbis-tools-1.4.3",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/3cp54xzrwjdjqj9hr1lzdr0x4q4rpwgl-vorbis-tools-1.4.3"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/g7lpk5grw12cw6mrg9daqqi0wmq5ggb2-vorbis-tools-1.4.3",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/g7lpk5grw12cw6mrg9daqqi0wmq5ggb2-vorbis-tools-1.4.3"
         }
       }
     }

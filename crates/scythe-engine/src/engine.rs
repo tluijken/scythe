@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -31,6 +31,8 @@ pub struct Transport {
     load: AtomicU32,
     /// Frames during which effects keep running while stopped (tails, parameter changes).
     wake_frames: AtomicI64,
+    /// Time from the output callback until its first frame is heard, as f64 bits (seconds).
+    output_latency: AtomicU64,
     sample_rate: u32,
 }
 
@@ -45,8 +47,14 @@ impl Transport {
             loop_end: AtomicI64::new(0),
             load: AtomicU32::new(0),
             wake_frames: AtomicI64::new(0),
+            output_latency: AtomicU64::new(0),
             sample_rate,
         }
+    }
+
+    /// How long rendered audio takes to reach the speakers, as the device reports it.
+    pub fn output_latency(&self) -> f64 {
+        f64::from_bits(self.output_latency.load(Ordering::Relaxed))
     }
 
     pub fn is_playing(&self) -> bool {
@@ -279,11 +287,11 @@ impl Engine {
         let (input_tx, input_rx) = channel();
         let proc = Processor::new(graph.clone(), transport.clone(), input_rx);
         let stream = match format {
-            SampleFormat::F32 => build::<f32>(device, &config, proc),
-            SampleFormat::I16 => build::<i16>(device, &config, proc),
-            SampleFormat::I32 => build::<i32>(device, &config, proc),
-            SampleFormat::U16 => build::<u16>(device, &config, proc),
-            SampleFormat::F64 => build::<f64>(device, &config, proc),
+            SampleFormat::F32 => build::<f32>(device, &config, proc, transport.clone()),
+            SampleFormat::I16 => build::<i16>(device, &config, proc, transport.clone()),
+            SampleFormat::I32 => build::<i32>(device, &config, proc, transport.clone()),
+            SampleFormat::U16 => build::<u16>(device, &config, proc, transport.clone()),
+            SampleFormat::F64 => build::<f64>(device, &config, proc, transport.clone()),
             other => return Err(format!("unsupported sample format {other}")),
         }?;
         stream.play().map_err(|e| e.to_string())?;
@@ -480,12 +488,18 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
     device: &cpal::Device,
     config: &StreamConfig,
     mut proc: Processor,
+    transport: Arc<Transport>,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
     device
         .build_output_stream::<T, _, _>(
             *config,
-            move |data: &mut [T], _| proc.write_interleaved(data, channels),
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                let t = info.timestamp();
+                let latency = t.playback.duration_since(t.callback);
+                transport.output_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
+                proc.write_interleaved(data, channels)
+            },
             |err| eprintln!("audio stream error: {err}"),
             None,
         )

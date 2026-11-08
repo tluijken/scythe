@@ -89,6 +89,12 @@ impl Builtin {
 /// REAPER's VST state block: a header (id, magic, two stereo pin maps, chunk size), the plugin
 /// chunk in base64 lines of 128 characters, and a program line.
 pub fn vst_lines(unique_id: u32, chunk: &[u8]) -> Vec<String> {
+    vst_lines_with(unique_id, chunk, 0x0010_0000)
+}
+
+/// Like `vst_lines`, with the header's last field given: REAPER writes 0x100000 for VST 2
+/// and 0xffff for VST 3.
+pub fn vst_lines_with(unique_id: u32, chunk: &[u8], trailer: u32) -> Vec<String> {
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut h = Vec::new();
     h.extend(unique_id.to_le_bytes());
@@ -101,7 +107,7 @@ pub fn vst_lines(unique_id: u32, chunk: &[u8]) -> Vec<String> {
     h.extend(2u64.to_le_bytes());
     h.extend((chunk.len() as u32).to_le_bytes());
     h.extend(1u32.to_le_bytes());
-    h.extend(0x0010_0000_u32.to_le_bytes());
+    h.extend(trailer.to_le_bytes());
     let data = b64.encode(chunk);
     let mut lines = vec![b64.encode(&h)];
     lines.extend(data.as_bytes().chunks(128).map(|c| String::from_utf8_lossy(c).into_owned()));

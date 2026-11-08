@@ -8,7 +8,7 @@ use scythe_core::history::History;
 use scythe_core::midi::{MidiSource, TimedNote};
 use scythe_core::rpp::{autosave_path, read_project, resolve_media_path, save_project, write_project};
 use scythe_core::{Item, ItemId, Project, Take, TempoMap, TimeRange, TrackId};
-use scythe_engine::bounce::{BitDepth, bounce_to_wav};
+use scythe_engine::bounce::{BitDepth, Encoding, bounce};
 use scythe_engine::record::{RecordTarget, Recording};
 use scythe_engine::{Engine, Media, MediaPool, MediaState};
 
@@ -55,9 +55,18 @@ pub struct Selection {
 }
 
 enum LoaderMsg {
-    Loaded { path: PathBuf, result: Result<Arc<Media>, String>, place: Option<(TrackId, f64)> },
+    Loaded {
+        path: PathBuf,
+        result: Result<Arc<Media>, String>,
+        place: Option<(TrackId, f64)>,
+    },
     Bounced(Result<PathBuf, String>),
+    /// A time-stretched copy is ready.
+    Stretched(StretchKey),
 }
+
+/// A file and the time and pitch ratios of a stretched copy, as bits.
+type StretchKey = (PathBuf, u64, u64);
 
 /// What a cached MIDI note layout depends on.
 type MidiKey = (u64, u64, u64, u64, bool, usize, TempoMap);
@@ -103,12 +112,24 @@ pub struct ScytheApp {
     loader_tx: Sender<LoaderMsg>,
     loader_rx: Receiver<LoaderMsg>,
     pending: HashSet<PathBuf>,
+    pending_stretch: HashSet<StretchKey>,
     pub busy: Option<String>,
     pub ctx: egui::Context,
     /// Displayed meter levels with peak decay, per track and for the master.
     pub levels: HashMap<TrackId, (f32, f32)>,
     pub master_level: (f32, f32),
     meters_at: Instant,
+    /// Plugin editors open in their own windows.
+    editors: Vec<OpenEditor>,
+}
+
+/// A plugin editor in its window. The instance is held so the plugin outlives its editor.
+pub struct OpenEditor {
+    pub track: Option<TrackId>,
+    pub index: usize,
+    instance: Arc<scythe_engine::fx::FxInstance>,
+    editor: Box<dyn scythe_engine::editor::Editor>,
+    window: crate::plugin_window::PluginWindow,
 }
 
 impl ScytheApp {
@@ -153,10 +174,12 @@ impl ScytheApp {
             loader_tx,
             loader_rx,
             pending: HashSet::new(),
+            pending_stretch: HashSet::new(),
             busy: None,
             ctx,
             levels: HashMap::new(),
             master_level: (0.0, 0.0),
+            editors: Vec::new(),
             meters_at: Instant::now(),
         };
         if let Some(reason) = app.engine.info().fallback_reason.clone() {
@@ -302,6 +325,31 @@ impl ScytheApp {
                 self.spawn_load(path, None);
             }
         }
+        let stretches: Vec<(PathBuf, (f64, f64))> = self
+            .project
+            .tracks
+            .iter()
+            .flat_map(|t| &t.items)
+            .flat_map(|i| &i.takes)
+            .filter_map(|t| Some((resolve_media_path(&self.project, t.source.file()?), t.stretch()?)))
+            .collect();
+        for (path, ratios) in stretches {
+            let key = (path.clone(), ratios.0.to_bits(), ratios.1.to_bits());
+            let pool = self.engine.pool().clone();
+            if pool.ready(&path).is_none()
+                || pool.stretched(&path, ratios).is_some()
+                || !self.pending_stretch.insert(key.clone())
+            {
+                continue;
+            }
+            let tx = self.loader_tx.clone();
+            let ctx = self.ctx.clone();
+            std::thread::spawn(move || {
+                pool.prepare_stretched(&path, ratios);
+                let _ = tx.send(LoaderMsg::Stretched(key));
+                ctx.request_repaint();
+            });
+        }
     }
 
     fn spawn_load(&mut self, path: PathBuf, place: Option<(TrackId, f64)>) {
@@ -385,9 +433,14 @@ impl ScytheApp {
                                 self.sel = Selection { track: Some(track), item: Some(id) };
                             }
                             self.engine.sync(&self.project);
+                            self.request_media();
                         }
                         Err(e) => self.notify(format!("Could not load {}: {e}", path.display())),
                     }
+                }
+                LoaderMsg::Stretched(key) => {
+                    self.pending_stretch.remove(&key);
+                    self.engine.sync(&self.project);
                 }
                 LoaderMsg::Bounced(result) => {
                     self.busy = None;
@@ -427,14 +480,20 @@ impl ScytheApp {
             match rec.session.finish() {
                 Ok(takes) => {
                     let start = rec.start;
+                    let output_latency = self.engine.transport().output_latency();
                     let mut first = None;
                     self.edit("Record", |p| {
                         for take in &takes {
-                            if take.frames == 0 {
+                            // What was played along to left the speakers `output_latency` late
+                            // and reached the file `input_latency` after that.
+                            let offset = take.input_latency + output_latency;
+                            let len = take.frames as f64 / take.sample_rate as f64 - offset;
+                            if len <= 0.0 {
                                 continue;
                             }
-                            let len = take.frames as f64 / take.sample_rate as f64;
-                            let item = Item::new(start, len, Take::from_file(take.path.clone()));
+                            let mut source = Take::from_file(take.path.clone());
+                            source.source_offset = offset;
+                            let item = Item::new(start, len, source);
                             first.get_or_insert(item.id);
                             if let Some(t) = p.track_mut(take.track) {
                                 t.items.push(item);
@@ -670,12 +729,12 @@ impl ScytheApp {
         }
         let name = self.project.name();
         let mut ranges: Vec<TimeRange> = Vec::new();
-        let mut mp3 = None;
+        let mut encoding = Encoding::Wav(BitDepth::Int24);
+        let mut channels = 2;
         let jobs: Vec<(Project, PathBuf)> = if kind == RenderKind::ProjectSettings {
             let settings = scythe_core::render_settings::RenderSettings::from_project(&self.project);
-            if let scythe_core::render_settings::Format::Mp3 { kbps } = settings.format {
-                mp3 = Some(kbps);
-            }
+            encoding = Encoding::from_format(&settings.format);
+            channels = settings.channels;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             match settings.jobs(&self.project, now) {
                 Ok(jobs) => jobs
@@ -723,15 +782,9 @@ impl ScytheApp {
                 if let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                last = match mp3 {
-                    Some(kbps) => {
-                        scythe_engine::bounce::bounce_to_mp3(&project, &pool, range, rate, kbps, &path, |_| {})
-                            .map(|()| path)
-                    }
-                    None => bounce_to_wav(&project, &pool, range, rate, BitDepth::Int24, &path, |_| {})
-                        .map(|()| path)
-                        .map_err(|e| e.to_string()),
-                };
+                last = bounce(&project, &pool, range, rate, channels, encoding, &path, |_| {})
+                    .map(|()| path)
+                    .map_err(|e| e.to_string());
                 if last.is_err() {
                     break;
                 }
@@ -739,6 +792,71 @@ impl ScytheApp {
             let _ = tx.send(LoaderMsg::Bounced(last));
             ctx.request_repaint();
         });
+    }
+
+    // ---- plugin editors --------------------------------------------------------------------
+
+    /// Opens the editor of effect `index` on `track` (the master when `None`) in its own window,
+    /// or closes it when it is already open.
+    pub fn toggle_editor(&mut self, track: Option<TrackId>, index: usize) {
+        if let Some(at) = self.editors.iter().position(|e| e.track == track && e.index == index) {
+            self.close_editor(at);
+            return;
+        }
+        let slots = match track {
+            Some(id) => self.project.track(id).map(|t| &t.fx),
+            None => Some(&self.project.master.fx),
+        };
+        let Some(slot) = slots.and_then(|s| s.get(index)).cloned() else { return };
+        let Some(instance) = self.engine.fx().instance(track, &slot, index) else {
+            self.notify(format!("{} is not running", slot.name));
+            return;
+        };
+        let Some(mut editor) = instance.with(|e| e.editor()).flatten() else {
+            self.notify(format!("{} has no editor", slot.name));
+            return;
+        };
+        let window = match crate::plugin_window::PluginWindow::new(&slot.name, 640, 480) {
+            Ok(w) => w,
+            Err(e) => {
+                self.notify(format!("Cannot open a plugin window: {e}"));
+                return;
+            }
+        };
+        match editor.open(window.window) {
+            Ok((w, h)) => {
+                window.resize(w, h);
+                self.editors.push(OpenEditor { track, index, instance, editor, window });
+            }
+            Err(e) => self.notify(format!("{}: {e}", slot.name)),
+        }
+    }
+
+    pub fn editor_open(&self, track: Option<TrackId>, index: usize) -> bool {
+        self.editors.iter().any(|e| e.track == track && e.index == index)
+    }
+
+    fn close_editor(&mut self, at: usize) {
+        let mut open = self.editors.remove(at);
+        open.editor.close();
+    }
+
+    /// Drives open editors: their timers and descriptors, size requests and closing, also
+    /// when their effect left the project.
+    pub fn tick_editors(&mut self) {
+        let mut at = 0;
+        while at < self.editors.len() {
+            let e = &mut self.editors[at];
+            if let Some((w, h)) = e.editor.idle() {
+                e.window.resize(w, h);
+            }
+            let orphaned = std::sync::Arc::strong_count(&e.instance) <= 1;
+            if e.window.close_requested() || e.editor.closed() || orphaned {
+                self.close_editor(at);
+            } else {
+                at += 1;
+            }
+        }
     }
 
     // ---- feedback ------------------------------------------------------------------------

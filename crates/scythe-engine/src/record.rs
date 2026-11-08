@@ -35,6 +35,8 @@ pub struct RecordedTake {
     pub path: PathBuf,
     pub frames: u64,
     pub sample_rate: u32,
+    /// How long the input took from the converter to the callback, as the device reports it.
+    pub input_latency: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +60,8 @@ pub struct Recording {
     /// Peak per target since the last `take_levels`, as f32 bits.
     levels: Arc<Vec<AtomicU32>>,
     overruns: Arc<AtomicU64>,
+    /// Input latency in seconds, as f64 bits.
+    input_latency: Arc<AtomicU64>,
     pub sample_rate: u32,
     pub device: String,
 }
@@ -89,6 +93,7 @@ impl Recording {
         let stop = Arc::new(AtomicBool::new(false));
         let levels: Arc<Vec<AtomicU32>> = Arc::new(targets.iter().map(|_| AtomicU32::new(0)).collect());
         let overruns = Arc::new(AtomicU64::new(0));
+        let input_latency = Arc::new(AtomicU64::new(0));
 
         let mut writers = Vec::new();
         for t in &targets {
@@ -137,16 +142,16 @@ impl Recording {
             let mut out = Vec::new();
             for (t, w) in targets.into_iter().zip(writers) {
                 w.finalize()?;
-                out.push(RecordedTake { track: t.track, path: t.path, frames, sample_rate });
+                out.push(RecordedTake { track: t.track, path: t.path, frames, sample_rate, input_latency: 0.0 });
             }
             Ok(out)
         })?;
 
         let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, &config, producer, overruns.clone()),
-            SampleFormat::I16 => build::<i16>(&device, &config, producer, overruns.clone()),
-            SampleFormat::I32 => build::<i32>(&device, &config, producer, overruns.clone()),
-            SampleFormat::U16 => build::<u16>(&device, &config, producer, overruns.clone()),
+            SampleFormat::F32 => build::<f32>(&device, &config, producer, overruns.clone(), input_latency.clone()),
+            SampleFormat::I16 => build::<i16>(&device, &config, producer, overruns.clone(), input_latency.clone()),
+            SampleFormat::I32 => build::<i32>(&device, &config, producer, overruns.clone(), input_latency.clone()),
+            SampleFormat::U16 => build::<u16>(&device, &config, producer, overruns.clone(), input_latency.clone()),
             other => Err(RecordError::Device(format!("unsupported sample format {other}"))),
         };
         let stream = match stream {
@@ -157,7 +162,16 @@ impl Recording {
             }
         };
         stream.play().map_err(|e| RecordError::Device(e.to_string()))?;
-        Ok(Self { _stream: stream, stop, writer: Some(writer), levels, overruns, sample_rate, device: name })
+        Ok(Self {
+            _stream: stream,
+            stop,
+            writer: Some(writer),
+            levels,
+            overruns,
+            input_latency,
+            sample_rate,
+            device: name,
+        })
     }
 
     /// Peak level per target since the previous call.
@@ -174,8 +188,11 @@ impl Recording {
     pub fn finish(mut self) -> Result<Vec<RecordedTake>, RecordError> {
         drop(self._stream);
         self.stop.store(true, Ordering::Release);
+        let latency = f64::from_bits(self.input_latency.load(Ordering::Relaxed));
         match self.writer.take().map(|w| w.join()) {
-            Some(Ok(result)) => result,
+            Some(Ok(result)) => {
+                result.map(|takes| takes.into_iter().map(|t| RecordedTake { input_latency: latency, ..t }).collect())
+            }
             _ => Err(RecordError::Device("writer thread panicked".into())),
         }
     }
@@ -186,6 +203,7 @@ fn build<T>(
     config: &cpal::StreamConfig,
     mut producer: rtrb::Producer<f32>,
     overruns: Arc<AtomicU64>,
+    input_latency: Arc<AtomicU64>,
 ) -> Result<cpal::Stream, RecordError>
 where
     T: SizedSample,
@@ -194,7 +212,10 @@ where
     device
         .build_input_stream(
             *config,
-            move |data: &[T], _| {
+            move |data: &[T], info: &cpal::InputCallbackInfo| {
+                let t = info.timestamp();
+                let latency = t.callback.duration_since(t.capture);
+                input_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
                 for &s in data {
                     if producer.push(s.to_sample::<f32>()).is_err() {
                         overruns.fetch_add(1, Ordering::Relaxed);

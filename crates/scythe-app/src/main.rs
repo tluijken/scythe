@@ -1,6 +1,7 @@
 mod app;
 mod demo;
 mod palette;
+mod plugin_window;
 mod theme;
 mod ui;
 
@@ -17,6 +18,7 @@ impl eframe::App for Shell {
         let ctx = ui.ctx().clone();
         self.app.poll();
         self.app.update_meters();
+        self.app.tick_editors();
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
         // Meters and the clock need a steady frame rate even when nothing is playing.
@@ -31,28 +33,18 @@ fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
     let settings = RenderSettings::from_project(&project);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let jobs = settings.jobs(&project, now)?;
-    let depth = match settings.format {
-        Format::Wav { bits: 16 } => scythe_engine::bounce::BitDepth::Int16,
-        Format::Wav { bits: 32 } => scythe_engine::bounce::BitDepth::Float32,
-        Format::Wav { .. } | Format::Mp3 { .. } => scythe_engine::bounce::BitDepth::Int24,
-        Format::Other(ref id) => {
-            eprintln!("note: the project renders to the {id} format; writing 24-bit WAV instead");
-            scythe_engine::bounce::BitDepth::Int24
-        }
-    };
+    if let Format::Other(ref id) = settings.format {
+        eprintln!("note: the project renders to the {id} format; writing 24-bit WAV instead");
+    }
+    let encoding = scythe_engine::bounce::Encoding::from_format(&settings.format);
     let rate = settings.sample_rate.or(project.sample_rate).unwrap_or(48_000);
     let pool = load_media(&project, rate);
     for (range, out) in jobs {
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        match settings.format {
-            Format::Mp3 { kbps } => {
-                scythe_engine::bounce::bounce_to_mp3(&project, &pool, range, rate, kbps, &out, |_| {})?
-            }
-            _ => scythe_engine::bounce::bounce_to_wav(&project, &pool, range, rate, depth, &out, |_| {})
-                .map_err(|e| e.to_string())?,
-        }
+        scythe_engine::bounce::bounce(&project, &pool, range, rate, settings.channels, encoding, &out, |_| {})
+            .map_err(|e| e.to_string())?;
         eprintln!("rendered {:.1}-{:.1} s to {}", range.start, range.end, out.display());
     }
     Ok(())
@@ -75,6 +67,7 @@ fn load_media(project: &scythe_core::Project, rate: u32) -> scythe_engine::Media
             eprintln!("warning: {e}");
         }
     });
+    pool.prepare_project(project);
     pool
 }
 

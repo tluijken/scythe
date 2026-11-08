@@ -844,7 +844,7 @@ fn item_handles(
                 let f = s as f32 / steps as f32;
                 let x = if out { outer.right() - px + f * px } else { outer.left() + f * px };
                 let progress = if out { 1.0 - f } else { f };
-                let g = fade.gain(progress as f64) as f32;
+                let g = if out { fade.out_gain(progress as f64) } else { fade.gain(progress as f64) } as f32;
                 pos2(x, outer.bottom() - g * outer.height())
             })
             .collect();

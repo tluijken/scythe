@@ -13,6 +13,10 @@ const EFF_GET_PARAM_NAME: i32 = 8;
 const EFF_GET_PARAM_DISPLAY: i32 = 7;
 const EFF_SET_SAMPLE_RATE: i32 = 10;
 const EFF_SET_BLOCK_SIZE: i32 = 11;
+const EFF_EDIT_GET_RECT: i32 = 13;
+const EFF_EDIT_OPEN: i32 = 14;
+const EFF_EDIT_CLOSE: i32 = 15;
+const EFF_EDIT_IDLE: i32 = 19;
 const EFF_MAINS_CHANGED: i32 = 12;
 const EFF_GET_CHUNK: i32 = 23;
 const EFF_SET_CHUNK: i32 = 24;
@@ -25,6 +29,7 @@ const EFF_STOP_PROCESS: i32 = 72;
 const AM_VERSION: i32 = 1;
 const AM_CURRENT_ID: i32 = 2;
 const AM_GET_TIME: i32 = 7;
+const AM_SIZE_WINDOW: i32 = 15;
 const AM_GET_SAMPLE_RATE: i32 = 16;
 const AM_GET_BLOCK_SIZE: i32 = 17;
 const AM_GET_CURRENT_PROCESS_LEVEL: i32 = 23;
@@ -127,6 +132,8 @@ struct HostData {
     sample_rate: f32,
     block_size: i32,
     time: TimeInfo,
+    /// Editor size the plugin asked for, as width << 32 | height (0 when none).
+    resize: std::sync::atomic::AtomicU64,
 }
 
 extern "C" fn host_callback(
@@ -152,6 +159,13 @@ extern "C" fn host_callback(
         AM_GET_SAMPLE_RATE => host.map_or(48000, |h| h.sample_rate as isize),
         AM_GET_BLOCK_SIZE => host.map_or(512, |h| h.block_size as isize),
         AM_GET_TIME => host.map_or(0, |h| &mut h.time as *mut TimeInfo as isize),
+        AM_SIZE_WINDOW => {
+            if let Some(h) = host {
+                let packed = ((_index.max(1) as u64) << 32) | (_value.max(1) as u64 & 0xffff_ffff);
+                h.resize.store(packed, std::sync::atomic::Ordering::Relaxed);
+            }
+            1
+        }
         AM_GET_CURRENT_PROCESS_LEVEL => 0,
         AM_GET_VENDOR_STRING | AM_GET_PRODUCT_STRING if !ptr.is_null() => {
             let s = b"Scythe\0";
@@ -212,6 +226,7 @@ impl Vst2Plugin {
             sample_rate,
             block_size,
             time: TimeInfo { sample_rate: sample_rate as f64, ..Default::default() },
+            resize: Default::default(),
         });
         // SAFETY: `user` is reserved for the host; the box outlives the effect.
         unsafe { (*effect).user = host.as_mut() as *mut HostData as *mut c_void };
@@ -248,6 +263,16 @@ impl Vst2Plugin {
 
     pub fn unique_id(&self) -> i32 {
         self.info().unique_id
+    }
+
+    /// The plugin's editor, when it has one. Its calls bypass any lock around `self`; keep
+    /// the plugin alive while the editor is in use.
+    pub fn editor(&self) -> Option<Vst2Editor> {
+        (self.flags() & FLAG_HAS_EDITOR != 0).then(|| Vst2Editor {
+            effect: self.effect,
+            host: &*self.host as *const HostData,
+            open: false,
+        })
     }
 
     pub fn flags(&self) -> i32 {
@@ -424,6 +449,69 @@ impl ReaperVstState {
         chunk.truncate(size);
         let program = program_line.and_then(|l| b64.decode(l.trim()).ok()).unwrap_or_default();
         Some(Self { unique_id, chunk, program })
+    }
+}
+
+#[repr(C)]
+struct ERect {
+    top: i16,
+    left: i16,
+    bottom: i16,
+    right: i16,
+}
+
+/// A VST 2 plugin's editor in an X11 window, idled from the UI thread.
+pub struct Vst2Editor {
+    effect: *mut AEffect,
+    host: *const HostData,
+    open: bool,
+}
+
+impl Vst2Editor {
+    fn dispatch(&self, opcode: i32, value: isize, ptr: *mut c_void) -> isize {
+        // SAFETY: the owner keeps the effect alive while its editor exists.
+        unsafe { ((*self.effect).dispatcher)(self.effect, opcode, 0, value, ptr, 0.0) }
+    }
+
+    fn rect(&self) -> Option<(u32, u32)> {
+        let mut rect: *mut ERect = std::ptr::null_mut();
+        self.dispatch(EFF_EDIT_GET_RECT, 0, &mut rect as *mut *mut ERect as *mut c_void);
+        // SAFETY: the plugin returns null or a rectangle it owns.
+        let r = unsafe { rect.as_ref() }?;
+        let (w, h) = ((r.right - r.left) as i32, (r.bottom - r.top) as i32);
+        (w > 0 && h > 0).then_some((w as u32, h as u32))
+    }
+}
+
+impl crate::editor::Editor for Vst2Editor {
+    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+        let before = self.rect();
+        if self.dispatch(EFF_EDIT_OPEN, 0, parent as usize as *mut c_void) == 0 && before.is_none() {
+            return Err("the editor could not be opened".into());
+        }
+        self.open = true;
+        Ok(self.rect().or(before).unwrap_or((640, 480)))
+    }
+
+    fn idle(&mut self) -> Option<(u32, u32)> {
+        if self.open {
+            self.dispatch(EFF_EDIT_IDLE, 0, std::ptr::null_mut());
+        }
+        // SAFETY: the host data lives as long as the effect.
+        let packed = unsafe { (*self.host).resize.swap(0, std::sync::atomic::Ordering::Relaxed) };
+        (packed != 0).then_some(((packed >> 32) as u32, packed as u32))
+    }
+
+    fn close(&mut self) {
+        if std::mem::take(&mut self.open) {
+            self.dispatch(EFF_EDIT_CLOSE, 0, std::ptr::null_mut());
+        }
+    }
+}
+
+impl Drop for Vst2Editor {
+    fn drop(&mut self) {
+        crate::editor::Editor::close(self);
     }
 }
 

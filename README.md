@@ -32,8 +32,8 @@ The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`
 | Crate | Contents |
 |---|---|
 | `scythe-core` | Project model (tracks, folders, items, takes, sends, markers, tempo map, envelopes, fades, MIDI sources), lossless `.RPP` reader/writer, pan and fader laws, undo history |
-| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia) and zero-phase sinc resampling, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP and VST 2 hosting |
-| `clap-test-gain` | A minimal CLAP plugin the host tests load |
+| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia) and zero-phase sinc resampling, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
+| `clap-test-gain`, `lv2-test-plugins`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-app` | egui UI: arrange view, mixer dock, inspector, action palette (Ctrl+K), demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back
@@ -86,18 +86,25 @@ Working:
   and ReaVerb. Neural Amp Modeler
   slots (the LV2 plugin) run their `.nam` WaveNet models natively, with the stored input and
   output levels (all 310 models in `~/music/Samples/NAM` load; ~11× realtime per instance). CLAP plugins are
-  hosted, instruments included (scan `~/.clap`, `/usr/lib/clap`, `$CLAP_PATH`; add them from the
-  inspector; click a slot for its parameters; their state is saved in the project) and Linux
-  VST 2 plugins from `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`.
+  hosted, instruments included (scan `~/.clap`, `/usr/lib/clap`, `$CLAP_PATH`), as are LV2
+  plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …; controls and state in REAPER's `<LV2` layout),
+  VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)
+  and Linux VST 2 plugins from `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`. Add them from the
+  inspector, click a slot for its parameters, and use **Edit** for the plugin's own editor (CLAP,
+  VST 2 and VST 3, in a separate X11 window). Plugin latency is compensated across tracks,
+  sends and folders.
+- **Time-stretch and pitch**: a take's play rate keeps its pitch when "Keep pitch" is on (REAPER's
+  default), and takes can be pitch-shifted in semitones; both use a phase vocoder, prepared in the
+  background. Recordings are shifted by the input and output latency the audio device reports.
 - **Files**: lossless `.RPP` load/save, `<name>.RPP-bak` on save, auto-save every 5 minutes
   to `Backups/`, media import (dialog and drag-and-drop), render to WAV (whole project, time
   selection or stems from the action palette; headless with
   `scythe-app project.RPP --render=out.wav [--range=START-END]`), or with the project's own
   render settings like REAPER's `-renderproject` (`--render-project` or the palette): bounds
   project, time selection, custom range or all regions, `RENDER_FILE` and wildcards such as
-  `$project`, `$regionnumber`, `$regionname`, date and time. MP3 renders go through the `lame`
-  encoder (in the devbox packages) at the project's bitrate; other sinks (FLAC …) are written as
-  WAV for now.
+  `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC and Ogg Vorbis renders go
+  through `lame`, `flac` and `oggenc` (in the devbox packages) with the project's settings, and
+  mono renders mix both channels down as REAPER does. Other sinks are written as WAV.
 
 ### Verified against REAPER
 
@@ -107,9 +114,9 @@ compare with scythe's output sample by sample:
 
 | Area | Result |
 |---|---|
-| Pan laws (0/-3/-6 dB, compensated, sine/linear tapers), take pan, item/take gain | exact |
-| Fade shapes 0–6, curvature for shapes 0–4 | exact; shapes 5–6 with curvature and shape 1 with negative curvature approximate |
-| Envelopes: volume/trim/pre-FX/pan/mute, shapes linear/square/slow/fast start/fast end | exact; bezier approximate |
+| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), hybrid at -3 dB and below and at 0 dB, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
+| Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
+| Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
 | Reversed sections | exact |
 | ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain | exact (35/35 cases) |
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
@@ -119,19 +126,24 @@ compare with scythe's output sample by sample:
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
 
-Hybrid pan taper at laws between -3 and 0 dB is approximate (≤ 2 %).
+The hybrid taper at laws between -3 and 0 dB is approximated (within 4 %); no project in the
+corpus uses one.
+
+`examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
+compares the two files.
 
 ### Not there yet
 
-- Plugin GUIs; FX parameter envelopes other than bypass, wet/dry and ReaDelay's taps; VST 3
-  and general LV2 hosting. NAM models are run at
-  the project rate without resampling to the model's rate.
+- LV2 plugin GUIs (CLAP, VST 2 and VST 3 editors open); FX parameter envelopes other than
+  bypass, wet/dry and ReaDelay's taps. NAM models are run at the project rate without resampling
+  to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - MIDI to VST 2 instruments, MIDI controller editing, MIDI input. (MIDI items do play through
   CLAP instruments, the built-in sampler and the preview synth.)
-- Plugins without a built-in equivalent (ReaTune, third-party VST 3 such as Amp Room) pass audio
-  through; the inspector says so per slot.
-- Time-stretch/pitch (playrate is resampled), latency compensation for recordings and plugins.
-- Render formats other than WAV and MP3 (FLAC, OGG …), mono renders.
+- Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
+  corpus such as Amp Room) pass audio through; the inspector says so per slot.
+- Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
+  null against REAPER.
+- Render formats beyond WAV, MP3, FLAC and Ogg Vorbis (Opus, WavPack, video).
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.

@@ -3,7 +3,8 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
@@ -11,14 +12,25 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE, clap_event_header,
     clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
 };
+use clap_sys::ext::gui::{
+    CLAP_EXT_GUI, CLAP_WINDOW_API_X11, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle, clap_xwnd,
+};
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_param_info, clap_plugin_params};
+use clap_sys::ext::posix_fd_support::{
+    CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, clap_host_posix_fd_support,
+    clap_plugin_posix_fd_support, clap_posix_fd_flags,
+};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
+use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support, clap_plugin_timer_support};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
 use clap_sys::host::clap_host;
+use clap_sys::id::clap_id;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
+
+use crate::editor::{Editor, Timers, ready_fds};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClapError {
@@ -159,9 +171,202 @@ static HOST_VENDOR: &CStr = c"Scythe";
 static HOST_URL: &CStr = c"";
 static HOST_VERSION: &CStr = c"0.1";
 
-unsafe extern "C" fn host_get_extension(_host: *const clap_host, _id: *const c_char) -> *const c_void {
-    std::ptr::null()
+/// What a plugin asks of the host on the main thread: timers, file descriptors and editor
+/// requests. Shared with its editor.
+#[derive(Debug, Default)]
+pub struct HostData {
+    timers: Mutex<Timers>,
+    fds: Mutex<Vec<i32>>,
+    resize: Mutex<Option<(u32, u32)>>,
+    closed: AtomicBool,
 }
+
+unsafe fn host_data<'a>(host: *const clap_host) -> Option<&'a HostData> {
+    // SAFETY: host_data is the plugin's HostData, alive as long as the host struct.
+    unsafe { ((*host).host_data as *const HostData).as_ref() }
+}
+
+unsafe extern "C" fn gui_hints(_host: *const clap_host) {}
+
+unsafe extern "C" fn gui_resize(host: *const clap_host, width: u32, height: u32) -> bool {
+    let Some(d) = (unsafe { host_data(host) }) else { return false };
+    *d.resize.lock().unwrap() = Some((width, height));
+    true
+}
+
+unsafe extern "C" fn gui_show(_host: *const clap_host) -> bool {
+    true
+}
+
+unsafe extern "C" fn gui_closed(host: *const clap_host, _was_destroyed: bool) {
+    if let Some(d) = unsafe { host_data(host) } {
+        d.closed.store(true, Ordering::Relaxed);
+    }
+}
+
+unsafe extern "C" fn timer_register(host: *const clap_host, period_ms: u32, id: *mut clap_id) -> bool {
+    let Some(d) = (unsafe { host_data(host) }) else { return false };
+    let new = d.timers.lock().unwrap().add(std::time::Duration::from_millis(period_ms as u64));
+    // SAFETY: the plugin passes a writable id.
+    unsafe { *id = new };
+    true
+}
+
+unsafe extern "C" fn timer_unregister(host: *const clap_host, id: clap_id) -> bool {
+    unsafe { host_data(host) }.is_some_and(|d| d.timers.lock().unwrap().remove(id))
+}
+
+unsafe extern "C" fn fd_register(host: *const clap_host, fd: i32, _flags: clap_posix_fd_flags) -> bool {
+    let Some(d) = (unsafe { host_data(host) }) else { return false };
+    let mut fds = d.fds.lock().unwrap();
+    if !fds.contains(&fd) {
+        fds.push(fd);
+    }
+    true
+}
+
+unsafe extern "C" fn fd_modify(_host: *const clap_host, _fd: i32, _flags: clap_posix_fd_flags) -> bool {
+    true
+}
+
+unsafe extern "C" fn fd_unregister(host: *const clap_host, fd: i32) -> bool {
+    let Some(d) = (unsafe { host_data(host) }) else { return false };
+    d.fds.lock().unwrap().retain(|&f| f != fd);
+    true
+}
+
+static HOST_GUI: clap_host_gui = clap_host_gui {
+    resize_hints_changed: Some(gui_hints),
+    request_resize: Some(gui_resize),
+    request_show: Some(gui_show),
+    request_hide: Some(gui_show),
+    closed: Some(gui_closed),
+};
+static HOST_TIMERS: clap_host_timer_support =
+    clap_host_timer_support { register_timer: Some(timer_register), unregister_timer: Some(timer_unregister) };
+static HOST_FDS: clap_host_posix_fd_support = clap_host_posix_fd_support {
+    register_fd: Some(fd_register),
+    modify_fd: Some(fd_modify),
+    unregister_fd: Some(fd_unregister),
+};
+
+unsafe extern "C" fn host_get_extension(_host: *const clap_host, id: *const c_char) -> *const c_void {
+    // SAFETY: plugins pass a NUL-terminated extension id.
+    let id = unsafe { CStr::from_ptr(id) };
+    if id == CLAP_EXT_GUI {
+        &HOST_GUI as *const _ as *const c_void
+    } else if id == CLAP_EXT_TIMER_SUPPORT {
+        &HOST_TIMERS as *const _ as *const c_void
+    } else if id == CLAP_EXT_POSIX_FD_SUPPORT {
+        &HOST_FDS as *const _ as *const c_void
+    } else {
+        std::ptr::null()
+    }
+}
+
+/// A CLAP plugin's editor, embedded through the gui extension. It holds the plugin pointer
+/// without the effect's lock; the owner keeps the plugin alive while the editor is open.
+pub struct ClapEditor {
+    plugin: *const clap_plugin,
+    data: Arc<HostData>,
+    created: bool,
+}
+
+impl ClapEditor {
+    fn ext<T>(&self, id: &CStr) -> Option<&T> {
+        // SAFETY: the plugin is alive; get_extension returns null or the requested interface.
+        unsafe { ((*self.plugin).get_extension?(self.plugin, id.as_ptr()) as *const T).as_ref() }
+    }
+}
+
+impl Editor for ClapEditor {
+    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+        let gui = self.ext::<clap_plugin_gui>(CLAP_EXT_GUI).copied().ok_or("the plugin has no editor")?;
+        let x11 = CLAP_WINDOW_API_X11.as_ptr();
+        // SAFETY: main-thread gui calls in the order the extension prescribes.
+        unsafe {
+            if !gui.is_api_supported.is_some_and(|f| f(self.plugin, x11, false)) {
+                return Err("the editor does not support X11 windows".into());
+            }
+            if !gui.create.is_some_and(|f| f(self.plugin, x11, false)) {
+                return Err("the editor could not be created".into());
+            }
+            self.created = true;
+            let (mut w, mut h) = (640u32, 480u32);
+            if let Some(get) = gui.get_size {
+                get(self.plugin, &mut w, &mut h);
+            }
+            let window = clap_window { api: x11, specific: clap_window_handle { x11: parent as clap_xwnd } };
+            if !gui.set_parent.is_some_and(|f| f(self.plugin, &window)) {
+                return Err("the editor could not be embedded".into());
+            }
+            if let Some(show) = gui.show {
+                show(self.plugin);
+            }
+            Ok((w, h))
+        }
+    }
+
+    fn idle(&mut self) -> Option<(u32, u32)> {
+        let due = self.data.timers.lock().unwrap().due();
+        if !due.is_empty()
+            && let Some(on_timer) =
+                self.ext::<clap_plugin_timer_support>(CLAP_EXT_TIMER_SUPPORT).and_then(|t| t.on_timer)
+        {
+            for id in due {
+                // SAFETY: a main-thread callback for a timer the plugin registered.
+                unsafe { on_timer(self.plugin, id) };
+            }
+        }
+        let fds = self.data.fds.lock().unwrap().clone();
+        let ready = ready_fds(&fds);
+        if !ready.is_empty()
+            && let Some(on_fd) =
+                self.ext::<clap_plugin_posix_fd_support>(CLAP_EXT_POSIX_FD_SUPPORT).and_then(|f| f.on_fd)
+        {
+            for (fd, events) in ready {
+                let mut flags = 0;
+                if events & (libc::POLLIN | libc::POLLPRI) != 0 {
+                    flags |= CLAP_POSIX_FD_READ;
+                }
+                if events & (libc::POLLERR | libc::POLLHUP) != 0 {
+                    flags |= CLAP_POSIX_FD_ERROR;
+                }
+                // SAFETY: a main-thread callback for a descriptor the plugin registered.
+                unsafe { on_fd(self.plugin, fd, flags) };
+            }
+        }
+        self.data.resize.lock().unwrap().take()
+    }
+
+    fn close(&mut self) {
+        if !std::mem::take(&mut self.created) {
+            return;
+        }
+        if let Some(gui) = self.ext::<clap_plugin_gui>(CLAP_EXT_GUI).copied() {
+            // SAFETY: hide and destroy the editor created in `open`.
+            unsafe {
+                if let Some(hide) = gui.hide {
+                    hide(self.plugin);
+                }
+                if let Some(destroy) = gui.destroy {
+                    destroy(self.plugin);
+                }
+            }
+        }
+    }
+
+    fn closed(&self) -> bool {
+        self.data.closed.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for ClapEditor {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 unsafe extern "C" fn host_request(_host: *const clap_host) {}
 
 unsafe extern "C" fn events_size(list: *const clap_input_events) -> u32 {
@@ -226,6 +431,7 @@ unsafe extern "C" fn read_slice(stream: *const clap_istream, buffer: *mut c_void
 pub struct ClapPlugin {
     plugin: *const clap_plugin,
     _host: Box<clap_host>,
+    host_data: Arc<HostData>,
     _lib: Arc<ClapLibrary>,
     pub id: String,
     processing: bool,
@@ -245,9 +451,10 @@ unsafe impl Send for ClapPlugin {}
 impl ClapPlugin {
     pub fn create(lib: Arc<ClapLibrary>, id: &str, sample_rate: f64, max_frames: u32) -> Result<Self, ClapError> {
         let factory = lib.factory().ok_or_else(|| ClapError::NoPlugin(id.into(), lib.path.clone()))?;
+        let host_data = Arc::new(HostData::default());
         let host = Box::new(clap_host {
             clap_version: CLAP_VERSION,
-            host_data: std::ptr::null_mut(),
+            host_data: Arc::as_ptr(&host_data) as *mut c_void,
             name: HOST_NAME.as_ptr(),
             vendor: HOST_VENDOR.as_ptr(),
             url: HOST_URL.as_ptr(),
@@ -267,6 +474,7 @@ impl ClapPlugin {
         let me = Self {
             plugin,
             _host: host,
+            host_data,
             _lib: lib,
             id: id.into(),
             processing: false,
@@ -297,6 +505,25 @@ impl ClapPlugin {
         let get = self.raw().get_extension?;
         // SAFETY: the state extension id is a C string; the result has that type or is null.
         unsafe { (get(self.plugin, CLAP_EXT_STATE.as_ptr()) as *const clap_plugin_state).as_ref() }
+    }
+
+    /// The plugin's editor, when it has one. Its calls bypass any lock around `self`; keep
+    /// the plugin alive while the editor is in use.
+    pub fn editor(&self) -> Option<ClapEditor> {
+        let get = self.raw().get_extension?;
+        // SAFETY: the gui extension id is a C string; the result is null or the extension.
+        let has_gui = !unsafe { get(self.plugin, CLAP_EXT_GUI.as_ptr()) }.is_null();
+        has_gui.then(|| ClapEditor { plugin: self.plugin, data: self.host_data.clone(), created: false })
+    }
+
+    /// Frames the plugin delays its output by.
+    pub fn latency(&self) -> u32 {
+        use clap_sys::ext::latency::{CLAP_EXT_LATENCY, clap_plugin_latency};
+        let Some(get) = self.raw().get_extension else { return 0 };
+        // SAFETY: the latency extension id is a C string; the result has that type or is null.
+        let ext = unsafe { (get(self.plugin, CLAP_EXT_LATENCY.as_ptr()) as *const clap_plugin_latency).as_ref() };
+        // SAFETY: called on an activated plugin, as the extension requires.
+        ext.and_then(|e| e.get).map_or(0, |f| unsafe { f(self.plugin) })
     }
 
     /// Clears voices and internal state (audio thread).

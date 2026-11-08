@@ -18,7 +18,7 @@ fn hosts_scans_processes_and_restores_state() {
     };
     let lib = ClapLibrary::load(&path).unwrap();
     let descs = lib.descriptors();
-    assert_eq!(descs.len(), 2);
+    assert_eq!(descs.len(), 3);
     assert_eq!(descs[0].id, "org.scythe.test-gain");
     assert!(descs[1].is_instrument() && !descs[0].is_instrument());
     assert_eq!(descs[0].features, ["audio-effect"]);
@@ -113,4 +113,57 @@ fn plugin_state_survives_save_and_load() {
     let chain = fresh.chain(Some(reloaded.tracks[0].id), &reloaded.tracks[0].fx);
     let value = chain[0].with(|e| e.param(7)).flatten().map(|(v, _)| v);
     assert!((value.unwrap() - 0.3).abs() < 1e-6, "{value:?}");
+}
+
+#[test]
+fn plugin_latency_is_compensated() {
+    use scythe_core::{Item, Project, Send, Take};
+    use scythe_engine::MediaPool;
+    use scythe_engine::fx::{FxRegistry, clap_slot};
+    use scythe_engine::render::{MeterRegistry, RenderGraph, RenderScratch};
+
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let descs = ClapLibrary::load(&path).unwrap().descriptors();
+    let delay = descs.iter().find(|d| d.id == "org.scythe.test-delay").unwrap();
+
+    let dir = std::env::temp_dir().join(format!("scythe-pdc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let impulse = dir.join("impulse.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 1000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(&impulse, spec).unwrap();
+    for i in 0..300 {
+        w.write_sample(if i == 100 { 1.0f32 } else { 0.0 }).unwrap();
+    }
+    w.finalize().unwrap();
+
+    // A plays through the 64-frame delay; B plays dry and also sends to A; C plays dry.
+    let mut project = Project::default();
+    let ids: Vec<_> = ["a", "b", "c"].into_iter().map(|n| project.add_track(n)).collect();
+    for &id in &ids {
+        let item = Item::new(0.4, 0.3, Take::from_file(impulse.clone()));
+        let t = project.track_mut(id).unwrap();
+        t.items.push(Item { fade_in: scythe_core::Fade::default(), fade_out: scythe_core::Fade::default(), ..item });
+    }
+    project.track_mut(ids[0]).unwrap().fx.push(clap_slot(delay));
+    project.track_mut(ids[1]).unwrap().sends.push(Send { volume: 1.0, ..Send::new(ids[0]) });
+
+    let pool = MediaPool::default();
+    pool.load(&impulse, 1000).unwrap();
+    let mut fx = FxRegistry::new(1000);
+    fx.set_clap_plugins(descs.clone());
+    let graph = RenderGraph::build(&project, &pool, &mut MeterRegistry::default(), &mut fx, 1000);
+    let (mut l, mut r) = (vec![0.0f32; 1000], vec![0.0f32; 1000]);
+    graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
+    let hits: Vec<(usize, f32)> = l.iter().copied().enumerate().filter(|(_, v)| v.abs() > 1e-6).collect();
+    // A, B, C and B's send all land on the impulse's own frame.
+    assert_eq!(hits, [(500, 4.0)]);
+    std::fs::remove_dir_all(&dir).ok();
 }

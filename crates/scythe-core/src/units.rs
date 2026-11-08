@@ -79,44 +79,35 @@ impl Default for PanLaw {
 
 impl PanLaw {
     /// Gains for a balance pan of a stereo (or mono-on-stereo) signal, matching REAPER's
-    /// renders: linear tapers interpolate between the centre gain and the full side; sine
-    /// tapers follow the constant-power curve; values above 1 keep the centre at unity and
-    /// boost the sides. Laws of -6 dB and below are always linear, and a 0 dB law with the
-    /// hybrid or linear taper is a plain balance control.
+    /// renders. Laws above 1 keep the centre at unity and scale everything up.
     ///
-    /// Exact against REAPER for the linear taper at any law and for the sine and hybrid tapers
-    /// at 0, -3 and -6 dB (and their compensated variants). Other sine/hybrid laws are
-    /// interpolated and can be off by a few percent.
+    /// The linear taper runs straight from the centre gain to 0 and 1. The sine taper is the
+    /// constant-power curve through the centre gain, blended towards the one that ends at
+    /// unity by `(1/cos(a pi/4) - 1) / (sqrt 2 - 1)` of the pan amount `a`; both are exact
+    /// for every law. The hybrid taper equals the sine taper from -3 dB down and is a plain
+    /// balance control at 0 dB; laws in between are approximated (within 4 %) by the sine
+    /// taper clipped to that balance control.
     pub fn gains(self, pan: f64) -> (f64, f64) {
+        use std::f64::consts::{FRAC_PI_4, SQRT_2};
         let pan = pan.clamp(-1.0, 1.0);
         let law = if self.law > 0.0 { self.law } else { 1.0 };
         let (centre, scale) = if law > 1.0 { (1.0 / law, law) } else { (law, 1.0) };
         let a = pan.abs();
         let linear = (centre * (1.0 - a), centre + (1.0 - centre) * a);
-        let db = 20.0 * centre.log10();
         let sine = {
-            let angle = (1.0 + a) * std::f64::consts::FRAC_PI_4;
-            // Above -3 dB REAPER pulls the constant-power curve down by the same factor on both
-            // sides, reaching unity on the hard-panned side; the dB amount scales with the law.
-            // The table is measured at a 0 dB law.
-            const DROP_DB: [f64; 5] = [0.0, 0.122, 0.523, 1.34, 3.0103];
-            let pos = a * 4.0;
-            let i = (pos as usize).min(3);
-            let drop = DROP_DB[i] + (DROP_DB[i + 1] - DROP_DB[i]) * (pos - i as f64);
-            let scale = ((db + 3.0103) / 3.0103).max(0.0);
-            let k = centre * std::f64::consts::SQRT_2 * 10f64.powf(-drop * scale / 20.0);
+            let angle = (1.0 + a) * FRAC_PI_4;
+            let towards_unity = (1.0 / (a * FRAC_PI_4).cos() - 1.0) / (SQRT_2 - 1.0);
+            let k = SQRT_2 * centre * (1.0 + (1.0 / (SQRT_2 * centre) - 1.0) * towards_unity);
             (k * angle.cos(), k * angle.sin())
         };
-        // How far the centre gain is from -3 dB towards 0 dB or -6 dB, where tapers turn linear.
-        let towards_linear = match self.taper {
-            PanTaper::Linear => 1.0,
-            PanTaper::Sine if db < -3.0103 => ((-3.0103 - db) / 3.0103).min(1.0),
-            PanTaper::Sine => 0.0,
-            PanTaper::Hybrid => ((db + 3.0103).abs() / 3.0103).min(1.0),
+        let (away, toward) = match self.taper {
+            // REAPER special-cases a centre of exactly -6 dB; 0.5012 already takes the curve.
+            _ if (centre - 0.5).abs() < 0.00119 => linear,
+            PanTaper::Linear => linear,
+            PanTaper::Sine => sine,
+            PanTaper::Hybrid if centre <= std::f64::consts::FRAC_1_SQRT_2 + 1e-4 => sine,
+            PanTaper::Hybrid => (sine.0.max(linear.0).min(1.0 - a), sine.1.min(1.0)),
         };
-        let mix = |l: f64, s: f64| s + (l - s) * towards_linear;
-        let away = mix(linear.0, sine.0);
-        let toward = mix(linear.1, sine.1);
         let (l, r) = if pan < 0.0 { (toward, away) } else { (away, toward) };
         (l * scale, r * scale)
     }
@@ -159,6 +150,12 @@ mod tests {
             (1.414, 3, 0.5, (0.5412, 1.3064)),
             (1.414, 2, 0.75, (0.25, 1.3106)),
             (2.0, 0, 0.5, (0.5, 1.5)),
+            (0.8414, 0, 0.5, (0.4409, 1.0644)),
+            (0.8414, 0, 0.9, (0.082, 1.0422)),
+            (0.5957, 0, 0.9, (0.0755, 0.9593)),
+            (0.5957, 3, 0.5, (0.3344, 0.8073)),
+            (1.5849, 0, 0.5, (0.5542, 1.3379)),
+            (1.5849, 0, 0.9, (0.1211, 1.5393)),
         ];
         for &(law, flags, pan, (l, r)) in cases {
             let (gl, gr) = PanLaw { law, taper: PanTaper::from_flags(flags) }.gains(pan);

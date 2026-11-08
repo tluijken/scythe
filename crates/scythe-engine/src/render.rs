@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use scythe_core::envelope::PointShape;
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
 use scythe_core::{Envelope, EnvelopeKind, Fade, Project, Source, TrackId};
@@ -87,6 +88,40 @@ pub struct RenderTrack {
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
     pub monitor: Option<(usize, Option<usize>)>,
+    /// Frames between this track's input and the master output, including plugin latency
+    /// downstream. Items are read this far ahead so they come out on time.
+    pub read_ahead: i64,
+    /// Latency of each effect in `fx`.
+    pub fx_latency: Vec<i64>,
+    /// Delay lines that line this track up with slower paths into each send destination and
+    /// into its parent or the master, when any are needed.
+    pub send_delays: Vec<Option<Arc<DelayLine>>>,
+    pub main_delay: Option<Arc<DelayLine>>,
+}
+
+/// A stereo delay of a fixed number of frames, used for plugin delay compensation.
+#[derive(Debug)]
+pub struct DelayLine {
+    state: std::sync::Mutex<(Vec<f32>, Vec<f32>, usize)>,
+}
+
+impl DelayLine {
+    fn new(frames: usize) -> Self {
+        Self { state: std::sync::Mutex::new((vec![0.0; frames], vec![0.0; frames], 0)) }
+    }
+
+    /// Adds the input, delayed and scaled, to the output.
+    fn mix(&self, input: (&[f32], &[f32]), gain: (f32, f32), out: (&mut [f32], &mut [f32])) {
+        let Ok(mut guard) = self.state.try_lock() else { return };
+        let (l, r, at) = &mut *guard;
+        for i in 0..input.0.len() {
+            out.0[i] += l[*at] * gain.0;
+            out.1[i] += r[*at] * gain.1;
+            l[*at] = input.0[i];
+            r[*at] = input.1[i];
+            *at = (*at + 1) % l.len();
+        }
+    }
 }
 
 /// Live input for one render call: per hardware channel, the samples aligned with the output.
@@ -126,9 +161,13 @@ pub struct Automation {
 }
 
 impl Automation {
-    const STEP: usize = 32;
+    const STEP: i64 = 32;
+    /// REAPER evaluates pan envelopes once per 512-frame processing block and ramps the channel
+    /// gains linearly in between; a block cut short by the end of a render ramps to its end.
+    const PAN_GRID: i64 = 512;
 
-    fn gains_at(&self, t: f64) -> (f32, f32) {
+    fn gains_at(&self, frame: i64, block_end: i64, sample_rate: f64) -> (f32, f32) {
+        let t = frame as f64 / sample_rate;
         let mut vol = self.volume;
         for e in &self.gains {
             vol *= e.value_at(t).unwrap_or(1.0);
@@ -136,16 +175,39 @@ impl Automation {
         if self.mute.as_ref().and_then(|e| e.value_at(t)).is_some_and(|v| v < 0.5) {
             vol = 0.0;
         }
-        let pan = self.pan - self.pan_env.as_ref().and_then(|e| e.value_at(t)).unwrap_or(0.0);
-        let (l, r) = self.pan_law.gains(pan.clamp(-1.0, 1.0));
+        let pan_gains = |t: f64| {
+            let pan = self.pan - self.pan_env.as_ref().and_then(|e| e.value_at(t)).unwrap_or(0.0);
+            self.pan_law.gains(pan.clamp(-1.0, 1.0))
+        };
+        let (l, r) = if let Some(env) = &self.pan_env {
+            let block = (frame - frame.rem_euclid(Self::PAN_GRID)) as f64 / sample_rate;
+            let mut lo = block;
+            let mut hi =
+                ((frame - frame.rem_euclid(Self::PAN_GRID) + Self::PAN_GRID).min(block_end)) as f64 / sample_rate;
+            if let Some((v0, v1)) = env.bezier_step(t) {
+                lo = lo.max(v0);
+                hi = hi.min(v1);
+            }
+            if hi <= lo {
+                pan_gains(t)
+            } else {
+                let k = ((t - lo) / (hi - lo)).clamp(0.0, 1.0);
+                let (a, b) = (pan_gains(lo), pan_gains(hi));
+                (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k)
+            }
+        } else {
+            pan_gains(t)
+        };
         ((vol * l) as f32, (vol * r) as f32)
     }
 
-    /// Whether any envelope has a point in `(t0, t1]`, where ramping would smear a step.
-    fn point_between(&self, t0: f64, t1: f64) -> bool {
+    /// Whether `(t0, t1]` needs per-sample evaluation: an envelope has a point there, where
+    /// ramping would smear a step, or is inside a bezier segment, which can be nearly vertical.
+    fn exact_between(&self, t0: f64, t1: f64) -> bool {
         self.gains.iter().chain(&self.pan_env).chain(&self.mute).any(|e| {
             let i = e.points.partition_point(|p| p.time <= t0);
-            e.points.get(i).is_some_and(|p| p.time <= t1)
+            let in_bezier = i > 0 && i < e.points.len() && matches!(e.points[i - 1].shape, PointShape::Bezier(_));
+            in_bezier || e.points.get(i).is_some_and(|p| p.time <= t1)
         })
     }
 
@@ -183,6 +245,8 @@ pub struct RenderGraph {
     pub master_meter: Arc<Meter>,
     pub master_loudness: Option<Arc<Loudness>>,
     pub master_fx: Vec<Arc<FxInstance>>,
+    /// Latency of each master effect, in frames.
+    pub master_fx_latency: Vec<i64>,
     pub timeline: Arc<Timeline>,
     pub clicks: Arc<ClickSounds>,
     /// Gain of the transport metronome; zero when it is off.
@@ -252,6 +316,7 @@ impl RenderGraph {
             master_meter: Arc::default(),
             master_loudness: None,
             master_fx: Vec::new(),
+            master_fx_latency: Vec::new(),
             timeline: Arc::new(scythe_core::TempoMap::default().timeline()),
             clicks: Arc::new(ClickSounds::new(sample_rate)),
             metronome: 0.0,
@@ -270,7 +335,7 @@ impl RenderGraph {
         let index: HashMap<TrackId, usize> = project.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let timeline = Arc::new(project.tempo.timeline());
         let parents = project.folder_parents();
-        let tracks = project
+        let mut tracks = project
             .tracks
             .iter()
             .enumerate()
@@ -286,6 +351,8 @@ impl RenderGraph {
                             Source::Section(s) => (s.start, s.length.max(0.0), s.reverse),
                             _ => (0.0, 0.0, false),
                         };
+                        // A stretched copy runs on its own time axis, `time` times the source's.
+                        let mut time = 1.0;
                         let audio = match &take.source {
                             Source::Raw(c) if c.args().first().is_some_and(|k| k == "CLICK") => ItemAudio::Click,
                             Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI") => {
@@ -293,18 +360,26 @@ impl RenderGraph {
                             }
                             source => {
                                 let path = scythe_core::rpp::resolve_media_path(project, source.file()?);
-                                ItemAudio::Media(pool.ready(&path)?.audio.clone())
+                                let base = pool.ready(&path)?;
+                                // Until the stretched copy is ready the take plays resampled.
+                                match take.stretch().and_then(|r| Some((r.0, pool.stretched(&path, r)?))) {
+                                    Some((t, stretched)) => {
+                                        time = t;
+                                        ItemAudio::Media(stretched)
+                                    }
+                                    None => ItemAudio::Media(base.audio.clone()),
+                                }
                             }
                         };
                         // Take pan never attenuates the centre in REAPER renders, whatever the project law.
                         let (tl, tr) = scythe_core::units::PanLaw::default().gains(take.pan);
-                        let src_sr = sr;
+                        let src_sr = sr * time;
                         let g = (it.volume * take.volume) as f32;
                         Some(RenderItem {
                             start: (it.position * sr).round() as i64,
                             length: (it.length * sr).round() as i64,
-                            source_offset: take.source_offset * sr,
-                            playrate: take.playrate,
+                            source_offset: take.source_offset * src_sr,
+                            playrate: take.playrate * time,
                             gain_l: g * tl as f32,
                             gain_r: g * tr as f32,
                             fade_in: ((it.fade_in.effective_length() * sr).round() as i64, it.fade_in),
@@ -362,10 +437,17 @@ impl RenderGraph {
                             (first, (t.rec_input & 1024 != 0).then_some(first + 1))
                         },
                     ),
+                    read_ahead: 0,
+                    fx_latency: Vec::new(),
+                    send_delays: Vec::new(),
+                    main_delay: None,
                 }
             })
             .collect::<Vec<_>>();
+        let master_fx = fx.chain(None, &project.master.fx);
+        let master_fx_latency = chain_latency(&master_fx);
         let order = send_order(&tracks);
+        compensate_latency(&mut tracks, &order, master_fx_latency.iter().sum());
         let level_of = dependency_levels(&tracks, &order);
         let level_count = level_of.iter().max().map_or(0, |m| m + 1);
         let mut level_sizes = vec![0; level_count];
@@ -386,7 +468,8 @@ impl RenderGraph {
             master_gain_r: (mv * mr) as f32,
             master_meter: meters.master.clone(),
             master_loudness: Some(meters.loudness(sample_rate)),
-            master_fx: fx.chain(None, &project.master.fx),
+            master_fx,
+            master_fx_latency,
             timeline,
             clicks: Arc::new(ClickSounds::new(sample_rate)),
             metronome: 0.0,
@@ -468,15 +551,18 @@ impl RenderGraph {
             }
         }
         if !self.master_fx.is_empty() {
-            let ctx = ProcessContext {
-                sample_rate: self.sample_rate,
-                position: start,
-                playing: true,
-                notes: None,
-                bpm: self.timeline.bpm_at(start as f64 / self.sample_rate as f64),
-            };
-            for fx in &self.master_fx {
+            // The master's input is the master effects' latency ahead of the output.
+            let mut position = start + self.master_fx_latency.iter().sum::<i64>();
+            for (fx, latency) in self.master_fx.iter().zip(&self.master_fx_latency) {
+                let ctx = ProcessContext {
+                    sample_rate: self.sample_rate,
+                    position,
+                    playing: true,
+                    notes: None,
+                    bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
+                };
                 fx.process(out_l, out_r, &ctx);
+                position -= latency;
             }
         }
         for s in out_l.iter_mut() {
@@ -508,29 +594,33 @@ impl RenderGraph {
                 tr[i] += right[i];
             }
         }
+        // Plugin latency downstream is compensated by reading this track's material early.
+        let read = start + track.read_ahead;
         let items: &[RenderItem] = if input.play_items { &track.items } else { &[] };
         for item in items {
             match &item.audio {
-                ItemAudio::Media(audio) => mix_item(item, audio, start, tl, tr),
-                ItemAudio::Midi(notes) => notes.render(start, self.sample_rate, (item.gain_l, item.gain_r), tl, tr),
+                ItemAudio::Media(audio) => mix_item(item, audio, read, tl, tr),
+                ItemAudio::Midi(notes) => notes.render(read, self.sample_rate, (item.gain_l, item.gain_r), tl, tr),
                 ItemAudio::Click => {
-                    let from = start.max(item.start);
-                    let to = (start + n as i64).min(item.start + item.length);
-                    self.mix_clicks(start, from..to, item.gain_l, item.gain_r, tl, tr);
+                    let from = read.max(item.start);
+                    let to = (read + n as i64).min(item.start + item.length);
+                    self.mix_clicks(read, from..to, item.gain_l, item.gain_r, tl, tr);
                 }
             }
         }
+        let mut position = read;
         if track.audible && !track.fx.is_empty() {
-            let ctx = ProcessContext {
-                sample_rate: self.sample_rate,
-                position: start,
-                playing: true,
-                // While stopped the position stands still; feeding notes would retrigger them.
-                notes: if input.play_items { track.notes.as_deref() } else { None },
-                bpm: self.timeline.bpm_at(start as f64 / self.sample_rate as f64),
-            };
-            let t = start as f64 / self.sample_rate as f64;
-            for (fx, automation) in track.fx.iter().zip(&track.fx_automation) {
+            for ((fx, automation), latency) in track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency) {
+                let ctx = ProcessContext {
+                    sample_rate: self.sample_rate,
+                    position,
+                    playing: true,
+                    // While stopped the position stands still; feeding notes would retrigger them.
+                    notes: if input.play_items { track.notes.as_deref() } else { None },
+                    bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
+                };
+                let t = position as f64 / self.sample_rate as f64;
+                position -= latency;
                 if automation.is_empty() {
                     fx.process(tl, tr, &ctx);
                 } else {
@@ -540,7 +630,7 @@ impl RenderGraph {
                     let mut at = 0;
                     while at < n {
                         let len = SLICE.min(n - at);
-                        let slice_ctx = ProcessContext { position: start + at as i64, ..ctx };
+                        let slice_ctx = ProcessContext { position: ctx.position + at as i64, ..ctx };
                         let st = t + at as f64 / self.sample_rate as f64;
                         fx.process_automated(&mut tl[at..at + len], &mut tr[at..at + len], &slice_ctx, automation, st);
                         at += len;
@@ -560,16 +650,21 @@ impl RenderGraph {
                 }
             }
             (Some(auto), true) => {
+                // The fader acts where the signal leaves the track's effects.
+                let start = position;
                 let sr_f = self.sample_rate as f64;
                 let mut at = 0;
-                let mut g0 = auto.gains_at(start as f64 / sr_f);
+                let end = start + n as i64;
+                let mut g0 = auto.gains_at(start, end, sr_f);
                 while at < n {
-                    let len = Automation::STEP.min(n - at);
-                    let t0 = (start + at as i64) as f64 / sr_f;
-                    let g1 = auto.gains_at((start + (at + len) as i64) as f64 / sr_f);
-                    if auto.point_between(t0, t0 + len as f64 / sr_f) {
+                    // Steps stay on a fixed grid, so they never straddle a pan grid boundary.
+                    let frame = start + at as i64;
+                    let len = ((Automation::STEP - frame.rem_euclid(Automation::STEP)) as usize).min(n - at);
+                    let t0 = frame as f64 / sr_f;
+                    let g1 = auto.gains_at(frame + len as i64, end, sr_f);
+                    if auto.exact_between(t0, t0 + len as f64 / sr_f) {
                         for i in 0..len {
-                            let g = auto.gains_at((start + (at + i) as i64) as f64 / sr_f);
+                            let g = auto.gains_at(frame + i as i64, end, sr_f);
                             tl[at + i] *= g.0;
                             tr[at + i] *= g.1;
                         }
@@ -595,12 +690,18 @@ impl RenderGraph {
         let track = &self.tracks[ti];
         let (l, r) = std::mem::take(&mut scratch.track_bufs[ti]);
         let (tl, tr) = (&l[..n], &r[..n]);
-        for &(dest, sgl, sgr) in &track.sends {
-            let (dl, dr) = &mut scratch.track_bufs[dest];
-            for i in 0..n {
-                dl[i] += tl[i] * sgl;
-                dr[i] += tr[i] * sgr;
+        let add = |delay: Option<&Arc<DelayLine>>, gain: (f32, f32), dl: &mut [f32], dr: &mut [f32]| match delay {
+            Some(line) => line.mix((tl, tr), gain, (dl, dr)),
+            None => {
+                for i in 0..n {
+                    dl[i] += tl[i] * gain.0;
+                    dr[i] += tr[i] * gain.1;
+                }
             }
+        };
+        for (si, &(dest, sgl, sgr)) in track.sends.iter().enumerate() {
+            let (dl, dr) = &mut scratch.track_bufs[dest];
+            add(track.send_delays.get(si).and_then(Option::as_ref), (sgl, sgr), &mut dl[..n], &mut dr[..n]);
         }
         if track.main_send {
             let (dl, dr): (&mut [f32], &mut [f32]) = match track.parent {
@@ -610,10 +711,7 @@ impl RenderGraph {
                 }
                 None => (&mut *out_l, &mut *out_r),
             };
-            for i in 0..n {
-                dl[i] += tl[i];
-                dr[i] += tr[i];
-            }
+            add(track.main_delay.as_ref(), (1.0, 1.0), dl, dr);
         }
         scratch.track_bufs[ti] = (l, r);
     }
@@ -647,6 +745,32 @@ impl RenderGraph {
                 out_r[o] += s * gain_r;
             }
         });
+    }
+}
+
+fn chain_latency(chain: &[Arc<FxInstance>]) -> Vec<i64> {
+    chain.iter().map(|fx| fx.with(|e| e.latency()).unwrap_or(0) as i64).collect()
+}
+
+/// Plugin delay compensation. Working back from the master, each track's `read_ahead` is its
+/// own effects' latency plus the slowest path from its output to the master; faster paths get
+/// a delay line so every path into a destination arrives together.
+fn compensate_latency(tracks: &mut [RenderTrack], order: &[usize], master_latency: i64) {
+    for t in tracks.iter_mut() {
+        t.fx_latency = chain_latency(&t.fx);
+    }
+    let mut read_ahead = vec![0i64; tracks.len()];
+    for &ti in order.iter().rev() {
+        let t = &tracks[ti];
+        let main = t.main_send.then(|| t.parent.map_or(master_latency, |p| read_ahead[p]));
+        let sends: Vec<i64> = t.sends.iter().map(|s| read_ahead[s.0]).collect();
+        let out = sends.iter().copied().chain(main).max().unwrap_or(master_latency);
+        let delay = |dest: i64| (out > dest).then(|| Arc::new(DelayLine::new((out - dest) as usize)));
+        let t = &mut tracks[ti];
+        t.send_delays = sends.iter().map(|&d| delay(d)).collect();
+        t.main_delay = main.and_then(delay);
+        t.read_ahead = out + t.fx_latency.iter().sum::<i64>();
+        read_ahead[ti] = t.read_ahead;
     }
 }
 
@@ -774,7 +898,7 @@ fn fade_gain(rel: i64, length: i64, fade_in: &(i64, Fade), fade_out: &(i64, Fade
     let to_end = length - rel;
     let (len, shape) = fade_out;
     if *len > 0 && to_end < *len {
-        g *= shape.gain(to_end as f64 / *len as f64);
+        g *= shape.out_gain(to_end as f64 / *len as f64);
     }
     g as f32
 }

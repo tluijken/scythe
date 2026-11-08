@@ -129,13 +129,53 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     }
 }
 
+/// A plugin binary the browser can add.
+enum Installed {
+    Clap(scythe_engine::clap_host::ClapDescriptor),
+    Lv2(scythe_engine::lv2::Lv2Info),
+    Vst3(scythe_engine::vst3_host::Vst3Info),
+}
+
+impl Installed {
+    fn label(&self) -> String {
+        match self {
+            Self::Clap(d) => format!("{} · {}", d.name, d.vendor),
+            Self::Lv2(i) => i.name.clone(),
+            Self::Vst3(i) => format!("{} · {}", i.name, i.vendor),
+        }
+    }
+
+    fn format(&self) -> &'static str {
+        match self {
+            Self::Clap(_) => "CLAP",
+            Self::Lv2(_) => "LV2",
+            Self::Vst3(_) => "VST3",
+        }
+    }
+
+    fn slot(&self) -> scythe_core::FxSlot {
+        match self {
+            Self::Clap(d) => scythe_engine::fx::clap_slot(d),
+            Self::Lv2(i) => scythe_engine::fx::lv2_slot(i),
+            Self::Vst3(i) => scythe_engine::fx::vst3_slot(i),
+        }
+    }
+}
+
+fn installed_plugins(app: &ScytheApp) -> Vec<Installed> {
+    let fx = app.engine.fx();
+    let mut out: Vec<Installed> = fx.clap_plugins().iter().cloned().map(Installed::Clap).collect();
+    out.extend(fx.lv2_plugins().iter().cloned().map(Installed::Lv2));
+    out.extend(fx.vst3_plugins().iter().cloned().map(Installed::Vst3));
+    out
+}
+
 fn content_height(app: &ScytheApp, track: &scythe_core::Track) -> f32 {
     let base = 16.0 + 44.0 + 16.0 + 40.0 + 16.0 + 16.0;
     let tab = match app.view.inspector_tab {
         InspectorTab::Fx => {
             let browser = if app.view.plugin_browser {
-                (scythe_engine::builtin::Builtin::ALL.len() + app.engine.fx().clap_plugins().len().max(1)) as f32 * 36.0
-                    + 8.0
+                (scythe_engine::builtin::Builtin::ALL.len() + installed_plugins(app).len().max(1)) as f32 * 36.0 + 8.0
             } else {
                 0.0
             };
@@ -199,7 +239,23 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
+        let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)));
+        if hosted {
+            let open = app.editor_open(Some(track_id), i);
+            let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
+            let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
+            if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
+                .on_hover_text(if open { "Close the plugin's editor" } else { "Open the plugin's own editor" })
+                .clicked()
+            {
+                app.toggle_editor(Some(track_id), i);
+            }
+        }
         row.context_menu(|ui| {
+            if hosted && ui.button("Open editor").clicked() {
+                app.toggle_editor(Some(track_id), i);
+                ui.close();
+            }
             if ui.button("Remove plugin").clicked() {
                 app.edit("Remove plugin", |p| {
                     p.track_mut(track_id).unwrap().fx.remove(i);
@@ -265,26 +321,32 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             }
             *y += 36.0;
         }
-        let plugins = app.engine.fx().clap_plugins().to_vec();
+        let plugins = installed_plugins(app);
         if plugins.is_empty() {
             painter.text(
                 pos2(inner.left() + 4.0, *y + 14.0),
                 Align2::LEFT_CENTER,
-                "No CLAP plugins in ~/.clap, /usr/lib/clap or $CLAP_PATH",
+                "No CLAP, LV2 or VST3 plugins found",
                 theme::regular(11.0),
                 TEXT_DIM,
             );
             *y += 36.0;
         }
-        for desc in plugins {
+        for plugin in plugins {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
             painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
-            let label = format!("{} · {}", desc.name, desc.vendor);
-            let label = widgets::truncate(ui, &label, &theme::regular(12.0), r.width() - 24.0);
+            let label = widgets::truncate(ui, &plugin.label(), &theme::regular(12.0), r.width() - 70.0);
             painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(12.0), TEXT);
+            painter.text(
+                r.right_center() - vec2(12.0, 0.0),
+                Align2::RIGHT_CENTER,
+                plugin.format(),
+                theme::regular(11.0),
+                TEXT_DIM,
+            );
             if resp.clicked() {
-                let slot = scythe_engine::fx::clap_slot(&desc);
+                let slot = plugin.slot();
                 app.edit("Add plugin", |p| p.track_mut(track_id).unwrap().fx.push(slot));
                 app.view.plugin_browser = false;
             }
@@ -579,7 +641,7 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
 }
 
 const ITEM_ROW: f32 = 40.0;
-const ITEM_H: f32 = 16.0 + 30.0 + 6.0 * (ITEM_ROW + 6.0) + 10.0;
+const ITEM_H: f32 = 16.0 + 30.0 + 8.0 * (ITEM_ROW + 6.0) + 10.0;
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let item = app.sel.item.filter(|id| app.project.find_item(*id).is_some());
@@ -719,7 +781,36 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
         app.end_gesture();
     }
 
-    for (label, on, toggle) in [("Loop source", item.looped, 0), ("Mute", item.muted, 1)] {
+    let edit_take = |app: &mut ScytheApp, label: &str, f: &dyn Fn(&mut scythe_core::Take)| {
+        edit_item(app, label, &|it| {
+            let active = it.active_take;
+            if let Some(t) = it.takes.get_mut(active) {
+                f(t);
+            }
+        });
+    };
+    let pitch = item.take().map_or(0.0, |t| t.pitch);
+    let (dx, resp) = drag_row(
+        ui,
+        &painter,
+        row(),
+        "Pitch",
+        &format!("{pitch:+.2} st"),
+        "Drag to shift in semitones, double-click for none",
+    );
+    if dx != 0.0 {
+        let new = (pitch + dx as f64 * 0.02).clamp(-24.0, 24.0);
+        edit_take(app, "Pitch", &|t| t.pitch = new);
+    }
+    if resp.double_clicked() {
+        edit_take(app, "Pitch", &|t| t.pitch = 0.0);
+    }
+    if resp.drag_stopped() || resp.double_clicked() {
+        app.end_gesture();
+    }
+
+    let preserve = item.take().is_none_or(|t| t.preserve_pitch);
+    for (label, on, toggle) in [("Keep pitch", preserve, 2), ("Loop source", item.looped, 0), ("Mute", item.muted, 1)] {
         let r = row();
         painter.rect_filled(r, CornerRadius::same(12), RAISED);
         painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(13.0), TEXT);
@@ -727,7 +818,16 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
         if switch(ui, sw, on, ACCENT).clicked() {
             app.edit(label, |p| {
                 if let Some(it) = p.tracks.iter_mut().find_map(|t| t.item_mut(id)) {
-                    if toggle == 0 { it.looped = !it.looped } else { it.muted = !it.muted }
+                    match toggle {
+                        0 => it.looped = !it.looped,
+                        1 => it.muted = !it.muted,
+                        _ => {
+                            let active = it.active_take;
+                            if let Some(t) = it.takes.get_mut(active) {
+                                t.preserve_pitch = !t.preserve_pitch;
+                            }
+                        }
+                    }
                 }
             });
         }

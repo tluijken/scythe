@@ -96,8 +96,8 @@ impl PointShape {
         }
     }
 
-    /// Progress from 0 to 1 over a segment. Shapes 0-4 match REAPER renders; the bezier is an
-    /// approximation (a cubic with both handles at the tension-shifted midpoint).
+    /// Progress from 0 to 1 over a segment. A bezier here has no neighbours to take its
+    /// tangents from; `Envelope::value_at` supplies them.
     pub fn progress(self, x: f64) -> f64 {
         let x = x.clamp(0.0, 1.0);
         match self {
@@ -106,20 +106,55 @@ impl PointShape {
             Self::SlowStartEnd => x * x * (3.0 - 2.0 * x),
             Self::FastStart => 1.0 - (1.0 - x).powi(3),
             Self::FastEnd => x.powi(3),
-            Self::Bezier(t) => {
-                let t = t.clamp(-1.0, 1.0);
-                let (hx, hy) = ((1.0 + t) * 0.5, (1.0 - t) * 0.5);
-                // Solve x(s) = x by bisection; x(s) is monotonic for handles inside the square.
-                let bx = |s: f64| 3.0 * s * (1.0 - s) * hx + s.powi(3);
-                let (mut lo, mut hi) = (0.0, 1.0);
-                for _ in 0..40 {
-                    let mid = (lo + hi) * 0.5;
-                    if bx(mid) < x { lo = mid } else { hi = mid }
-                }
-                let s = (lo + hi) * 0.5;
-                3.0 * s * (1.0 - s) * hy + s.powi(3)
-            }
+            Self::Bezier(t) => Bezier::new(t, 1.0, 1.0).value(x),
         }
+    }
+}
+
+/// REAPER's bezier segment in unit coordinates (time and value both normalised to 0..=1).
+/// The handles sit a quarter of the way in, at the heights the tangents `s0` and `s1` (relative
+/// to the straight line) give them, kept inside the segment; the tension pulls both towards
+/// the corner (1, 0) when positive or (0, 1) when negative. REAPER plays the curve as a
+/// polyline through `VERTICES` steps of the curve parameter.
+#[derive(Debug, Clone, Copy)]
+struct Bezier {
+    ax: f64,
+    ay: f64,
+    bx: f64,
+    by: f64,
+}
+
+impl Bezier {
+    const VERTICES: usize = 256;
+
+    fn new(tension: f64, s0: f64, s1: f64) -> Self {
+        let t = tension.clamp(-1.0, 1.0);
+        let (cx, cy) = if t < 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
+        let pull = |(hx, hy): (f64, f64)| (hx + (cx - hx) * t.abs(), hy + (cy - hy) * t.abs());
+        let (ax, ay) = pull((0.25, (0.25 * s0).clamp(0.0, 1.0)));
+        let (bx, by) = pull((0.75, (1.0 - 0.25 * s1).clamp(0.0, 1.0)));
+        Self { ax, ay, bx, by }
+    }
+
+    fn vertex(self, k: usize) -> (f64, f64) {
+        let s = k as f64 / Self::VERTICES as f64;
+        let cubic = |a: f64, b: f64| 3.0 * (1.0 - s) * (1.0 - s) * s * a + 3.0 * (1.0 - s) * s * s * b + s.powi(3);
+        (cubic(self.ax, self.bx), cubic(self.ay, self.by))
+    }
+
+    /// The polyline step containing `x`, as its two vertices.
+    fn step(self, x: f64) -> ((f64, f64), (f64, f64)) {
+        let (mut lo, mut hi) = (0, Self::VERTICES);
+        while hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            if self.vertex(mid).0 <= x { lo = mid } else { hi = mid }
+        }
+        (self.vertex(lo), self.vertex(hi))
+    }
+
+    fn value(self, x: f64) -> f64 {
+        let ((x0, y0), (x1, y1)) = self.step(x);
+        if x1 > x0 { y0 + (y1 - y0) * ((x - x0) / (x1 - x0)).clamp(0.0, 1.0) } else { y1 }
     }
 }
 
@@ -166,8 +201,48 @@ impl Envelope {
         if span <= 0.0 {
             return Some(next.value);
         }
-        let k = p.shape.progress((t - p.time) / span);
+        let x = (t - p.time) / span;
+        let k = match self.bezier_at(i) {
+            Some(curve) => curve.value(x),
+            None => p.shape.progress(x),
+        };
         Some(p.value + (next.value - p.value) * k)
+    }
+
+    /// Inside a bezier segment, the times of the polyline vertices around `t`. REAPER computes
+    /// pan gains at these vertices and ramps them in between.
+    pub fn bezier_step(&self, t: f64) -> Option<(f64, f64)> {
+        let i = self.points.partition_point(|p| p.time <= t);
+        let curve = self.bezier_at(i)?;
+        let (p, next) = (&self.points[i - 1], &self.points[i]);
+        let span = next.time - p.time;
+        let ((x0, _), (x1, _)) = curve.step((t - p.time) / span);
+        Some((p.time + x0 * span, p.time + x1 * span))
+    }
+
+    /// The curve of the segment ending at point `i`, when it is a bezier that moves.
+    fn bezier_at(&self, i: usize) -> Option<Bezier> {
+        let p = self.points.get(i.checked_sub(1)?)?;
+        let next = self.points.get(i)?;
+        let PointShape::Bezier(tension) = p.shape else { return None };
+        let span = next.time - p.time;
+        if span <= 0.0 || next.value == p.value {
+            return None;
+        }
+        // A neighbouring point only shapes the tangent when it is a bezier point itself;
+        // otherwise that end follows the straight line.
+        let chord = (next.value - p.value) / span;
+        let is_bezier = |q: &EnvPoint| matches!(q.shape, PointShape::Bezier(_));
+        let central = |a: &EnvPoint, b: &EnvPoint| (b.value - a.value) / (b.time - a.time) / chord;
+        let s0 = match i.checked_sub(2).map(|j| &self.points[j]) {
+            Some(before) if is_bezier(before) && next.time > before.time => central(before, next),
+            _ => 1.0,
+        };
+        let s1 = match self.points.get(i + 1) {
+            Some(after) if is_bezier(after) && after.time > p.time => central(p, after),
+            _ => 1.0,
+        };
+        Some(Bezier::new(tension, s0, s1))
     }
 
     pub fn sort(&mut self) {
@@ -209,9 +284,44 @@ mod tests {
                 assert!((shape.progress(x) - want).abs() < 1e-3, "{shape:?} at {x}");
             }
         }
-        let b = PointShape::Bezier(0.5);
-        assert!(
-            b.progress(0.5) < 0.25 && (b.progress(0.5) + PointShape::Bezier(-0.5).progress(0.5) - 1.0).abs() < 1e-6
-        );
+    }
+
+    /// Bezier envelopes rendered by REAPER 7.73: a lone segment, tangents from neighbouring
+    /// bezier points, a clamped tangent at a peak, and a linear neighbour that does not count.
+    #[test]
+    fn beziers_match_reaper() {
+        let b = |t: f64| PointShape::Bezier(t);
+        type Case<'a> = (&'a [(f64, f64, PointShape)], [f64; 6]);
+        let cases: [Case; 5] = [
+            (&[(0.0, 0.0, b(0.5)), (1.0, 1.0, PointShape::Linear)], [0.0104, 0.0344, 0.0633, 0.1437, 0.2773, 0.5377]),
+            (
+                &[(0.0, 0.0, b(0.0)), (0.2, 0.5, b(0.0)), (0.7, 0.6, b(0.0)), (1.0, 1.0, PointShape::Linear)],
+                [0.1383, 0.4105, 0.5309, 0.5781, 0.5929, 0.7801],
+            ),
+            (
+                &[(0.0, 0.2, b(-0.5)), (0.3, 0.9, b(-0.5)), (0.6, 0.1, b(-0.5)), (1.0, 0.5, PointShape::Linear)],
+                [0.5635, 0.8195, 0.8931, 0.2566, 0.2431, 0.4502],
+            ),
+            (
+                &[(0.0, 0.0, b(0.0)), (0.5, 0.6, b(0.0)), (1.0, 1.0, b(0.0))],
+                [0.061, 0.1852, 0.3094, 0.547, 0.7311, 0.8852],
+            ),
+            (
+                &[
+                    (0.0, 0.0, b(0.0)),
+                    (0.25, 0.5, b(0.0)),
+                    (0.5, 0.7, PointShape::Linear),
+                    (1.0, 1.0, PointShape::Linear),
+                ],
+                [0.1, 0.3, 0.5, 0.6644, 0.79, 0.91],
+            ),
+        ];
+        for (points, expect) in cases {
+            let e = env(points);
+            for (x, want) in [0.05, 0.15, 0.25, 0.45, 0.65, 0.85].into_iter().zip(expect) {
+                let got = e.value_at(x).unwrap();
+                assert!((got - want).abs() < 1e-3, "{points:?} at {x}: {got} vs {want}");
+            }
+        }
     }
 }

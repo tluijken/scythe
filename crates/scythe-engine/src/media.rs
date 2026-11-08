@@ -128,8 +128,13 @@ impl SincKernel {
     const BETA: f64 = 9.0;
 
     fn new(from: u32, to: u32) -> Self {
+        Self::with_step(from as f64 / to as f64)
+    }
+
+    /// A kernel for reading the input `step` frames apart.
+    fn with_step(step: f64) -> Self {
         // Downsampling widens the kernel so the cutoff stays below the new Nyquist.
-        let scale = (to as f64 / from as f64).min(1.0);
+        let scale = (1.0 / step).min(1.0);
         let cutoff = 0.95 * scale;
         let half = (Self::HALF_TAPS as f64 / scale).ceil() as usize;
         let bessel_i0 = |x: f64| {
@@ -187,6 +192,12 @@ impl SincKernel {
         }
         acc
     }
+}
+
+/// Reads `frames` output frames from `input`, `step` input frames apart (band-limited).
+pub(crate) fn resample_by_step(input: &[f32], step: f64, frames: usize) -> Vec<f32> {
+    let kernel = SincKernel::with_step(step);
+    (0..frames).map(|i| kernel.sample(input, i as f64 * step)).collect()
 }
 
 /// Min/max envelope of the channel-summed signal, used for waveform drawing.
@@ -258,9 +269,37 @@ pub enum MediaState {
 #[derive(Debug, Default)]
 pub struct MediaPool {
     entries: Mutex<HashMap<PathBuf, MediaState>>,
+    /// Time-stretched or pitch-shifted copies, keyed by file and the two ratios' bits.
+    stretched: Mutex<HashMap<(PathBuf, u64, u64), Arc<AudioData>>>,
 }
 
 impl MediaPool {
+    /// The copy of `path` stretched by `time` and shifted by `pitch`, once prepared.
+    pub fn stretched(&self, path: &Path, (time, pitch): (f64, f64)) -> Option<Arc<AudioData>> {
+        self.stretched.lock().unwrap().get(&(path.to_owned(), time.to_bits(), pitch.to_bits())).cloned()
+    }
+
+    /// Computes the stretched copy (slow; for worker threads). `None` until the file is loaded.
+    pub fn prepare_stretched(&self, path: &Path, ratios: (f64, f64)) -> Option<Arc<AudioData>> {
+        if let Some(done) = self.stretched(path, ratios) {
+            return Some(done);
+        }
+        let base = self.ready(path)?;
+        let audio = Arc::new(crate::stretch::stretch(&base.audio, ratios.0, ratios.1));
+        let key = (path.to_owned(), ratios.0.to_bits(), ratios.1.to_bits());
+        self.stretched.lock().unwrap().insert(key, audio.clone());
+        Some(audio)
+    }
+
+    /// Prepares every stretched copy the project's takes need; their files must be loaded.
+    pub fn prepare_project(&self, project: &scythe_core::Project) {
+        for take in project.tracks.iter().flat_map(|t| &t.items).flat_map(|i| &i.takes) {
+            if let (Some(file), Some(ratios)) = (take.source.file(), take.stretch()) {
+                self.prepare_stretched(&scythe_core::rpp::resolve_media_path(project, file), ratios);
+            }
+        }
+    }
+
     pub fn get(&self, path: &Path) -> Option<MediaState> {
         self.entries.lock().unwrap().get(path).cloned()
     }
@@ -291,6 +330,7 @@ impl MediaPool {
 
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
+        self.stretched.lock().unwrap().clear();
     }
 }
 

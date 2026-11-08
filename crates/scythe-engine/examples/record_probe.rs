@@ -11,7 +11,7 @@ fn main() {
             println!("device: {} @ {} Hz", rec.device, rec.sample_rate);
             std::thread::sleep(std::time::Duration::from_millis(500));
             let takes = rec.finish().expect("finish");
-            println!("frames: {}", takes[0].frames);
+            println!("frames: {}, input latency {:.2} ms", takes[0].frames, takes[0].input_latency * 1000.0);
         }
         Err(e) => println!("error: {e}"),
     }

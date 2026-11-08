@@ -13,3 +13,4 @@ egui.workspace = true
 rfd.workspace = true
 hound.workspace = true
 rayon.workspace = true
+x11rb.workspace = true

@@ -1,5 +1,5 @@
 //! A project's own render settings (`RENDER_FILE`, `RENDER_PATTERN`, `RENDER_FMT`,
-//! `RENDER_RANGE`, `<RENDER_CFG`), turned into concrete render jobs.
+//! `RENDER_RANGE`, `<RENDER_CFG`), turned into concrete render jo            kbps: u32_at(&bytes, 4).unwrap_or(320).clamp(8, 320),s.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +22,10 @@ pub enum Format {
     Wav { bits: u16 },
     /// MP3 at a constant bitrate.
     Mp3 { kbps: u32 },
+    /// FLAC with this many bits per sample and compression level 0-8.
+    Flac { bits: u16, level: u32 },
+    /// Ogg Vorbis: variable bitrate at `quality` (0-1), or managed around `kbps` when `vbr` is off.
+    Vorbis { vbr: bool, quality: f32, kbps: u32 },
     /// Another sink, by its four-character id as REAPER prints it (`l3pm` is MP3).
     Other(String),
 }
@@ -84,8 +88,8 @@ impl RenderSettings {
         s
     }
 
-    /// Ranges and output paths to render; the extension follows the format (other sinks than
-    /// WAV and MP3 get `.wav`).
+    /// Ranges and output paths to render; the extension follows the format (sinks without an
+    /// encoder here get `.wav`) and is not added twice.
     pub fn jobs(&self, p: &Project, unix_seconds: u64) -> Result<Vec<(TimeRange, PathBuf)>, String> {
         let ranges: Vec<(TimeRange, Option<(u32, String)>)> = match &self.bounds {
             Bounds::Custom(r) => vec![(*r, None)],
@@ -127,11 +131,18 @@ impl RenderSettings {
                         if name.trim_matches(|c: char| " -_.".contains(c)).is_empty() { p.name() } else { name }
                     })
                 };
+                let ext = match self.format {
+                    Format::Mp3 { .. } => "mp3",
+                    Format::Flac { .. } => "flac",
+                    Format::Vorbis { .. } => "ogg",
+                    _ => "wav",
+                };
+                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
+                    return (range, path);
+                }
                 let mut path = path.into_os_string();
-                path.push(match self.format {
-                    Format::Mp3 { .. } => ".mp3",
-                    _ => ".wav",
-                });
+                path.push(".");
+                path.push(ext);
                 (range, PathBuf::from(path))
             })
             .collect())
@@ -150,8 +161,21 @@ fn decode_cfg<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Format> {
         "l3pm" => Format::Mp3 {
             kbps: bytes.get(4..8).map_or(320, |b| u32::from_le_bytes(b.try_into().unwrap())).clamp(8, 320),
         },
+        "calf" => Format::Flac {
+            bits: u32_at(&bytes, 4).map_or(24, |b| b as u16),
+            level: u32_at(&bytes, 8).unwrap_or(5).min(8),
+        },
+        "vggo" => Format::Vorbis {
+            vbr: bytes.get(8).is_none_or(|m| *m == 0),
+            quality: bytes.get(4..8).map_or(0.5, |b| f32::from_le_bytes(b.try_into().unwrap())).clamp(0.0, 1.0),
+            kbps: u32_at(&bytes, 9).unwrap_or(128).clamp(32, 500),
+        },
         _ => Format::Other(id),
     })
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 fn decode_base64(text: &str) -> Option<Vec<u8>> {
@@ -239,5 +263,28 @@ mod tests {
         let s = RenderSettings::from_project(&project_from_rpp(&text).unwrap());
         assert_eq!(s.format, Format::Mp3 { kbps: 320 });
         assert_eq!(s.jobs(&project_from_rpp(&text).unwrap(), 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.mp3"));
+    }
+
+    #[test]
+    fn an_existing_extension_is_kept() {
+        let mut p = project_from_rpp(PROJECT).unwrap();
+        let mut s = RenderSettings::from_project(&p);
+        s.file = "/out/mix.WAV".into();
+        s.pattern.clear();
+        s.bounds = Bounds::Project;
+        p.tracks.clear();
+        assert_eq!(s.jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/mix.WAV"));
+    }
+
+    #[test]
+    fn flac_and_vorbis_sinks_use_reapers_defaults() {
+        let format = |cfg: &str| {
+            RenderSettings::from_project(&project_from_rpp(&PROJECT.replace("ZXZhdxgAAQ==", cfg)).unwrap()).format
+        };
+        assert_eq!(format("Y2FsZhAAAAAFAAAA"), Format::Flac { bits: 16, level: 5 });
+        assert_eq!(
+            format("dmdnbwAAAD8AgAAAAIAAAAAgAAAAAAEAAA=="),
+            Format::Vorbis { vbr: true, quality: 0.5, kbps: 128 }
+        );
     }
 }

@@ -19,13 +19,12 @@ impl Fade {
         if self.auto_length > 0.0 { self.auto_length } else { self.length.max(0.0) }
     }
 
-    /// Gain at `x` in 0..=1, where 0 is silence and 1 the end of the fade (for a fade-out, `x`
-    /// is the distance to the item end over the fade length).
+    /// Gain of a fade-in at `x` in 0..=1, where 0 is silence and 1 the end of the fade.
     ///
-    /// Shapes 0, 2, 3 and 4 and the curvature of shapes 0..=4 match REAPER renders exactly;
-    /// curvature bends shapes 0, 3 and 4 towards a quartic, shape 2 along a parabola and shape 1
-    /// towards a quartic (positive) or a steep rise (negative, approximated). Shapes 5 and 6
-    /// ignore curvature.
+    /// Curvature bends shapes 0, 3 and 4 towards a quartic, shape 2 along a parabola and
+    /// shape 1 towards a quartic (positive) or `sqrt(1 - (1-x)^8)` (negative). Shapes 5 and 6
+    /// keep their S-curve and warp the time axis instead; that warp is a polynomial fitted to
+    /// REAPER 7.73 renders (within 3e-4). Everything else matches REAPER exactly.
     pub fn gain(&self, x: f64) -> f64 {
         let x = x.clamp(0.0, 1.0);
         let c = self.curve.clamp(-1.0, 1.0);
@@ -35,15 +34,73 @@ impl Fade {
             base + (target - base) * c.abs()
         };
         match self.shape {
-            1 => towards(fast(2), fast(10)),
+            1 => towards(fast(2), fast(8).sqrt()),
             2 => x - c * x * (1.0 - x),
-            5 => x * x * (3.0 - 2.0 * x),
-            6 if x < 0.5 => 0.5 * (2.0 * x).powi(4),
-            6 => 1.0 - 0.5 * (2.0 * (1.0 - x)).powi(4),
+            5 | 6 => s_curve(self.shape, x, c),
             _ => towards(x, fast(4)),
         }
     }
+
+    /// Gain of a fade-out at `x`, the distance to the item end over the fade length. REAPER
+    /// mirrors the curvature: a fade-out with curvature `c` follows the fade-in with `-c`.
+    pub fn out_gain(&self, x: f64) -> f64 {
+        Fade { curve: -self.curve, ..*self }.gain(x)
+    }
 }
+
+fn s_curve(shape: u8, x: f64, c: f64) -> f64 {
+    if c < 0.0 {
+        return 1.0 - s_curve(shape, 1.0 - x, -c);
+    }
+    let warp: &[[f64; 4]] = if shape == 5 { &WARP5 } else { &WARP6 };
+    let u = 2.0 * x - 1.0;
+    let (mut t0, mut t1) = (1.0, u);
+    let mut sum = 0.0;
+    for (i, row) in warp.iter().enumerate() {
+        let t = match i {
+            0 => t0,
+            1 => t1,
+            _ => {
+                let t2 = 2.0 * u * t1 - t0;
+                (t0, t1) = (t1, t2);
+                t2
+            }
+        };
+        let poly = row.iter().rev().fold(0.0, |acc, k| acc * c + k) * c;
+        sum += t * poly;
+    }
+    let w = (x + x * (1.0 - x) * sum).clamp(0.0, 1.0);
+    if shape == 5 {
+        w * w * (3.0 - 2.0 * w)
+    } else if w < 0.5 {
+        0.5 * (2.0 * w).powi(4)
+    } else {
+        1.0 - 0.5 * (2.0 * (1.0 - w)).powi(4)
+    }
+}
+
+/// Time warp of the S-curves under positive curvature: `x + x(1-x) * sum T_i(2x-1) * P_i(c)`
+/// with Chebyshev polynomials `T_i` and `P_i(c) = sum_j row[j] * c^(j+1)`.
+const WARP5: [[f64; 4]; 7] = [
+    [-0.999135578, -0.0147857489, -0.0513778001, -0.046033335],
+    [0.0142086351, -0.55398008, 0.0883056404, -0.127228051],
+    [0.00197861181, -0.0286258724, -0.0750980362, -0.087280076],
+    [0.00948986252, -0.0385892976, 0.0677507196, -0.101588071],
+    [0.00195752302, -0.0235823533, 0.065962485, -0.0693242916],
+    [0.00414344769, -0.0201267767, 0.0407957655, -0.0316098246],
+    [0.000642100175, -0.00732156494, 0.0184502062, -0.0148847538],
+];
+const WARP6: [[f64; 4]; 9] = [
+    [-1.22773215, -0.205006095, 0.382294564, -0.500627253],
+    [0.0168924152, -0.75906458, -0.246711807, 0.0903895062],
+    [0.0403417796, -0.364794392, 0.696426134, -0.887627082],
+    [0.012538119, -0.00314835241, -0.116811947, 4.90551207e-05],
+    [0.0289371759, -0.254661407, 0.68989988, -0.610239163],
+    [0.00970841527, -0.0360575163, 0.0334434442, -0.0105120158],
+    [0.0138072993, -0.114747706, 0.294594124, -0.235062745],
+    [0.00265636847, -0.0109567305, 0.0112841358, -0.00079900434],
+    [0.00327909137, -0.0266476105, 0.0659041443, -0.0499431687],
+];
 
 impl Default for Fade {
     fn default() -> Self {
@@ -88,6 +145,13 @@ mod tests {
             (2, 1.0, [0.01, 0.0624, 0.25, 0.5624, 0.81]),
             (1, 0.5, [0.095, 0.2208, 0.4062, 0.627, 0.823]),
             (1, 1.0, [0.0, 0.004, 0.0624, 0.3164, 0.656]),
+            (1, -1.0, [0.7547, 0.9486, 0.998, 1.0, 1.0]),
+            (1, -0.5, [0.4723, 0.69306, 0.874, 0.9687, 0.995]),
+            (5, 0.5, [0.0113, 0.0747, 0.3191, 0.7106, 0.9348]),
+            (5, -1.0, [0.147, 0.4731, 0.8278, 0.9697, 0.9961]),
+            (6, 1.0, [0.0, 0.0003, 0.0165, 0.328, 0.9352]),
+            (6, -0.5, [0.0073, 0.1767, 0.8835, 0.9959, 0.9999]),
+            (6, 0.3, [0.0002, 0.0096, 0.2196, 0.9086, 0.997]),
         ];
         for &(shape, curve, expect) in cases {
             let f = Fade { shape, curve, ..Fade::new(1.0) };
@@ -96,6 +160,13 @@ mod tests {
                 assert!((got - want).abs() < 1e-3, "shape {shape} curve {curve} at {x}: {got} vs {want}");
             }
         }
+    }
+
+    #[test]
+    fn fade_outs_mirror_the_curvature() {
+        let f = Fade { shape: 1, curve: 1.0, ..Fade::new(1.0) };
+        assert!((f.out_gain(0.1) - 0.7547).abs() < 1e-3);
+        assert_eq!(f.out_gain(0.3), Fade { curve: -1.0, ..f }.gain(0.3));
     }
 
     #[test]

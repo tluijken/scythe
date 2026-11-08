@@ -2,7 +2,7 @@
 //! keyed by slot identity and recreates one only when its stored state changes.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use scythe_core::rpp::{Chunk, Node, line_key, tokenize};
@@ -41,6 +41,16 @@ pub trait Effect: Send {
     /// Clears internal state such as filter memories and delay lines (on seek or stop).
     fn reset(&mut self) {}
 
+    /// Frames the effect delays its output by; the graph compensates for it.
+    fn latency(&mut self) -> usize {
+        0
+    }
+
+    /// The plugin's own editor. Taken under the effect's lock and then used without it.
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        None
+    }
+
     /// Automatable parameters, for hosted plugins.
     fn params(&mut self) -> Vec<ParamInfo> {
         Vec::new()
@@ -55,6 +65,12 @@ pub trait Effect: Send {
 
     /// The plugin's own state, to store in the project.
     fn save_state(&mut self) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// State as the lines and chunks REAPER keeps inside the plugin chunk (LV2 controls and
+    /// properties); each replaces the existing node with the same key.
+    fn save_nodes(&mut self) -> Option<Vec<Node>> {
         None
     }
 
@@ -197,6 +213,10 @@ pub struct FxRegistry {
     /// Relative file references in plugin state (impulse responses) resolve against this.
     pub project_dir: Option<PathBuf>,
     clap_cache: std::sync::OnceLock<Vec<ClapDescriptor>>,
+    lv2_cache: std::sync::OnceLock<Vec<crate::lv2::Lv2Info>>,
+    vst3_cache: std::sync::OnceLock<Vec<crate::vst3_host::Vst3Info>>,
+    /// Loaded VST 3 modules, so each library is entered once.
+    vst3_modules: Mutex<HashMap<PathBuf, Arc<crate::vst3_host::Vst3Module>>>,
 }
 
 impl FxRegistry {
@@ -207,6 +227,9 @@ impl FxRegistry {
             search_paths: vst_search_paths(),
             project_dir: None,
             clap_cache: Default::default(),
+            lv2_cache: Default::default(),
+            vst3_cache: Default::default(),
+            vst3_modules: Default::default(),
         }
     }
 
@@ -265,6 +288,27 @@ impl FxRegistry {
             let slots = if ti == usize::MAX { &mut project.master.fx } else { &mut project.tracks[ti].fx };
             for (i, slot) in slots.iter_mut().enumerate() {
                 let Some(inst) = self.instance(owner, slot, i) else { continue };
+                if let Some(nodes) = inst.with(|e| e.save_nodes()).flatten() {
+                    let Some(Node::Chunk(chunk)) = slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(_))) else {
+                        continue;
+                    };
+                    let key = |n: &Node| match n {
+                        Node::Line(l) => line_key(l).to_owned(),
+                        Node::Chunk(c) => format!("<{}", c.name()),
+                    };
+                    for node in nodes {
+                        let k = key(&node);
+                        match chunk.children.iter_mut().find(|n| key(n) == k) {
+                            Some(existing) => *existing = node,
+                            None => chunk.children.push(node),
+                        }
+                    }
+                    let key = (owner.map_or(Owner::Master, Owner::Track), slot_key(slot, i));
+                    if let Some(entry) = self.entries.get_mut(&key) {
+                        entry.state = plugin_state(slot);
+                    }
+                    continue;
+                }
                 let Some(state) = inst.with(|e| e.save_state()).flatten() else { continue };
                 let Some(Node::Chunk(chunk)) =
                     slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(c) if matches!(c.name(), "CLAP" | "VST")))
@@ -273,7 +317,7 @@ impl FxRegistry {
                 };
                 if chunk.name() == "VST" {
                     // REAPER's layout: header, plugin chunk and program, as base64 lines.
-                    let id = chunk.args().get(4).and_then(|a| a.split('<').next()?.parse::<u32>().ok());
+                    let id = chunk.args().get(4).and_then(|a| a.split(['<', '{']).next()?.parse::<u32>().ok());
                     let Some(id) = id else { continue };
                     if plugin_state(slot).is_empty() {
                         continue;
@@ -332,6 +376,36 @@ impl FxRegistry {
         self.clap_cache = std::sync::OnceLock::from(plugins);
     }
 
+    /// Replaces the LV2 plugin list instead of scanning the standard locations.
+    pub fn set_lv2_plugins(&mut self, plugins: Vec<crate::lv2::Lv2Info>) {
+        self.lv2_cache = std::sync::OnceLock::from(plugins);
+    }
+
+    /// Replaces the VST 3 plugin list instead of scanning the standard locations.
+    pub fn set_vst3_plugins(&mut self, plugins: Vec<crate::vst3_host::Vst3Info>) {
+        self.vst3_cache = std::sync::OnceLock::from(plugins);
+    }
+
+    /// Installed VST 3 plugins, scanned on first use.
+    pub fn vst3_plugins(&self) -> &[crate::vst3_host::Vst3Info] {
+        self.vst3_cache.get_or_init(|| crate::vst3_host::scan(&crate::vst3_host::search_paths()))
+    }
+
+    fn vst3_module(&self, path: &Path) -> Result<Arc<crate::vst3_host::Vst3Module>, String> {
+        let mut modules = self.vst3_modules.lock().unwrap();
+        if let Some(m) = modules.get(path) {
+            return Ok(m.clone());
+        }
+        let module = crate::vst3_host::Vst3Module::load(path)?;
+        modules.insert(path.to_owned(), module.clone());
+        Ok(module)
+    }
+
+    /// Installed LV2 plugins, scanned on first use.
+    pub fn lv2_plugins(&self) -> &[crate::lv2::Lv2Info] {
+        self.lv2_cache.get_or_init(|| crate::lv2::scan(&crate::lv2::search_paths()))
+    }
+
     /// Installed CLAP plugins, scanned on first use.
     pub fn clap_plugins(&self) -> &[ClapDescriptor] {
         self.clap_cache.get_or_init(crate::clap_host::scan)
@@ -353,6 +427,29 @@ impl FxRegistry {
             "VST" => {
                 let display = args.first().cloned().unwrap_or_default();
                 let state = ReaperVstState::decode(&lines);
+                if display.starts_with("VST3") {
+                    // The class id is the hex in braces after the numeric id: `123{0D6A…}`.
+                    let cid = args.get(4).and_then(|a| a.split_once('{')).map(|(_, rest)| rest.trim_end_matches('}'));
+                    let file = args.get(1).cloned().unwrap_or_default();
+                    let info = self
+                        .vst3_plugins()
+                        .iter()
+                        .find(|p| cid.is_some_and(|c| c.eq_ignore_ascii_case(&crate::vst3_host::cid_hex(&p.cid))))
+                        .or_else(|| self.vst3_plugins().iter().find(|p| p.file_name == file))
+                        .cloned()
+                        .ok_or_else(|| format!("{file} is not installed as a Linux VST 3 plugin"))?;
+                    let module = self.vst3_module(&info.path)?;
+                    let mut plugin = crate::vst3_host::Vst3Plugin::new(
+                        module,
+                        &info,
+                        self.sample_rate as f64,
+                        crate::render::RenderScratch::MAX_BLOCK,
+                    )?;
+                    if let Some(state) = state {
+                        plugin.load_state(&state.chunk);
+                    }
+                    return Ok((Box::new(Vst3Effect::new(plugin)), FxStatus::Hosted(info.path.clone())));
+                }
                 if display.contains("ReaEQ (Cockos)") {
                     let state = state.ok_or("unreadable ReaEQ state")?;
                     let eq =
@@ -442,6 +539,35 @@ impl FxRegistry {
                 let nam = NamEffect::new(&path, level("input_level"), level("output_level"))
                     .map_err(|e| format!("NAM model: {e}"))?;
                 Ok((Box::new(nam), FxStatus::Native("Neural Amp Modeler (built in)")))
+            }
+            "LV2" => {
+                let uri = args.get(1).cloned().ok_or("LV2 slot without a plugin URI")?;
+                let info = self
+                    .lv2_plugins()
+                    .iter()
+                    .find(|p| p.uri == uri)
+                    .cloned()
+                    .ok_or_else(|| format!("LV2 plugin {uri} is not installed"))?;
+                let mut plugin = crate::lv2::Lv2Plugin::new(
+                    &info,
+                    self.sample_rate as f64,
+                    crate::render::RenderScratch::MAX_BLOCK,
+                )?;
+                // `P symbol value symbol value …` holds the input controls.
+                if let Some(values) = plugin_chunk.find_line("P") {
+                    for pair in values.chunks(2) {
+                        if let [symbol, value] = pair
+                            && let Ok(v) = value.parse::<f32>()
+                        {
+                            plugin.set_control_by_symbol(symbol, v);
+                        }
+                    }
+                }
+                if let Some(state) = plugin_chunk.chunks("STATE").next() {
+                    plugin.restore_state(&crate::lv2::parse_reaper_state(state));
+                }
+                let binary = info.binary.clone();
+                Ok((Box::new(Lv2Effect::new(plugin)), FxStatus::Hosted(binary)))
             }
             "CLAP" => {
                 let id = args.get(1).cloned().ok_or("CLAP slot without a plugin id")?;
@@ -552,6 +678,23 @@ pub fn clap_slot(desc: &ClapDescriptor) -> FxSlot {
     }
 }
 
+/// A new slot for an LV2 plugin, named the way REAPER names it (`LV2i:` for instruments).
+pub fn lv2_slot(info: &crate::lv2::Lv2Info) -> FxSlot {
+    let display = format!("{}: {}", if info.instrument { "LV2i" } else { "LV2" }, info.name);
+    let mut chunk = Chunk::new("LV2", &[&display, &info.uri, ""]);
+    chunk.line(["CFG", "0", "0", "0", ""]);
+    FxSlot {
+        name: display,
+        enabled: true,
+        raw: vec![
+            Node::Line("BYPASS 0 0 0".into()),
+            Node::Chunk(chunk),
+            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
+            Node::Line("WAK 0 0".into()),
+        ],
+    }
+}
+
 struct ClapEffect {
     plugin: ClapPlugin,
     instrument: bool,
@@ -562,6 +705,14 @@ struct ClapEffect {
 impl Effect for ClapEffect {
     fn is_instrument(&self) -> bool {
         self.instrument
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
+    }
+
+    fn latency(&mut self) -> usize {
+        self.plugin.latency() as usize
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -617,6 +768,192 @@ impl Effect for ClapEffect {
     }
 }
 
+/// A new slot for a VST 3 plugin in REAPER's layout: `VST3:` name, bundle file, a numeric id
+/// with the class id in braces, and the state block.
+pub fn vst3_slot(info: &crate::vst3_host::Vst3Info) -> FxSlot {
+    let display = format!("{}: {} ({})", if info.instrument { "VST3i" } else { "VST3" }, info.name, info.vendor);
+    let id = u32::from_le_bytes([info.cid[0], info.cid[1], info.cid[2], info.cid[3]])
+        ^ u32::from_le_bytes([info.cid[12], info.cid[13], info.cid[14], info.cid[15]]);
+    let ident = format!("{}{{{}}}", id & 0x7fff_ffff, crate::vst3_host::cid_hex(&info.cid));
+    let mut chunk = Chunk::new("VST", &[&display, &info.file_name, "0", "", &ident, ""]);
+    // An empty component state until the plugin saves its own.
+    let state = [0u32, 1, 0, 0].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>();
+    for line in crate::builtin::vst_lines_with(id & 0x7fff_ffff, &state, 0xffff) {
+        chunk.line([line]);
+    }
+    FxSlot {
+        name: display,
+        enabled: true,
+        raw: vec![
+            Node::Line("BYPASS 0 0 0".into()),
+            Node::Chunk(chunk),
+            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
+            Node::Line("WAK 0 0".into()),
+        ],
+    }
+}
+
+/// Adapts a hosted VST 3 plugin to the stereo in-place interface; parameters are normalised.
+struct Vst3Effect {
+    plugin: crate::vst3_host::Vst3Plugin,
+    notes: Vec<(i32, bool, u8, u8, u8)>,
+}
+
+impl Vst3Effect {
+    fn new(plugin: crate::vst3_host::Vst3Plugin) -> Self {
+        Self { plugin, notes: Vec::with_capacity(256) }
+    }
+}
+
+impl Effect for Vst3Effect {
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
+    }
+
+    fn is_instrument(&self) -> bool {
+        self.plugin.instrument
+    }
+
+    fn latency(&mut self) -> usize {
+        self.plugin.latency() as usize
+    }
+
+    fn reset(&mut self) {
+        if self.plugin.instrument {
+            self.plugin.reset();
+        }
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.notes.clear();
+        if let Some(notes) = ctx.notes {
+            let (start, end) = (ctx.position, ctx.position + left.len() as i64);
+            for note in notes.starting_in(start - notes.max_span()..end) {
+                if (start..end).contains(&note.start) {
+                    self.notes.push(((note.start - start) as i32, true, note.channel, note.key, note.velocity));
+                }
+                let off = note.end.min(note.cutoff);
+                if (start..end).contains(&off) {
+                    self.notes.push(((off - start) as i32, false, note.channel, note.key, 0));
+                }
+            }
+            self.notes.sort_by_key(|e| (e.0, e.1));
+        }
+        self.plugin.process(left, right, &self.notes, ctx.position, ctx.bpm);
+    }
+
+    fn params(&mut self) -> Vec<ParamInfo> {
+        self.plugin
+            .params()
+            .into_iter()
+            .map(|p| ParamInfo { id: p.id, name: p.name, min: 0.0, max: 1.0, default: p.default, log: false })
+            .collect()
+    }
+
+    fn param(&mut self, id: u32) -> Option<(f64, String)> {
+        self.plugin.param(id)
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.plugin.set_param(id, value);
+    }
+
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        Some(self.plugin.save_state())
+    }
+}
+
+/// Adapts a hosted LV2 plugin: input control ports are its parameters, MIDI reaches its atom
+/// input, and its controls and properties are stored the way REAPER stores them.
+struct Lv2Effect {
+    plugin: crate::lv2::Lv2Plugin,
+    midi: Vec<(u32, [u8; 3])>,
+}
+
+impl Lv2Effect {
+    fn new(plugin: crate::lv2::Lv2Plugin) -> Self {
+        Self { plugin, midi: Vec::with_capacity(256) }
+    }
+
+    fn control_ports(&self) -> impl Iterator<Item = &crate::lv2::PortInfo> {
+        self.plugin.info.ports.iter().filter(|p| p.kind == crate::lv2::PortKind::Control && p.input)
+    }
+}
+
+impl Effect for Lv2Effect {
+    fn is_instrument(&self) -> bool {
+        self.plugin.info.instrument
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.midi.clear();
+        if let Some(notes) = ctx.notes {
+            let (start, end) = (ctx.position, ctx.position + left.len() as i64);
+            for note in notes.starting_in(start - notes.max_span()..end) {
+                if (start..end).contains(&note.start) {
+                    self.midi.push(((note.start - start) as u32, [0x90 | note.channel, note.key, note.velocity]));
+                }
+                let off = note.end.min(note.cutoff);
+                if (start..end).contains(&off) {
+                    self.midi.push(((off - start) as u32, [0x80 | note.channel, note.key, 0]));
+                }
+            }
+            self.midi.sort_by_key(|e| (e.0, e.1[0] & 0xf0 == 0x90));
+        }
+        for (l, r) in left
+            .chunks_mut(crate::render::RenderScratch::MAX_BLOCK)
+            .zip(right.chunks_mut(crate::render::RenderScratch::MAX_BLOCK))
+        {
+            self.plugin.process(l, r, &self.midi);
+        }
+    }
+
+    fn params(&mut self) -> Vec<ParamInfo> {
+        self.control_ports()
+            .map(|p| ParamInfo {
+                id: p.index,
+                name: p.name.clone(),
+                min: p.min as f64,
+                max: p.max as f64,
+                default: p.default as f64,
+                log: p.logarithmic,
+            })
+            .collect()
+    }
+
+    fn param(&mut self, id: u32) -> Option<(f64, String)> {
+        let port = self.control_ports().find(|p| p.index == id)?;
+        let (toggled, integer) = (port.toggled, port.integer);
+        let v = self.plugin.control(id)? as f64;
+        let text = if toggled {
+            if v > 0.5 { "on".into() } else { "off".into() }
+        } else if integer {
+            format!("{}", v.round())
+        } else {
+            format!("{v:.3}")
+        };
+        Some((v, text))
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.plugin.set_control(id, value as f32);
+    }
+
+    fn save_nodes(&mut self) -> Option<Vec<Node>> {
+        let mut controls = vec!["P".to_owned()];
+        for p in self.control_ports() {
+            controls.push(p.symbol.clone());
+            controls.push(scythe_core::rpp::fmt_num(self.plugin.control(p.index).unwrap_or(p.default) as f64));
+        }
+        let mut nodes = vec![Node::Line(scythe_core::rpp::join_tokens(controls))];
+        let state = self.plugin.save_state();
+        if !state.is_empty() {
+            nodes.push(Node::Chunk(crate::lv2::reaper_state(&state)));
+        }
+        Some(nodes)
+    }
+}
+
 /// Adapts a hosted VST 2 plugin to the stereo in-place interface.
 struct Vst2Effect {
     plugin: Vst2Plugin,
@@ -634,6 +971,14 @@ impl Vst2Effect {
 }
 
 impl Effect for Vst2Effect {
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
+    }
+
+    fn latency(&mut self) -> usize {
+        self.plugin.latency()
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         let n = left.len().min(crate::render::RenderScratch::MAX_BLOCK);
         for (c, buf) in self.inputs.iter_mut().enumerate() {

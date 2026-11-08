@@ -139,6 +139,10 @@ pub struct Take {
     /// Offset into the source in seconds (RPP `SOFFS`).
     pub source_offset: f64,
     pub playrate: f64,
+    /// Keep the pitch when `playrate` is not 1 (time-stretch instead of resampling).
+    pub preserve_pitch: bool,
+    /// Pitch shift in semitones.
+    pub pitch: f64,
     pub volume: f64,
     pub pan: f64,
     pub lines: LineMemo,
@@ -170,6 +174,16 @@ impl Take {
         Some(if reverse { start + len - pos } else { start + pos })
     }
 
+    /// The time-stretch and pitch ratio the source needs before playback, when it needs one:
+    /// a rate change that keeps the pitch stretches the time axis by `1 / playrate`, and a
+    /// pitch shift scales the frequencies. A rate change without `preserve_pitch` stays a
+    /// plain resampling at playback.
+    pub fn stretch(&self) -> Option<(f64, f64)> {
+        let time = if self.preserve_pitch && self.playrate > 0.0 { 1.0 / self.playrate } else { 1.0 };
+        let pitch = 2f64.powf(self.pitch / 12.0);
+        ((time - 1.0).abs() > 1e-9 || (pitch - 1.0).abs() > 1e-9).then_some((time, pitch))
+    }
+
     pub fn from_file(path: PathBuf) -> Self {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         Self {
@@ -177,6 +191,8 @@ impl Take {
             source: Source::File(path),
             source_offset: 0.0,
             playrate: 1.0,
+            preserve_pitch: true,
+            pitch: 0.0,
             volume: 1.0,
             pan: 0.0,
             lines: LineMemo::new(),

@@ -5,8 +5,8 @@
 mod project;
 
 pub use project::{
-    ProjectIoError, autosave_path, project_from_rpp, project_to_rpp, read_project, resolve_media_path, save_project,
-    write_project,
+    ProjectIoError, autosave_path, fmt_num, project_from_rpp, project_to_rpp, read_project, resolve_media_path,
+    save_project, write_project,
 };
 
 use std::fmt::Write as _;

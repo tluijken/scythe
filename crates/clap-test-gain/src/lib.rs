@@ -1,6 +1,7 @@
 //! Minimal CLAP plugins used to test scythe's CLAP host: an effect that scales stereo audio by
-//! a gain that round-trips through the state extension, and an instrument that writes each
-//! held key number as a constant level (key / 128) so tests can read note timing exactly.
+//! a gain that round-trips through the state extension, an instrument that writes each held
+//! key number as a constant level (key / 128) so tests can read note timing exactly, and a
+//! delay that reports its delay as latency.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -105,6 +106,10 @@ static DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descrip
 struct Gain {
     plugin: clap_plugin,
     gain: AtomicU32,
+    host: *const clap_host,
+    gui: std::sync::Mutex<Option<Gui>>,
+    /// Host timer ticks seen while the editor is open.
+    ticks: AtomicU32,
 }
 
 unsafe fn gain_of<'a>(plugin: *const clap_plugin) -> &'a Gain {
@@ -238,6 +243,146 @@ static PARAMS: clap_sys::ext::params::clap_plugin_params = clap_sys::ext::params
     flush: None,
 };
 
+/// The editor: a coloured child window in the host's X11 window, and a host timer.
+struct Gui {
+    conn: x11rb::rust_connection::RustConnection,
+    window: u32,
+    timer: Option<clap_sys::id::clap_id>,
+}
+
+const GUI_SIZE: (u32, u32) = (320, 200);
+
+unsafe extern "C" fn gui_api_supported(_p: *const clap_plugin, api: *const c_char, floating: bool) -> bool {
+    // SAFETY: api is a C string.
+    !floating && unsafe { CStr::from_ptr(api) } == clap_sys::ext::gui::CLAP_WINDOW_API_X11
+}
+
+unsafe extern "C" fn gui_create(p: *const clap_plugin, api: *const c_char, floating: bool) -> bool {
+    use x11rb::connection::Connection as _;
+    if !unsafe { gui_api_supported(p, api, floating) } {
+        return false;
+    }
+    let Ok((conn, _)) = x11rb::connect(None) else { return false };
+    let Ok(window) = conn.generate_id() else { return false };
+    let gain = unsafe { gain_of(p) };
+    // A 16 ms timer through the host, as editors on Linux use to repaint.
+    let timer = unsafe {
+        let host = &*gain.host;
+        let ext = host.get_extension.and_then(|g| {
+            (g(gain.host, clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT.as_ptr())
+                as *const clap_sys::ext::timer_support::clap_host_timer_support)
+                .as_ref()
+        });
+        let mut id = 0;
+        ext.and_then(|t| t.register_timer).filter(|r| r(gain.host, 16, &mut id)).map(|_| id)
+    };
+    *gain.gui.lock().unwrap() = Some(Gui { conn, window, timer });
+    true
+}
+
+unsafe extern "C" fn gui_destroy(p: *const clap_plugin) {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let gain = unsafe { gain_of(p) };
+    if let Some(gui) = gain.gui.lock().unwrap().take() {
+        let _ = gui.conn.destroy_window(gui.window);
+        let _ = gui.conn.flush();
+        if let Some(id) = gui.timer {
+            // SAFETY: the host and its timer extension outlive the plugin.
+            unsafe {
+                let host = &*gain.host;
+                if let Some(t) = host.get_extension.and_then(|g| {
+                    (g(gain.host, clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT.as_ptr())
+                        as *const clap_sys::ext::timer_support::clap_host_timer_support)
+                        .as_ref()
+                }) && let Some(unregister) = t.unregister_timer
+                {
+                    unregister(gain.host, id);
+                }
+            }
+        }
+    }
+}
+
+unsafe extern "C" fn gui_set_scale(_p: *const clap_plugin, _scale: f64) -> bool {
+    false
+}
+
+unsafe extern "C" fn gui_get_size(_p: *const clap_plugin, w: *mut u32, h: *mut u32) -> bool {
+    // SAFETY: the host passes writable sizes.
+    unsafe {
+        *w = GUI_SIZE.0;
+        *h = GUI_SIZE.1;
+    }
+    true
+}
+
+unsafe extern "C" fn gui_set_parent(p: *const clap_plugin, window: *const clap_sys::ext::gui::clap_window) -> bool {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{ConnectionExt as _, CreateWindowAux, WindowClass};
+    let gain = unsafe { gain_of(p) };
+    let guard = gain.gui.lock().unwrap();
+    let Some(gui) = guard.as_ref() else { return false };
+    // SAFETY: the host passes an X11 window.
+    let parent = unsafe { (*window).specific.x11 } as u32;
+    let aux = CreateWindowAux::new().background_pixel(0x2a9d8f);
+    let created = gui.conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        gui.window,
+        parent,
+        0,
+        0,
+        GUI_SIZE.0 as u16,
+        GUI_SIZE.1 as u16,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &aux,
+    );
+    created.is_ok() && gui.conn.flush().is_ok()
+}
+
+unsafe extern "C" fn gui_show(p: *const clap_plugin) -> bool {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let gain = unsafe { gain_of(p) };
+    let guard = gain.gui.lock().unwrap();
+    guard.as_ref().is_some_and(|g| g.conn.map_window(g.window).is_ok() && g.conn.flush().is_ok())
+}
+
+unsafe extern "C" fn gui_hide(p: *const clap_plugin) -> bool {
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::ConnectionExt as _;
+    let gain = unsafe { gain_of(p) };
+    let guard = gain.gui.lock().unwrap();
+    guard.as_ref().is_some_and(|g| g.conn.unmap_window(g.window).is_ok() && g.conn.flush().is_ok())
+}
+
+static GUI: clap_sys::ext::gui::clap_plugin_gui = clap_sys::ext::gui::clap_plugin_gui {
+    is_api_supported: Some(gui_api_supported),
+    get_preferred_api: None,
+    create: Some(gui_create),
+    destroy: Some(gui_destroy),
+    set_scale: Some(gui_set_scale),
+    get_size: Some(gui_get_size),
+    can_resize: None,
+    get_resize_hints: None,
+    adjust_size: None,
+    set_size: None,
+    set_parent: Some(gui_set_parent),
+    set_transient: None,
+    suggest_title: None,
+    show: Some(gui_show),
+    hide: Some(gui_hide),
+};
+
+unsafe extern "C" fn on_timer(p: *const clap_plugin, _id: clap_sys::id::clap_id) {
+    unsafe { gain_of(p) }.ticks.fetch_add(1, Ordering::Relaxed);
+}
+
+static TIMER: clap_sys::ext::timer_support::clap_plugin_timer_support =
+    clap_sys::ext::timer_support::clap_plugin_timer_support { on_timer: Some(on_timer) };
+
 unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) -> *const c_void {
     // SAFETY: id is a C string.
     let id = unsafe { CStr::from_ptr(id) };
@@ -245,18 +390,88 @@ unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) ->
         &STATE as *const _ as *const c_void
     } else if id == clap_sys::ext::params::CLAP_EXT_PARAMS {
         &PARAMS as *const _ as *const c_void
+    } else if id == clap_sys::ext::gui::CLAP_EXT_GUI {
+        &GUI as *const _ as *const c_void
+    } else if id == clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT {
+        &TIMER as *const _ as *const c_void
+    } else {
+        std::ptr::null()
+    }
+}
+
+const DELAY_ID: &CStr = c"org.scythe.test-delay";
+/// Latency the delay plugin reports, and the delay it applies.
+const DELAY_FRAMES: usize = 64;
+
+static DELAY_DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descriptor {
+    clap_version: CLAP_VERSION,
+    id: DELAY_ID.as_ptr(),
+    name: c"Test Delay".as_ptr(),
+    vendor: c"Scythe".as_ptr(),
+    url: c"".as_ptr(),
+    manual_url: c"".as_ptr(),
+    support_url: c"".as_ptr(),
+    version: c"1.0".as_ptr(),
+    description: c"Delays the signal by its reported latency".as_ptr(),
+    features: FEATURES.0.as_ptr(),
+});
+
+struct Delay {
+    plugin: clap_plugin,
+    lines: std::cell::RefCell<[[f32; DELAY_FRAMES]; 2]>,
+    at: std::cell::Cell<usize>,
+}
+
+unsafe extern "C" fn delay_destroy(p: *const clap_plugin) {
+    // SAFETY: undoes the Box::into_raw in `create_plugin`.
+    drop(unsafe { Box::from_raw((*p).plugin_data as *mut Delay) });
+}
+
+unsafe extern "C" fn delay_process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
+    // SAFETY: the host passes valid buffers for `frames_count` frames.
+    unsafe {
+        let delay = &*((*p).plugin_data as *const Delay);
+        let pr = &*process;
+        let (input, output) = (&*pr.audio_inputs, &*pr.audio_outputs);
+        let mut lines = delay.lines.borrow_mut();
+        let mut at = delay.at.get();
+        for i in 0..pr.frames_count as usize {
+            for (c, line) in lines.iter_mut().enumerate().take(output.channel_count.min(input.channel_count) as usize) {
+                let x = *(*input.data32.add(c)).add(i);
+                *(*output.data32.add(c)).add(i) = line[at];
+                line[at] = x;
+            }
+            at = (at + 1) % DELAY_FRAMES;
+        }
+        delay.at.set(at);
+    }
+    CLAP_PROCESS_CONTINUE
+}
+
+unsafe extern "C" fn delay_latency(_p: *const clap_plugin) -> u32 {
+    DELAY_FRAMES as u32
+}
+
+static LATENCY: clap_sys::ext::latency::clap_plugin_latency =
+    clap_sys::ext::latency::clap_plugin_latency { get: Some(delay_latency) };
+
+unsafe extern "C" fn delay_extension(_p: *const clap_plugin, id: *const c_char) -> *const c_void {
+    // SAFETY: id is a C string.
+    if unsafe { CStr::from_ptr(id) } == clap_sys::ext::latency::CLAP_EXT_LATENCY {
+        &LATENCY as *const _ as *const c_void
     } else {
         std::ptr::null()
     }
 }
 
 unsafe extern "C" fn count(_f: *const clap_plugin_factory) -> u32 {
-    2
+    3
 }
 unsafe extern "C" fn descriptor(_f: *const clap_plugin_factory, i: u32) -> *const clap_plugin_descriptor {
     match i {
         0 => &DESCRIPTOR.0,
         1 => &SYNTH_DESCRIPTOR.0,
+        2 => &DELAY_DESCRIPTOR.0,
         _ => std::ptr::null(),
     }
 }
@@ -267,6 +482,31 @@ unsafe extern "C" fn create_plugin(
 ) -> *const clap_plugin {
     // SAFETY: id is a C string.
     let id = unsafe { CStr::from_ptr(id) };
+    if id == DELAY_ID {
+        let boxed = Box::into_raw(Box::new(Delay {
+            plugin: clap_plugin {
+                desc: &DELAY_DESCRIPTOR.0,
+                plugin_data: std::ptr::null_mut(),
+                init: Some(init),
+                destroy: Some(delay_destroy),
+                activate: Some(activate),
+                deactivate: Some(nop),
+                start_processing: Some(start),
+                stop_processing: Some(nop),
+                reset: Some(nop),
+                process: Some(delay_process),
+                get_extension: Some(delay_extension),
+                on_main_thread: Some(nop),
+            },
+            lines: std::cell::RefCell::new([[0.0; DELAY_FRAMES]; 2]),
+            at: std::cell::Cell::new(0),
+        }));
+        // SAFETY: the box was just leaked and is valid.
+        return unsafe {
+            (*boxed).plugin.plugin_data = boxed as *mut c_void;
+            &(*boxed).plugin
+        };
+    }
     if id == SYNTH_ID {
         let boxed = Box::into_raw(Box::new(Synth {
             plugin: clap_plugin {
@@ -310,6 +550,9 @@ unsafe extern "C" fn create_plugin(
             on_main_thread: Some(nop),
         },
         gain: AtomicU32::new(0.5f32.to_bits()),
+        host: _host,
+        gui: std::sync::Mutex::new(None),
+        ticks: AtomicU32::new(0),
     }));
     // SAFETY: the box was just leaked and is valid.
     unsafe {

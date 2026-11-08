@@ -76,7 +76,7 @@ fn flag(toks: &[String], i: usize) -> bool {
 }
 
 /// Shortest representation that round-trips, which is also what REAPER writes.
-fn fmt_num(v: f64) -> String {
+pub fn fmt_num(v: f64) -> String {
     if v == 0.0 { "0".to_owned() } else { v.to_string() }
 }
 
@@ -465,7 +465,11 @@ fn parse_item(c: &Chunk) -> Item {
                             tk.volume = num(&t, 2, 1.0);
                         }
                         "SOFFS" => tk.source_offset = num(&t, 1, 0.0),
-                        "PLAYRATE" => tk.playrate = num(&t, 1, 1.0),
+                        "PLAYRATE" => {
+                            tk.playrate = num(&t, 1, 1.0);
+                            tk.preserve_pitch = num(&t, 2, 1.0) != 0.0;
+                            tk.pitch = num(&t, 3, 0.0);
+                        }
                         _ => tk.extra.push(node.clone()),
                     }
                     continue;
@@ -544,6 +548,8 @@ fn empty_take() -> Take {
         source: Source::Empty,
         source_offset: 0.0,
         playrate: 1.0,
+        preserve_pitch: true,
+        pitch: 0.0,
         volume: 1.0,
         pan: 0.0,
         lines: LineMemo::new(),
@@ -898,7 +904,7 @@ fn write_item(it: &Item) -> Chunk {
             l,
             "PLAYRATE",
             &["PLAYRATE", "1", "1", "0", "-1", "0", "0.0025"],
-            &[(1, fmt_num(tk.playrate))],
+            &[(1, fmt_num(tk.playrate)), (2, (tk.preserve_pitch as u8).to_string()), (3, fmt_num(tk.pitch))],
         ));
         c.children.extend(tk.extra.iter().cloned());
         c.push_chunk(write_source(&tk.source, l));
