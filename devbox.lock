@@ -247,6 +247,54 @@
         }
       }
     },
+    "opus-tools@latest": {
+      "last_modified": "2026-10-02T22:55:44Z",
+      "resolved": "github:NixOS/nixpkgs/55ba7f49ef2962b42cbd126522b7df5f95037679#opus-tools",
+      "source": "devbox-search",
+      "version": "0.2",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/w141l0n7jghm0fja43f9qq3di6q3mxg4-opus-tools-0.2",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/w141l0n7jghm0fja43f9qq3di6q3mxg4-opus-tools-0.2"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/zcj5crgf6cs1jbhh1j0s6labgskm97bd-opus-tools-0.2",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/zcj5crgf6cs1jbhh1j0s6labgskm97bd-opus-tools-0.2"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/653yyfxmn7c8gd149wql959lr2sf9j7x-opus-tools-0.2",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/653yyfxmn7c8gd149wql959lr2sf9j7x-opus-tools-0.2"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/170xs4vv04p3sp80lh1b0c2mxrq6vvnh-opus-tools-0.2",
+              "default": true
+            }
+          ],
+          "store_path": "/nix/store/170xs4vv04p3sp80lh1b0c2mxrq6vvnh-opus-tools-0.2"
+        }
+      }
+    },
     "procps@latest": {
       "last_modified": "2026-10-06T17:11:02Z",
       "resolved": "github:NixOS/nixpkgs/e2ccecbf30866802b1db536246e0939eccbd7bfb#procps",
@@ -346,6 +394,106 @@
             }
           ],
           "store_path": "/nix/store/g7lpk5grw12cw6mrg9daqqi0wmq5ggb2-vorbis-tools-1.4.3"
+        }
+      }
+    },
+    "wavpack@latest": {
+      "last_modified": "2026-10-04T07:06:02Z",
+      "resolved": "github:NixOS/nixpkgs/a322c65bf7233456788a9ebf03bc067db7dc090a#wavpack",
+      "source": "devbox-search",
+      "version": "5.9.0",
+      "systems": {
+        "aarch64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/3vkmfg6915y0pzhdjn0c57anxq1b1q99-wavpack-5.9.0",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/jdc57cap0237fjpqdsqzbivlq8b7yxal-wavpack-5.9.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/hhjcmcb8irn7yhvxibhhm7ff44qfqh54-wavpack-5.9.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/5k92wap8nsgj4pv1hzrqdd32wkls31is-wavpack-5.9.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/3vkmfg6915y0pzhdjn0c57anxq1b1q99-wavpack-5.9.0"
+        },
+        "aarch64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/43kdmn1mcqkmz4hjjqz8q5022g0wwh8s-wavpack-5.9.0",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/npygfgw1bskijqrx5xrdbvhyw95hs4w0-wavpack-5.9.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/ikqpgxznkdyvg6fwcngwl5b0glj8p904-wavpack-5.9.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/27w94yx2mh38j5gk664g3nyhf5dvbafs-wavpack-5.9.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/43kdmn1mcqkmz4hjjqz8q5022g0wwh8s-wavpack-5.9.0"
+        },
+        "x86_64-darwin": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/3bmvzk6jrm4py4p3fwbf53aj9js4nmvv-wavpack-5.9.0",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/2mh06sy085l4ibkcwz388q1dhqcckyxy-wavpack-5.9.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/s4ih5rb922cxfiwgcvxgsbsz4dsz9904-wavpack-5.9.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/3d3v9w3z2zrf6ds0mk8yj2b6frb3wl3d-wavpack-5.9.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/3bmvzk6jrm4py4p3fwbf53aj9js4nmvv-wavpack-5.9.0"
+        },
+        "x86_64-linux": {
+          "outputs": [
+            {
+              "name": "out",
+              "path": "/nix/store/c63p5gc7k8s71f0z6g0f1pa1nnghdy4g-wavpack-5.9.0",
+              "default": true
+            },
+            {
+              "name": "man",
+              "path": "/nix/store/zgwxaiz1yagydbdk4gl5znmxnbmrgii6-wavpack-5.9.0-man",
+              "default": true
+            },
+            {
+              "name": "dev",
+              "path": "/nix/store/w9spxkxz67gl7hcj51cnkizd5n2xzf2k-wavpack-5.9.0-dev"
+            },
+            {
+              "name": "doc",
+              "path": "/nix/store/s9vck992w68pyqnbqg5xv757lrnqbxak-wavpack-5.9.0-doc"
+            }
+          ],
+          "store_path": "/nix/store/c63p5gc7k8s71f0z6g0f1pa1nnghdy4g-wavpack-5.9.0"
         }
       }
     }

@@ -20,7 +20,9 @@
     "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXi",
     "lame@latest",
     "flac@latest",
-    "vorbis-tools@latest"
+    "vorbis-tools@latest",
+    "opus-tools@latest",
+    "wavpack@latest"
   ],
   "shell": {
     "init_hook": [

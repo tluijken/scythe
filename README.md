@@ -167,9 +167,12 @@ Working:
   `scythe-app project.RPP --render=out.wav [--range=START-END]`), or with the project's own
   render settings like REAPER's `-renderproject` (`--render-project` or the palette): bounds
   project, time selection, custom range or all regions, `RENDER_FILE` and wildcards such as
-  `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC and Ogg Vorbis renders go
-  through `lame`, `flac` and `oggenc` (in the devbox packages) with the project's settings, and
-  mono renders mix both channels down as REAPER does. Other sinks are written as WAV. The
+  `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC, Ogg Vorbis, Opus and
+  WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
+  packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
+  complexity; WavPack: 16/24/32-bit float, fast/normal/high/very high), and mono renders mix
+  both channels down as REAPER does. Integer samples are scaled by 2^(bits-1) and rounded half
+  up, as REAPER writes them. Other sinks are written as WAV. The
   project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
   target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 16- and 24-bit) apply.
 
@@ -198,6 +201,7 @@ compare with scythe's output sample by sample:
 | JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
 | JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
+| WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
@@ -223,7 +227,8 @@ compares the two files.
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
   null against REAPER.
-- Render formats beyond WAV, MP3, FLAC and Ogg Vorbis (Opus, WavPack, video).
+- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus and WavPack (video, DDP, CD image);
+  32-bit integer WavPack is written from 24-bit samples.
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.

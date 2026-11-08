@@ -26,13 +26,15 @@ impl BitDepth {
 }
 
 /// How a render is written. Everything but WAV goes through a command-line encoder (`lame`,
-/// `flac`, `oggenc`) that reads an intermediate WAV.
+/// `flac`, `oggenc`, `opusenc`, `wavpack`) that reads an intermediate WAV.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Encoding {
     Wav(BitDepth),
     Mp3 { kbps: u32 },
     Flac { depth: BitDepth, level: u32 },
     Vorbis { vbr: bool, quality: f32, kbps: u32 },
+    Opus { kbps: f32, mode: u8, complexity: u8 },
+    WavPack { depth: BitDepth, mode: u32 },
 }
 
 impl Encoding {
@@ -44,6 +46,11 @@ impl Encoding {
             Format::Mp3 { kbps } => Self::Mp3 { kbps },
             Format::Flac { bits, level } => Self::Flac { depth: BitDepth::from_bits(bits.min(24)), level },
             Format::Vorbis { vbr, quality, kbps } => Self::Vorbis { vbr, quality, kbps },
+            Format::Opus { kbps, mode, complexity } => Self::Opus { kbps, mode, complexity },
+            // 32-bit integer WavPack is written from 24-bit samples.
+            Format::WavPack { bits, float, mode } => {
+                Self::WavPack { depth: if float { BitDepth::Float32 } else { BitDepth::from_bits(bits.min(24)) }, mode }
+            }
             Format::Other(_) => Self::Wav(BitDepth::Int24),
         }
     }
@@ -54,6 +61,8 @@ impl Encoding {
             Self::Mp3 { .. } => "mp3",
             Self::Flac { .. } => "flac",
             Self::Vorbis { .. } => "ogg",
+            Self::Opus { .. } => "opus",
+            Self::WavPack { .. } => "wv",
         }
     }
 }
@@ -115,17 +124,17 @@ pub fn bounce_finished(
         Encoding::Wav(depth) => {
             return render_wav(project, pool, range, sample_rate, channels, depth, path, finish, progress);
         }
-        Encoding::Flac { depth, .. } => depth,
-        Encoding::Mp3 { .. } | Encoding::Vorbis { .. } => BitDepth::Int24,
+        Encoding::Flac { depth, .. } | Encoding::WavPack { depth, .. } => depth,
+        Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
     };
     let wav = path.with_extension("scythe-render.wav");
     let rendered = render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress);
-    let encoded = rendered.and_then(|()| encode(encoding, &wav, path));
+    let encoded = rendered.and_then(|()| encode(encoding, channels, &wav, path));
     let _ = std::fs::remove_file(&wav);
     encoded
 }
 
-fn encode(encoding: Encoding, wav: &Path, out: &Path) -> Result<(), BounceError> {
+fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(), BounceError> {
     let mut cmd = match encoding {
         Encoding::Wav(_) => unreachable!("WAV is written directly"),
         Encoding::Mp3 { kbps } => {
@@ -147,6 +156,33 @@ fn encode(encoding: Encoding, wav: &Path, out: &Path) -> Result<(), BounceError>
                 c.args(["--managed", "-b", &kbps.to_string()]);
             }
             c.arg("-o").arg(out).arg(wav);
+            c
+        }
+        Encoding::Opus { kbps, mode, complexity } => {
+            // REAPER's bitrate is per channel.
+            let total = kbps * channels.max(1) as f32;
+            let mode = ["--vbr", "--cvbr", "--hard-cbr"][mode.min(2) as usize];
+            let mut c = std::process::Command::new("opusenc");
+            c.args(["--quiet", mode, "--bitrate", &format!("{total}"), "--comp", &complexity.to_string()]);
+            c.arg(wav).arg(out);
+            c
+        }
+        Encoding::WavPack { mode, .. } => {
+            let mut c = std::process::Command::new("wavpack");
+            c.args(["-q", "-y"]);
+            match mode {
+                1 | 2 => {
+                    c.arg("-f");
+                }
+                3 => {
+                    c.arg("-h");
+                }
+                4 => {
+                    c.arg("-hh");
+                }
+                _ => {}
+            }
+            c.arg(wav).arg("-o").arg(out);
             c
         }
     };
@@ -234,10 +270,10 @@ impl Dither {
     }
 
     fn quantize(&mut self, s: f32, channel: usize, bits: u32) -> i32 {
-        let max = ((1i64 << (bits - 1)) - 1) as f32;
-        let v = s * max - if self.shape { self.error[channel] } else { 0.0 };
+        let scale = (1i64 << (bits - 1)) as f32;
+        let v = s * scale - if self.shape { self.error[channel] } else { 0.0 };
         let noise = self.uniform() - self.uniform();
-        let q = (v + noise).round().clamp(-max, max);
+        let q = (v + noise + 0.5).floor().clamp(-scale, scale - 1.0);
         self.error[channel] = q - v;
         q as i32
     }
@@ -437,9 +473,10 @@ fn render_wav(
     second
 }
 
+/// Full scale is 2^(bits-1), rounding halves up, as REAPER writes integer samples.
 fn quantize(s: f32, bits: u32) -> i32 {
-    let max = ((1i64 << (bits - 1)) - 1) as f32;
-    (s.clamp(-1.0, 1.0) * max).round() as i32
+    let scale = (1i64 << (bits - 1)) as f64;
+    (s as f64 * scale + 0.5).floor().clamp(-scale, scale - 1.0) as i32
 }
 
 #[cfg(test)]
@@ -624,7 +661,9 @@ mod tests {
     #[test]
     fn quantize_clips() {
         assert_eq!(quantize(2.0, 16), 32767);
-        assert_eq!(quantize(-1.0, 16), -32767);
+        assert_eq!(quantize(-1.0, 16), -32768);
         assert_eq!(quantize(0.0, 24), 0);
+        // REAPER's rounding, checked against its 16- and 24-bit renders.
+        assert_eq!((quantize(0.5 / 32768.0, 16), quantize(-0.5 / 32768.0, 16)), (1, 0));
     }
 }

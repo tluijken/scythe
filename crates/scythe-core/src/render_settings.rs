@@ -26,6 +26,12 @@ pub enum Format {
     Flac { bits: u16, level: u32 },
     /// Ogg Vorbis: variable bitrate at `quality` (0-1), or managed around `kbps` when `vbr` is off.
     Vorbis { vbr: bool, quality: f32, kbps: u32 },
+    /// Ogg Opus at `kbps` per channel; `mode` 0 VBR, 1 constrained VBR, 2 hard CBR;
+    /// encoder complexity 0-10.
+    Opus { kbps: f32, mode: u8, complexity: u8 },
+    /// WavPack lossless with this many bits (32 with `float` for floating point); `mode` 0
+    /// normal, 1 and 2 fast, 3 high, 4 very high.
+    WavPack { bits: u16, float: bool, mode: u32 },
     /// Another sink, by its four-character id as REAPER prints it (`l3pm` is MP3).
     Other(String),
 }
@@ -189,6 +195,8 @@ impl RenderSettings {
                     Format::Mp3 { .. } => "mp3",
                     Format::Flac { .. } => "flac",
                     Format::Vorbis { .. } => "ogg",
+                    Format::Opus { .. } => "opus",
+                    Format::WavPack { .. } => "wv",
                     _ => "wav",
                 };
                 if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
@@ -224,6 +232,20 @@ fn decode_cfg<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Format> {
             quality: bytes.get(4..8).map_or(0.5, |b| f32::from_le_bytes(b.try_into().unwrap())).clamp(0.0, 1.0),
             kbps: u32_at(&bytes, 9).unwrap_or(128).clamp(32, 500),
         },
+        "SggO" => Format::Opus {
+            kbps: bytes.get(4..8).map_or(128.0, |b| f32::from_le_bytes(b.try_into().unwrap())).clamp(1.0, 512.0),
+            mode: bytes.get(8).copied().unwrap_or(0).min(2),
+            complexity: bytes.get(9).copied().unwrap_or(10).min(10),
+        },
+        "kpvw" => {
+            let (bits, float) = match u32_at(&bytes, 8).unwrap_or(1) {
+                0 => (16, false),
+                2 => (32, false),
+                3 => (32, true),
+                _ => (24, false),
+            };
+            Format::WavPack { bits, float, mode: u32_at(&bytes, 4).unwrap_or(0) }
+        }
         _ => Format::Other(id),
     })
 }
@@ -340,6 +362,9 @@ mod tests {
             format("dmdnbwAAAD8AgAAAAIAAAAAgAAAAAAEAAA=="),
             Format::Vorbis { vbr: true, quality: 0.5, kbps: 128 }
         );
+        // REAPER 7.73's defaults for its Opus and WavPack sinks.
+        assert_eq!(format("U2dnTwAAAEMACgAAAAAAAAA="), Format::Opus { kbps: 128.0, mode: 0, complexity: 10 });
+        assert_eq!(format("a3B2dwAAAAABAAAAAAAAAAAAAAA="), Format::WavPack { bits: 24, float: false, mode: 0 });
     }
 
     #[test]
