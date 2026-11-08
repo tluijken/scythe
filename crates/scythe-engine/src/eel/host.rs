@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use super::{Code, Function, Machine, Node, Parser, Resolver, Scope, Vars, finish, lex, place};
+use super::{Code, Function, Machine, Node, Parser, Resolver, Scope, Vars, finish, lex, mark_pointers, place};
 
 /// Answers the host functions of a program compiled with `compile_with_host`.
 pub trait Host {
@@ -90,6 +90,7 @@ pub fn compile_with_host(
     let ast = ast?;
     let mut r = Resolver { vars, functions, host };
     let mut node = r.resolve(&Scope::default(), &ast)?;
+    mark_pointers(&mut node);
     finish(&mut node);
     Ok(Code(node))
 }

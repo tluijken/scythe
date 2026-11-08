@@ -222,11 +222,11 @@ pub fn measure(spec: &FontSpec, text: &str) -> (f64, f64) {
     }
 }
 
-/// The pixels one line of `text` covers, relative to the top-left of its measured box, and
-/// how much of each (0..=255).
-pub fn rasterize(spec: &FontSpec, text: &str) -> Vec<(i32, i32, u8)> {
+/// The pixels one line of `text` covers, relative to the top-left of its measured box, how
+/// much of each (0..=255), and whether it is an outline or shadow pixel, drawn white.
+pub fn rasterize(spec: &FontSpec, text: &str) -> Vec<(i32, i32, u8, bool)> {
     if spec.bitmap {
-        return super::bitmap::rasterize(text);
+        return super::bitmap::rasterize(text).into_iter().map(|(x, y, c)| (x, y, c, false)).collect();
     }
     let mut fonts = fonts();
     let Some(laid) = layout(&mut fonts, spec, text) else { return Vec::new() };
@@ -247,10 +247,58 @@ pub fn rasterize(spec: &FontSpec, text: &str) -> Vec<(i32, i32, u8)> {
         out.extend((0..laid.width.round() as i32).map(|x| (x, y, 255)));
     }
     let (w, h) = (laid.width.round() as i32, size.round() as i32);
+    let mut out = effects(spec, out, w, h);
     match spec.turn() {
         Turn::None => {}
         Turn::Down => out.iter_mut().for_each(|p| (p.0, p.1) = (h - 1 - p.1, p.0)),
         Turn::Up => out.iter_mut().for_each(|p| (p.0, p.1) = (p.1, w - 1 - p.0)),
+    }
+    out
+}
+
+/// The flags that change how glyphs are drawn, as LICE's cached fonts apply them to the line's
+/// `w` x `h` box (measured in REAPER): `'v'` inverts the coverage over the box; `'m'`, `'o'`
+/// and `'s'` make each pixel all or nothing; `'s'` then adds a shadow below and right of the
+/// glyphs (pixels with one of their left, upper and upper-left neighbours drawn), else `'o'`
+/// an outline (pixels with one of their four neighbours drawn), both white unless `'m'` asks
+/// for one colour.
+fn effects(spec: &FontSpec, ink: Vec<(i32, i32, u8)>, w: i32, h: i32) -> Vec<(i32, i32, u8, bool)> {
+    let (invert, mono, outline, shadow) = (spec.has(b'v'), spec.has(b'm'), spec.has(b'o'), spec.has(b's'));
+    if !(invert || mono || outline || shadow) || w <= 0 || h <= 0 {
+        return ink.into_iter().map(|(x, y, c)| (x, y, c, false)).collect();
+    }
+    let (uw, uh) = (w as usize, h as usize);
+    let mut cov = vec![0u8; uw * uh];
+    for (x, y, c) in ink {
+        if (0..w).contains(&x) && (0..h).contains(&y) {
+            let p = &mut cov[y as usize * uw + x as usize];
+            *p = (*p).max(c);
+        }
+    }
+    if invert {
+        cov.iter_mut().for_each(|c| *c = 255 - *c);
+    }
+    if mono || outline || shadow {
+        cov.iter_mut().for_each(|c| *c = if *c >= 128 { 255 } else { 0 });
+    }
+    let on = |x: i32, y: i32| (0..w).contains(&x) && (0..h).contains(&y) && cov[y as usize * uw + x as usize] != 0;
+    let near: &[(i32, i32)] = if shadow {
+        &[(-1, 0), (0, -1), (-1, -1)]
+    } else if outline {
+        &[(-1, 0), (1, 0), (0, -1), (0, 1)]
+    } else {
+        &[]
+    };
+    let mut out = Vec::with_capacity(uw * uh);
+    for y in 0..h {
+        for x in 0..w {
+            let c = cov[y as usize * uw + x as usize];
+            if c != 0 {
+                out.push((x, y, c, false));
+            } else if near.iter().any(|&(dx, dy)| on(x + dx, y + dy)) {
+                out.push((x, y, 255, !mono));
+            }
+        }
     }
     out
 }

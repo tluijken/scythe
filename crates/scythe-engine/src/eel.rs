@@ -10,6 +10,8 @@ mod matching;
 mod spectral;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 pub use host::{Host, HostArgs, compile_with_host};
 
@@ -17,7 +19,52 @@ pub use host::{Host, HostArgs, compile_with_host};
 const CLOSE: f64 = 0.00001;
 /// Memory slots, as JSFX gives each effect.
 pub const MEM_SIZE: usize = 8 * 1024 * 1024;
-const BLOCK: usize = 65536;
+/// Memory is allocated in blocks of `1 << MEM_SHIFT` slots, variables in blocks of
+/// `1 << VAR_SHIFT`.
+const MEM_SHIFT: u32 = 16;
+const VAR_SHIFT: u32 = 12;
+/// Variables an effect can have.
+const MAX_VARS: usize = 1 << 22;
+
+/// Numbers shared by the machines of one effect: the audio thread's and its `@gfx` thread's,
+/// as REAPER runs `@gfx` on the UI thread over the same variables and memory while audio
+/// runs. Each value is an `f64` kept in an atomic, so the threads race as REAPER's do, a value
+/// at a time, without undefined behaviour; relaxed loads and stores compile to plain moves.
+/// Blocks are allocated on first write, so untouched memory costs nothing.
+pub struct Cells {
+    blocks: Box<[OnceLock<Box<[AtomicU64]>>]>,
+    shift: u32,
+}
+
+impl Cells {
+    fn new(shift: u32, len: usize) -> Self {
+        Self { blocks: (0..len >> shift).map(|_| OnceLock::new()).collect(), shift }
+    }
+
+    fn get(&self, i: usize) -> f64 {
+        match self.blocks.get(i >> self.shift).and_then(OnceLock::get) {
+            Some(b) => f64::from_bits(b[i & ((1 << self.shift) - 1)].load(Ordering::Relaxed)),
+            None => 0.0,
+        }
+    }
+
+    fn set(&self, i: usize, v: f64) {
+        if let Some(block) = self.blocks.get(i >> self.shift) {
+            let b = block.get_or_init(|| (0..1usize << self.shift).map(|_| AtomicU64::new(0)).collect());
+            b[i & ((1 << self.shift) - 1)].store(v.to_bits(), Ordering::Relaxed);
+        }
+    }
+}
+
+impl std::fmt::Debug for Cells {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cells({} blocks)", self.blocks.len())
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Op {
@@ -60,6 +107,8 @@ pub enum Builtin {
     Abs,
     Min,
     Max,
+    /// `max` where REAPER compiles it for a pointer result (see [`mark_pointers`]).
+    MaxPtr,
     Sign,
     Rand,
     Floor,
@@ -278,14 +327,12 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
                 while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
                     i += 1;
                 }
-                if i < b.len()
-                    && (b[i] == b'e' || b[i] == b'E')
-                    && b.get(i + 1).is_some_and(|d| d.is_ascii_digit() || *d == b'-' || *d == b'+')
-                {
-                    i += 2;
-                    while i < b.len() && b[i].is_ascii_digit() {
-                        i += 1;
-                    }
+                // EEL2 has no exponents: `1e5`, like any number run into a name, fails to
+                // compile (measured in REAPER, which then leaves the section out).
+                if b.get(i).is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'#') {
+                    let end =
+                        src[i..].find(|c: char| !c.is_ascii_alphanumeric() && c != '_').map_or(b.len(), |e| i + e);
+                    return Err(format!("bad number {}", &src[s..end]));
                 }
                 out.push(Tok::Num(src[s..i].parse().map_err(|_| format!("bad number {}", &src[s..i]))?));
             }
@@ -667,14 +714,26 @@ fn assign_rightmost(op: Option<Op>, lhs: Ast, rhs: Ast) -> Ast {
 
 // ---- resolution ----------------------------------------------------------------------------
 
-/// Variables by name, shared by every section of an effect.
-#[derive(Debug, Default)]
+/// Variables by name, shared by every section of an effect. Values and strings are shared
+/// with every [`Vars::share`] of them.
+#[derive(Debug)]
 pub struct Vars {
     index: HashMap<String, usize>,
-    pub values: Vec<f64>,
+    values: Arc<Cells>,
     /// String literals and `#named` strings, by handle.
-    strings: HashMap<i64, String>,
+    strings: Arc<Mutex<HashMap<i64, String>>>,
     named: HashMap<String, i64>,
+}
+
+impl Default for Vars {
+    fn default() -> Self {
+        Self {
+            index: HashMap::new(),
+            values: Arc::new(Cells::new(VAR_SHIFT, MAX_VARS)),
+            strings: Default::default(),
+            named: HashMap::new(),
+        }
+    }
 }
 
 /// Handles of literals and named strings; 0-1023 are the numbered string slots.
@@ -686,19 +745,49 @@ impl Vars {
         if let Some(&i) = self.index.get(name) {
             return i;
         }
-        self.values.push(0.0);
-        self.index.insert(name.to_owned(), self.values.len() - 1);
-        self.values.len() - 1
+        let i = self.index.len();
+        self.index.insert(name.to_owned(), i);
+        i
     }
 
     pub fn get(&self, name: &str) -> Option<f64> {
-        self.index.get(name).map(|&i| self.values[i])
+        self.index.get(name).map(|&i| self.at(i))
+    }
+
+    /// The value in slot `i`.
+    pub fn at(&self, i: usize) -> f64 {
+        self.values.get(i)
+    }
+
+    pub fn put(&self, i: usize, v: f64) {
+        self.values.set(i, v);
+    }
+
+    /// Every variable's value, for [`Vars::restore`].
+    pub fn snapshot(&self) -> Vec<f64> {
+        (0..self.index.len()).map(|i| self.at(i)).collect()
+    }
+
+    pub fn restore(&self, values: &[f64]) {
+        for (i, &v) in values.iter().enumerate() {
+            self.put(i, v);
+        }
+    }
+
+    /// The same variables, values and strings, for a machine on another thread.
+    pub fn share(&self) -> Self {
+        Self {
+            index: self.index.clone(),
+            values: self.values.clone(),
+            strings: self.strings.clone(),
+            named: self.named.clone(),
+        }
     }
 
     fn literal(&mut self, s: &str) -> i64 {
-        let handle =
-            LITERAL_BASE + self.strings.keys().filter(|k| (LITERAL_BASE..NAMED_BASE).contains(*k)).count() as i64;
-        self.strings.insert(handle, s.to_owned());
+        let mut strings = lock(&self.strings);
+        let handle = LITERAL_BASE + strings.keys().filter(|k| (LITERAL_BASE..NAMED_BASE).contains(*k)).count() as i64;
+        strings.insert(handle, s.to_owned());
         handle
     }
 
@@ -708,8 +797,20 @@ impl Vars {
         }
         let h = NAMED_BASE + self.named.len() as i64;
         self.named.insert(name.to_owned(), h);
-        self.strings.insert(h, String::new());
+        lock(&self.strings).insert(h, String::new());
         h
+    }
+
+    fn string(&self, handle: f64) -> String {
+        lock(&self.strings).get(&(handle.round() as i64)).cloned().unwrap_or_default()
+    }
+
+    fn set_string(&self, handle: f64, s: String) {
+        let h = handle.round() as i64;
+        // Literals are constants; the numbered slots and named strings can be written.
+        if (0..1024).contains(&h) || h >= NAMED_BASE {
+            lock(&self.strings).insert(h, s);
+        }
     }
 }
 
@@ -929,7 +1030,7 @@ pub fn compile(src: &str, vars: &mut Vars, functions: &mut HashMap<String, Funct
 /// What a running effect holds: its variables, memory and the host hooks the builtins reach.
 pub struct Machine {
     pub vars: Vars,
-    mem: Vec<Option<Box<[f64]>>>,
+    mem: Arc<Cells>,
     rng: u64,
     /// `spl0` … `spl63` and `slider1` … `slider64`, for `spl()` and `slider()`.
     pub spl_slots: [usize; 64],
@@ -948,7 +1049,7 @@ pub struct Machine {
     files: Vec<Option<files::OpenFile>>,
     /// The `@serialize` stream (file handle 0) while that section runs.
     pub serial: Option<Serial>,
-    gfx: gfx::Gfx,
+    gfx: gfx::Link,
 }
 
 /// Values `@serialize` reads back (`writing` false) or writes.
@@ -994,10 +1095,10 @@ impl Machine {
     pub fn new(mut vars: Vars) -> Self {
         let spl_slots = std::array::from_fn(|i| vars.slot(&format!("spl{i}")));
         let slider_slots = std::array::from_fn(|i| vars.slot(&format!("slider{}", i + 1)));
-        let gfx = gfx::Gfx::new(&mut vars);
+        let gfx = gfx::Link::new(&mut vars);
         Self {
             vars,
-            mem: vec![None; MEM_SIZE / BLOCK],
+            mem: Arc::new(Cells::new(MEM_SHIFT, MEM_SIZE)),
             rng: 0x2545_f491_4f6c_dd1d,
             spl_slots,
             slider_slots,
@@ -1014,16 +1115,34 @@ impl Machine {
         }
     }
 
+    /// A machine over the same variables, memory, strings and graphics, with files, MIDI and
+    /// the rest of its own: what runs `@gfx` beside the audio thread's machine.
+    pub fn share(&self) -> Self {
+        Self {
+            vars: self.vars.share(),
+            mem: self.mem.clone(),
+            rng: self.rng,
+            spl_slots: self.spl_slots,
+            slider_slots: self.slider_slots,
+            midi_in: Vec::new(),
+            midi_out: Vec::new(),
+            midi_read: 0,
+            output: String::new(),
+            spectral: Default::default(),
+            file_sliders: self.file_sliders.clone(),
+            data_dirs: self.data_dirs.clone(),
+            files: Vec::new(),
+            serial: None,
+            gfx: self.gfx.share(),
+        }
+    }
+
     fn string(&self, handle: f64) -> String {
-        self.vars.strings.get(&(handle.round() as i64)).cloned().unwrap_or_default()
+        self.vars.string(handle)
     }
 
     fn set_string(&mut self, handle: f64, s: String) {
-        let h = handle.round() as i64;
-        // Literals are constants; the numbered slots and named strings can be written.
-        if (0..1024).contains(&h) || h >= NAMED_BASE {
-            self.vars.strings.insert(h, s);
-        }
+        self.vars.set_string(handle, s);
     }
 
     /// The string a handle names, as `string` arguments are passed.
@@ -1166,16 +1285,13 @@ impl Machine {
     }
 
     fn read(&self, at: f64) -> f64 {
-        match Self::mem_index(at) {
-            Some(i) => self.mem[i / BLOCK].as_ref().map_or(0.0, |b| b[i % BLOCK]),
-            None => 0.0,
-        }
+        Self::mem_index(at).map_or(0.0, |i| self.mem.get(i))
     }
 
-    fn cell(&mut self, at: f64) -> Option<&mut f64> {
-        let i = Self::mem_index(at)?;
-        let block = self.mem[i / BLOCK].get_or_insert_with(|| vec![0.0; BLOCK].into_boxed_slice());
-        Some(&mut block[i % BLOCK])
+    fn write(&self, at: f64, v: f64) {
+        if let Some(i) = Self::mem_index(at) {
+            self.mem.set(i, v);
+        }
     }
 
     /// Runs `code`; its value is that of its last expression.
@@ -1185,7 +1301,7 @@ impl Machine {
 
     fn store(&mut self, target: &Node, v: f64) -> f64 {
         match target {
-            Node::Var(i) => self.vars.values[*i] = v,
+            Node::Var(i) => self.vars.put(*i, v),
             Node::Call(b @ (Builtin::Spl | Builtin::Slider), args) => {
                 let i = args.first().map_or(0.0, |a| self.eval(a)) as usize;
                 let slot = match b {
@@ -1193,14 +1309,12 @@ impl Machine {
                     _ => i.checked_sub(1).and_then(|i| self.slider_slots.get(i)),
                 };
                 if let Some(&s) = slot {
-                    self.vars.values[s] = v;
+                    self.vars.put(s, v);
                 }
             }
             Node::Mem(base, idx) => {
                 let at = self.eval(base) + self.eval(idx);
-                if let Some(c) = self.cell(at) {
-                    *c = v;
-                }
+                self.write(at, v);
             }
             _ => {}
         }
@@ -1210,7 +1324,7 @@ impl Machine {
     fn eval(&mut self, n: &Node) -> f64 {
         match n {
             Node::Num(v) => *v,
-            Node::Var(i) => self.vars.values[*i],
+            Node::Var(i) => self.vars.at(*i),
             Node::Mem(base, idx) => {
                 let at = self.eval(base) + self.eval(idx);
                 self.read(at)
@@ -1224,16 +1338,14 @@ impl Machine {
                 // The target's address is evaluated once, as EEL2 does.
                 match &**t {
                     Node::Var(i) => {
-                        let r = binop(*op, self.vars.values[*i], rhs);
-                        self.vars.values[*i] = r;
+                        let r = binop(*op, self.vars.at(*i), rhs);
+                        self.vars.put(*i, r);
                         r
                     }
                     Node::Mem(base, idx) => {
                         let at = self.eval(base) + self.eval(idx);
                         let r = binop(*op, self.read(at), rhs);
-                        if let Some(c) = self.cell(at) {
-                            *c = r;
-                        }
+                        self.write(at, r);
                         r
                     }
                     other => {
@@ -1262,16 +1374,13 @@ impl Machine {
                 let mut v = 0.0;
                 for i in items {
                     v = self.eval(i);
-                    if self.gfx.halted() {
-                        break;
-                    }
                 }
                 v
             }
             Node::While(body) => {
                 // EEL2 stops runaway loops after a million passes.
                 let mut n = 0;
-                while truth(self.eval(body)) && n < 1_000_000 && !self.gfx.halted() {
+                while truth(self.eval(body)) && n < 1_000_000 {
                     n += 1;
                 }
                 0.0
@@ -1280,9 +1389,6 @@ impl Machine {
                 let n = self.eval(count).clamp(0.0, 1_000_000.0) as usize;
                 for _ in 0..n {
                     self.eval(body);
-                    if self.gfx.halted() {
-                        break;
-                    }
                 }
                 // What REAPER's `loop()` evaluates to, whatever its count or body.
                 1.0
@@ -1300,7 +1406,7 @@ impl Machine {
                 let x = arg(self, 0);
                 math(b, x, 0.0)
             }
-            Atan2 | Pow | Min | Max => {
+            Atan2 | Pow | Min | Max | MaxPtr => {
                 let x = arg(self, 0);
                 let y = arg(self, 1);
                 math(b, x, y)
@@ -1315,9 +1421,7 @@ impl Machine {
             Memset => {
                 let (at, v, n) = (arg(self, 0), arg(self, 1), arg(self, 2));
                 for k in 0..(n.max(0.0) as usize).min(MEM_SIZE) {
-                    if let Some(c) = self.cell(at + k as f64) {
-                        *c = v;
-                    }
+                    self.write(at + k as f64, v);
                 }
                 at
             }
@@ -1326,20 +1430,18 @@ impl Machine {
                 let n = (n.max(0.0) as usize).min(MEM_SIZE);
                 let values: Vec<f64> = (0..n).map(|k| self.read(src + k as f64)).collect();
                 for (k, v) in values.into_iter().enumerate() {
-                    if let Some(c) = self.cell(dst + k as f64) {
-                        *c = v;
-                    }
+                    self.write(dst + k as f64, v);
                 }
                 dst
             }
             Freembuf => arg(self, 0),
             Spl => {
                 let i = arg(self, 0) as usize;
-                self.spl_slots.get(i).map_or(0.0, |&s| self.vars.values[s])
+                self.spl_slots.get(i).map_or(0.0, |&s| self.vars.at(s))
             }
             Slider => {
                 let i = arg(self, 0) as usize;
-                i.checked_sub(1).and_then(|i| self.slider_slots.get(i)).map_or(0.0, |&s| self.vars.values[s])
+                i.checked_sub(1).and_then(|i| self.slider_slots.get(i)).map_or(0.0, |&s| self.vars.at(s))
             }
             MidiRecv => {
                 let Some(i) = self.next_midi(false) else { return 0.0 };
@@ -1378,9 +1480,7 @@ impl Machine {
                     self.store(t, offset);
                 }
                 for (k, &byte) in bytes.iter().enumerate() {
-                    if let Some(c) = self.cell(at + k as f64) {
-                        *c = byte as f64;
-                    }
+                    self.write(at + k as f64, byte as f64);
                 }
                 bytes.len() as f64
             }
@@ -1413,7 +1513,7 @@ impl Machine {
             FileOpen => {
                 let chosen = match args.first() {
                     Some(Node::Var(slot)) => self.file_sliders.iter().find(|(s, _)| s == slot).map(|(_, files)| {
-                        let i = self.vars.values[*slot].round();
+                        let i = self.vars.at(*slot).round();
                         (i >= 0.0).then(|| files.get(i as usize).cloned()).flatten()
                     }),
                     _ => None,
@@ -1518,24 +1618,20 @@ impl Machine {
                     self.serial.as_mut().unwrap().values.extend(values);
                     return len as f64;
                 }
-                if h.round() == 0.0 && self.serial.is_some() {
-                    let mut read = 0;
-                    while read < len {
-                        let Some(v) = self.serial.as_mut().unwrap().next() else { break };
-                        if let Some(c) = self.cell(at + read as f64) {
-                            *c = v;
-                        }
-                        read += 1;
+                if h.round() == 0.0
+                    && let Some(serial) = self.serial.as_mut()
+                {
+                    let values: Vec<f64> = (0..len).map_while(|_| serial.next()).collect();
+                    for (k, &v) in values.iter().enumerate() {
+                        self.write(at + k as f64, v);
                     }
-                    return read as f64;
+                    return values.len() as f64;
                 }
                 let mut read = 0;
                 for k in 0..len {
                     let Some(Some(f)) = self.file_slot(h) else { break };
                     let Some(v) = f.next() else { break };
-                    if let Some(c) = self.cell(at + k as f64) {
-                        *c = v;
-                    }
+                    self.write(at + k as f64, v);
                     read += 1;
                 }
                 read as f64
@@ -1639,9 +1735,7 @@ impl Machine {
                     }
                     let written = if matches!(b, Mdct) { len / 2 } else { len };
                     for (k, v) in data.into_iter().take(written).enumerate() {
-                        if let Some(c) = self.cell(at + k as f64) {
-                            *c = v;
-                        }
+                        self.write(at + k as f64, v);
                     }
                 }
                 at
@@ -1652,12 +1746,8 @@ impl Machine {
                     let i = (2 * k) as f64;
                     let x = (self.read(dst + i), self.read(dst + i + 1.0));
                     let y = (self.read(src + i), self.read(src + i + 1.0));
-                    if let Some(c) = self.cell(dst + i) {
-                        *c = x.0 * y.0 - x.1 * y.1;
-                    }
-                    if let Some(c) = self.cell(dst + i + 1.0) {
-                        *c = x.0 * y.1 + x.1 * y.0;
-                    }
+                    self.write(dst + i, x.0 * y.0 - x.1 * y.1);
+                    self.write(dst + i + 1.0, x.0 * y.1 + x.1 * y.0);
                 }
                 dst
             }
@@ -1732,7 +1822,7 @@ impl Machine {
                 let name = match args.get(1) {
                     Some(Node::Var(slot)) => {
                         self.file_sliders.iter().find(|(s, _)| s == slot).and_then(|(_, files)| {
-                            let i = self.vars.values[*slot].round();
+                            let i = self.vars.at(*slot).round();
                             files.get(i.max(0.0) as usize)?.file_name().map(|n| n.to_string_lossy().into_owned())
                         })
                     }
@@ -1810,19 +1900,21 @@ fn invsqrt(x: f64) -> f64 {
 fn math(b: Builtin, x: f64, y: f64) -> f64 {
     use Builtin::*;
     match b {
-        Sin => x.sin(),
+        // The library functions run with flush-to-zero too: a result too small to be normal
+        // is 0 (measured with `exp(-740)` and `pow(2, -1070)`).
+        Sin => flush(x.sin()),
         Cos => x.cos(),
-        Tan => x.tan(),
-        Asin => x.asin(),
+        Tan => flush(x.tan()),
+        Asin => flush(x.asin()),
         Acos => x.acos(),
-        Atan => x.atan(),
-        Atan2 => x.atan2(y),
+        Atan => flush(x.atan()),
+        Atan2 => flush(x.atan2(y)),
         Sqr => flush(x * x),
         Sqrt => x.abs().sqrt(),
-        Pow => x.powf(y),
-        Exp => x.exp(),
-        Log => x.ln(),
-        Log10 => x.log10(),
+        Pow => flush(x.powf(y)),
+        Exp => flush(x.exp()),
+        Log => flush(x.ln()),
+        Log10 => flush(x.log10()),
         Abs => x.abs(),
         // Unordered comparisons give the first argument.
         Min => {
@@ -1837,6 +1929,15 @@ fn math(b: Builtin, x: f64, y: f64) -> f64 {
                 y
             } else {
                 x
+            }
+        }
+        // Where REAPER needs the result as a pointer it compares the other way round, so NaN
+        // gives the second argument.
+        MaxPtr => {
+            if x > y {
+                x
+            } else {
+                y
             }
         }
         // Zeros come back as they are; anything else, NaN too, by its sign bit.
@@ -1910,7 +2011,7 @@ fn common(op: Op, a: f64, b: f64) -> f64 {
             let d = int(b.abs()) as u64;
             return if d == 0 { 0.0 } else { ((int(a.abs()) as u64) % d) as f64 };
         }
-        Pow => return a.powf(b),
+        Pow => return flush(a.powf(b)),
         Or => return (int(a) | int(b)) as f64,
         And => return (int(a) & int(b)) as f64,
         Xor => return (int(a) ^ int(b)) as f64,
@@ -1947,6 +2048,105 @@ fn fold_bin(op: Op, a: Node, b: Node) -> Node {
             }
         }
         (op, a, b) => Node::Bin(op, Box::new(a), Box::new(b)),
+    }
+}
+
+/// Builtins REAPER compiles as machine code taking and giving numbers; the others take their
+/// arguments as pointers to values.
+fn takes_numbers(b: Builtin) -> bool {
+    use Builtin::*;
+    matches!(
+        b,
+        Sin | Cos
+            | Tan
+            | Asin
+            | Acos
+            | Atan
+            | Atan2
+            | Sqr
+            | Sqrt
+            | Pow
+            | Exp
+            | Log
+            | Log10
+            | Abs
+            | Min
+            | Max
+            | MaxPtr
+            | Sign
+            | Rand
+            | Floor
+            | Ceil
+            | Invsqrt
+    )
+}
+
+/// Switches `max` to [`Builtin::MaxPtr`] where REAPER needs its result as a pointer (measured
+/// with NaN arguments): as an argument of a builtin taking pointers, and as a branch of `?:`
+/// whose value is assigned or passed that way, or the last statement of such a branch.
+fn mark_pointers(n: &mut Node) {
+    fn as_pointer(n: &mut Node) {
+        match n {
+            Node::Call(b @ Builtin::Max, _) => *b = Builtin::MaxPtr,
+            Node::Cond(_, y, n) => {
+                as_pointer(y);
+                if let Some(n) = n {
+                    as_pointer(n);
+                }
+            }
+            Node::Seq(items) => {
+                if let Some(last) = items.last_mut() {
+                    as_pointer(last);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn assigned(n: &mut Node) {
+        match n {
+            Node::Cond(..) => as_pointer(n),
+            Node::Seq(items) => {
+                if let Some(last) = items.last_mut() {
+                    assigned(last);
+                }
+            }
+            _ => {}
+        }
+    }
+    match n {
+        Node::Num(_) | Node::Var(_) => {}
+        Node::Assign(t, v, _) => {
+            mark_pointers(t);
+            mark_pointers(v);
+            assigned(v);
+        }
+        Node::Mem(a, b)
+        | Node::OpAssign(_, a, b)
+        | Node::Bin(_, a, b)
+        | Node::AndAlso(a, b)
+        | Node::OrElse(a, b)
+        | Node::Loop(a, b) => {
+            mark_pointers(a);
+            mark_pointers(b);
+        }
+        Node::Neg(a) | Node::Not(a) | Node::While(a) => mark_pointers(a),
+        Node::Cond(c, y, n) => {
+            mark_pointers(c);
+            mark_pointers(y);
+            if let Some(n) = n {
+                mark_pointers(n);
+            }
+        }
+        Node::Seq(items) => items.iter_mut().for_each(mark_pointers),
+        Node::Call(b, args) => {
+            let pointers = !takes_numbers(*b);
+            for a in args {
+                mark_pointers(a);
+                if pointers {
+                    as_pointer(a);
+                }
+            }
+        }
     }
 }
 
@@ -2022,7 +2222,7 @@ fn could_denormal(n: &Node) -> bool {
         Node::Cond(_, y, n) => could_denormal(y) || n.as_deref().is_some_and(could_denormal),
         Node::Seq(items) => items.last().is_some_and(could_denormal),
         Node::Call(b, args) => match b {
-            Sin | Sqrt | Abs | Min | Max => args.iter().any(could_denormal),
+            Sin | Sqrt | Abs | Min | Max | MaxPtr => args.iter().any(could_denormal),
             Tan | Asin | Acos | Atan | Atan2 | Exp | Log | Log10 | Sqr | Invsqrt | Pow => true,
             _ => false,
         },
@@ -2133,6 +2333,25 @@ mod tests {
         let v: Vec<f64> = ["a", "b", "c", "d", "e", "f", "g", "h"].iter().map(|n| var(&m, n)).collect();
         assert_eq!(v, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 2.0]);
         assert_eq!((var(&m, "i"), var(&m, "j"), var(&m, "k")), (i64::MIN as f64, 1.0, -1.0));
+    }
+
+    #[test]
+    fn max_for_a_pointer_gives_the_second_argument_for_nan() {
+        let m = run("z = 0; c = 1; n = z / z + 1; a = max(n, 5); b = c ? max(n, 5) : 0; memset(100, max(n, 5), 1); \
+             p = 100[0]; d = c ? (y = 1; max(n, 5)) : 0; e = (c ? max(n, 5) : 0) + 1; f = c ? min(n, 5) : 0;");
+        assert!(var(&m, "a").is_nan() && var(&m, "e").is_nan() && var(&m, "f").is_nan(), "numbers give the first");
+        assert_eq!([var(&m, "b"), var(&m, "p"), var(&m, "d")], [5.0; 3]);
+    }
+
+    #[test]
+    fn exponents_do_not_compile_and_library_results_flush() {
+        for src in
+            ["x = 1e5;", "x = 1E5;", "x = 1e-5;", "x = .5e2;", "x = 1.e3;", "x = 3e2x;", "x = 1d5;", "x = 1.5.5;"]
+        {
+            assert!(compile(src, &mut Vars::default(), &mut HashMap::new()).is_err(), "{src}");
+        }
+        let m = run("x = 0x1e5; y = .5; z = 0; m = -740; a = exp(m + z) * 2 ^ 1000; b = pow(2, -1070 + z) * 2 ^ 1000;");
+        assert_eq!([var(&m, "x"), var(&m, "y"), var(&m, "a"), var(&m, "b")], [485.0, 0.5, 0.0, 0.0]);
     }
 
     #[test]

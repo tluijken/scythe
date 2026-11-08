@@ -1,6 +1,7 @@
-//! JSFX views and ReaScript graphics windows. Each open `@gfx` runs on the UI thread about 30
-//! times a second in a window of its own, with the mouse and keys over it. Its screen is drawn
-//! after the effect's lock is let go and shown as a texture, uploaded again only when it
+//! JSFX views and ReaScript graphics windows. Each open `@gfx` runs about 30 times a second on
+//! a thread of its own (the effect's [`gfx::View`]), in a window inside the main one, with the
+//! mouse, keys and dropped files over it; a menu the script asks for is shown here while the
+//! script waits for the choice. Screens are shown as textures, uploaded again only when they
 //! changed. A script's `gfx_init` window shows what its deferred code drew each frame.
 
 use std::time::{Duration, Instant};
@@ -9,7 +10,7 @@ use egui::{
     Color32, ColorImage, Event, Id, Key, MouseWheelUnit, PointerButton, Rect, Response, Sense, TextureHandle,
     TextureOptions, Ui, pos2, vec2,
 };
-use scythe_engine::eel::gfx::{Bitmap, Input, Menu, MenuItem};
+use scythe_engine::eel::gfx::{self, Bitmap, Input, Menu, MenuItem};
 
 use crate::app::{GfxView, ScytheApp};
 
@@ -23,11 +24,14 @@ pub struct GfxPointer {
     pub wheel: (f64, f64),
     pub chars: Vec<u32>,
     pub mouse: (f64, f64),
-    /// Buttons held and modifiers, whether the mouse is over the view, and its size, as last
-    /// seen.
+    /// Files dropped onto the view since the last run.
+    pub dropped: Vec<String>,
+    /// Buttons held and modifiers, whether the mouse is over the view, its size and its pixels
+    /// per point, as last seen.
     held: u32,
     hovered: bool,
     size: (f64, f64),
+    scale: f64,
 }
 
 impl Default for GfxPointer {
@@ -37,16 +41,19 @@ impl Default for GfxPointer {
             wheel: (0.0, 0.0),
             chars: Vec::new(),
             mouse: (-1.0, -1.0),
+            dropped: Vec::new(),
             held: 0,
             hovered: false,
             size: (0.0, 0.0),
+            scale: 1.0,
         }
     }
 }
 
 impl GfxPointer {
-    /// Follows the mouse and keys over `rect` this frame; `blocked` while a menu is up.
-    fn track(&mut self, ui: &Ui, rect: Rect, resp: &Response, blocked: bool) {
+    /// Follows the mouse, keys and dropped files over `rect` this frame; `blocked` while a menu
+    /// is up. `scale` is what the screen's pixels per point are reported as.
+    fn track(&mut self, ui: &Ui, rect: Rect, resp: &Response, blocked: bool, scale: f64) {
         let hovered = resp.hovered() && !blocked;
         let held = resp.is_pointer_button_down_on();
         let (buttons, mods, pointer) = ui.input(|i| {
@@ -90,6 +97,9 @@ impl GfxPointer {
             let m = i.modifiers;
             let mods =
                 [(m.ctrl, 4), (m.shift, 8), (m.alt, 16)].iter().filter(|(on, _)| *on).map(|(_, b)| b).sum::<u32>();
+            if i.pointer.latest_pos().is_some_and(|p| rect.contains(p)) {
+                self.dropped.extend(i.raw.dropped_files.iter().map(|f| f.path().display().to_string()));
+            }
             (buttons, mods, i.pointer.latest_pos())
         });
         if let Some(p) = pointer.filter(|_| hovered || held) {
@@ -98,6 +108,7 @@ impl GfxPointer {
         self.held = buttons | mods;
         self.hovered = hovered;
         self.size = (rect.width().floor() as f64, rect.height().floor() as f64);
+        self.scale = scale;
     }
 
     /// The input for a run now: what was gathered since the last one.
@@ -112,7 +123,8 @@ impl GfxPointer {
             hwheel: std::mem::take(&mut self.wheel.1),
             mouse_in: self.hovered,
             chars: std::mem::take(&mut self.chars),
-            menu_choice: None,
+            scale: self.scale,
+            dropped: std::mem::take(&mut self.dropped),
         };
         self.pressed = 0;
         input
@@ -135,6 +147,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         open
     });
     script_window(app, &ctx);
+    if !app.gfx_views.is_empty() {
+        ctx.request_repaint_after(Duration::from_millis(10));
+    }
 }
 
 /// A script's graphics window, as the script left it.
@@ -175,8 +190,8 @@ fn script_window(app: &mut ScytheApp, ctx: &egui::Context) {
         |ui| {
             let (rect, resp) =
                 ui.allocate_exact_size(ui.available_size().max(vec2(64.0, 48.0)), Sense::click_and_drag());
-            view.pointer.track(ui, rect, &resp, false);
-            paint(ui, rect, view.texture.as_ref());
+            view.pointer.track(ui, rect, &resp, false, 1.0);
+            paint(ui, rect, view.texture.as_ref(), 1.0);
         },
     );
     if !open {
@@ -185,12 +200,13 @@ fn script_window(app: &mut ScytheApp, ctx: &egui::Context) {
     }
 }
 
-fn paint(ui: &Ui, rect: Rect, texture: Option<&TextureHandle>) {
+/// Shows `texture` at `scale` pixels per point.
+fn paint(ui: &Ui, rect: Rect, texture: Option<&TextureHandle>, scale: f32) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::BLACK);
     if let Some(t) = texture {
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        painter.image(t.id(), Rect::from_min_size(rect.min, t.size_vec2()), uv, Color32::WHITE);
+        painter.image(t.id(), Rect::from_min_size(rect.min, t.size_vec2() / scale.max(1.0)), uv, Color32::WHITE);
     }
 }
 
@@ -207,44 +223,48 @@ fn upload(ctx: &egui::Context, texture: &mut Option<TextureHandle>, name: &str, 
 
 fn canvas(ui: &mut Ui, view: &mut GfxView) {
     let (rect, resp) = ui.allocate_exact_size(ui.available_size().max(vec2(64.0, 48.0)), Sense::click_and_drag());
-    view.pointer.track(ui, rect, &resp, view.menu.is_some());
-    // While a menu is up the script waits for it, as REAPER's `gfx_showmenu` blocks.
+    view.pointer.track(ui, rect, &resp, view.menu.is_some(), ui.ctx().pixels_per_point() as f64);
+    if view.runner.is_none() {
+        view.runner = view.instance.with(|e| e.gfx_view()).flatten();
+    }
+    let Some(runner) = view.runner.as_mut() else { return };
+    while let Some(event) = runner.poll() {
+        match event {
+            gfx::Event::Frame(out) => {
+                if !out.sliders.is_empty() {
+                    view.instance.with(|e| e.gfx_sliders(&out.sliders));
+                }
+                view.scale = out.scale as f32;
+                if let Some(screen) = out.render() {
+                    upload(ui.ctx(), &mut view.texture, "jsfx-gfx", &screen);
+                }
+            }
+            gfx::Event::Menu(menu) => view.menu = Some(GfxMenu { menu, scale: view.scale, just_opened: true }),
+        }
+    }
     if let Some(pending) = view.menu.take() {
         match menu(ui, rect, &pending) {
-            Some(choice) => run(ui, view, Input { menu_choice: Some(choice), ..pending.input }),
+            Some(choice) => runner.choose(choice),
             None => view.menu = Some(GfxMenu { just_opened: false, ..pending }),
         }
-    } else if view.ran.is_none_or(|t| t.elapsed() >= PERIOD) || view.pointer.pressed != 0 {
-        let input = view.pointer.take_input();
-        run(ui, view, input);
+    } else if !runner.busy() && (view.ran.is_none_or(|t| t.elapsed() >= PERIOD) || view.pointer.pressed != 0) {
+        view.ran = Some(Instant::now());
+        runner.run(view.pointer.take_input());
     }
-    paint(ui, rect, view.texture.as_ref());
+    paint(ui, rect, view.texture.as_ref(), view.scale);
 }
 
-/// A menu `@gfx` asked for and the input of the run to repeat once the user has chosen.
+/// A menu the script waits on, at its place in the view's pixels.
 pub struct GfxMenu {
     pub menu: Menu,
-    pub input: Input,
+    /// The view's pixels per point when the menu was asked for.
+    pub scale: f32,
     pub just_opened: bool,
-}
-
-/// Runs `@gfx` under the effect's lock, then draws what it queued without the lock.
-fn run(ui: &Ui, view: &mut GfxView, input: Input) {
-    let Some(out) = view.instance.with(|e| e.gfx(&input)).flatten() else { return };
-    view.ran = Some(Instant::now());
-    if let Some(screen) = out.render() {
-        upload(ui.ctx(), &mut view.texture, "jsfx-gfx", &screen);
-    }
-    if let Some(menu) = out.menu {
-        // The repeated run must not see the keys and wheel the first one used up.
-        let input = Input { chars: Vec::new(), wheel: 0.0, hwheel: 0.0, ..input };
-        view.menu = Some(GfxMenu { menu, input, just_opened: true });
-    }
 }
 
 /// Shows the menu at its place in the view; the item chosen, or 0 once it is dismissed.
 fn menu(ui: &Ui, rect: Rect, pending: &GfxMenu) -> Option<u32> {
-    let at = rect.min + vec2(pending.menu.x as f32, pending.menu.y as f32);
+    let at = rect.min + vec2(pending.menu.x as f32, pending.menu.y as f32) / pending.scale.max(1.0);
     let mut chosen = None;
     let area = egui::Area::new(Id::unique(("jsfx-gfx-menu", rect.min.x as i32, rect.min.y as i32)))
         .order(egui::Order::Foreground)

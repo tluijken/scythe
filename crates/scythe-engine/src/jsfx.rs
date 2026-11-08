@@ -311,6 +311,8 @@ pub struct JsfxEffect {
     num_ch: usize,
     ext_noinit: usize,
     was_playing: bool,
+    /// Initialised on load and not yet played or changed since.
+    fresh: bool,
     /// Whether the script reads or writes MIDI; others leave the chain's MIDI alone.
     uses_midi: bool,
     midi_in: Vec<(usize, [u8; 3])>,
@@ -319,6 +321,8 @@ pub struct JsfxEffect {
     midi_sent: crate::fx::MidiBlock,
     /// Whether it ran since; a bypassed effect lets the chain's MIDI go past it.
     midi_ran: bool,
+    /// Sections that did not compile, which REAPER leaves out and runs the rest.
+    pub compile_errors: Vec<String>,
 }
 
 impl JsfxEffect {
@@ -328,12 +332,15 @@ impl JsfxEffect {
         let mut vars = Vars::default();
         let mut functions = HashMap::new();
         let mut sections: HashMap<&str, Vec<Code>> = HashMap::new();
+        let mut compile_errors = Vec::new();
         let all: Vec<&HashMap<String, String>> = script.imported.iter().chain([&script.sections]).collect();
         for name in ["init", "slider", "block", "sample", "serialize", "gfx"] {
             for secs in &all {
                 if let Some(src) = secs.get(name) {
-                    let code = compile(src, &mut vars, &mut functions).map_err(|e| format!("@{name}: {e}"))?;
-                    sections.entry(name).or_default().push(code);
+                    match compile(src, &mut vars, &mut functions) {
+                        Ok(code) => sections.entry(name).or_default().push(code),
+                        Err(e) => compile_errors.push(format!("@{name}: {e}")),
+                    }
                 }
             }
         }
@@ -345,13 +352,14 @@ impl JsfxEffect {
             .map(|(i, s)| values.get(i).copied().flatten().unwrap_or(s.default))
             .collect();
         let slot = |vars: &mut Vars, n: &str| vars.slot(n);
-        let (srate, samplesblock, play_state, tempo, pdc_delay, num_ch) = (
+        let (srate, samplesblock, play_state, tempo, pdc_delay, num_ch, ext_noinit) = (
             slot(&mut vars, "srate"),
             slot(&mut vars, "samplesblock"),
             slot(&mut vars, "play_state"),
             slot(&mut vars, "tempo"),
             slot(&mut vars, "pdc_delay"),
             slot(&mut vars, "num_ch"),
+            slot(&mut vars, "ext_noinit"),
         );
         let uses_midi = all.iter().flat_map(|secs| secs.values()).any(|src| {
             let src = src.to_ascii_lowercase();
@@ -376,15 +384,16 @@ impl JsfxEffect {
             tempo,
             pdc_delay,
             num_ch,
-            ext_noinit: 0,
+            ext_noinit,
             was_playing: false,
+            fresh: false,
             uses_midi,
             midi_in: Vec::new(),
             long_in: Vec::new(),
             midi_sent: Default::default(),
             midi_ran: false,
+            compile_errors,
         };
-        fx.ext_noinit = fx.machine.vars.slot("ext_noinit");
         fx.machine.data_dirs = fx.script.data_dirs.clone();
         fx.machine.set_image_dirs(fx.script.folder.iter().cloned().collect());
         fx.machine.file_sliders = fx
@@ -399,25 +408,54 @@ impl JsfxEffect {
         // Effects often set `pdc_delay` in `@block`; one block up front makes their latency
         // known before the first is rendered, as REAPER has it. Only the latency is kept: the
         // first real block must still see the state `@init` and `@slider` left.
-        let before = fx.machine.vars.values.clone();
-        fx.machine.vars.values[fx.samplesblock] = BLOCK_FRAMES as f64;
+        let vars = &fx.machine.vars;
+        let before = vars.snapshot();
+        vars.put(fx.samplesblock, BLOCK_FRAMES as f64);
         for code in &fx.block {
             fx.machine.run(code);
         }
-        let latency = fx.machine.vars.values[fx.pdc_delay];
-        fx.machine.vars.values = before;
-        fx.machine.vars.values[fx.pdc_delay] = latency;
+        let vars = &fx.machine.vars;
+        let latency = vars.at(fx.pdc_delay);
+        vars.restore(&before);
+        vars.put(fx.pdc_delay, latency);
+        // REAPER reads the state of an effect with `@serialize` as soon as it is loaded.
+        fx.save_state();
+        fx.fresh = fx.serialize.is_empty();
         Ok(fx)
+    }
+
+    /// Restores what the project stored, as REAPER does for an effect with `@serialize`: sets
+    /// the sliders again when the slot has their values (running `@slider`), gives
+    /// `@serialize` the values it stored (`<JS_SER`, when there is one) to read, then reads the
+    /// state once more.
+    pub fn loaded(&mut self, sliders: bool, state: Option<Vec<f64>>) {
+        if self.serialize.is_empty() {
+            return;
+        }
+        if sliders {
+            self.run_slider();
+        }
+        if let Some(values) = state {
+            self.run_serialize(crate::eel::Serial { values, pos: 0, writing: false });
+        }
+        self.save_state();
+    }
+
+    fn save_state(&mut self) -> Option<Vec<f64>> {
+        if self.serialize.is_empty() {
+            return None;
+        }
+        Some(self.run_serialize(crate::eel::Serial { writing: true, ..Default::default() }))
     }
 
     /// `@init` then `@slider`, as REAPER runs them on load and at the start of playback.
     fn initialise(&mut self) {
-        let v = &mut self.machine.vars.values;
-        v[self.srate] = self.sample_rate as f64;
-        v[self.num_ch] = 2.0;
-        v[self.tempo] = 120.0;
+        let v = &self.machine.vars;
+        v.put(self.srate, self.sample_rate as f64);
+        v.put(self.num_ch, 2.0);
+        v.put(self.tempo, 120.0);
         for (&slot, &value) in self.slider_vars.iter().zip(&self.values) {
-            v[slot] = value;
+            v.put(slot, value);
         }
         for code in &self.init {
             self.machine.run(code);
@@ -427,24 +465,31 @@ impl JsfxEffect {
 
     fn run_slider(&mut self) {
         for (&slot, &value) in self.slider_vars.iter().zip(&self.values) {
-            self.machine.vars.values[slot] = value;
+            self.machine.vars.put(slot, value);
         }
         for code in &self.slider {
             self.machine.run(code);
         }
     }
 
-    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        // REAPER runs `@init` again when playback starts, unless the effect sets ext_noinit.
-        if ctx.playing && !self.was_playing && self.machine.vars.values[self.ext_noinit] == 0.0 {
+    /// REAPER runs `@init` again when playback starts, unless the effect sets ext_noinit. An
+    /// effect without `@serialize` it initialises only then, so the first start finds it as
+    /// loading left it.
+    fn start(&mut self, ctx: &ProcessContext) {
+        if ctx.playing && !self.was_playing && self.machine.vars.at(self.ext_noinit) == 0.0 && !self.fresh {
             self.initialise();
         }
+        self.fresh &= !ctx.playing;
         self.was_playing = ctx.playing;
+    }
+
+    fn process_block(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.start(ctx);
         self.receive_midi(left.len(), ctx);
-        let v = &mut self.machine.vars.values;
-        v[self.samplesblock] = left.len() as f64;
-        v[self.play_state] = if ctx.playing { 1.0 } else { 0.0 };
-        v[self.tempo] = ctx.bpm;
+        let v = &self.machine.vars;
+        v.put(self.samplesblock, left.len() as f64);
+        v.put(self.play_state, if ctx.playing { 1.0 } else { 0.0 });
+        v.put(self.tempo, ctx.bpm);
         for code in &self.block {
             self.machine.run(code);
         }
@@ -455,19 +500,19 @@ impl JsfxEffect {
         let (s0, s1) = (self.machine.spl_slots[0], self.machine.spl_slots[1]);
         let (s2, s3) = (self.machine.spl_slots[2], self.machine.spl_slots[3]);
         // A sidechain arrives as channels 3/4 (`spl2`, `spl3`).
-        self.machine.vars.values[self.num_ch] = if ctx.aux.is_some() { 4.0 } else { 2.0 };
+        self.machine.vars.put(self.num_ch, if ctx.aux.is_some() { 4.0 } else { 2.0 });
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-            self.machine.vars.values[s0] = *l as f64;
-            self.machine.vars.values[s1] = *r as f64;
+            self.machine.vars.put(s0, *l as f64);
+            self.machine.vars.put(s1, *r as f64);
             if let Some((a, b)) = ctx.aux {
-                self.machine.vars.values[s2] = a[i] as f64;
-                self.machine.vars.values[s3] = b[i] as f64;
+                self.machine.vars.put(s2, a[i] as f64);
+                self.machine.vars.put(s3, b[i] as f64);
             }
             for code in &self.sample {
                 self.machine.run(code);
             }
-            *l = self.machine.vars.values[s0] as f32;
-            *r = self.machine.vars.values[s1] as f32;
+            *l = self.machine.vars.at(s0) as f32;
+            *r = self.machine.vars.at(s1) as f32;
         }
         self.pass_midi(left.len(), ctx);
     }
@@ -480,17 +525,14 @@ impl JsfxEffect {
             }
             return;
         }
-        if ctx.playing && !self.was_playing && self.machine.vars.values[self.ext_noinit] == 0.0 {
-            self.initialise();
-        }
-        self.was_playing = ctx.playing;
+        self.start(ctx);
         self.receive_midi(range.len(), ctx);
         let channels = ins.max(outs).min(bufs.len()).min(64);
-        let v = &mut self.machine.vars.values;
-        v[self.samplesblock] = range.len() as f64;
-        v[self.play_state] = if ctx.playing { 1.0 } else { 0.0 };
-        v[self.tempo] = ctx.bpm;
-        v[self.num_ch] = channels as f64;
+        let v = &self.machine.vars;
+        v.put(self.samplesblock, range.len() as f64);
+        v.put(self.play_state, if ctx.playing { 1.0 } else { 0.0 });
+        v.put(self.tempo, ctx.bpm);
+        v.put(self.num_ch, channels as f64);
         for code in &self.block {
             self.machine.run(code);
         }
@@ -502,22 +544,16 @@ impl JsfxEffect {
         for i in range {
             for (c, buf) in bufs.iter().enumerate().take(channels) {
                 let slot = self.machine.spl_slots[c];
-                self.machine.vars.values[slot] = if c < ins { buf[i] as f64 } else { 0.0 };
+                self.machine.vars.put(slot, if c < ins { buf[i] as f64 } else { 0.0 });
             }
             for code in &self.sample {
                 self.machine.run(code);
             }
             for (c, buf) in bufs.iter_mut().enumerate().take(outs.min(channels)) {
-                buf[i] = self.machine.vars.values[self.machine.spl_slots[c]] as f32;
+                buf[i] = self.machine.vars.at(self.machine.spl_slots[c]) as f32;
             }
         }
         self.pass_midi(n, ctx);
-    }
-
-    /// Gives `@serialize` the values REAPER stored (`<JS_SER`) to read back, after `@init` and
-    /// `@slider` as REAPER loads it.
-    pub fn restore_serialized(&mut self, values: Vec<f64>) {
-        self.run_serialize(crate::eel::Serial { values, pos: 0, writing: false });
     }
 
     fn run_serialize(&mut self, serial: crate::eel::Serial) -> Vec<f64> {
@@ -545,27 +581,39 @@ impl JsfxEffect {
         }
     }
 
-    /// Runs `@gfx` once for a view of `input`'s size and mouse; returns what it shows.
-    /// Sliders it changes take effect as if set from outside, with `@slider` run.
+    /// Runs `@gfx` once on this thread for a view of `input`; what it drew is drawn by
+    /// rendering the output. `gfx_showmenu` gives 0. Sliders it changes take effect as if set
+    /// from outside, with `@slider` run.
     pub fn run_gfx(&mut self, input: &crate::eel::gfx::Input) -> crate::eel::gfx::Output {
-        let values = &self.machine.vars.values;
-        let before: Vec<f64> = self.slider_vars.iter().map(|&s| values[s]).collect();
+        let before: Vec<f64> = self.slider_vars.iter().map(|&s| self.machine.vars.at(s)).collect();
         self.machine.gfx_begin(input);
         for code in &self.gfx {
             self.machine.run(code);
         }
         let out = self.machine.gfx_end();
-        let mut changed = false;
-        for ((value, &slot), old) in self.values.iter_mut().zip(&self.slider_vars).zip(before) {
-            let now = self.machine.vars.values[slot];
-            if now != old {
-                (*value, changed) = (now, true);
+        let changes: Vec<(usize, f64)> = self
+            .slider_vars
+            .iter()
+            .zip(before)
+            .enumerate()
+            .filter_map(|(i, (&s, old))| {
+                let now = self.machine.vars.at(s);
+                (now.to_bits() != old.to_bits()).then_some((i, now))
+            })
+            .collect();
+        self.set_from_gfx(&changes);
+        out
+    }
+
+    fn set_from_gfx(&mut self, changes: &[(usize, f64)]) {
+        for &(i, v) in changes {
+            if let Some(value) = self.values.get_mut(i) {
+                *value = v;
             }
         }
-        if changed {
+        if !changes.is_empty() {
             self.run_slider();
         }
-        out
     }
 
     fn visible(&self) -> impl Iterator<Item = (usize, &Slider)> {
@@ -609,10 +657,7 @@ impl Effect for JsfxEffect {
     }
 
     fn save_serialized(&mut self) -> Option<Vec<f64>> {
-        if self.serialize.is_empty() {
-            return None;
-        }
-        Some(self.run_serialize(crate::eel::Serial { writing: true, ..Default::default() }))
+        self.save_state()
     }
 
     fn take_midi(&mut self, out: &mut crate::fx::MidiBlock) -> bool {
@@ -632,12 +677,17 @@ impl Effect for JsfxEffect {
         (!self.gfx.is_empty()).then(|| self.script.gfx_size.unwrap_or_default())
     }
 
-    fn gfx(&mut self, input: &crate::eel::gfx::Input) -> Option<crate::eel::gfx::Output> {
-        (!self.gfx.is_empty()).then(|| self.run_gfx(input))
+    fn gfx_view(&mut self) -> Option<crate::eel::gfx::View> {
+        (!self.gfx.is_empty())
+            .then(|| crate::eel::gfx::View::spawn(self.machine.share(), self.gfx.clone(), self.slider_vars.clone()))
+    }
+
+    fn gfx_sliders(&mut self, changes: &[(usize, f64)]) {
+        self.set_from_gfx(changes);
     }
 
     fn latency(&mut self) -> usize {
-        self.machine.vars.values[self.pdc_delay].max(0.0) as usize
+        self.machine.vars.at(self.pdc_delay).max(0.0) as usize
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -771,6 +821,73 @@ mod tests {
         };
         fx.process(&mut l, &mut r, &ctx);
         assert!((l[0] - 0.1).abs() < 1e-6 && r[3] == -0.5);
+    }
+
+    fn playing() -> ProcessContext<'static> {
+        ProcessContext {
+            midi: None,
+            midi_from: 0,
+            sample_rate: 48000,
+            position: 0,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            aux: None,
+            bpm: 120.0,
+        }
+    }
+
+    #[test]
+    fn serialize_runs_when_reaper_runs_it() {
+        let text = "desc:t\nslider1:3<0,10,1>a\n@init\ntrail = trail * 10 + 1;\n@slider\ntrail = trail * 10 + 2;\n\
+                    @serialize\ntrail = trail * 10 + (file_avail(0) >= 0 ? 3 : 4);\nfile_var(0, keep);\n\
+                    @block\nblocks == 0 ? trail = trail * 10 + 5; blocks += 1;\n";
+        // The trails of REAPER's renders: without stored state, with `keep` stored, and with
+        // it stored but no slider values in the slot.
+        for (sliders, state, trail) in
+            [(true, None, 12424125.0), (true, Some(vec![2.0]), 124234125.0), (false, Some(vec![2.0]), 12434125.0)]
+        {
+            let (_, sections) = split_sections(text);
+            let script =
+                Script { sliders: vec![parse_slider(1, "3<0,10,1>a").unwrap()], sections, ..Default::default() };
+            let mut fx = JsfxEffect::new(script, &[], 48000).unwrap();
+            fx.loaded(sliders, state.clone());
+            fx.process(&mut [0.0; 4], &mut [0.0; 4], &playing());
+            assert_eq!(fx.machine.vars.get("trail"), Some(trail), "{state:?}");
+            let saved = fx.save_serialized();
+            assert_eq!(saved, Some(vec![state.map_or(0.0, |s| s[0])]));
+            assert_eq!(fx.machine.vars.get("trail"), Some(trail * 10.0 + 4.0), "a save runs it once");
+        }
+    }
+
+    #[test]
+    fn gfx_runs_beside_the_audio_on_shared_state() {
+        let text = "desc:t\n@init\nbuf = 1000;\n@sample\nspl0 = buf[0] + g;\nn += 1;\n\
+                    @gfx 100 100\nbuf[0] = 0.25; g = 0.5; seen = n; gfx_x = gfx_y = 0; choice = gfx_showmenu(\"a|b\");\n";
+        let (_, sections) = split_sections(text);
+        let mut fx = JsfxEffect::new(Script { sections, ..Default::default() }, &[], 48000).unwrap();
+        let mut view = fx.gfx_view().expect("a view");
+        view.run(crate::eel::gfx::Input { w: 100.0, h: 100.0, ..Default::default() });
+        let started = std::time::Instant::now();
+        let menu = loop {
+            if let Some(e) = view.poll() {
+                break e;
+            }
+            assert!(started.elapsed().as_secs() < 10, "the view answers");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert!(matches!(menu, crate::eel::gfx::Event::Menu(_)));
+        // The script waits on its menu while the audio runs, and sees what it wrote.
+        let (mut l, mut r) = ([0.0f32; 4], [0.0f32; 4]);
+        fx.process(&mut l, &mut r, &playing());
+        assert_eq!(l, [0.75; 4]);
+        view.choose(1);
+        while view.busy() {
+            view.poll();
+            assert!(started.elapsed().as_secs() < 10, "the run ends");
+        }
+        assert_eq!((fx.machine.vars.get("choice"), fx.machine.vars.get("seen")), (Some(1.0), Some(0.0)));
     }
 
     #[test]

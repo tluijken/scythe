@@ -1,7 +1,9 @@
-//! JSFX graphics. The `gfx_*` builtins of `@gfx` queue drawing calls for a pixel canvas
-//! (the screen and images 0..1023), which the UI thread draws once it has let go of the
-//! effect, so the audio thread waits on `@gfx` only for the script itself. The screen keeps
-//! what was drawn while `gfx_clear` is negative, as REAPER's framebuffer does.
+//! JSFX graphics. The `gfx_*` builtins queue drawing calls for a pixel canvas (the screen and
+//! images 0..1023), drawn when a run ends or a call reads pixels back. The graphics state is
+//! shared by an effect's machines, so images loaded in `@init` are there for `@gfx`. `@gfx`
+//! itself runs on a [`View`]'s thread, as REAPER runs it beside the audio over the same
+//! variables and memory. The screen keeps what was drawn while `gfx_clear` is negative, as
+//! REAPER's framebuffer does.
 
 mod bitmap;
 mod menu;
@@ -10,6 +12,7 @@ mod text;
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 pub use menu::{Menu, MenuItem};
@@ -18,11 +21,12 @@ pub use text::FontSpec;
 
 use raster::{Cmd, Op, Paint};
 
-use super::{Machine, Node, Vars};
+use super::{Code, Machine, Node, Vars, lock};
 
 /// What the UI hands `@gfx` for one run.
 #[derive(Debug, Clone, Default)]
 pub struct Input {
+    /// The view's size and the mouse in points.
     pub w: f64,
     pub h: f64,
     pub mouse_x: f64,
@@ -35,26 +39,116 @@ pub struct Input {
     pub mouse_in: bool,
     /// Typed characters, for `gfx_getchar`.
     pub chars: Vec<u32>,
-    /// What the user chose from the menu the last run asked for (0 for nothing), when this
-    /// run repeats it.
-    pub menu_choice: Option<u32>,
+    /// Pixels per point of the screen the view is on; 0 counts as 1.
+    pub scale: f64,
+    /// Files dropped onto the view since the last run, for `gfx_getdropfile`.
+    pub dropped: Vec<String>,
 }
 
 /// What one run of `@gfx` leaves.
 pub struct Output {
     canvas: Arc<Mutex<Canvas>>,
-    /// A menu the run asked for. `gfx_showmenu` waits for the user in REAPER; here the run
-    /// stops at the call, its drawing is dropped, and the UI runs it again with the same
-    /// input and [`Input::menu_choice`] set, which that call then returns.
-    pub menu: Option<Menu>,
+    /// Screen pixels per point: the view's scale when the script asked for it with
+    /// `gfx_ext_retina`, else 1.
+    pub scale: f64,
+    /// Sliders the run changed, by their index in the script, with their new values.
+    pub sliders: Vec<(usize, f64)>,
 }
 
 impl Output {
     /// Draws what the run queued and returns the screen if it changed.
     pub fn render(&self) -> Option<Bitmap> {
-        let mut canvas = self.canvas.lock().unwrap_or_else(|e| e.into_inner());
+        let mut canvas = lock(&self.canvas);
         canvas.flush();
         canvas.take_screen()
+    }
+}
+
+/// What a [`View`]'s thread reports.
+pub enum Event {
+    /// A run ended.
+    Frame(Output),
+    /// The script waits in `gfx_showmenu` until [`View::choose`] answers.
+    Menu(Menu),
+}
+
+/// `@gfx` running on a thread of its own, so the audio thread never waits for it and
+/// `gfx_showmenu` waits for the user inside the script, as REAPER's does. The thread ends once
+/// the view is dropped and its run is over.
+pub struct View {
+    input: Sender<Input>,
+    choice: Sender<u32>,
+    events: Receiver<Event>,
+    busy: bool,
+}
+
+impl View {
+    /// Runs `code` on `machine` (a [`Machine::share`] of the effect's) once per
+    /// [`View::run`]; `sliders` are the slots of the script's sliders, reported when a run
+    /// changes them.
+    pub fn spawn(mut machine: Machine, code: Vec<Code>, sliders: Vec<usize>) -> Self {
+        let (input, inputs) = channel::<Input>();
+        let (choice, choices) = channel::<u32>();
+        let (event, events) = channel();
+        let menus = event.clone();
+        machine.gfx.menu = Some(Box::new(move |menu| {
+            if menus.send(Event::Menu(menu)).is_err() {
+                return 0;
+            }
+            choices.recv().unwrap_or(0)
+        }));
+        let run = move || {
+            while let Ok(input) = inputs.recv() {
+                let before: Vec<f64> = sliders.iter().map(|&s| machine.vars.at(s)).collect();
+                machine.gfx_begin(&input);
+                for c in &code {
+                    machine.run(c);
+                }
+                let mut out = machine.gfx_end();
+                out.sliders = sliders
+                    .iter()
+                    .zip(before)
+                    .enumerate()
+                    .filter_map(|(i, (&s, old))| {
+                        let now = machine.vars.at(s);
+                        (now.to_bits() != old.to_bits()).then_some((i, now))
+                    })
+                    .collect();
+                if event.send(Event::Frame(out)).is_err() {
+                    break;
+                }
+            }
+        };
+        if let Err(e) = std::thread::Builder::new().name("jsfx-gfx".into()).spawn(run) {
+            eprintln!("cannot start a JSFX view: {e}");
+        }
+        Self { input, choice, events, busy: false }
+    }
+
+    /// Whether a run has started and not yet ended.
+    pub fn busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Starts a run unless one is going.
+    pub fn run(&mut self, input: Input) {
+        if !self.busy && self.input.send(input).is_ok() {
+            self.busy = true;
+        }
+    }
+
+    /// What the thread reported since last asked.
+    pub fn poll(&mut self) -> Option<Event> {
+        let e = self.events.try_recv().ok()?;
+        if matches!(e, Event::Frame(_)) {
+            self.busy = false;
+        }
+        Some(e)
+    }
+
+    /// Answers the menu the script waits on: the item chosen, or 0.
+    pub fn choose(&mut self, choice: u32) {
+        self.choice.send(choice).ok();
     }
 }
 
@@ -62,6 +156,8 @@ impl Output {
 const MAX_QUEUE: usize = 1 << 16;
 /// `gfx_getsyscol`: the window background, as `r | g << 8 | b << 16`.
 const SYSCOL: f64 = (0x26 | 0x26 << 8 | 0x2a << 16) as f64;
+/// The largest table `gfx_transformblit` reads.
+const MAX_DIVS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Call {
@@ -88,6 +184,8 @@ pub enum Call {
     LoadImg,
     Blit,
     BlitExt,
+    DeltaBlit,
+    TransformBlit,
     SetImgDim,
     GetImgDim,
     GetChar,
@@ -95,13 +193,13 @@ pub enum Call {
     MulAddRect,
     ShowMenu,
     SysCol,
+    DropFile,
     /// A ReaScript's window: `gfx_init`, `gfx_quit`, `gfx_update` and `gfx_dock`.
     Init,
     Quit,
     Update,
     Dock,
-    /// Dropped files, cursors and the blits through coordinate tables, which this
-    /// host does not have.
+    /// Cursors and other images' extents, which this host does not have.
     Nothing,
 }
 
@@ -133,6 +231,8 @@ impl Call {
             "gfx_loadimg" => (LoadImg, 2),
             "gfx_blit" => (Blit, ANY),
             "gfx_blitext" => (BlitExt, 3),
+            "gfx_deltablit" => (DeltaBlit, ANY),
+            "gfx_transformblit" => (TransformBlit, 8),
             "gfx_setimgdim" => (SetImgDim, 3),
             "gfx_getimgdim" => (GetImgDim, 3),
             "gfx_getchar" => (GetChar, ANY),
@@ -140,18 +240,18 @@ impl Call {
             "gfx_muladdrect" => (MulAddRect, ANY),
             "gfx_showmenu" => (ShowMenu, 1),
             "gfx_getsyscol" => (SysCol, ANY),
+            "gfx_getdropfile" => (DropFile, ANY),
             "gfx_init" => (Init, ANY),
             "gfx_quit" => (Quit, ANY),
             "gfx_update" => (Update, ANY),
             "gfx_dock" => (Dock, ANY),
-            "gfx_getdropfile" | "gfx_setcursor" | "gfx_deltablit" | "gfx_transformblit" | "gfx_setimgdim_ext" => {
-                (Nothing, ANY)
-            }
+            "gfx_setcursor" | "gfx_setimgdim_ext" => (Nothing, ANY),
             _ => return None,
         })
     }
 }
 
+#[derive(Clone, Copy)]
 struct Slots {
     r: usize,
     g: usize,
@@ -166,6 +266,7 @@ struct Slots {
     texth: usize,
     mode: usize,
     dest: usize,
+    retina: usize,
     mouse_x: usize,
     mouse_y: usize,
     mouse_cap: usize,
@@ -173,8 +274,8 @@ struct Slots {
     mouse_hwheel: usize,
 }
 
-/// The graphics state of a machine.
-pub(super) struct Gfx {
+/// The graphics state of an effect, shared by its machines.
+struct Gfx {
     v: Slots,
     canvas: Arc<Mutex<Canvas>>,
     queue: Vec<Cmd>,
@@ -185,10 +286,10 @@ pub(super) struct Gfx {
     font: usize,
     chars: VecDeque<u32>,
     mouse_in: bool,
-    menu_choice: Option<u32>,
-    menu: Option<Menu>,
-    /// The run stopped at `gfx_showmenu`.
-    halted: bool,
+    /// Files dropped onto the view and not yet cleared with `gfx_getdropfile(-1)`.
+    dropped: Vec<String>,
+    /// The scale of the run going on.
+    scale: f64,
     /// Where `gfx_loadimg` looks for a file named without a folder.
     image_dirs: Vec<PathBuf>,
     /// The window a ReaScript opened with `gfx_init`; effects have none.
@@ -205,7 +306,15 @@ pub struct Window {
     pub open: bool,
 }
 
-impl Gfx {
+/// A machine's way to the shared graphics state, and how its `gfx_showmenu` reaches the user.
+pub(super) struct Link {
+    state: Arc<Mutex<Gfx>>,
+    v: Slots,
+    /// Shows a menu and waits for the choice; without it `gfx_showmenu` gives 0.
+    menu: Option<Box<dyn FnMut(Menu) -> u32 + Send>>,
+}
+
+impl Link {
     pub(super) fn new(vars: &mut Vars) -> Self {
         let mut s = |n: &str| vars.slot(n);
         let v = Slots {
@@ -222,6 +331,7 @@ impl Gfx {
             texth: s("gfx_texth"),
             mode: s("gfx_mode"),
             dest: s("gfx_dest"),
+            retina: s("gfx_ext_retina"),
             mouse_x: s("mouse_x"),
             mouse_y: s("mouse_y"),
             mouse_cap: s("mouse_cap"),
@@ -229,9 +339,9 @@ impl Gfx {
             mouse_hwheel: s("mouse_hwheel"),
         };
         for (slot, value) in [(v.a, 1.0), (v.a2, 1.0), (v.dest, -1.0)] {
-            vars.values[slot] = value;
+            vars.put(slot, value);
         }
-        Self {
+        let state = Gfx {
             v,
             canvas: Default::default(),
             queue: Vec::new(),
@@ -240,17 +350,16 @@ impl Gfx {
             font: 0,
             chars: VecDeque::new(),
             mouse_in: false,
-            menu_choice: None,
-            menu: None,
-            halted: false,
+            dropped: Vec::new(),
+            scale: 1.0,
             image_dirs: Vec::new(),
             window: None,
-        }
+        };
+        Self { state: Arc::new(Mutex::new(state)), v, menu: None }
     }
 
-    /// Whether the running code should stop: `gfx_showmenu` is waiting for the user.
-    pub(super) fn halted(&self) -> bool {
-        self.halted
+    pub(super) fn share(&self) -> Self {
+        Self { state: self.state.clone(), v: self.v, menu: None }
     }
 }
 
@@ -264,124 +373,206 @@ fn unpack(rgb: f64) -> [f32; 3] {
     [(c & 0xff) as f32 / 255.0, (c >> 8 & 0xff) as f32 / 255.0, (c >> 16 & 0xff) as f32 / 255.0]
 }
 
+/// A colour channel as REAPER takes it: truncated to a byte.
+fn channel_byte(v: f64) -> f32 {
+    ((v * 255.0) as i64).clamp(0, 255) as f32 / 255.0
+}
+
+/// What a call reads besides its arguments: its string and memory, fetched before the
+/// graphics state is locked.
+#[derive(Default)]
+struct Reads {
+    text: String,
+    table: Vec<f64>,
+    dirs: Vec<PathBuf>,
+}
+
+/// What a call writes back once the graphics state is let go: values to its arguments, and a
+/// string.
+#[derive(Default)]
+struct Writes {
+    args: Vec<(usize, f64)>,
+    string: Option<(f64, String)>,
+}
+
 impl Machine {
     /// Prepares a run of `@gfx`: the view's size, the mouse and keys, and the screen cleared
     /// to `gfx_clear` unless it is negative.
     pub fn gfx_begin(&mut self, input: &Input) {
-        let v = &self.gfx.v;
-        let values = &mut self.vars.values;
-        values[v.w] = input.w;
-        values[v.h] = input.h;
-        values[v.mouse_x] = input.mouse_x;
-        values[v.mouse_y] = input.mouse_y;
-        values[v.mouse_cap] = input.mouse_cap as f64;
-        values[v.mouse_wheel] += input.wheel;
-        values[v.mouse_hwheel] += input.hwheel;
-        values[v.dest] = -1.0;
-        values[v.texth] = self.gfx.fonts[self.gfx.font].size.round() as f64;
-        let clear = values[v.clear];
-        self.gfx.mouse_in = input.mouse_in;
-        self.gfx.chars.extend(&input.chars);
-        self.gfx.menu_choice = input.menu_choice;
-        self.gfx.menu = None;
-        self.gfx.halted = false;
-        let (w, h) = (input.w.max(0.0) as usize, input.h.max(0.0) as usize);
-        self.push(Cmd { dest: -1, paint: Paint::default(), clip: None, op: Op::Resize(w, h) });
+        let state = self.gfx.state.clone();
+        let mut g = lock(&state);
+        let v = g.v;
+        let vars = &self.vars;
+        let view_scale = if input.scale > 0.0 { input.scale } else { 1.0 };
+        // A script that sets `gfx_ext_retina` draws at the screen's own pixels.
+        let scale = if vars.at(v.retina) > 0.0 {
+            vars.put(v.retina, view_scale);
+            view_scale
+        } else {
+            1.0
+        };
+        let (w, h) = ((input.w * scale).floor(), (input.h * scale).floor());
+        vars.put(v.w, w);
+        vars.put(v.h, h);
+        vars.put(v.mouse_x, (input.mouse_x * scale).floor());
+        vars.put(v.mouse_y, (input.mouse_y * scale).floor());
+        vars.put(v.mouse_cap, input.mouse_cap as f64);
+        vars.put(v.mouse_wheel, vars.at(v.mouse_wheel) + input.wheel);
+        vars.put(v.mouse_hwheel, vars.at(v.mouse_hwheel) + input.hwheel);
+        vars.put(v.dest, -1.0);
+        vars.put(v.texth, g.fonts[g.font].size.round() as f64);
+        g.mouse_in = input.mouse_in;
+        g.scale = scale;
+        g.chars.extend(&input.chars);
+        g.dropped.extend(input.dropped.iter().cloned());
+        let clear = vars.at(v.clear);
+        g.push(Cmd {
+            dest: -1,
+            paint: Paint::default(),
+            clip: None,
+            op: Op::Resize(w.max(0.0) as usize, h.max(0.0) as usize),
+        });
         if clear >= 0.0 {
             let paint = Paint { rgb: unpack(clear), ..Paint::default() };
-            self.push(Cmd { dest: -1, paint, clip: None, op: Op::Clear });
+            g.push(Cmd { dest: -1, paint, clip: None, op: Op::Clear });
         }
     }
 
     /// Hands what the run drew to the canvas, to be drawn there.
     pub fn gfx_end(&mut self) -> Output {
-        if std::mem::take(&mut self.gfx.halted) {
-            // The run is repeated once the user has chosen; only what sizes the surfaces stays.
-            self.gfx.queue.retain(|c| matches!(c.op, Op::Resize(..) | Op::SetImgDim(..) | Op::SetImage(_)));
-        }
-        self.gfx.menu_choice = None;
-        self.send_queue();
-        Output { canvas: self.gfx.canvas.clone(), menu: self.gfx.menu.take() }
+        let mut g = lock(&self.gfx.state);
+        g.send_queue();
+        Output { canvas: g.canvas.clone(), scale: g.scale, sliders: Vec::new() }
     }
 
     /// The window a ReaScript opened with `gfx_init`.
-    pub fn gfx_window(&self) -> Option<&Window> {
-        self.gfx.window.as_ref()
+    pub fn gfx_window(&self) -> Option<Window> {
+        lock(&self.gfx.state).window.clone()
     }
 
     /// The user closed the script's window.
     pub fn close_gfx_window(&mut self) {
-        if let Some(w) = &mut self.gfx.window {
+        if let Some(w) = &mut lock(&self.gfx.state).window {
             w.open = false;
         }
     }
 
     /// Sets the folders `gfx_loadimg` looks in, the effect's own first.
     pub fn set_image_dirs(&mut self, dirs: Vec<PathBuf>) {
-        self.gfx.image_dirs = dirs;
+        lock(&self.gfx.state).image_dirs = dirs;
     }
 
+    pub(super) fn gfx_call(&mut self, call: Call, args: &[Node]) -> f64 {
+        use Call::*;
+        let n = args.len();
+        let mut a = [0.0f64; 16];
+        // Outputs (`gfx_measurestr`'s width and height, …) are read too, which does no harm;
+        // `gfx_printf` reads its arguments as it formats them.
+        if call != Printf {
+            for (slot, node) in a.iter_mut().zip(args) {
+                *slot = self.eval(node);
+            }
+        }
+        let mut reads = Reads::default();
+        match call {
+            DrawStr | MeasureStr | ShowMenu | Init => reads.text = c_text(&self.string(a[0])).to_owned(),
+            SetFont | LoadImg if n >= 2 => reads.text = c_text(&self.string(a[1])).to_owned(),
+            Printf => reads.text = self.format(args),
+            LoadImg => {}
+            BlitExt => reads.table = (0..10).map(|i| self.read(a[1] + i as f64)).collect(),
+            TransformBlit => {
+                let (dw, dh) = (a[5].clamp(2.0, MAX_DIVS as f64) as usize, a[6].clamp(2.0, MAX_DIVS as f64) as usize);
+                reads.table = (0..2 * dw * dh).map(|i| self.read(a[7] + i as f64)).collect();
+            }
+            _ => {}
+        }
+        if call == ShowMenu {
+            return self.show_menu(&reads.text);
+        }
+        let mut writes = Writes::default();
+        let state = self.gfx.state.clone();
+        if call == LoadImg {
+            reads.dirs = self.data_dirs.clone();
+        }
+        let r = lock(&state).call(call, &self.vars, &a, n.min(16), &reads, &mut writes);
+        for (i, v) in writes.args {
+            if let Some(node) = args.get(i) {
+                self.store(node, v);
+            }
+        }
+        if let Some((h, s)) = writes.string {
+            self.set_string(h, s);
+        }
+        r
+    }
+
+    /// `gfx_showmenu`: waits for the user's choice, with the graphics state let go so the
+    /// audio thread's calls do not wait on the menu.
+    fn show_menu(&mut self, text: &str) -> f64 {
+        let items = menu::parse(text);
+        if items.is_empty() {
+            return 0.0;
+        }
+        let v = self.gfx.v;
+        let menu = Menu { items, x: self.vars.at(v.x), y: self.vars.at(v.y) };
+        self.gfx.menu.as_mut().map_or(0.0, |show| show(menu) as f64)
+    }
+}
+
+impl Gfx {
     fn send_queue(&mut self) {
-        let queue = std::mem::take(&mut self.gfx.queue);
-        self.gfx.canvas.lock().unwrap_or_else(|e| e.into_inner()).queue.extend(queue);
+        let queue = std::mem::take(&mut self.queue);
+        lock(&self.canvas).queue.extend(queue);
     }
 
     /// Draws everything queued so far, for calls that read pixels back.
     fn draw_now(&mut self) -> std::sync::MutexGuard<'_, Canvas> {
         self.send_queue();
-        let mut canvas = self.gfx.canvas.lock().unwrap_or_else(|e| e.into_inner());
+        let mut canvas = lock(&self.canvas);
         canvas.flush();
         canvas
     }
 
     fn push(&mut self, cmd: Cmd) {
-        self.gfx.queue.push(cmd);
-        if self.gfx.queue.len() >= MAX_QUEUE {
+        self.queue.push(cmd);
+        if self.queue.len() >= MAX_QUEUE {
             drop(self.draw_now());
         }
     }
 
-    fn gvar(&self, slot: fn(&Slots) -> usize) -> f64 {
-        self.vars.values[slot(&self.gfx.v)]
-    }
-
-    fn set_gvar(&mut self, slot: fn(&Slots) -> usize, value: f64) {
-        self.vars.values[slot(&self.gfx.v)] = value;
-    }
-
-    fn paint(&self) -> Paint {
-        let c = |s: fn(&Slots) -> usize| self.gvar(s).clamp(0.0, 1.0) as f32;
+    fn paint(&self, vars: &Vars) -> Paint {
+        let v = self.v;
         Paint {
-            rgb: [c(|v| v.r), c(|v| v.g), c(|v| v.b)],
-            a: self.gvar(|v| v.a) as f32,
-            mode: self.gvar(|v| v.mode).max(0.0) as u32,
-            a2: c(|v| v.a2),
+            rgb: [v.r, v.g, v.b].map(|s| channel_byte(vars.at(s))),
+            a: vars.at(v.a) as f32,
+            mode: vars.at(v.mode).max(0.0) as u32,
+            a2: channel_byte(vars.at(v.a2)),
         }
     }
 
-    fn dest(&self) -> i64 {
-        (self.gvar(|v| v.dest).round() as i64).max(-1)
+    fn dest(&self, vars: &Vars) -> i64 {
+        (vars.at(self.v.dest).round() as i64).max(-1)
     }
 
-    fn surface_size(&self, id: i64) -> (f64, f64) {
+    fn surface_size(&self, vars: &Vars, id: i64) -> (f64, f64) {
         if id < 0 {
-            (self.gvar(|v| v.w), self.gvar(|v| v.h))
+            (vars.at(self.v.w), vars.at(self.v.h))
         } else {
-            self.gfx.sizes.get(&id).map_or((0.0, 0.0), |&(w, h)| (w as f64, h as f64))
+            self.sizes.get(&id).map_or((0.0, 0.0), |&(w, h)| (w as f64, h as f64))
         }
     }
 
-    fn draw(&mut self, op: Op) {
-        self.draw_clipped(op, None);
+    fn draw(&mut self, vars: &Vars, op: Op) {
+        self.draw_clipped(vars, op, None);
     }
 
-    fn draw_clipped(&mut self, op: Op, clip: Option<[i64; 4]>) {
-        let cmd = Cmd { dest: self.dest(), paint: self.paint(), clip, op };
+    fn draw_clipped(&mut self, vars: &Vars, op: Op, clip: Option<[i64; 4]>) {
+        let cmd = Cmd { dest: self.dest(vars), paint: self.paint(vars), clip, op };
         self.push(cmd);
     }
 
     fn current_font(&self) -> &FontSpec {
-        &self.gfx.fonts[self.gfx.font]
+        &self.fonts[self.font]
     }
 
     /// Width and height of `text`, its lines split at `\n`.
@@ -393,171 +584,180 @@ impl Machine {
         text.split('\n').map(|l| text::measure(font, l)).fold((0.0, 0.0), |(w, h), (lw, lh)| (w.max(lw), h + lh))
     }
 
-    /// Draws `text` at `(x, y)` a line at a time, leaving `gfx_x`/`gfx_y` after its end.
-    fn draw_text(&mut self, text: &str, x: f64, y: f64, clip: Option<[i64; 4]>) {
-        let text = c_text(text);
+    /// `gfx_drawstr`, `gfx_printf` and the rest: `text` from `gfx_x`/`gfx_y`, or placed in the
+    /// box to `(right, bottom)` by `flags` (1 centred, 2 right, 4 middle, 8 bottom, 256 not
+    /// clipped to the box). Font 0 aligns the text as a block and, clipped to a box, draws
+    /// into a window on the box (its corner moved onto the destination, as LICE's sub-bitmaps
+    /// are) and leaves `gfx_x`/`gfx_y` measured from that corner; other fonts align each line
+    /// in the box below the lines before it and leave `gfx_x` after the last line, measured
+    /// from the start whatever the alignment.
+    fn draw_text(&mut self, vars: &Vars, text: &str, boxed: Option<(u32, f64, f64)>) {
+        let v = self.v;
+        let (x0, y0) = (vars.at(v.x).floor(), vars.at(v.y).floor());
         let font = self.current_font().clone();
+        let (flags, right, bottom) = boxed.map_or((0, 0.0, 0.0), |(f, r, b)| (f, r.floor(), b.floor()));
+        let (bw, bh) = (right - x0, bottom - y0);
+        let clipped = boxed.is_some() && flags & 256 == 0;
+        let empty = clipped && (bw <= 0.0 || bh <= 0.0);
+        let offset = |flags: u32, center: u32, far: u32, room: f64, size: f64| {
+            if flags & center != 0 {
+                ((room - size) / 2.0).floor()
+            } else if flags & far != 0 {
+                room - size
+            } else {
+                0.0
+            }
+        };
         if font.bitmap {
-            let (dx, dy) = bitmap::advance(text);
-            self.draw_clipped(Op::Text { x, y, font, text: text.to_owned() }, clip);
-            self.set_gvar(|v| v.x, x + dx);
-            self.set_gvar(|v| v.y, y + dy);
+            if empty {
+                vars.put(v.x, 0.0);
+                return;
+            }
+            let (w, h) = bitmap::measure(text);
+            let (dx, dy) = match boxed {
+                Some(_) => (offset(flags, 1, 2, bw, w), offset(flags, 4, 8, bh, h)),
+                None => (0.0, 0.0),
+            };
+            let (adv_x, adv_y) = bitmap::advance(text);
+            let (ox, oy, clip) = if clipped {
+                let (ox, oy) = (x0.max(0.0), y0.max(0.0));
+                (ox, oy, Some([ox, oy, ox + bw, oy + bh].map(|c| c as i64)))
+            } else {
+                (x0, y0, None)
+            };
+            self.draw_clipped(vars, Op::Text { x: ox + dx, y: oy + dy, font, text: text.to_owned() }, clip);
+            let (bx, by) = if clipped { (0.0, 0.0) } else { (x0, y0) };
+            vars.put(v.x, bx + dx + adv_x);
+            vars.put(v.y, by + dy + adv_y);
             return;
         }
-        let mut last = (x, y);
-        let mut ly = y;
-        for line in text.split('\n') {
-            let (w, h) = text::measure(&font, line);
-            if !line.is_empty() {
-                self.draw_clipped(Op::Text { x, y: ly, font: font.clone(), text: line.to_owned() }, clip);
+        let lines: Vec<&str> = text.split('\n').collect();
+        let clip = clipped.then(|| [x0, y0, right, bottom].map(|c| c as i64));
+        let mut last_w = 0.0;
+        let mut top = y0;
+        for (i, line) in lines.iter().enumerate() {
+            let (w, lh) = text::measure(&font, line);
+            if i > 0 {
+                top += lh;
             }
-            last = (x + w, ly);
-            ly += h;
+            last_w = w;
+            if empty || line.is_empty() {
+                continue;
+            }
+            let (dx, dy) = match boxed {
+                Some(_) => (offset(flags, 1, 2, bw, w), offset(flags, 4, 8, bottom - top, lh)),
+                None => (0.0, 0.0),
+            };
+            self.draw_clipped(
+                vars,
+                Op::Text { x: x0 + dx, y: top + dy, font: font.clone(), text: (*line).to_owned() },
+                clip,
+            );
         }
-        self.set_gvar(|v| v.x, last.0);
-        self.set_gvar(|v| v.y, last.1);
+        vars.put(v.x, x0 + last_w);
+        vars.put(v.y, if empty { y0 } else { top });
     }
 
-    fn text_at_cursor(&mut self, text: &str) {
-        let (x, y) = (self.gvar(|v| v.x), self.gvar(|v| v.y));
-        self.draw_text(text, x, y, None);
-    }
-
-    /// `from` of `src` onto `to` (left, top, width, height) of the destination.
-    fn blit(&mut self, src: i64, from: [f64; 4], to: [f64; 4], angle: f64, pivot: [f64; 2]) {
-        self.draw(Op::Blit { src: src.max(-1), from, to, angle, pivot });
-    }
-
-    fn load_image(&mut self, id: i64, name: &str) -> f64 {
+    fn load_image(&mut self, data_dirs: &[PathBuf], id: i64, name: &str) -> f64 {
         let name = std::path::Path::new(name);
         let path = if name.is_absolute() {
             Some(name.to_path_buf())
         } else {
-            self.gfx.image_dirs.iter().chain(&self.data_dirs).map(|d| d.join(name)).find(|p| p.is_file())
+            self.image_dirs.iter().chain(data_dirs).map(|d| d.join(name)).find(|p| p.is_file())
         };
         let Some(bmp) = path.and_then(|p| raster::load_image(&p)) else { return -1.0 };
-        self.gfx.sizes.insert(id, (bmp.w, bmp.h));
+        self.sizes.insert(id, (bmp.w, bmp.h));
         self.push(Cmd { dest: id, paint: Paint::default(), clip: None, op: Op::SetImage(bmp) });
         id as f64
     }
 
-    pub(super) fn gfx_call(&mut self, call: Call, args: &[Node]) -> f64 {
+    fn call(&mut self, call: Call, vars: &Vars, a: &[f64; 16], n: usize, reads: &Reads, out: &mut Writes) -> f64 {
         use Call::*;
-        let n = args.len();
-        let mut a = [0.0f64; 16];
-        // Outputs (`gfx_measurestr`'s width and height, …) are read too, which does no harm.
-        for (slot, node) in a.iter_mut().zip(args) {
-            *slot = self.eval(node);
-        }
-        let get = |i: usize, default: f64| if n > i { a[i] } else { default };
-        let (gx, gy) = (self.gvar(|v| v.x), self.gvar(|v| v.y));
+        let get = |i: usize, default: f64| if i < n { a[i] } else { default };
+        let v = self.v;
+        let (gx, gy) = (vars.at(v.x), vars.at(v.y));
         match call {
             Set => {
-                let (g, b) = if n >= 3 { (a[1], a[2]) } else { (a[0], a[0]) };
-                let slots = [self.gfx.v.r, self.gfx.v.g, self.gfx.v.b, self.gfx.v.a];
-                for (slot, value) in slots.into_iter().zip([a[0], g, b, get(3, 1.0)]) {
-                    self.vars.values[slot] = value;
+                let (g, b) = if n >= 3 { (a[1], a[2]) } else { (get(0, 0.0), get(0, 0.0)) };
+                for (slot, value) in [v.r, v.g, v.b, v.a].into_iter().zip([get(0, 0.0), g, b, get(3, 1.0)]) {
+                    vars.put(slot, value);
                 }
-                if n >= 5 {
-                    self.set_gvar(|v| v.mode, a[4]);
-                }
-                if n >= 6 {
-                    self.set_gvar(|v| v.dest, a[5]);
-                }
-                if n >= 7 {
-                    self.set_gvar(|v| v.a2, a[6]);
+                for (i, slot) in [(4, v.mode), (5, v.dest), (6, v.a2)] {
+                    if n > i {
+                        vars.put(slot, a[i]);
+                    }
                 }
                 0.0
             }
             Rect => {
-                self.draw(Op::Rect { x: a[0], y: a[1], w: a[2], h: a[3], filled: get(4, 1.0) != 0.0 });
+                self.draw(vars, Op::Rect { x: a[0], y: a[1], w: a[2], h: a[3], filled: get(4, 1.0) != 0.0 });
                 0.0
             }
             RectTo => {
                 let (x0, x1) = (gx.min(a[0]), gx.max(a[0]));
                 let (y0, y1) = (gy.min(a[1]), gy.max(a[1]));
-                self.draw(Op::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, filled: true });
-                self.set_gvar(|v| v.x, a[0]);
-                self.set_gvar(|v| v.y, a[1]);
+                self.draw(vars, Op::Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0, filled: true });
+                vars.put(v.x, a[0]);
+                vars.put(v.y, a[1]);
                 a[0]
             }
             Line => {
-                self.draw(Op::Line { a: [a[0], a[1]], b: [a[2], a[3]], aa: get(4, 1.0) != 0.0 });
+                self.draw(vars, Op::Line { a: [a[0], a[1]], b: [a[2], a[3]], aa: get(4, 1.0) != 0.0 });
                 0.0
             }
             LineTo => {
-                self.draw(Op::Line { a: [gx, gy], b: [a[0], a[1]], aa: get(2, 1.0) != 0.0 });
-                self.set_gvar(|v| v.x, a[0]);
-                self.set_gvar(|v| v.y, a[1]);
+                self.draw(vars, Op::Line { a: [gx, gy], b: [a[0], a[1]], aa: get(2, 1.0) != 0.0 });
+                vars.put(v.x, a[0]);
+                vars.put(v.y, a[1]);
                 a[0]
             }
             Circle => {
                 let (filled, aa) = (get(3, 0.0) != 0.0, get(4, 1.0) != 0.0);
-                self.draw(Op::Circle { x: a[0], y: a[1], r: a[2], filled, aa });
+                self.draw(vars, Op::Circle { x: a[0], y: a[1], r: a[2], filled, aa });
                 0.0
             }
             Arc => {
-                self.draw(Op::Arc { x: a[0], y: a[1], r: a[2], from: a[3], to: a[4], aa: get(5, 1.0) != 0.0 });
+                self.draw(vars, Op::Arc { x: a[0], y: a[1], r: a[2], from: a[3], to: a[4], aa: get(5, 1.0) != 0.0 });
                 0.0
             }
             RoundRect => {
-                self.draw(Op::RoundRect { x: a[0], y: a[1], w: a[2], h: a[3], r: a[4], aa: get(5, 1.0) != 0.0 });
+                self.draw(vars, Op::RoundRect { x: a[0], y: a[1], w: a[2], h: a[3], r: a[4], aa: get(5, 1.0) != 0.0 });
                 0.0
             }
             Triangle => {
-                let points: Vec<[f64; 2]> = (0..n.min(16) / 2).map(|i| [a[2 * i], a[2 * i + 1]]).collect();
+                let points: Vec<[f64; 2]> = (0..n / 2).map(|i| [a[2 * i], a[2 * i + 1]]).collect();
                 if points.len() >= 3 {
-                    self.draw(Op::Polygon(points));
+                    self.draw(vars, Op::Polygon(points));
                 }
                 0.0
             }
             GradRect => {
-                let part = |from: usize| std::array::from_fn(|c| a[from + c] as f32);
+                let part = |from: usize| std::array::from_fn(|c| get(from + c, 0.0) as f32);
                 let (start, dx, dy) = (part(4), part(8), part(12));
-                self.draw(Op::Gradient { x: a[0], y: a[1], w: a[2], h: a[3], start, dx, dy });
+                self.draw(vars, Op::Gradient { x: a[0], y: a[1], w: a[2], h: a[3], start, dx, dy });
                 0.0
             }
             DrawStr => {
-                let text = c_text(&self.string(a[0])).to_owned();
-                let (w, h) = self.text_size(&text);
-                let (flags, right, bottom) = (a[1] as i64, a[2], a[3]);
-                let (mut x, mut y) = (gx, gy);
-                let mut clip = None;
-                if n >= 4 {
-                    if flags & 1 != 0 {
-                        x = gx + (right - gx - w) / 2.0;
-                    } else if flags & 2 != 0 {
-                        x = right - w;
-                    }
-                    if flags & 4 != 0 {
-                        y = gy + (bottom - gy - h) / 2.0;
-                    } else if flags & 8 != 0 {
-                        y = bottom - h;
-                    }
-                    if flags & 256 == 0 {
-                        clip = Some([gx, gy, right, bottom].map(|v| v.floor() as i64));
-                    }
-                }
-                self.draw_text(&text, x, y, clip);
+                let boxed = (n >= 4).then(|| (a[1] as i64 as u32, a[2], a[3]));
+                self.draw_text(vars, &reads.text, boxed);
                 0.0
             }
             DrawNumber => {
-                self.text_at_cursor(&format!("{:.*}", a[1].clamp(0.0, 16.0) as usize, a[0]));
+                self.draw_text(vars, &format!("{:.*}", a[1].clamp(0.0, 16.0) as usize, a[0]), None);
                 0.0
             }
             DrawChar => {
                 let c = char::from_u32(a[0].max(0.0) as u32).unwrap_or(' ');
-                self.text_at_cursor(&c.to_string());
+                self.draw_text(vars, &c.to_string(), None);
                 a[0]
             }
             Printf => {
-                let text = self.format(args);
-                self.text_at_cursor(&text);
-                text.len() as f64
+                self.draw_text(vars, &reads.text, None);
+                reads.text.len() as f64
             }
             MeasureStr | MeasureChar => {
                 let text = match call {
-                    MeasureStr => c_text(&self.string(a[0])).to_owned(),
+                    MeasureStr => reads.text.clone(),
                     _ => char::from_u32(a[0].max(0.0) as u32).unwrap_or(' ').to_string(),
                 };
                 // REAPER leaves the outputs as they were for an empty string.
@@ -565,52 +765,46 @@ impl Machine {
                     return 0.0;
                 }
                 let (w, h) = self.text_size(&text);
-                self.store(&args[1], w);
-                self.store(&args[2], h);
+                out.args.extend([(1, w), (2, h)]);
                 w
             }
             SetFont => {
                 // Font 0 is the default font and cannot be changed.
-                let idx = (a[0].max(0.0) as usize).min(16);
+                let idx = (get(0, 0.0).max(0.0) as usize).min(16);
                 if idx > 0 && n >= 2 {
-                    let face = c_text(&self.string(a[1])).to_owned();
-                    let font = &mut self.gfx.fonts[idx];
-                    font.face = face;
+                    let font = &mut self.fonts[idx];
+                    font.face = reads.text.clone();
                     font.bitmap = false;
                     if n >= 3 && a[2] > 0.0 {
                         font.size = a[2] as f32;
                     }
                     font.flags = if n >= 4 { a[3].max(0.0) as u32 } else { 0 };
                 }
-                self.gfx.font = idx;
-                self.set_gvar(|v| v.texth, self.gfx.fonts[idx].size.round() as f64);
+                self.font = idx;
+                vars.put(v.texth, self.fonts[idx].size.round() as f64);
                 1.0
             }
             GetFont => {
                 if n >= 1 {
-                    let face = self.current_font().face.clone();
-                    self.set_string(a[0], face);
+                    out.string = Some((a[0], self.current_font().face.clone()));
                 }
-                self.gfx.font as f64
+                self.font as f64
             }
             SetPixel => {
-                let mut paint = self.paint();
-                paint.rgb = [a[0], a[1], a[2]].map(|c| c.clamp(0.0, 1.0) as f32);
-                self.push(Cmd { dest: self.dest(), paint, clip: None, op: Op::Pixel { x: gx, y: gy } });
+                let mut paint = self.paint(vars);
+                paint.rgb = [a[0], a[1], a[2]].map(channel_byte);
+                self.push(Cmd { dest: self.dest(vars), paint, clip: None, op: Op::Pixel { x: gx, y: gy } });
                 0.0
             }
             GetPixel => {
-                let dest = self.dest();
+                let dest = self.dest(vars);
                 let p = self.draw_now().pixel(dest, gx.floor() as i64, gy.floor() as i64).unwrap_or([0; 4]);
-                for (arg, c) in args.iter().zip(p) {
-                    self.store(arg, c as f64 / 255.0);
-                }
+                out.args.extend((0..n.min(3)).map(|i| (i, p[i] as f64 / 255.0)));
                 p[0] as f64 / 255.0
             }
             LoadImg => {
                 let id = a[0].round() as i64;
-                let name = c_text(&self.string(a[1])).to_owned();
-                if (0..1024).contains(&id) { self.load_image(id, &name) } else { -1.0 }
+                if (0..1024).contains(&id) { self.load_image(&reads.dirs, id, &reads.text) } else { -1.0 }
             }
             SetImgDim => {
                 let id = a[0].round() as i64;
@@ -619,84 +813,124 @@ impl Machine {
                 }
                 let dim = |v: f64| (v.max(0.0) as usize).min(raster::MAX_DIM);
                 let (w, h) = (dim(a[1]), dim(a[2]));
-                self.gfx.sizes.insert(id, (w, h));
+                self.sizes.insert(id, (w, h));
                 self.push(Cmd { dest: id, paint: Paint::default(), clip: None, op: Op::SetImgDim(w, h) });
                 1.0
             }
             GetImgDim => {
-                let (w, h) = self.surface_size(a[0].round() as i64);
-                self.store(&args[1], w);
-                self.store(&args[2], h);
+                let (w, h) = self.surface_size(vars, a[0].round() as i64);
+                out.args.extend([(1, w), (2, h)]);
                 w
             }
             Blit => {
-                let src = a[0].round() as i64;
-                let (sw, sh) = self.surface_size(src);
+                let src = get(0, 0.0).round() as i64;
+                let (sw, sh) = self.surface_size(vars, src);
                 let scale = get(1, 1.0);
                 let (fx, fy, fw, fh) = (get(3, 0.0), get(4, 0.0), get(5, sw), get(6, sh));
                 let (tx, ty) = (get(7, gx), get(8, gy));
                 let (tw, th) = (get(9, fw * scale), get(10, fh * scale));
-                self.blit(src, [fx, fy, fw, fh], [tx, ty, tw, th], get(2, 0.0), [get(11, 0.0), get(12, 0.0)]);
+                let op = Op::Blit {
+                    src: src.max(-1),
+                    from: [fx, fy, fw, fh],
+                    to: [tx, ty, tw, th],
+                    angle: get(2, 0.0),
+                    pivot: [get(11, 0.0), get(12, 0.0)],
+                };
+                self.draw(vars, op);
                 src as f64
             }
             BlitExt => {
-                let p: [f64; 10] = std::array::from_fn(|i| self.read(a[1] + i as f64));
-                self.blit(a[0].round() as i64, [p[0], p[1], p[2], p[3]], [p[4], p[5], p[6], p[7]], a[2], [p[8], p[9]]);
+                let p = &reads.table;
+                let op = Op::Blit {
+                    src: (a[0].round() as i64).max(-1),
+                    from: [p[0], p[1], p[2], p[3]],
+                    to: [p[4], p[5], p[6], p[7]],
+                    angle: a[2],
+                    pivot: [p[8], p[9]],
+                };
+                self.draw(vars, op);
                 a[0]
             }
-            GetChar if self.gfx.window.as_ref().is_some_and(|w| !w.open) => -1.0,
-            GetChar => match a[0] as i64 {
-                65536 => (1 | 4 | if self.gfx.mouse_in { 2 | 8 } else { 0 }) as f64,
-                0 => self.gfx.chars.pop_front().map_or(0.0, |c| c as f64),
+            DeltaBlit => {
+                let src = get(0, 0.0).round() as i64;
+                let d: [f64; 14] = std::array::from_fn(|i| get(i + 1, 0.0));
+                let op = Op::DeltaBlit {
+                    src: src.max(-1),
+                    from: [d[0], d[1], d[2], d[3]],
+                    to: [d[4], d[5], d[6], d[7]].map(|c| c as i64),
+                    deltas: [d[8], d[9], d[10], d[11], d[12], d[13]],
+                    clip_source: get(15, 1.0) != 0.0,
+                };
+                self.draw(vars, op);
+                src as f64
+            }
+            TransformBlit => {
+                let src = a[0].round() as i64;
+                let (dw, dh) = (a[5].clamp(2.0, MAX_DIVS as f64) as usize, a[6].clamp(2.0, MAX_DIVS as f64) as usize);
+                let op = Op::TransformBlit {
+                    src: src.max(-1),
+                    to: [a[1], a[2], a[3], a[4]].map(|c| c as i64),
+                    divs: (dw, dh),
+                    table: reads.table.clone(),
+                };
+                self.draw(vars, op);
+                src as f64
+            }
+            GetChar if self.window.as_ref().is_some_and(|w| !w.open) => -1.0,
+            GetChar => match get(0, 0.0) as i64 {
+                65536 => (1 | 4 | if self.mouse_in { 2 | 8 } else { 0 }) as f64,
+                0 => self.chars.pop_front().map_or(0.0, |c| c as f64),
                 _ => 0.0,
             },
             BlurTo => {
-                self.draw(Op::Blur([gx, gy, a[0], a[1]]));
-                self.set_gvar(|v| v.x, a[0]);
-                self.set_gvar(|v| v.y, a[1]);
+                self.draw(vars, Op::Blur([gx, gy, a[0], a[1]]));
+                vars.put(v.x, a[0]);
+                vars.put(v.y, a[1]);
                 a[0]
             }
             MulAddRect => {
-                let mul = [a[4], a[5], a[6], get(7, 1.0)].map(|v| v as f32);
-                let add = [a[8], a[9], a[10], a[11]].map(|v| v as f32);
-                self.draw(Op::MulAdd { rect: [a[0], a[1], a[2], a[3]], mul, add });
+                let mul = [get(4, 0.0), get(5, 0.0), get(6, 0.0), get(7, 1.0)].map(|v| v as f32);
+                let add = [get(8, 0.0), get(9, 0.0), get(10, 0.0), get(11, 0.0)].map(|v| v as f32);
+                self.draw(vars, Op::MulAdd { rect: [a[0], a[1], a[2], a[3]], mul, add });
                 0.0
             }
-            // A script's deferred code cannot be run again with the choice, as an effect's
-            // `@gfx` is, so its menus are not shown.
-            ShowMenu if self.gfx.window.is_some() => 0.0,
-            ShowMenu => {
-                if let Some(choice) = self.gfx.menu_choice.take() {
-                    return choice as f64;
+            DropFile => {
+                let idx = get(0, 0.0);
+                if idx < 0.0 {
+                    self.dropped.clear();
+                    return 0.0;
                 }
-                let items = menu::parse(c_text(&self.string(a[0])));
-                if !items.is_empty() {
-                    self.gfx.menu = Some(Menu { items, x: gx, y: gy });
-                    self.gfx.halted = true;
+                match self.dropped.get(idx as usize) {
+                    Some(name) => {
+                        if n >= 2 {
+                            out.string = Some((a[1], name.clone()));
+                        }
+                        1.0
+                    }
+                    None => 0.0,
                 }
-                0.0
             }
+            ShowMenu => 0.0,
             SysCol => SYSCOL,
             Init => {
-                let title = c_text(&self.string(a[0])).to_owned();
                 let (w, h) = (get(1, 0.0).max(0.0) as u32, get(2, 0.0).max(0.0) as u32);
-                let window = self.gfx.window.get_or_insert(Window { title: String::new(), w: 640, h: 400, open: true });
+                let window = self.window.get_or_insert(Window { title: String::new(), w: 640, h: 400, open: true });
                 // An empty title on an open window only resizes it.
-                if !title.is_empty() || !window.open {
-                    window.title = title;
+                if !reads.text.is_empty() || !window.open {
+                    window.title = reads.text.clone();
                 }
                 if w > 0 && h > 0 {
                     (window.w, window.h) = (w, h);
                 }
                 window.open = true;
                 let (w, h) = (window.w as usize, window.h as usize);
-                self.set_gvar(|v| v.w, w as f64);
-                self.set_gvar(|v| v.h, h as f64);
+                vars.put(v.w, w as f64);
+                vars.put(v.h, h as f64);
                 self.push(Cmd { dest: -1, paint: Paint::default(), clip: None, op: Op::Resize(w, h) });
                 1.0
             }
             Quit => {
-                if let Some(w) = &mut self.gfx.window {
+                if let Some(w) = &mut self.window {
                     w.open = false;
                 }
                 0.0
@@ -752,7 +986,7 @@ mod tests {
              gfx_set(0, 1, 0, 1, 0); gfx_rect(40, 0, 5, 5, 0);",
         );
         let clear = m.vars.slot("gfx_clear");
-        m.vars.values[clear] = 0x204000 as f64;
+        m.vars.put(clear, 0x204000 as f64);
         let s = run(&mut m, &code, &view()).1.unwrap();
         assert_eq!(rgb(&s, 30, 30), [0x00, 0x40, 0x20], "gfx_clear is r | g << 8 | b << 16");
         assert!(near(rgb(&s, 5, 5), [128, 32, 16]), "half of red over the clear: {:?}", rgb(&s, 5, 5));
@@ -872,21 +1106,238 @@ mod tests {
     }
 
     #[test]
-    fn showmenu_stops_the_run_and_returns_the_choice_when_repeated() {
-        let (mut m, code) = machine(
-            "gfx_x = 5; gfx_y = 6; gfx_set(1); gfx_rect(0, 0, 4, 4); \
-             mouse_cap == 2 ? (choice = gfx_showmenu(\"a|>sub|b|<c\"); after = 1;); runs += 1;",
+    fn showmenu_waits_inside_the_run_for_the_choice() {
+        let (m, code) = machine(
+            "runs += 1; gfx_x = 5; gfx_y = 6; gfx_set(1); gfx_rect(0, 0, 4, 4); \
+             mouse_cap == 2 ? (choice = gfx_showmenu(\"a|>sub|b|<c\"); after = 1;);",
         );
-        let click = Input { mouse_cap: 2, ..view() };
-        let (out, screen) = run(&mut m, &code, &click);
-        let menu = out.menu.expect("a menu is asked for");
+        let shared = m.share();
+        let mut gfx_view = View::spawn(m.share(), vec![code], Vec::new());
+        gfx_view.run(Input { mouse_cap: 2, ..view() });
+        let next = |view: &mut View| {
+            let started = std::time::Instant::now();
+            loop {
+                if let Some(e) = view.poll() {
+                    return e;
+                }
+                assert!(started.elapsed().as_secs() < 10, "the view answers");
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        };
+        let Event::Menu(menu) = next(&mut gfx_view) else { panic!("a menu is asked for") };
         assert_eq!((menu.x, menu.y, menu.items.len()), (5.0, 6.0, 2));
-        assert_eq!((m.vars.get("after"), m.vars.get("runs")), (Some(0.0), Some(0.0)), "the run stops at the menu");
-        assert_eq!(screen.map(|s| rgb(&s, 1, 1)), Some([0; 3]), "and what it drew is dropped");
-        let (out, screen) = run(&mut m, &code, &Input { menu_choice: Some(2), ..click });
-        assert!(out.menu.is_none());
-        assert_eq!([m.vars.get("choice"), m.vars.get("after"), m.vars.get("runs")], [Some(2.0), Some(1.0), Some(1.0)]);
-        assert_eq!(screen.map(|s| rgb(&s, 1, 1)), Some([255; 3]));
+        assert_eq!((shared.vars.get("runs"), shared.vars.get("after")), (Some(1.0), Some(0.0)), "the run waits");
+        assert!(gfx_view.busy());
+        gfx_view.choose(2);
+        let Event::Frame(out) = next(&mut gfx_view) else { panic!("the run ends") };
+        assert_eq!(
+            [shared.vars.get("choice"), shared.vars.get("after"), shared.vars.get("runs")],
+            [Some(2.0), Some(1.0), Some(1.0)]
+        );
+        assert_eq!(out.render().map(|s| rgb(&s, 1, 1)), Some([255; 3]), "with what was drawn before the menu");
+        assert!(!gfx_view.busy());
+    }
+
+    #[test]
+    fn showmenu_without_a_view_gives_0() {
+        let (m, _) = frame("x = gfx_showmenu(\"a|b\") + 5;");
+        assert_eq!(m.vars.get("x"), Some(5.0));
+    }
+
+    /// `gfx_x`/`gfx_y` after `gfx_drawstr("abcdef", flags, right, bottom)` and the ink's
+    /// bounds, measured in REAPER with font 0 (48 x 8): `(start, flags, right, bottom, after,
+    /// ink left, top, right, bottom)`.
+    type Boxed = ((f64, f64), u32, f64, f64, (f64, f64), [i64; 4]);
+    const BOXED: [Boxed; 11] = [
+        ((10.0, 20.0), 0, 100.0, 50.0, (48.0, 0.0), [10, 20, 56, 26]),
+        ((10.0, 20.0), 1, 100.0, 50.0, (69.0, 0.0), [31, 20, 77, 26]),
+        ((10.0, 20.0), 5, 100.0, 50.0, (69.0, 11.0), [31, 31, 77, 37]),
+        ((10.0, 20.0), 10, 100.0, 50.0, (90.0, 22.0), [52, 42, 98, 48]),
+        ((10.0, 20.0), 257, 100.0, 50.0, (79.0, 20.0), [31, 20, 77, 26]),
+        ((10.7, 20.7), 5, 100.0, 80.0, (69.0, 26.0), [31, 46, 77, 52]),
+        ((-20.0, -6.0), 5, 100.0, 80.0, (84.0, 39.0), [36, 39, 82, 45]),
+        ((-20.0, -6.0), 0, 100.0, 50.0, (48.0, 0.0), [0, 0, 46, 6]),
+        ((10.0, 20.0), 1, 99.0, 50.0, (68.0, 0.0), [30, 20, 76, 26]),
+        ((10.0, 20.0), 4, 100.0, 23.0, (48.0, -3.0), [10, 20, 54, 22]),
+        ((10.0, 20.0), 1, 47.0, 50.0, (42.0, 0.0), [-1; 4]),
+    ];
+
+    #[test]
+    fn font_0_in_a_box_draws_and_leaves_gfx_x_as_reaper_does() {
+        for ((x, y), flags, r, b, after, ink) in BOXED {
+            let (mut m, code) = machine(&format!(
+                "gfx_setimgdim(0, 120, 100); gfx_dest = 0; gfx_set(1); gfx_x = {x}; gfx_y = {y}; \
+                 gfx_drawstr(\"abcdef\", {flags}, {r}, {b}); ax = gfx_x; ay = gfx_y; gfx_dest = -1; \
+                 gfx_blit(0, 1, 0, 0, 0, 120, 100, 0, 0, 120, 100);"
+            ));
+            let s = run(&mut m, &code, &Input { w: 120.0, h: 100.0, ..Default::default() }).1.unwrap();
+            let case = format!("from ({x}, {y}) with flags {flags} to ({r}, {b})");
+            assert_eq!((m.vars.get("ax").unwrap(), m.vars.get("ay").unwrap()), after, "{case}");
+            let lit: Vec<(i64, i64)> = (0..100)
+                .flat_map(|y| (0..120).map(move |x| (x, y)))
+                .filter(|&(x, y)| rgb(&s, x, y) != [0; 3])
+                .collect();
+            let bounds = [
+                lit.iter().map(|p| p.0).min().unwrap(),
+                lit.iter().map(|p| p.1).min().unwrap(),
+                lit.iter().map(|p| p.0).max().unwrap(),
+                lit.iter().map(|p| p.1).max().unwrap(),
+            ];
+            // Scythe's font 0 glyphs are its own, so their ink may start or end a column apart, and
+            // where the box cuts a glyph the ink is not compared.
+            assert!(
+                ink[0] < 0 || bounds.iter().zip(ink).all(|(a, b)| a.abs_diff(b) <= 1),
+                "{case}: ink {bounds:?}, REAPER's {ink:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn font_0_lines_align_as_a_block_and_an_empty_box_zeroes_gfx_x() {
+        let (m, _) = frame(
+            "gfx_x = 10; gfx_y = 20; gfx_drawstr(\"abcdef\\nab\", 1, 100, 50); a = gfx_x; b = gfx_y; \
+             gfx_x = 10; gfx_y = 20.5; gfx_drawstr(\"abcdef\", 0, 100, 20); c = gfx_x; d = gfx_y; \
+             gfx_x = 10.7; gfx_y = 20.7; gfx_drawstr(\"ab\\ncdef\"); e = gfx_x; f = gfx_y;",
+        );
+        let var = |n: &str| m.vars.get(n).unwrap();
+        assert_eq!([var("a"), var("b")], [37.0, 8.0], "the second line starts where the first does");
+        assert_eq!([var("c"), var("d")], [0.0, 20.5]);
+        assert_eq!([var("e"), var("f")], [42.0, 28.0], "measured from the whole pixel");
+    }
+
+    #[test]
+    fn other_fonts_leave_gfx_x_after_the_last_line_whatever_the_box() {
+        let (m, _) = frame(
+            "gfx_setfont(1, \"Sans\", 20); gfx_measurestr(\"cdef\", w, h); \
+             gfx_x = 10.7; gfx_y = 20; gfx_drawstr(\"ab\\ncdef\", 10, 100, 80); a = gfx_x; b = gfx_y; \
+             gfx_x = 280; gfx_y = 190; gfx_drawstr(\"ab\\ncdef\", 0, 100, 50); c = gfx_x; d = gfx_y;",
+        );
+        let var = |n: &str| m.vars.get(n).unwrap();
+        let w = var("w");
+        assert_eq!([var("a"), var("b")], [10.0 + w, 40.0]);
+        assert_eq!([var("c"), var("d")], [280.0 + w, 190.0], "an empty box leaves gfx_y");
+    }
+
+    /// An 8 x 8 image whose pixel `(x, y)` holds about `(30x, 30y, 0)`, with the values REAPER
+    /// gave the probes (whose `xx * 30 / 255` it reads as `xx * (30 / 255)`), and what one call made of it in a 14 x 14 view.
+    fn coords(call: &str) -> Bitmap {
+        frame(&format!(
+            "gfx_setimgdim(1, 8, 8); gfx_dest = 1; yy = 0; loop(8, xx = 0; loop(8, gfx_x = xx; gfx_y = yy; \
+             gfx_setpixel(xx * (30 / 255), yy * (30 / 255), 0); xx += 1); yy += 1); \
+             gfx_dest = -1; gfx_set(0); gfx_rect(0, 0, 14, 14); gfx_set(1); {call}"
+        ))
+        .1
+    }
+
+    fn row(s: &Bitmap, y: i64) -> Vec<[u8; 3]> {
+        (0..14).map(|x| rgb(s, x, y)).collect()
+    }
+
+    #[test]
+    fn deltablit_steps_as_lice_does() {
+        let s = coords("gfx_mode = 0; gfx_deltablit(1, 0, 0, 8, 8, 0, 0, 14, 14, 0.3, 0, 0, 0.3, 0, 0);");
+        let reds: Vec<u8> = row(&s, 0).iter().map(|p| p[0]).collect();
+        assert_eq!(reds, [0, 8, 17, 26, 35, 44, 53, 62, 71, 80, 88, 98, 107, 116], "16.16 steps, 16-bit weights");
+        assert_eq!(rgb(&s, 1, 1), [8, 8, 0]);
+        let s = coords("gfx_mode = 0; gfx_deltablit(1, 0.5, 0.25, 8, 8, 2, 3, 10, 10, 1, 0, 0, 1, 0, 0);");
+        assert_eq!((rgb(&s, 2, 3), rgb(&s, 9, 3), rgb(&s, 2, 10)), ([15, 7, 0], [210, 7, 0], [15, 210, 0]));
+        assert_eq!(rgb(&s, 10, 3), [0; 3], "ten pixels wide");
+        let s = coords("gfx_mode = 4; gfx_deltablit(1, 2, 2, 3, 3, 0, 0, 14, 14, 1, 0, 0, 1, 0, 0);");
+        assert_eq!((rgb(&s, 0, 0), rgb(&s, 1, 0), rgb(&s, 0, 1)), ([120, 120, 0], [0; 3], [0; 3]), "read from (4, 4)");
+        let s = coords("gfx_mode = 4; gfx_deltablit(1, 0, 0, 4, 4, 0, 0, 14, 14, 1, 0, 0, 1, 0, 0, 0);");
+        assert_eq!(rgb(&s, 7, 7), [210, 210, 0], "the whole image without the source rectangle");
+        let s = coords("gfx_mode = 4; gfx_deltablit(1, 0, 0, 8, 8, 0, 0, 14, 14, 0.5, 0, 0, 0.5, 0.1, 0.05);");
+        assert_eq!((rgb(&s, 11, 1), rgb(&s, 12, 1), rgb(&s, 11, 2)), ([179, 30, 0], [210, 30, 0], [210, 60, 0]));
+    }
+
+    #[test]
+    fn transformblit_runs_a_delta_blit_per_cell() {
+        let s = coords(
+            "300[0] = 0; 300[1] = 0; 300[2] = 8; 300[3] = 0; 300[4] = 0; 300[5] = 8; 300[6] = 8; 300[7] = 8; \
+             gfx_mode = 4; gfx_transformblit(1, 0, 0, 14, 14, 2, 2, 300);",
+        );
+        let reds: Vec<u8> = row(&s, 0).iter().map(|p| p[0]).collect();
+        assert_eq!(reds, [0, 0, 30, 30, 60, 60, 89, 89, 120, 150, 150, 179, 179, 210]);
+        let s = coords(
+            "300[0] = 1; 300[1] = 1; 300[2] = 5; 300[3] = 2; 300[4] = 2; 300[5] = 6; 300[6] = 7; 300[7] = 7; \
+             gfx_mode = 0; gfx_transformblit(1, 0, 0, 14, 14, 2, 2, 300);",
+        );
+        let reds: Vec<u8> = row(&s, 0).iter().map(|p| p[0]).collect();
+        assert_eq!(reds, [30, 38, 47, 55, 64, 72, 80, 88, 97, 106, 115, 124, 132, 141]);
+        assert_eq!(rgb(&s, 13, 13), [194, 196, 0]);
+    }
+
+    #[test]
+    fn retina_scripts_draw_at_the_screens_pixels() {
+        let (mut m, code) = machine("w = gfx_w; r = gfx_ext_retina; mx = mouse_x;");
+        let input = Input { scale: 2.0, mouse_x: 10.0, ..view() };
+        let retina = m.vars.slot("gfx_ext_retina");
+        m.vars.put(retina, 1.0);
+        let (out, screen) = run(&mut m, &code, &input);
+        assert_eq!((out.scale, screen.map(|s| s.w)), (2.0, Some(128)));
+        assert_eq!([m.vars.get("w"), m.vars.get("r"), m.vars.get("mx")], [Some(128.0), Some(2.0), Some(20.0)]);
+        let (mut m, code) = machine("w = gfx_w; r = gfx_ext_retina;");
+        let (out, _) = run(&mut m, &code, &input);
+        assert_eq!((out.scale, m.vars.get("w"), m.vars.get("r")), (1.0, Some(64.0), Some(0.0)));
+    }
+
+    #[test]
+    fn dropped_files_are_listed_until_cleared() {
+        let (mut m, code) = machine(
+            "n = 0; while (gfx_getdropfile(n, #f)) (n += 1); gfx_getdropfile(0, #first); \
+             mouse_cap == 1 ? gfx_getdropfile(-1);",
+        );
+        let input = Input { dropped: vec!["/a.wav".into(), "/b c.wav".into()], ..view() };
+        run(&mut m, &code, &input);
+        let first = m.vars.named["#first"] as f64;
+        assert_eq!((m.string(first), m.vars.get("n")), ("/a.wav".to_owned(), Some(2.0)));
+        run(&mut m, &code, &Input { mouse_cap: 1, ..view() });
+        run(&mut m, &code, &view());
+        assert_eq!(m.vars.get("n"), Some(0.0), "gfx_getdropfile(-1) clears the list");
+    }
+
+    #[test]
+    fn outline_shadow_and_inverted_fonts() {
+        let draw = |flags: &str| {
+            frame(&format!(
+                "gfx_set(0.5); gfx_rect(0, 0, 64, 48); gfx_setfont(1, \"Sans\", 16, {flags}); gfx_set(1, 0, 0); \
+                 gfx_x = 4; gfx_y = 4; gfx_drawstr(\"Ab\"); gfx_measurestr(\"Ab\", w, h);"
+            ))
+        };
+        let (m, plain) = draw("0");
+        let (w, h) = (m.vars.get("w").unwrap() as i64, m.vars.get("h").unwrap() as i64);
+        let colours = |s: &Bitmap| {
+            let mut seen: Vec<[u8; 3]> =
+                (0..48).flat_map(|y| (0..64).map(move |x| (x, y))).map(|(x, y)| rgb(s, x, y)).collect();
+            seen.sort();
+            seen.dedup();
+            seen
+        };
+        if colours(&plain).len() < 3 {
+            // No font on this system.
+            return;
+        }
+        let (_, outline) = draw("'o'");
+        assert_eq!(colours(&outline), [[127, 127, 127], [255, 0, 0], [255, 255, 255]], "all or nothing, white around");
+        let (_, shadow) = draw("'s'");
+        let white: Vec<(i64, i64)> = (0..48)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .filter(|&(x, y)| rgb(&shadow, x, y) == [255; 3])
+            .collect();
+        assert!(white.iter().all(|&(x, y)| [(x - 1, y), (x, y - 1), (x - 1, y - 1)].iter().any(|&(a, b)| rgb(
+            &shadow, a, b
+        ) == [
+            255, 0, 0
+        ])));
+        let (_, mono_outline) = draw("'om'");
+        assert_eq!(colours(&mono_outline), [[127, 127, 127], [255, 0, 0]], "one colour with 'm'");
+        let (_, inverted) = draw("'v'");
+        assert_eq!(
+            (rgb(&inverted, 4, 4), rgb(&inverted, 4 + w - 1, 4 + h - 1)),
+            ([255, 0, 0], [255, 0, 0]),
+            "the box filled"
+        );
+        assert_eq!((rgb(&inverted, 4 + w, 4), rgb(&inverted, 4, 4 + h)), ([127; 3], [127; 3]), "and no more");
     }
 
     #[test]

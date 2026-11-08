@@ -212,8 +212,12 @@ pub struct GfxView {
     pub size: (u32, u32),
     /// The screen `@gfx` drew last.
     pub texture: Option<egui::TextureHandle>,
+    /// The effect's `@gfx` thread, started when the view first shows.
+    pub runner: Option<scythe_engine::eel::gfx::View>,
     /// A menu the script waits on.
     pub menu: Option<crate::ui::gfx_view::GfxMenu>,
+    /// Screen pixels per point of the last frame.
+    pub scale: f32,
     pub ran: Option<Instant>,
     pub pointer: crate::ui::gfx_view::GfxPointer,
 }
@@ -1288,7 +1292,9 @@ impl ScytheApp {
                 instance,
                 size,
                 texture: None,
+                runner: None,
                 menu: None,
+                scale: 1.0,
                 ran: None,
                 pointer: Default::default(),
             });

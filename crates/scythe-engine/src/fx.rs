@@ -202,11 +202,15 @@ pub trait Effect: Send {
         None
     }
 
-    /// Runs the effect's `@gfx` once on the UI thread; what it drew is drawn by rendering the
-    /// output, which needs no lock on the effect.
-    fn gfx(&mut self, _input: &crate::eel::gfx::Input) -> Option<crate::eel::gfx::Output> {
+    /// The effect's `@gfx`, started on a thread of its own that shares the effect's state;
+    /// taken under the effect's lock and then used without it.
+    fn gfx_view(&mut self) -> Option<crate::eel::gfx::View> {
         None
     }
+
+    /// Sliders a run of `@gfx` changed (by index, with their new values), applied as if set
+    /// from outside.
+    fn gfx_sliders(&mut self, _changes: &[(usize, f64)]) {}
 
     /// Automatable parameters, for hosted plugins.
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -847,9 +851,7 @@ impl FxRegistry {
                 let script = crate::jsfx::Script::load(&path, roots)?;
                 let values = lines.first().map(|l| crate::jsfx::parse_values(l, &script.sliders)).unwrap_or_default();
                 let mut fx = crate::jsfx::JsfxEffect::new(script, &values, self.sample_rate)?;
-                if let Some(state) = js_serialized(slot) {
-                    fx.restore_serialized(state);
-                }
+                fx.loaded(!lines.is_empty(), js_serialized(slot));
                 Ok((Box::new(fx), FxStatus::Native("JSFX run from its source")))
             }
             "LV2" if args.first().is_some_and(|n| n.contains("Neural Amp Modeler")) => {

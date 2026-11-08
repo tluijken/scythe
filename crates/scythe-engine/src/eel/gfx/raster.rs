@@ -160,6 +160,24 @@ pub enum Op {
         angle: f64,
         pivot: [f64; 2],
     },
+    /// `gfx_deltablit`: image `src` read from `(s, t)` = `from`'s corner onto `to` (left,
+    /// top, width, height), with `deltas` the change of `s` and `t` per pixel right, per row
+    /// down, and of the former per row. `clip_source` keeps the reads in `from`.
+    DeltaBlit {
+        src: i64,
+        from: [f64; 4],
+        to: [i64; 4],
+        deltas: [f64; 6],
+        clip_source: bool,
+    },
+    /// `gfx_transformblit`: `to` split into a grid of `divs` points, each with its source
+    /// coordinates `(s, t)` in `table`, row by row.
+    TransformBlit {
+        src: i64,
+        to: [i64; 4],
+        divs: (usize, usize),
+        table: Vec<f64>,
+    },
     /// An image cleared to transparent at a new size; one already that size keeps its pixels.
     SetImgDim(usize, usize),
     SetImage(Bitmap),
@@ -238,7 +256,7 @@ impl Canvas {
         }
         // A surface copied onto itself reads what it held before.
         let source = match &op {
-            Op::Blit { src, .. } => {
+            Op::Blit { src, .. } | Op::DeltaBlit { src, .. } | Op::TransformBlit { src, .. } => {
                 let src = (*src).max(-1);
                 match self.bitmap(src) {
                     Some(b) => Some(b.clone()),
@@ -272,13 +290,28 @@ impl Canvas {
             Op::Pixel { x, y } => pen.plot(x.floor() as i64, y.floor() as i64, 1.0),
             Op::Text { x, y, font, text } => {
                 let (x0, y0) = (x.round() as i64, y.round() as i64);
-                for (i, j, cov) in text::rasterize(&font, &text) {
-                    pen.plot(x0 + i as i64, y0 + j as i64, cov as f32 / 255.0);
+                for (i, j, cov, effect) in text::rasterize(&font, &text) {
+                    let (px, py, a) = (x0 + i as i64, y0 + j as i64, cov as f32 / 255.0);
+                    if effect {
+                        pen.blend(px, py, [1.0; 3], pen.paint.a * a);
+                    } else {
+                        pen.plot(px, py, a);
+                    }
                 }
             }
             Op::Blit { from, to, angle, pivot, .. } => {
                 if let Some(src) = source {
                     pen.blit(&src, from, to, angle, pivot);
+                }
+            }
+            Op::DeltaBlit { from, to, deltas, clip_source, .. } => {
+                if let Some(src) = source {
+                    pen.delta_blit(&src, from, to, deltas, clip_source);
+                }
+            }
+            Op::TransformBlit { to, divs, table, .. } => {
+                if let Some(src) = source {
+                    pen.transform_blit(&src, to, divs, &table);
                 }
             }
             Op::Blur(r) => pen.blur(r),
@@ -537,6 +570,93 @@ impl<'a> Pen<'a> {
         }
     }
 
+    /// LICE's delta blit: source coordinates and their steps are 16.16 fixed point. Kept to the
+    /// source rectangle, the reads are also moved by that rectangle's whole-pixel corner
+    /// (REAPER reads from `2 * s` for a rectangle at `s`).
+    fn delta_blit(&mut self, src: &Bitmap, from: [f64; 4], to: [i64; 4], deltas: [f64; 6], clip_source: bool) {
+        let [s0, t0, sw, sh] = from;
+        let [dx, dy, dw, dh] = to;
+        let [dsdx, dtdx, dsdy, dtdy, dsdxdy, dtdxdy] = deltas;
+        if dw <= 0 || dh <= 0 || src.w == 0 || src.h == 0 {
+            return;
+        }
+        let (mut l, mut t, mut r, mut b) = (0.0f64, 0.0f64, src.w as f64, src.h as f64);
+        let mut corner = (0, 0);
+        if clip_source {
+            (l, t, r, b) = (l.max(s0), t.max(t0), r.min(s0 + sw), b.min(t0 + sh));
+            corner = (l as i64, t as i64);
+        }
+        let fixed = |v: f64| (v * 65536.0) as i64;
+        let (fl, ft, fr, fb) = (fixed(l), fixed(t), fixed(r), fixed(b));
+        let (last_x, last_y) = (r.ceil() as i64 - 1, b.ceil() as i64 - 1);
+        let nearest = self.paint.mode & NO_FILTER != 0;
+        let (alpha, mode) = (self.paint.a, self.paint.mode);
+        let (mut s, mut t_row) = (fixed(s0) + (corner.0 << 16), fixed(t0) + (corner.1 << 16));
+        let (mut step_s, mut step_t) = (fixed(dsdx), fixed(dtdx));
+        let [dsdy, dtdy, dsdxdy, dtdxdy] = [dsdy, dtdy, dsdxdy, dtdxdy].map(fixed);
+        for py in dy..dy + dh {
+            let (mut fs, mut ft_) = (s, t_row);
+            for px in dx..dx + dw {
+                if fs >= fl && fs < fr && ft_ >= ft && ft_ < fb {
+                    let (x, y) = (fs >> 16, ft_ >> 16);
+                    let pixel = |x: i64, y: i64| src.px[y.min(last_y) as usize * src.w + x.min(last_x) as usize];
+                    let c = if nearest {
+                        pixel(x, y).map(f32::from)
+                    } else {
+                        bilinear_fixed(pixel(x, y), pixel(x + 1, y), pixel(x, y + 1), pixel(x + 1, y + 1), fs, ft_)
+                    };
+                    let a = if mode & NO_SOURCE_ALPHA != 0 { alpha } else { alpha * c[3] / 255.0 };
+                    self.blend(px, py, [c[0] / 255.0, c[1] / 255.0, c[2] / 255.0], a);
+                }
+                fs += step_s;
+                ft_ += step_t;
+            }
+            s += dsdy;
+            t_row += dtdy;
+            step_s += dsdxdy;
+            step_t += dtdxdy;
+        }
+    }
+
+    /// LICE's transform blit: a delta blit per cell of the grid, the cells' edges rounded to
+    /// whole pixels.
+    fn transform_blit(&mut self, src: &Bitmap, to: [i64; 4], (cols, rows): (usize, usize), table: &[f64]) {
+        let [x0, y0, w, h] = to;
+        if w <= 0 || h <= 0 || table.len() < 2 * cols * rows {
+            return;
+        }
+        let point = |i: usize, j: usize| (table[2 * (j * cols + i)], table[2 * (j * cols + i) + 1]);
+        let (xstep, ystep) = (w as f64 / (cols - 1) as f64, h as f64 / (rows - 1) as f64);
+        let edge = |v: f64| (v + 0.5).floor() as i64;
+        let mut ypos = y0 as f64;
+        for j in 0..rows - 1 {
+            let top = edge(ypos);
+            ypos += ystep;
+            let ch = edge(ypos) - top;
+            let mut xpos = x0 as f64;
+            for i in 0..cols - 1 {
+                let left = edge(xpos);
+                xpos += xstep;
+                let cw = edge(xpos) - left;
+                if cw <= 0 || ch <= 0 {
+                    continue;
+                }
+                let ((s00, t00), (s01, t01)) = (point(i, j), point(i + 1, j));
+                let ((s10, t10), (s11, t11)) = (point(i, j + 1), point(i + 1, j + 1));
+                let (fw, fh) = (cw as f64, ch as f64);
+                let deltas = [
+                    (s01 - s00) / fw,
+                    (t01 - t00) / fw,
+                    (s10 - s00) / fh,
+                    (t10 - t00) / fh,
+                    ((s11 - s10) - (s01 - s00)) / (fw * fh),
+                    ((t11 - t10) - (t01 - t00)) / (fw * fh),
+                ];
+                self.delta_blit(src, [s00, t00, src.w as f64, src.h as f64], [left, top, cw, ch], deltas, false);
+            }
+        }
+    }
+
     fn blur(&mut self, [x0, y0, x1, y1]: [f64; 4]) {
         let (l, r) = (x0.min(x1), x0.max(x1));
         let (t, b) = (y0.min(y1), y0.max(y1));
@@ -578,6 +698,18 @@ impl<'a> Pen<'a> {
             }
         }
     }
+}
+
+/// LICE's integer bilinear filter between a pixel, its right and lower neighbours and the one
+/// diagonal, weighted by the 16-bit fractions of the 16.16 coordinates `s` and `t`.
+fn bilinear_fixed(p00: Rgba, p01: Rgba, p10: Rgba, p11: Rgba, s: i64, t: i64) -> [f32; 4] {
+    let (xf, yf) = ((s & 0xffff) as u64, (t & 0xffff) as u64);
+    let f4 = (xf * yf) >> 16;
+    let (f3, f2) = (yf - f4, xf - f4);
+    let f1 = 65536 + f4 - yf - xf;
+    std::array::from_fn(|c| {
+        ((p00[c] as u64 * f1 + p01[c] as u64 * f2 + p10[c] as u64 * f3 + p11[c] as u64 * f4) >> 16) as f32
+    })
 }
 
 /// The source's colour at `(u, v)`, interpolated between the four nearest pixel centres

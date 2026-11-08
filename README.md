@@ -239,27 +239,42 @@ Working:
   checked); constant expressions are folded at load (non-finite results become 0, `1 << 40` is
   a 32-bit shift) and `x + 0`, `x * 1`, `x * 0` are simplified; arithmetic flushes subnormal
   results to zero; comparisons with NaN take x86's unordered flags (`<`, `<=`, `==` true);
-  `min`/`max` give their first argument for NaN; integer conversions give the most negative
-  integer for NaN and out-of-range values; `<<`/`>>` shift the low 32 bits; `invsqrt` is the
-  bit-trick estimate; `loop()` evaluates to 1.
+  `min`/`max` give their first argument for NaN, except that `max` gives its second where
+  REAPER compiles it for a pointer result (an argument of `memset`, `sprintf`, `gfx_*` and the
+  other builtins taking pointers, or a branch of a `?:` that is assigned or passed on); the
+  library functions (`exp`, `pow`, `sin`, ...) flush subnormal results too; integer
+  conversions give the most negative integer for NaN and out-of-range values; `<<`/`>>` shift
+  the low 32 bits; `invsqrt` is the bit-trick estimate; `loop()` evaluates to 1. EEL2 has no
+  exponents: a number run into letters (`1e5`, `1.5e+3`, `2x`) fails to compile, and a section
+  that does not compile is left out while the others run, as REAPER does.
   File sliders list their folder under `Data` and are stored by file name as REAPER does;
-  `@serialize` state is read from and written to `<JS_SER` (32-bit floats) after `@init` and
-  `@slider`, as REAPER loads it;
+  `@serialize` state is read from and written to `<JS_SER` (32-bit floats), and `@serialize`
+  runs when REAPER runs it: on load after `@init` and `@slider` (writing), again after the
+  slot's slider values (`@slider`), reading the stored state and writing once more, and once
+  per save; an effect without `@serialize` is initialised once for its first playback;
   `file_open` reads WAV files as samples and text one value per item. Effects with `@gfx`
   (analyzers, scopes, the channel mapper) open their own view from the Edit button: `@gfx`
-  runs on the UI thread about 30 times a second, sharing the effect's variables and memory,
-  with the mouse (buttons, modifiers, wheel) and typed keys. It draws into pixels as REAPER
+  runs about 30 times a second on a thread of its own beside the audio, as REAPER runs it,
+  sharing the effect's variables, memory, strings and images (each value is an atomic, so the
+  two race a value at a time as REAPER's do), with the mouse (buttons, modifiers, wheel),
+  typed keys and files dropped onto the view (`gfx_getdropfile`). It draws into pixels as REAPER
   does: rectangles, lines, circles, arcs, triangles, gradients and pixels blend with `gfx_a`
   and `gfx_mode` (additive too), into the screen or any of 1024 images (`gfx_dest`,
-  `gfx_setimgdim`); font 0, and a font before `gfx_setfont` names a face, is Scythe's own
-  8-pixel bitmap font with REAPER's measures; other text is drawn in the face `gfx_setfont`
-  names (found through fontconfig;
-  bold, italic, underline and turned text) and measures as it draws; `gfx_blit` and
-  `gfx_blitext` scale, turn and filter; `gfx_loadimg` reads PNG and JPEG files from the
-  effect's folder or `Data`; `gfx_getpixel`, `gfx_blurto` and `gfx_muladdrect` work on the
-  pixels; `gfx_showmenu` opens a menu at the mouse; `gfx_clear = -1` keeps what was drawn; and
-  sliders it sets take effect as if moved by hand. The script runs under the effect's lock,
-  its drawing after the lock is let go, and the view uploads the screen only when it changed. They
+  `gfx_setimgdim`), colours taken to a byte as REAPER truncates them; font 0, and a font
+  before `gfx_setfont` names a face, is Scythe's own 8-pixel bitmap font with REAPER's
+  measures; other text is drawn in the face `gfx_setfont` names (found through fontconfig;
+  bold, italic, underline, turned, and outlined, shadowed, inverted and one-colour as LICE
+  draws them) and measures as it draws. Text in a box (`gfx_drawstr` with flags) is placed and
+  clipped as REAPER places it, font 0 drawing into a window on the box and leaving
+  `gfx_x`/`gfx_y` measured from that window, other fonts aligning each line and leaving them
+  after the text. `gfx_blit` and `gfx_blitext` scale, turn and filter; `gfx_deltablit` and
+  `gfx_transformblit` step through the source in LICE's fixed point with its filter;
+  `gfx_loadimg` reads PNG and JPEG files from the effect's folder or `Data`; `gfx_getpixel`,
+  `gfx_blurto` and `gfx_muladdrect` work on the pixels; `gfx_showmenu` waits inside the script
+  for a choice from a menu at the mouse while the audio goes on; `gfx_clear = -1` keeps what
+  was drawn; a script that sets `gfx_ext_retina` gets the screen's pixels per point there and
+  draws at the screen's own pixels; and sliders it sets take effect as if moved by hand. The
+  view uploads the screen only when it changed. They
   run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
   next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
   installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
@@ -382,6 +397,10 @@ compare with scythe's output sample by sample:
 | Video items' own audio: PCM in Matroska and MOV at 48 and 44.1 kHz, AAC in MP4, with item position and offset | PCM at the render rate identical; resampled and AAC streams within -30 dB (REAPER's video audio drifts by a fraction of a sample) |
 | Video processors: opacity 0.5 over a lower track, zoom and pan with and without aspect and filtering, invert colours (track and take FX), brightness/contrast | brightness/contrast identical; invert 37-40 dB; opacity 22 dB and zoom/pan 18-21 dB (REAPER blits the lower track's own video by nearest neighbour, and its zoomed rectangle is not matched exactly) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
+| JSFX run order on load and at render start: `@init`, `@slider` and `@serialize` reads and writes counted by a probe effect, with and without stored state and slider values, and without `@serialize` (renders, and gmem read after adding, saving and opening in REAPER) | exact (5 renders) |
+| JSFX `gfx_drawstr` in a box: font 0 and a TrueType font, 41 flag/box/start combinations from 4 starting points (negative, fractional, off the right edge), multi-line text, empty and inverted boxes; `gfx_x`/`gfx_y` after and where the ink lands (`gmem` and `gfx_getpixel` in REAPER's JSFX window) | same positions (font 0 glyphs differ, ink within a column) |
+| JSFX font flags `o`, `s`, `v`, `m` and their pairs, `gfx_deltablit` (16 cases: filters, scales, shears, source rectangles, offsets) and `gfx_transformblit` (2 x 2 and 3 x 3 grids, nearest and filtered), read pixel by pixel with `gfx_getpixel` | blits identical to the byte; effects as LICE draws them (a different rasterizer under them) |
+| EEL2 against REAPER: number literals (20 forms), `min`/`max` with NaN in 41 contexts, subnormal results of `exp`, `pow`, `^` and the rest | same values; the same sections fail to compile |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
@@ -407,24 +426,16 @@ compares the two files.
   take or return chunks (`Get/SetTrackStateChunk` …), automation items, FX containers, take
   FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
   returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
-  windows do not show menus (`gfx_showmenu` returns 0) or dock, and `gfx_getdropfile` finds
-  nothing. MIDI events are kept in time order, so `noSort` changes nothing. Effect parameters
-  are those of running effects, set live as the inspector does; their presets come from
+  windows do not show menus (`gfx_showmenu` returns 0) or dock. MIDI events are kept
+  in time order, so `noSort` changes nothing. Effect parameters are those of running effects, set live as the inspector does; their presets come from
   REAPER's preset files only. `Track_GetPeakInfo` returns 0.
-- JSFX views (`@gfx`): `gfx_showmenu` does not wait inside the script; the run stops at the
-  call, drops what it drew, and runs again with the same mouse once a choice is made, so code
-  before the call runs twice. Font 0 measures as REAPER's, but its glyphs are Scythe's own
-  drawing. After a `gfx_drawstr` centred in a box, REAPER leaves `gfx_x`/`gfx_y` measured from
-  0 rather than from the box (from (10, 20) into a box to (100, 50): x 69, y 0, where Scythe
-  gives 79, 20); Scythe keeps the box's offset. Other font flags (outline, shadow, inverted) are ignored, and views
-  draw one pixel per point (`gfx_ext_retina` stays 0). `gfx_deltablit`, `gfx_transformblit`
-  and `gfx_getdropfile` do nothing. Audio passes the effect by while its `@gfx` script runs.
-  REAPER runs
-  `@serialize` a few more times after loading (to save state), which only matters to scripts
-  that count its runs. Where REAPER compiles `min`/`max` for a pointer result, its `max` gives
-  the second argument for NaN; scythe always gives the first (no probe reached that case).
-  Subnormal results of library math functions are not flushed. Number literals with an
-  exponent (`1e-60`) made REAPER's whole `@init` fail in the probes; scythe reads them.
+- JSFX views (`@gfx`): font 0 measures and places text as REAPER's, but its glyphs are Scythe's
+  own drawing, and TrueType text comes from another rasterizer, so outlines and shadows follow
+  slightly different glyphs. The blur font flag (`r`) is ignored. `gfx_ext_retina` follows
+  REAPER's documented behaviour; there was no HiDPI screen to measure REAPER on.
+- EEL2: REAPER reorders constants in a chain of operators (`x * 30 / 255` runs as
+  `x * (30 / 255)`, `x + 0.2 - 0.3` as `x + (0.2 - 0.3)`; parentheses keep the order), which
+  can change the last bit of a result; Scythe keeps the written order.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is

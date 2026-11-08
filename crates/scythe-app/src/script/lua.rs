@@ -254,7 +254,7 @@ fn gfx_call(g: &mut Gfx, eel: &str, outs: Outs, args: &[Value]) -> Result<Vec<f6
                     _ => 0.0,
                 };
                 let slot = g.machine.vars.slot(&format!("__a{i}"));
-                g.machine.vars.values[slot] = x;
+                g.machine.vars.put(slot, x);
                 params.push(format!("__a{i}"));
             }
         }
@@ -378,7 +378,7 @@ fn gfx_table(lua: &Lua, gfx: &Rc<RefCell<Gfx>>) -> mlua::Result<Table> {
                     };
                     let mut g = g.borrow_mut();
                     let slot = g.machine.vars.slot(&v);
-                    g.machine.vars.values[slot] = x;
+                    g.machine.vars.put(slot, x);
                 }
                 None => t.raw_set(key, value)?,
             }

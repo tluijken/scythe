@@ -202,7 +202,7 @@ impl ScriptGfx {
 
     /// After a run: draws what it queued, keeping the last frame until the app takes it.
     fn end(&mut self, m: &mut Machine) {
-        let Some(w) = m.gfx_window().cloned() else { return };
+        let Some(w) = m.gfx_window() else { return };
         let frame = if w.open { m.gfx_end().render() } else { None };
         let kept = self.window.as_mut().and_then(|x| x.frame.take());
         self.window = Some(GfxWindow { title: w.title, w: w.w, h: w.h, open: w.open, frame: frame.or(kept) });

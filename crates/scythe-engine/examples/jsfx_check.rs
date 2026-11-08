@@ -66,11 +66,16 @@ fn main() {
         if !String::from_utf8_lossy(&text).lines().any(|l| l.trim_start().starts_with("desc:")) {
             continue;
         }
-        match Script::load(f, &roots).and_then(|s| JsfxEffect::new(s, &[], 48000)) {
+        // An effect runs without the sections that do not compile, as REAPER's does; they
+        // still count as failures here.
+        let effect = Script::load(f, &roots)
+            .and_then(|s| JsfxEffect::new(s, &[], 48000))
+            .and_then(|fx| if fx.compile_errors.is_empty() { Ok(fx) } else { Err(fx.compile_errors.join("; ")) });
+        match effect {
             Ok(mut fx) => {
                 ok += 1;
-                if let Some(out) = scythe_engine::fx::Effect::gfx(&mut fx, &view) {
-                    out.render();
+                if scythe_engine::fx::Effect::gfx_size(&fx).is_some() {
+                    fx.run_gfx(&view).render();
                     views += 1;
                 }
             }
