@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-app", "crates/clap-test-gain"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+scythe-core = { path = "crates/scythe-core" }
+scythe-engine = { path = "crates/scythe-engine" }
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+base64 = "0.23.1"
+arc-swap = "1.9.3"
+rtrb = "0.4.1"
+libloading = "0.8"
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap-sys = "0.5"
+realfft = "3.5.1"
+cpal = "0.18.2"
+symphonia = { version = "0.6.1", features = ["all"] }
+hound = "3.5.1"
+eframe = "0.37.0"
+egui = "0.37.0"
+rfd = "0.18.0"
+
+[profile.dev.package."*"]
+opt-level = 2

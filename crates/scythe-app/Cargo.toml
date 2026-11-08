@@ -1,0 +1,15 @@
+[package]
+name = "scythe-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scythe-core.workspace = true
+scythe-engine.workspace = true
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+hound.workspace = true
+rayon.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "scythe-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scythe-core.workspace = true
+thiserror.workspace = true
+arc-swap.workspace = true
+rtrb.workspace = true
+libloading.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap-sys.workspace = true
+realfft.workspace = true
+base64.workspace = true
+cpal.workspace = true
+symphonia.workspace = true
+hound.workspace = true

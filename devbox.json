@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.2/.schema/devbox.schema.json",
+  "packages": [
+    "github:NixOS/nixpkgs/nixpkgs-unstable#nodejs_26",
+    "procps@latest",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#rustc",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#cargo",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#clippy",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#rustfmt",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#pkg-config",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#alsa-lib.dev",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#libjack2",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#libxkbcommon",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#wayland",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#libGL",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#vulkan-loader",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libX11",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXcursor",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXrandr",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXi",
+    "lame@latest"
+  ],
+  "shell": {
+    "init_hook": [
+      ". \"$DEVBOX_PROJECT_ROOT/scripts/env.sh\""
+    ],
+    "scripts": {
+      "build": [
+        ". scripts/env.sh",
+        "cargo build --workspace"
+      ],
+      "test": [
+        ". scripts/env.sh",
+        "cargo test --workspace"
+      ],
+      "app": [
+        ". scripts/env.sh",
+        "cargo run -p scythe-app --release -- \"$@\""
+      ]
+    }
+  }
+}
