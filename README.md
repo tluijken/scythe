@@ -295,9 +295,7 @@ compares the two files.
   are not followed. MP3 samples decode slightly differently from REAPER's decoder.
 - Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image and DDP (video,
   REAPER's FFmpeg and video sinks; WAV's 8-bit, 64-bit float and ADPCM modes). CD image and DDP
-  renders are always 44.1 kHz stereo, where REAPER leaves a mono CD image empty. REAPER ends
-  custom render bounds on a whole millisecond; Scythe renders to the exact time, so a render to
-  17.3333 s is 14 samples longer.
+  renders are always 44.1 kHz stereo, where REAPER leaves a mono CD image empty.
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.

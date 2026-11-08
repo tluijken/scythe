@@ -177,7 +177,11 @@ impl RenderSettings {
     /// encoder here get `.wav`) and is not added twice.
     pub fn jobs(&self, p: &Project, unix_seconds: u64) -> Result<Vec<(TimeRange, PathBuf)>, String> {
         let ranges: Vec<(TimeRange, Option<(u32, String)>)> = match &self.bounds {
-            Bounds::Custom(r) => vec![(*r, None)],
+            // REAPER renders custom bounds to the nearest millisecond.
+            Bounds::Custom(r) => {
+                let ms = |t: f64| (t * 1000.0).round() / 1000.0;
+                vec![(TimeRange::new(ms(r.start), ms(r.end)), None)]
+            }
             Bounds::Project => vec![(TimeRange::new(0.0, p.length()), None)],
             Bounds::TimeSelection => {
                 vec![(p.time_selection.ok_or("the project renders its time selection, but has none")?, None)]
@@ -424,6 +428,16 @@ mod tests {
         assert_eq!(format("IHBkZA=="), Format::Ddp);
         let p = project("IHBkZA==");
         assert_eq!(RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.DAT"));
+    }
+
+    #[test]
+    fn custom_bounds_end_on_a_millisecond() {
+        let p = crate::rpp::project_from_rpp(
+            "<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RANGE 0 1.00004 17.3333 0 1000\n>\n",
+        )
+        .unwrap();
+        let r = RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].0;
+        assert_eq!((r.start, r.end), (1.0, 17.333));
     }
 
     #[test]
