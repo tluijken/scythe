@@ -23,7 +23,8 @@
     "flac@latest",
     "vorbis-tools@latest",
     "opus-tools@latest",
-    "wavpack@latest"
+    "wavpack@latest",
+    "ffmpeg@latest"
   ],
   "shell": {
     "init_hook": [

@@ -28,8 +28,10 @@ pub mod scan_cache;
 pub mod stretch;
 pub mod synth;
 pub mod turtle;
+pub mod video;
 pub mod vst2;
 pub mod vst3_host;
+pub mod wavcodec;
 
 pub use engine::{DeviceInfo, Engine, Transport};
 pub use media::{AudioData, Media, MediaPool, MediaState, Peaks};

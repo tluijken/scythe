@@ -18,7 +18,8 @@ pub enum Bounds {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Format {
-    /// WAV with this many bits: 32 is float, 33 is 32-bit integer.
+    /// WAV with this many bits: 8 is unsigned, 32 is float, 33 is 32-bit integer, 64 is double;
+    /// 4 is IMA ADPCM and 2 REAPER's 2-bit cADPCM.
     Wav { bits: u16 },
     /// MP3 at a constant bitrate.
     Mp3 { kbps: u32 },
@@ -36,6 +37,8 @@ pub enum Format {
     CdImage(CdImage),
     /// DDP 2.00 fileset for CD manufacturing, laid out from `#`, `!` and `@` markers.
     Ddp,
+    /// REAPER's FFmpeg video sink: a container with a video and an audio stream.
+    Video(Video),
     /// Another sink, by its four-character id as REAPER prints it (`l3pm` is MP3).
     Other(String),
 }
@@ -59,6 +62,159 @@ pub struct CdImage {
     pub lead_in_ms: u32,
     /// Only markers whose names start with `#` start tracks; the `#` is left out of titles.
     pub hash_markers_only: bool,
+}
+
+/// The containers of REAPER's video sink, in the order of its format list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    Avi,
+    Mpeg1,
+    /// An MPEG transport stream.
+    Mpeg2,
+    /// "QT/MOV/MP4 (deprecated)": the MOV file, named `.mp4`.
+    QuickTimeLegacy,
+    Matroska,
+    Flv,
+    WebM,
+    Mp4,
+    Mov,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoCodec {
+    H264,
+    H265,
+    Av1,
+    Vp8,
+    Vp9,
+    Mpeg1,
+    Mpeg2,
+    /// MPEG-4 part 2 tagged `xvid`.
+    Xvid,
+    Flv1,
+    Ffv1,
+    Huffyuv,
+    Mjpeg,
+    Dv,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioCodec {
+    Mp3,
+    Aac,
+    Ac3,
+    Mp2,
+    Vorbis,
+    Opus,
+    Pcm16,
+    Pcm24,
+    Float32,
+    DvAudio,
+}
+
+impl Container {
+    fn from_index(i: u32) -> Self {
+        use Container::*;
+        // Out-of-range formats render as MPEG-4.
+        [Avi, Mpeg1, Mpeg2, QuickTimeLegacy, Matroska, Flv, WebM, Mp4, Mov].get(i as usize).copied().unwrap_or(Mp4)
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Avi => "avi",
+            Self::Mpeg1 | Self::Mpeg2 => "mpg",
+            Self::QuickTimeLegacy | Self::Mp4 => "mp4",
+            Self::Matroska => "mkv",
+            Self::Flv => "flv",
+            Self::WebM => "webm",
+            Self::Mov => "mov",
+        }
+    }
+
+    /// The codec list the sink offers for this container; `None` is the "NONE" entry.
+    pub fn video_codecs(self) -> &'static [Option<VideoCodec>] {
+        use VideoCodec::*;
+        match self {
+            Self::Avi => &[Some(Xvid), Some(H264), Some(Dv), Some(Mjpeg), Some(Ffv1), Some(Huffyuv), Some(Mpeg2), None],
+            Self::Mpeg1 => &[Some(Mpeg1), None],
+            Self::Mpeg2 => &[Some(Mpeg2), None],
+            Self::QuickTimeLegacy => &[Some(H264), Some(Mpeg2), Some(Mjpeg), None],
+            Self::Matroska => &[
+                Some(H264),
+                Some(Xvid),
+                Some(Ffv1),
+                Some(Huffyuv),
+                Some(Mjpeg),
+                Some(Mpeg2),
+                None,
+                Some(H265),
+                Some(Av1),
+            ],
+            Self::Flv => &[Some(H264), Some(Flv1), None],
+            Self::WebM => &[Some(Vp8), Some(Vp9), Some(Av1), None],
+            Self::Mp4 | Self::Mov => &[Some(H264), Some(H265), Some(Av1), Some(Mpeg2), Some(Mjpeg), None],
+        }
+    }
+
+    pub fn audio_codecs(self) -> &'static [Option<AudioCodec>] {
+        use AudioCodec::*;
+        match self {
+            Self::Avi => {
+                &[Some(Mp3), Some(Aac), Some(Ac3), Some(Pcm16), Some(Pcm24), Some(Float32), Some(DvAudio), None]
+            }
+            Self::Mpeg1 => &[Some(Mp3), Some(Mp2), None],
+            Self::Mpeg2 => &[Some(Aac), Some(Mp3), Some(Mp2), None],
+            Self::Matroska => &[Some(Mp3), Some(Aac), Some(Pcm16), Some(Pcm24), Some(Float32), None],
+            Self::Flv => &[Some(Mp3), Some(Aac), None],
+            Self::WebM => &[Some(Vorbis), Some(Opus), None],
+            Self::QuickTimeLegacy | Self::Mp4 | Self::Mov => {
+                &[Some(Aac), Some(Mp3), Some(Pcm16), Some(Pcm24), Some(Float32), None]
+            }
+        }
+    }
+}
+
+/// REAPER's video sink settings (`RENDER_CFG` id `PMFF`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Video {
+    pub container: Container,
+    pub video: Option<VideoCodec>,
+    pub audio: Option<AudioCodec>,
+    pub video_kbps: u32,
+    pub audio_kbps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// Scale video items into the frame keeping their aspect ratio, with black bars.
+    pub keep_aspect: bool,
+}
+
+impl Video {
+    /// The sink stores the container and codecs as list indexes (an index past a list picks
+    /// its first entry), then the bitrates, the frame size (0 for 1920x1080, odd sizes grow
+    /// to even), the frame rate as a float and the aspect flag.
+    fn parse(bytes: &[u8]) -> Self {
+        let container = Container::from_index(u32_at(bytes, 4).unwrap_or(7));
+        fn pick<T: Copy>(list: &[Option<T>], index: Option<u32>) -> Option<T> {
+            *list.get(index.unwrap_or(0) as usize).unwrap_or(&list[0])
+        }
+        let size = |at, default| match u32_at(bytes, at).unwrap_or(0) {
+            0 => default,
+            n => n.min(16384).next_multiple_of(2),
+        };
+        let fps = bytes.get(32..36).map_or(30.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
+        Self {
+            container,
+            video: pick(container.video_codecs(), u32_at(bytes, 8)),
+            audio: pick(container.audio_codecs(), u32_at(bytes, 16)),
+            video_kbps: u32_at(bytes, 12).unwrap_or(2048),
+            audio_kbps: u32_at(bytes, 20).unwrap_or(128),
+            width: size(24, 1920),
+            height: size(28, 1080),
+            fps: if fps.is_finite() && fps > 0.0 { fps as f64 } else { 30.0 },
+            keep_aspect: u32_at(bytes, 36).unwrap_or(1) != 0,
+        }
+    }
 }
 
 /// How media at another sample rate is converted for a render (`RENDER_RESAMPLE <mode>`, in
@@ -276,6 +432,7 @@ impl RenderSettings {
                     Format::WavPack { .. } => "wv",
                     Format::CdImage(_) => "cue",
                     Format::Ddp => "DAT",
+                    Format::Video(v) => v.container.extension(),
                     _ => "wav",
                 };
                 if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
@@ -337,6 +494,7 @@ fn decode_cfg<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Format> {
             hash_markers_only: u32_at(&bytes, 20).unwrap_or(0) != 0,
         }),
         " pdd" => Format::Ddp,
+        "PMFF" => Format::Video(Video::parse(&bytes)),
         _ => Format::Other(id),
     })
 }
@@ -458,6 +616,10 @@ mod tests {
         assert_eq!(format("a3B2dwAAAAABAAAAAAAAAAAAAAA="), Format::WavPack { bits: 24, float: false, mode: 0 });
         // 32-bit integer WAV, as REAPER 7.73 stores it.
         assert_eq!(format("ZXZhdyEAAQ=="), Format::Wav { bits: 33 });
+        // 8-bit, 64-bit float and IMA ADPCM.
+        assert_eq!(format("ZXZhdwgAAQ=="), Format::Wav { bits: 8 });
+        assert_eq!(format("ZXZhd0AAAQ=="), Format::Wav { bits: 64 });
+        assert_eq!(format("ZXZhdwQAAQ=="), Format::Wav { bits: 4 });
     }
 
     #[test]
@@ -476,6 +638,45 @@ mod tests {
         assert_eq!(format("IHBkZA=="), Format::Ddp);
         let p = project("IHBkZA==");
         assert_eq!(RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.DAT"));
+    }
+
+    #[test]
+    fn video_sink() {
+        let project = |cfg: &str| project_from_rpp(&PROJECT.replace("ZXZhdxgAAQ==", cfg)).unwrap();
+        let format = |cfg: &str| RenderSettings::from_project(&project(cfg)).format;
+        // REAPER 7.73's default: MPEG-4 with H.264 and AAC, 1920x1080 at 30 fps.
+        assert_eq!(
+            format("UE1GRgcAAAAAAAAAAAgAAAAAAACAAAAAgAcAADgEAAAAAPBBAQAAAF8AAAAAAA=="),
+            Format::Video(Video {
+                container: Container::Mp4,
+                video: Some(VideoCodec::H264),
+                audio: Some(AudioCodec::Aac),
+                video_kbps: 2048,
+                audio_kbps: 128,
+                width: 1920,
+                height: 1080,
+                fps: 30.0,
+                keep_aspect: true,
+            })
+        );
+        // Matroska, FFV1 and 16-bit PCM at 320x240, 25 fps; then no video stream.
+        let Format::Video(v) = format("UE1GRgQAAAACAAAAAAgAAAIAAACAAAAAQAEAAPAAAAAAAMhBAQAAAF8AAAAAAA==") else {
+            panic!()
+        };
+        assert_eq!(
+            (v.container, v.video, v.audio),
+            (Container::Matroska, Some(VideoCodec::Ffv1), Some(AudioCodec::Pcm16))
+        );
+        assert_eq!((v.width, v.height, v.fps), (320, 240, 25.0));
+        let Format::Video(v) = format("UE1GRgQAAAAGAAAAAAgAAAIAAACAAAAAQAEAAPAAAAAAAPBBAQAAAF8AAAAAAA==") else {
+            panic!()
+        };
+        assert_eq!(v.video, None);
+        let p = project("UE1GRgYAAAABAAAAAAgAAAEAAACAAAAAQAEAAPAAAAAAAPBBAQAAAF8AAAAAAA==");
+        let s = RenderSettings::from_project(&p);
+        let Format::Video(v) = s.format else { panic!() };
+        assert_eq!((v.video, v.audio), (Some(VideoCodec::Vp9), Some(AudioCodec::Opus)));
+        assert_eq!(s.jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.webm"));
     }
 
     #[test]

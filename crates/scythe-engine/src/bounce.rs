@@ -1,27 +1,33 @@
 use std::path::Path;
 
-use scythe_core::render_settings::{CdImage, Format, Normalize, NormalizeSource, RenderSettings};
+use scythe_core::render_settings::{AudioCodec, CdImage, Format, Normalize, NormalizeSource, RenderSettings, Video};
 use scythe_core::{Project, TimeRange};
 
 use crate::fx::FxRegistry;
 use crate::loudness::LoudnessScan;
 use crate::media::MediaPool;
 use crate::render::{MeterRegistry, RenderGraph, RenderScratch};
+pub use crate::wavcodec::Adpcm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitDepth {
+    /// Unsigned 8-bit.
+    Uint8,
     Int16,
     Int24,
     Int32,
     Float32,
+    Float64,
 }
 
 impl BitDepth {
-    /// REAPER's WAV bit depths: 32 is float, 33 is 32-bit integer.
+    /// REAPER's WAV bit depths: 32 is float, 33 is 32-bit integer, 64 is double.
     pub fn from_bits(bits: u16) -> Self {
         match bits {
+            8 => Self::Uint8,
             ..=16 => Self::Int16,
             33 => Self::Int32,
+            64 => Self::Float64,
             32.. => Self::Float32,
             _ => Self::Int24,
         }
@@ -29,8 +35,9 @@ impl BitDepth {
 }
 
 /// How a render is written. Everything but WAV goes through a command-line encoder (`lame`,
-/// `flac`, `oggenc`, `opusenc`, `wavpack`) that reads an intermediate WAV; CD images and DDP
-/// filesets are laid out from a 16-bit WAV by [`crate::disc`].
+/// `flac`, `oggenc`, `opusenc`, `wavpack`, `ffmpeg` for video) that reads an intermediate WAV;
+/// CD images and DDP filesets are laid out from a 16-bit WAV by [`crate::disc`], and 64-bit
+/// and ADPCM WAVs are converted from a float WAV by [`crate::wavcodec`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Encoding {
     Wav(BitDepth),
@@ -41,6 +48,8 @@ pub enum Encoding {
     WavPack { depth: BitDepth, mode: u32 },
     CdImage(CdImage),
     Ddp,
+    Adpcm(Adpcm),
+    Video(Video),
 }
 
 impl Encoding {
@@ -48,9 +57,11 @@ impl Encoding {
     /// 24-bit WAV.
     pub fn from_format(format: &Format) -> Self {
         match *format {
+            Format::Wav { bits: 4 } => Self::Adpcm(Adpcm::Ima),
+            Format::Wav { bits: 2 } => Self::Adpcm(Adpcm::Cockos),
             Format::Wav { bits } => Self::Wav(BitDepth::from_bits(bits)),
             Format::Mp3 { kbps } => Self::Mp3 { kbps },
-            Format::Flac { bits, level } => Self::Flac { depth: BitDepth::from_bits(bits.min(24)), level },
+            Format::Flac { bits, level } => Self::Flac { depth: BitDepth::from_bits(bits.clamp(16, 24)), level },
             Format::Vorbis { vbr, quality, kbps } => Self::Vorbis { vbr, quality, kbps },
             Format::Opus { kbps, mode, complexity } => Self::Opus { kbps, mode, complexity },
             Format::WavPack { bits, float, mode } => {
@@ -63,13 +74,14 @@ impl Encoding {
             }
             Format::CdImage(cd) => Self::CdImage(cd),
             Format::Ddp => Self::Ddp,
+            Format::Video(v) => Self::Video(v),
             Format::Other(_) => Self::Wav(BitDepth::Int24),
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Wav(_) => "wav",
+            Self::Wav(_) | Self::Adpcm(_) => "wav",
             Self::Mp3 { .. } => "mp3",
             Self::Flac { .. } => "flac",
             Self::Vorbis { .. } => "ogg",
@@ -77,6 +89,7 @@ impl Encoding {
             Self::WavPack { .. } => "wv",
             Self::CdImage(_) => "cue",
             Self::Ddp => "DAT",
+            Self::Video(v) => v.container.extension(),
         }
     }
 
@@ -142,12 +155,18 @@ pub fn bounce_finished(
     progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
     let depth = match encoding {
+        Encoding::Wav(BitDepth::Float64) | Encoding::Adpcm(_) => BitDepth::Float32,
         Encoding::Wav(depth) => {
             return render_wav(project, pool, range, sample_rate, channels, depth, path, finish, progress);
         }
         Encoding::Flac { depth, .. } | Encoding::WavPack { depth, .. } => depth,
         Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
         Encoding::CdImage(_) | Encoding::Ddp => BitDepth::Int16,
+        Encoding::Video(v) => match v.audio {
+            Some(AudioCodec::Pcm16) => BitDepth::Int16,
+            Some(AudioCodec::Pcm24) => BitDepth::Int24,
+            _ => BitDepth::Float32,
+        },
     };
     if matches!(encoding, Encoding::CdImage(_) | Encoding::Ddp) && channels != 2 {
         // REAPER creates the files, then its sink refuses anything but stereo and leaves them empty.
@@ -177,6 +196,26 @@ pub fn bounce_finished(
             .and_then(|()| Ok(crate::disc::write_cd_image(&project.markers, range, &wav, &cd, path)?)),
         Encoding::Ddp => render_wav(project, pool, range, sample_rate, 2, depth, &wav, finish, progress)
             .and_then(|()| Ok(crate::disc::write_ddp(&project.markers, &wav, path)?)),
+        // A mono render keeps both channels here, to be mixed down in double precision.
+        Encoding::Wav(_) => {
+            render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, finish, progress)
+                .and_then(|()| Ok(crate::wavcodec::write_f64(&wav, channels == 1, path)?))
+        }
+        Encoding::Adpcm(mode) => {
+            render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, finish, progress)
+                .and_then(|()| Ok(crate::wavcodec::write_adpcm(&wav, channels == 1, path, mode)?))
+        }
+        Encoding::Video(v) => {
+            let audio = match v.audio {
+                Some(_) => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
+                    .map(|()| Some(wav.as_path())),
+                None => Ok(None),
+            };
+            let clips = crate::video::video_clips(project, range);
+            audio.and_then(|audio| {
+                crate::video::write_video(&v, &clips, range.length(), audio, path).map_err(BounceError::Encoder)
+            })
+        }
         _ => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
             .and_then(|()| encode(encoding, channels, &wav, path)),
     };
@@ -186,7 +225,9 @@ pub fn bounce_finished(
 
 fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(), BounceError> {
     let mut cmd = match encoding {
-        Encoding::Wav(_) | Encoding::CdImage(_) | Encoding::Ddp => unreachable!("written without an encoder"),
+        Encoding::Wav(_) | Encoding::CdImage(_) | Encoding::Ddp | Encoding::Adpcm(_) | Encoding::Video(_) => {
+            unreachable!("written without a command-line audio encoder")
+        }
         Encoding::Mp3 { kbps } => {
             let mut c = std::process::Command::new("lame");
             c.args(["--quiet", "--cbr", "-b", &kbps.to_string()]).arg(wav).arg(out);
@@ -347,18 +388,16 @@ impl SampleWriter {
         finish: Finish,
     ) -> Result<Self, BounceError> {
         let (bits, format) = match depth {
+            BitDepth::Uint8 => (8, hound::SampleFormat::Int),
             BitDepth::Int16 => (16, hound::SampleFormat::Int),
             BitDepth::Int24 => (24, hound::SampleFormat::Int),
             BitDepth::Int32 => (32, hound::SampleFormat::Int),
-            BitDepth::Float32 => (32, hound::SampleFormat::Float),
+            BitDepth::Float32 | BitDepth::Float64 => (32, hound::SampleFormat::Float),
         };
         let channels = channels.clamp(1, 64);
         let spec = hound::WavSpec { channels, sample_rate, bits_per_sample: bits, sample_format: format };
-        let dither = (finish.dither && matches!(depth, BitDepth::Int16 | BitDepth::Int24)).then_some(Dither {
-            rng: 0x9e37_79b9_7f4a_7c15,
-            shape: finish.noise_shape,
-            error: [0.0; 64],
-        });
+        let dither = (finish.dither && matches!(depth, BitDepth::Uint8 | BitDepth::Int16 | BitDepth::Int24))
+            .then_some(Dither { rng: 0x9e37_79b9_7f4a_7c15, shape: finish.noise_shape, error: [0.0; 64] });
         Ok(Self { writer: hound::WavWriter::create(path, spec)?, depth, channels, gain: 1.0, dither })
     }
 
@@ -370,17 +409,21 @@ impl SampleWriter {
                 1 => r[i],
                 c => extra.get(c - 2).map_or(0.0, |b| b[i]),
             };
-            let mono = [0.5 * (l[i] + r[i]) * self.gain];
-            let mut frame = [0.0f32; 64];
+            let gain = self.gain as f64;
+            // REAPER mixes down to mono in double precision.
+            let mono = [0.5 * (l[i] as f64 + r[i] as f64) * gain];
+            let mut frame = [0.0f64; 64];
             for (c, f) in frame.iter_mut().enumerate().take(self.channels as usize) {
-                *f = sample(c) * self.gain;
+                *f = sample(c) as f64 * gain;
             }
             let samples = if self.channels == 1 { &mono[..] } else { &frame[..self.channels as usize] };
             for (c, &s) in samples.iter().enumerate() {
                 match (self.depth, &mut self.dither) {
-                    (BitDepth::Float32, _) => self.writer.write_sample(s)?,
-                    (BitDepth::Int16, Some(d)) => self.writer.write_sample(d.quantize(s, c, 16) as i16)?,
-                    (BitDepth::Int24, Some(d)) => self.writer.write_sample(d.quantize(s, c, 24))?,
+                    (BitDepth::Float32 | BitDepth::Float64, _) => self.writer.write_sample(s as f32)?,
+                    (BitDepth::Uint8, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 8) as i8)?,
+                    (BitDepth::Uint8, None) => self.writer.write_sample(quantize(s, 8) as i8)?,
+                    (BitDepth::Int16, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 16) as i16)?,
+                    (BitDepth::Int24, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 24))?,
                     (BitDepth::Int16, None) => self.writer.write_sample(quantize(s, 16) as i16)?,
                     (BitDepth::Int24, None) => self.writer.write_sample(quantize(s, 24))?,
                     (BitDepth::Int32, _) => self.writer.write_sample(quantize(s, 32))?,
@@ -526,9 +569,9 @@ fn render_wav(
 }
 
 /// Full scale is 2^(bits-1), rounding halves up, as REAPER writes integer samples.
-fn quantize(s: f32, bits: u32) -> i32 {
+pub(crate) fn quantize(s: f64, bits: u32) -> i32 {
     let scale = (1i64 << (bits - 1)) as f64;
-    (s as f64 * scale + 0.5).floor().clamp(-scale, scale - 1.0) as i32
+    (s * scale + 0.5).floor().clamp(-scale, scale - 1.0) as i32
 }
 
 #[cfg(test)]

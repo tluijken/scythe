@@ -217,9 +217,18 @@ Working:
   WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
   packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
   complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and
-  mono renders mix both channels down as REAPER does. WAV is written at 16, 24 or 32 bits,
-  integer or float. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
-  writes them. Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
+  mono renders mix both channels down (in double precision) as REAPER does. WAV is written as
+  8-bit unsigned, 16, 24 or 32-bit integer, 32 or 64-bit float, 4-bit IMA ADPCM or REAPER's
+  2-bit cADPCM. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
+  writes them; ADPCM follows REAPER's coder (codes rounded down after taking half a step off,
+  the prediction wrapping at 16 bits, 1024-byte blocks per channel, the last block filled up by
+  coding silence). REAPER's video sink (FFmpeg) goes through `ffmpeg`: AVI, MPEG-1, MPEG-2
+  (transport stream), MOV, MP4, Matroska, FLV and WebM with the codecs REAPER lists for each
+  (H.264, H.265, AV1, VP8, VP9, MPEG-1/2, XviD, FLV1, FFV1, Huffyuv, MJPEG, DV; MP3, AAC,
+  AC-3, MP2, Vorbis, Opus, 16/24-bit and float PCM, or no stream), the video and audio bitrate,
+  frame size (0 for 1920x1080) and rate. Frames are black where no video item plays; video
+  items (top track first) are scaled into the frame keeping their aspect ratio with black bars,
+  or stretched, and show on every frame they overlap. Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
   writes them) take their tracks from markers (each at least 4 seconds after the previous track;
   `PERF=`, `WRIT=` and `ISRC=` markers fill in the track's cue entries; optionally only `#`
   markers), from regions (audio outside regions left out) or as one track, after an optional
@@ -230,9 +239,9 @@ Working:
   the Red Book rules (2 s before the first track, 4 s minimum tracks) move indexes as REAPER
   moves them. As in REAPER, a CD image or DDP render of other than two channels fails with
   "Unable to create output file …, sample rate or channel count may not be compatible" and
-  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks are written as WAV. The
+  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks (AIFF, CAF, GIF, LCF …) are written as WAV. The
   project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
-  target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 16- and 24-bit) apply.
+  target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 8-, 16- and 24-bit) apply.
 
 ### Verified against REAPER
 
@@ -271,6 +280,8 @@ compare with scythe's output sample by sample:
 | CD image and DDP renders of a mono and a 4-channel project | same empty files (`.cue` and `.bin`; `OUT.DAT`) and the same error; 48 kHz projects render at 44.1 kHz as REAPER's do |
 | JSFX font 0: `gfx_texth` (0 before the first `@gfx`, then 8), `gfx_measurestr`/`gfx_measurechar` of every byte and of strings with spaces, tabs, `\r` and `\n`, multi-byte UTF-8, the empty string, and `gfx_x`/`gfx_y` after `gfx_drawstr`, `gfx_drawchar` and `gfx_drawnumber` (read back through `gmem` from REAPER's JSFX window) | same values (34 cases) |
 | Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
+| WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
+| Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames (REAPER's 25 fps decode repeats and skips a few source frames), pixels within 25-28 dB PSNR (another scaler) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
@@ -318,9 +329,14 @@ compares the two files.
   pitch-shifted takes are always read with the 192-point sinc.
 - MPEG-2/2.5 intensity stereo is untested against REAPER (LAME cannot encode it). A VBRI
   header frame is assumed to play as silence like a Xing/Info frame.
-- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image and DDP (video,
-  REAPER's FFmpeg and video sinks; WAV's 8-bit, 64-bit float and ADPCM modes). CD image and DDP
-  renders are always 44.1 kHz.
+- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image, DDP and the
+  FFmpeg video sink (AIFF, CAF, GIF, LCF; WAV's 8-bit u-law; the WAV sink's BWF and Wave64/RF64
+  options). CD image and DDP renders are always 44.1 kHz.
+- Video renders: the sink's encoder option strings, transparency and colour-bits settings are
+  not read, and a frame size of 0 always means 1920x1080 rather than the project's video
+  settings. Video items are scaled with FFmpeg's bilinear scaler, not REAPER's, have no video
+  FX, and their own audio is not rendered; lossy streams are FFmpeg's current encoders rather
+  than the FFmpeg 4.4 REAPER loads. DV audio is not written (FFmpeg has no encoder for it).
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.
