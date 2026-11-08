@@ -222,7 +222,7 @@ impl Action {
             Action::TallerTracks => "View: Increase track height",
             Action::ShorterTracks => "View: Decrease track height",
             Action::ShowPalette => "Actions: Search actions",
-            Action::RunScript => "Script: Run ReaScript (Lua)",
+            Action::RunScript => "Script: Run ReaScript (Lua, EEL2 or Python)",
             Action::RunLastScript => "Script: Run last script again",
             Action::StopScript => "Script: Stop the running script",
             Action::MasterMoreChannels => "Master: More channels",

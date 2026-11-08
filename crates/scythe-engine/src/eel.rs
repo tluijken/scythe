@@ -5,10 +5,13 @@
 
 mod files;
 pub mod gfx;
+mod host;
 mod matching;
 mod spectral;
 
 use std::collections::HashMap;
+
+pub use host::{Host, HostArgs, compile_with_host};
 
 /// Values closer than this count as equal, and closer than this to zero as false.
 const CLOSE: f64 = 0.00001;
@@ -120,6 +123,9 @@ pub enum Builtin {
     PinMapping,
     /// `gfx_*` drawing, for `@gfx`.
     Gfx(gfx::Call),
+    /// A function the embedder answers, by its index in the names given to
+    /// `compile_with_host`.
+    Host(usize),
 }
 
 impl Builtin {
@@ -718,6 +724,7 @@ struct Scope {
 struct Resolver<'a> {
     vars: &'a mut Vars,
     functions: &'a HashMap<String, Function>,
+    host: &'a [&'a str],
 }
 
 fn unescape(s: &str) -> String {
@@ -819,6 +826,12 @@ impl Resolver<'_> {
             let args = args.iter().map(|a| self.resolve(scope, a)).collect::<Result<_, _>>()?;
             return Ok(Node::Call(b, args));
         }
+        if !self.functions.contains_key(name)
+            && let Some(index) = self.host.iter().position(|h| h.eq_ignore_ascii_case(name))
+        {
+            let args = args.iter().map(|a| self.resolve(scope, a)).collect::<Result<_, _>>()?;
+            return Ok(Node::Call(Builtin::Host(index), args));
+        }
         // `ns.fn(...)` calls `fn` with `ns` as its instance namespace.
         // Function names may contain dots themselves, so the namespace is the shortest prefix
         // that leaves a known function; the instance namespace is then the whole call name
@@ -880,12 +893,7 @@ pub struct Code(Node);
 /// Compiles `src` against `vars`; functions defined in earlier sections are passed in and the
 /// ones defined here are added.
 pub fn compile(src: &str, vars: &mut Vars, functions: &mut HashMap<String, Function>) -> Result<Code, String> {
-    let mut p = Parser { toks: lex(src)?, at: 0, functions: std::mem::take(functions) };
-    let ast = p.sequence(None);
-    *functions = p.functions;
-    let ast = ast?;
-    let mut r = Resolver { vars, functions };
-    Ok(Code(r.resolve(&Scope::default(), &ast)?))
+    compile_with_host(src, vars, functions, &[])
 }
 
 // ---- interpreter ---------------------------------------------------------------------------
@@ -1736,6 +1744,7 @@ impl Machine {
                 if (0.0..32.0).contains(&k) { (1u64 << k as u32) as f64 } else { 0.0 }
             }
             Gfx(call) => self.gfx_call(call, args),
+            Host(index) => self.host_call(index, args),
         }
     }
 }

@@ -112,9 +112,9 @@ Working:
   into one take, as REAPER's MIDI overdub. A track can also send its MIDI (items and monitored
   input, optionally forced to one channel) to a hardware output (Sends tab), timed to sound
   with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
-- **ReaScript (Lua 5.4)**: "Script: Run ReaScript" runs a `.lua` file against the project as one
-  undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg` output in a console window. The
-  `reaper.*` subset: tracks (`CountTracks`, `GetTrack`, `GetMasterTrack`, `GetSelectedTrack`,
+- **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
+  file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
+  output in a console window. The `reaper.*` subset: tracks (`CountTracks`, `GetTrack`, `GetMasterTrack`, `GetSelectedTrack`,
   `InsertTrackAtIndex`, `DeleteTrack`, `GetTrackName`, `GetSetMediaTrackInfo_String`,
   `Get/SetMediaTrackInfo_Value`, `TrackFX_GetCount/GetFXName/GetEnabled/SetEnabled`), items
   (`CountMediaItems`, `GetMediaItem`, `CountTrackMediaItems`, `GetTrackMediaItem`,
@@ -125,7 +125,12 @@ Working:
   `TimeMap2_timeToQN/QNToTime`, `time_precise`) and undo/console calls. `defer` and `runloop`
   keep a script running: its deferred functions run once per frame over the current project
   until it stops deferring or "Script: Stop the running script" ends it, which runs its
-  `atexit` functions.
+  `atexit` functions. EEL2 scripts call the same functions without `reaper.`, with outputs
+  passed as variables or `#strings` (`GetTrackName(tr, #name)`) and tracks and items as
+  numbers; `defer("code")` takes code. Python scripts (`from reaper_python import *`, then
+  `RPR_GetTrack(0, 0)`) run in a `python3` process and get REAPER's return conventions: a tuple
+  of the value and every argument when a call has outputs, pointers as `(MediaTrack*)0x…`
+  strings, `RPR_defer("step()")` taking code or a function.
 - **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
   load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
   between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
@@ -233,7 +238,9 @@ compares the two files.
 - FX presets: loading one keeps the slot's pin mapping; presets cannot be renamed or deleted
   from Scythe; factory presets (`.vstpreset`, plugin programs, `.RPL` libraries REAPER has
   not imported yet) and preset library import and export are not offered.
-- ReaScript covers a subset of the API (below), in Lua only; no EEL or Python.
+- ReaScript covers a subset of the API (above); Python needs `python3` on the PATH, and its
+  `print` goes to Scythe's stderr, not the console. EEL2 `eval`, `extension_api`, `gfx_*`
+  windows and EEL file/network functions are not there.
 - JSFX views (`@gfx`) are drawn from shapes, not pixels: images cannot be loaded
   (`gfx_loadimg` fails), `gfx_getpixel` sees only filled rectangles, blits ignore rotation,
   additive `gfx_mode` blends normally, `gfx_showmenu` shows no menu, and text is laid out on a

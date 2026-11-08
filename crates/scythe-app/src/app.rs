@@ -1666,12 +1666,14 @@ impl ScytheApp {
     }
 
     pub fn run_script_dialog(&mut self) {
-        let Some(path) = resource_dialog("Scripts").add_filter("ReaScript", &["lua"]).pick_file() else { return };
+        let Some(path) = resource_dialog("Scripts").add_filter("ReaScript", &["lua", "eel", "py"]).pick_file() else {
+            return;
+        };
         self.run_script(&path);
     }
 
-    /// Runs a Lua ReaScript on the project; its changes become one undo step. A script that
-    /// defers work keeps running until it stops deferring or is stopped.
+    /// Runs a ReaScript (Lua, EEL2 or Python) on the project; its changes become one undo step.
+    /// A script that defers work keeps running until it stops deferring or is stopped.
     pub fn run_script(&mut self, path: &Path) {
         self.stop_script();
         self.last_script = Some(path.to_owned());

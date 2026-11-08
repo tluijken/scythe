@@ -13,6 +13,7 @@ eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
 mlua.workspace = true
+serde_json.workspace = true
 hound.workspace = true
 rayon.workspace = true
 x11rb.workspace = true

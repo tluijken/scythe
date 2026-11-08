@@ -18,6 +18,7 @@
     "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXcursor",
     "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXrandr",
     "github:NixOS/nixpkgs/nixpkgs-unstable#xorg.libXi",
+    "github:NixOS/nixpkgs/nixpkgs-unstable#python3",
     "lame@latest",
     "flac@latest",
     "vorbis-tools@latest",

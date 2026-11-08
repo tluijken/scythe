@@ -3350,6 +3350,7 @@ dependencies = [
  "rfd",
  "scythe-core",
  "scythe-engine",
+ "serde_json",
  "x11rb",
 ]
 
