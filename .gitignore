@@ -4,3 +4,4 @@
 /.rea
 /package.json
 /package-lock.json
+.claude/worktrees/
