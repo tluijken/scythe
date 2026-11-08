@@ -145,7 +145,13 @@ Working:
   File sliders list their folder under `Data` and are stored by file name as REAPER does;
   `@serialize` state is read from and written to `<JS_SER` (32-bit floats) after `@init` and
   `@slider`, as REAPER loads it;
-  `file_open` reads WAV files as samples and text one value per item. They
+  `file_open` reads WAV files as samples and text one value per item. Effects with `@gfx`
+  (analyzers, scopes, the channel mapper) open their own view from the Edit button: `@gfx`
+  runs on the UI thread about 30 times a second, sharing the effect's variables and memory,
+  with the mouse (buttons, modifiers, wheel) and typed keys; rectangles, lines, circles, arcs,
+  triangles, gradients and text are painted from its display list, `gfx_clear = -1` keeps what
+  was drawn, `gfx_blit` copies drawn shapes (scrolling views), and sliders it sets take effect
+  as if moved by hand. They
   run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
   next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
   installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
@@ -227,7 +233,10 @@ compares the two files.
   from Scythe; factory presets (`.vstpreset`, plugin programs, `.RPL` libraries REAPER has
   not imported yet) and preset library import and export are not offered.
 - ReaScript covers a subset of the API (below), in Lua only; no EEL or Python.
-- JSFX: no graphics (`@gfx`); system exclusive (`midisyx`) is not passed on. REAPER runs
+- JSFX views (`@gfx`) are drawn from shapes, not pixels: images cannot be loaded
+  (`gfx_loadimg` fails), `gfx_getpixel` sees only filled rectangles, blits ignore rotation,
+  additive `gfx_mode` blends normally, `gfx_showmenu` shows no menu, and text is laid out on a
+  fixed-width grid in the UI's monospace font rather than the font asked for. System exclusive (`midisyx`) is not passed on. REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
   that count its runs. NaN follows IEEE rules; REAPER compares it as both less than and equal
   to anything.

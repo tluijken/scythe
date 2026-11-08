@@ -164,6 +164,8 @@ pub struct ScytheApp {
     meters_at: Instant,
     /// Plugin editors open in their own windows.
     editors: Vec<OpenEditor>,
+    /// JSFX views (`@gfx`) open in windows inside the main one.
+    pub gfx_views: Vec<GfxView>,
     /// Controls being written as automation during this pass.
     auto_writes: Vec<AutoWrite>,
 }
@@ -193,6 +195,23 @@ pub struct OpenEditor {
     instance: Arc<scythe_engine::fx::FxInstance>,
     editor: Box<dyn scythe_engine::editor::Editor>,
     window: crate::plugin_window::PluginWindow,
+}
+
+/// A JSFX's own view: what its `@gfx` drew last and the mouse it has not seen yet.
+pub struct GfxView {
+    pub track: Option<TrackId>,
+    pub index: usize,
+    pub title: String,
+    pub instance: Arc<scythe_engine::fx::FxInstance>,
+    /// The size `@gfx` asks for, 0 where it does not care.
+    pub size: (u32, u32),
+    pub draws: Vec<scythe_engine::eel::gfx::Draw>,
+    pub ran: Option<Instant>,
+    /// Buttons pressed since the last run, so a quick click is not missed.
+    pub pressed: u32,
+    pub wheel: (f64, f64),
+    pub chars: Vec<u32>,
+    pub mouse: (f64, f64),
 }
 
 impl ScytheApp {
@@ -252,6 +271,7 @@ impl ScytheApp {
             levels: HashMap::new(),
             master_level: (0.0, 0.0),
             editors: Vec::new(),
+            gfx_views: Vec::new(),
             auto_writes: Vec::new(),
             meters_at: Instant::now(),
         };
@@ -1237,6 +1257,27 @@ impl ScytheApp {
             self.notify(format!("{} is not running", slot.name));
             return;
         };
+        if let Some(at) = self.gfx_views.iter().position(|v| v.track == track && v.index == index) {
+            self.gfx_views.remove(at);
+            return;
+        }
+        if let Some(size) = instance.with(|e| e.gfx_size()).flatten() {
+            let title = slot.name.split_once(": ").map_or(slot.name.as_str(), |(_, n)| n).to_owned();
+            self.gfx_views.push(GfxView {
+                track,
+                index,
+                title,
+                instance,
+                size,
+                draws: Vec::new(),
+                ran: None,
+                pressed: 0,
+                wheel: (0.0, 0.0),
+                chars: Vec::new(),
+                mouse: (-1.0, -1.0),
+            });
+            return;
+        }
         let Some(mut editor) = instance.with(|e| e.editor()).flatten() else {
             self.notify(format!("{} has no editor", slot.name));
             return;
@@ -1259,6 +1300,20 @@ impl ScytheApp {
 
     pub fn editor_open(&self, track: Option<TrackId>, index: usize) -> bool {
         self.editors.iter().any(|e| e.track == track && e.index == index)
+            || self.gfx_views.iter().any(|v| v.track == track && v.index == index)
+    }
+
+    /// Whether effect `index` on `track` draws a view of its own (a JSFX with `@gfx`).
+    pub fn has_gfx(&self, track: Option<TrackId>, index: usize) -> bool {
+        let slots = match track {
+            Some(id) => self.project.track(id).map(|t| &t.fx),
+            None => Some(&self.project.master.fx),
+        };
+        slots
+            .and_then(|s| s.get(index))
+            .and_then(|slot| self.engine.fx().instance(track, slot, index))
+            .and_then(|inst| inst.with(|e| e.gfx_size().is_some()))
+            .unwrap_or(false)
     }
 
     fn close_editor(&mut self, at: usize) {
@@ -1282,6 +1337,7 @@ impl ScytheApp {
                 at += 1;
             }
         }
+        self.gfx_views.retain(|v| Arc::strong_count(&v.instance) > 1);
     }
 
     // ---- feedback ------------------------------------------------------------------------

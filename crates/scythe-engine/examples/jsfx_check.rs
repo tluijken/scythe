@@ -1,6 +1,6 @@
 //! Compiles every JSFX under the given folders (default: the JSFX search paths) and prints
-//! the ones that do not compile, with the reason. `--bench name` instead times ten seconds of
-//! stereo audio through one effect.
+//! the ones that do not compile, with the reason; effects with `@gfx` draw one view each.
+//! `--bench name` instead times ten seconds of stereo audio through one effect.
 //!
 //! cargo run -p scythe-engine --example jsfx_check [-- dir …] [-- --bench sstillwell/1175]
 
@@ -58,19 +58,26 @@ fn main() {
     for r in &roots {
         walk(r, &mut files);
     }
-    let (mut ok, mut failed) = (0, 0);
+    let (mut ok, mut failed, mut views) = (0, 0, 0);
+    let view =
+        scythe_engine::eel::gfx::Input { w: 640.0, h: 400.0, mouse_x: 50.0, mouse_y: 50.0, ..Default::default() };
     for f in &files {
         let text = std::fs::read(f).unwrap_or_default();
         if !String::from_utf8_lossy(&text).lines().any(|l| l.trim_start().starts_with("desc:")) {
             continue;
         }
         match Script::load(f, &roots).and_then(|s| JsfxEffect::new(s, &[], 48000)) {
-            Ok(_) => ok += 1,
+            Ok(mut fx) => {
+                ok += 1;
+                if scythe_engine::fx::Effect::gfx(&mut fx, &view).is_some() {
+                    views += 1;
+                }
+            }
             Err(e) => {
                 failed += 1;
                 println!("{}: {e}", f.display());
             }
         }
     }
-    println!("{ok} compile, {failed} do not");
+    println!("{ok} compile, {failed} do not; {views} draw a view");
 }

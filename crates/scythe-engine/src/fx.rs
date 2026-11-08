@@ -135,6 +135,17 @@ pub trait Effect: Send {
         None
     }
 
+    /// The view size a JSFX's `@gfx` asks for (0 where it does not care); `None` when the
+    /// effect draws no view of its own.
+    fn gfx_size(&self) -> Option<(u32, u32)> {
+        None
+    }
+
+    /// Runs the effect's `@gfx` once on the UI thread and returns what its view shows.
+    fn gfx(&mut self, _input: &crate::eel::gfx::Input) -> Option<Vec<crate::eel::gfx::Draw>> {
+        None
+    }
+
     /// Automatable parameters, for hosted plugins.
     fn params(&mut self) -> Vec<ParamInfo> {
         Vec::new()

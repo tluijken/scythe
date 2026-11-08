@@ -43,6 +43,8 @@ pub struct Script {
     pub out_pins: Option<usize>,
     /// `Data` folders beside the effect folders, for file sliders and `file_open`.
     pub data_dirs: Vec<PathBuf>,
+    /// The size `@gfx w h` asks for, 0 where it does not care.
+    pub gfx_size: Option<(u32, u32)>,
 }
 
 /// The files of `dir` in the data folders, sorted by name as REAPER lists them.
@@ -118,6 +120,17 @@ fn parse_slider(index: usize, spec: &str) -> Option<Slider> {
     })
 }
 
+/// The size on an `@gfx` line; sizes written as expressions count as 0.
+fn gfx_size(text: &str) -> Option<(u32, u32)> {
+    let line = text
+        .lines()
+        .map(str::trim_start)
+        .find(|l| l.strip_prefix("@gfx").is_some_and(|r| !r.starts_with(|c: char| c.is_alphanumeric() || c == '_')))?;
+    let mut nums = line[4..].split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty());
+    let mut next = || nums.next().and_then(|t| t.parse::<f64>().ok()).map_or(0, |v| v.max(0.0) as u32);
+    Some((next(), next()))
+}
+
 fn split_sections(text: &str) -> (Vec<&str>, HashMap<String, String>) {
     let mut header = Vec::new();
     let mut sections: HashMap<String, String> = HashMap::new();
@@ -147,7 +160,7 @@ impl Script {
     pub fn load(path: &Path, roots: &[PathBuf]) -> Result<Self, String> {
         let text = read_text(path)?;
         let (header, sections) = split_sections(&text);
-        let mut script = Script { sections, ..Default::default() };
+        let mut script = Script { sections, gfx_size: gfx_size(&text), ..Default::default() };
         for line in header {
             let line = line.trim();
             if let Some(d) = line.strip_prefix("desc:") {
@@ -175,8 +188,9 @@ impl Script {
                     .filter(|p| p.is_file())
                     .or_else(|| roots.iter().map(|r| r.join(file)).find(|p| p.is_file()))
                     .ok_or_else(|| format!("import {file} not found"))?;
-                let (_, sections) = split_sections(&read_text(&found)?);
-                script.imported.push(sections);
+                let text = read_text(&found)?;
+                script.gfx_size = script.gfx_size.or_else(|| gfx_size(&text));
+                script.imported.push(split_sections(&text).1);
             }
         }
         script.data_dirs = roots.iter().filter_map(|r| Some(r.parent()?.join("Data"))).filter(|d| d.is_dir()).collect();
@@ -282,6 +296,7 @@ pub struct JsfxEffect {
     block: Vec<Code>,
     sample: Vec<Code>,
     serialize: Vec<Code>,
+    gfx: Vec<Code>,
     slider_vars: Vec<usize>,
     values: Vec<f64>,
     sample_rate: u32,
@@ -310,7 +325,7 @@ impl JsfxEffect {
         let mut functions = HashMap::new();
         let mut sections: HashMap<&str, Vec<Code>> = HashMap::new();
         let all: Vec<&HashMap<String, String>> = script.imported.iter().chain([&script.sections]).collect();
-        for name in ["init", "slider", "block", "sample", "serialize"] {
+        for name in ["init", "slider", "block", "sample", "serialize", "gfx"] {
             for secs in &all {
                 if let Some(src) = secs.get(name) {
                     let code = compile(src, &mut vars, &mut functions).map_err(|e| format!("@{name}: {e}"))?;
@@ -345,6 +360,7 @@ impl JsfxEffect {
             block: take("block"),
             sample: take("sample"),
             serialize: take("serialize"),
+            gfx: take("gfx"),
             machine: Machine::new(vars),
             script,
             slider_vars,
@@ -520,6 +536,29 @@ impl JsfxEffect {
         }
     }
 
+    /// Runs `@gfx` once for a view of `input`'s size and mouse; returns what it shows.
+    /// Sliders it changes take effect as if set from outside, with `@slider` run.
+    pub fn run_gfx(&mut self, input: &crate::eel::gfx::Input) -> Vec<crate::eel::gfx::Draw> {
+        let values = &self.machine.vars.values;
+        let before: Vec<f64> = self.slider_vars.iter().map(|&s| values[s]).collect();
+        self.machine.gfx_begin(input);
+        for code in &self.gfx {
+            self.machine.run(code);
+        }
+        let draws = self.machine.gfx_end();
+        let mut changed = false;
+        for ((value, &slot), old) in self.values.iter_mut().zip(&self.slider_vars).zip(before) {
+            let now = self.machine.vars.values[slot];
+            if now != old {
+                (*value, changed) = (now, true);
+            }
+        }
+        if changed {
+            self.run_slider();
+        }
+        draws
+    }
+
     fn visible(&self) -> impl Iterator<Item = (usize, &Slider)> {
         self.script.sliders.iter().enumerate().filter(|(_, s)| !s.hidden)
     }
@@ -577,6 +616,14 @@ impl Effect for JsfxEffect {
 
     fn reset(&mut self) {
         self.initialise();
+    }
+
+    fn gfx_size(&self) -> Option<(u32, u32)> {
+        (!self.gfx.is_empty()).then(|| self.script.gfx_size.unwrap_or_default())
+    }
+
+    fn gfx(&mut self, input: &crate::eel::gfx::Input) -> Option<Vec<crate::eel::gfx::Draw>> {
+        (!self.gfx.is_empty()).then(|| self.run_gfx(input))
     }
 
     fn latency(&mut self) -> usize {

@@ -4,6 +4,8 @@
 //! each call with their parameters, locals and instance variables renamed, as EEL2 itself does.
 
 mod files;
+pub mod gfx;
+mod matching;
 mod spectral;
 
 use std::collections::HashMap;
@@ -106,6 +108,17 @@ pub enum Builtin {
     NoChange,
     /// Accepted and ignored (UI and host notifications).
     Nop,
+    StrcpySubstr,
+    StrSetchar,
+    StrcpyFromslider,
+    /// `match` (`true`) and `matchi` (`false` folds case).
+    Match(bool),
+    /// The track's channels, as `num_ch` has them.
+    HostNumchan,
+    /// The pin map, always the identity: pin `n` on channel `n`.
+    PinMapping,
+    /// `gfx_*` drawing, for `@gfx`.
+    Gfx(gfx::Call),
 }
 
 impl Builtin {
@@ -146,6 +159,14 @@ impl Builtin {
             "strcpy" => (Strcpy, 2),
             "strcat" => (Strcat, 2),
             "strlen" => (Strlen, 1),
+            "strcpy_substr" => (StrcpySubstr, usize::MAX),
+            "str_setchar" => (StrSetchar, usize::MAX),
+            "strcpy_fromslider" => (StrcpyFromslider, 2),
+            "match" => (Match(true), usize::MAX),
+            "matchi" => (Match(false), usize::MAX),
+            "get_host_numchan" => (HostNumchan, 0),
+            "get_pin_mapping" => (PinMapping, 4),
+            "set_host_numchan" | "set_pin_mapping" | "set_pinmapper_flags" => (Nop, usize::MAX),
             "strcmp" => (Strcmp, 2),
             "stricmp" => (Stricmp, 2),
             "str_getchar" => (StrGetchar, usize::MAX),
@@ -158,7 +179,8 @@ impl Builtin {
             "file_rewind" => (FileRewind, 1),
             "file_riff" => (FileRiff, 3),
             "file_text" => (FileText, 1),
-            "file_avail" => (FileAvail, 1),
+            // `file_avail()` without a handle reads the `@serialize` stream (handle 0).
+            "file_avail" => (FileAvail, usize::MAX),
             "file_var" => (FileVar, 2),
             "file_mem" => (FileMem, 3),
             "file_string" => (FileString, 2),
@@ -180,7 +202,7 @@ impl Builtin {
             "slider_automate" | "sliderchange" | "slider_show" | "export_buffer_to_project" | "get_pinmapper_flags" => {
                 (Nop, usize::MAX)
             }
-            _ => return None,
+            _ => return gfx::Call::from_name(name).map(|(c, arity)| (Gfx(c), arity)),
         })
     }
 }
@@ -286,9 +308,19 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
             } else {
                 return Err(format!("unknown constant ${}", rest.chars().take(8).collect::<String>()));
             }
+        } else if c == b'\'' {
+            // `'ab'` is a number as `$'ab'` is (used for keys and font flags).
+            let end = src[i + 1..].find('\'').ok_or("unterminated character")?;
+            out.push(Tok::Num(src[i + 1..i + 1 + end].bytes().fold(0f64, |acc, ch| acc * 256.0 + ch as f64)));
+            i += end + 2;
         } else if c == b'"' {
             let end = src[i + 1..].find('"').ok_or("unterminated string")?;
-            out.push(Tok::Str(src[i + 1..i + 1 + end].to_owned()));
+            let text = &src[i + 1..i + 1 + end];
+            // Adjacent literals join, as in C.
+            match out.last_mut() {
+                Some(Tok::Str(prev)) => prev.push_str(text),
+                _ => out.push(Tok::Str(text.to_owned())),
+            }
             i += end + 2;
         } else if c.is_ascii_alphabetic() || c == b'_' || c == b'#' {
             let s = i;
@@ -461,7 +493,7 @@ impl Parser {
         };
         self.at += 1;
         let rhs = self.assignment()?;
-        Ok(Ast::Assign(op, Box::new(lhs), Box::new(rhs)))
+        Ok(assign_rightmost(op, lhs, rhs))
     }
 
     fn ternary(&mut self) -> Result<Ast, String> {
@@ -603,12 +635,24 @@ impl Parser {
     fn sequence_arg(&mut self) -> Result<Ast, String> {
         let mut items = vec![self.assignment()?];
         while self.eat(";") {
+            while self.eat(";") {}
             if self.sym(",") || self.sym(")") {
                 break;
             }
             items.push(self.assignment()?);
         }
         Ok(if items.len() == 1 { items.pop().unwrap() } else { Ast::Seq(items) })
+    }
+}
+
+/// EEL2 assigns to the rightmost operand of a logical or binary expression: `a && b = 1` is
+/// `a && (b = 1)`.
+fn assign_rightmost(op: Option<Op>, lhs: Ast, rhs: Ast) -> Ast {
+    match lhs {
+        Ast::AndAlso(a, b) => Ast::AndAlso(a, Box::new(assign_rightmost(op, *b, rhs))),
+        Ast::OrElse(a, b) => Ast::OrElse(a, Box::new(assign_rightmost(op, *b, rhs))),
+        Ast::Bin(o, a, b) => Ast::Bin(o, a, Box::new(assign_rightmost(op, *b, rhs))),
+        lhs => Ast::Assign(op, Box::new(lhs), Box::new(rhs)),
     }
 }
 
@@ -865,6 +909,7 @@ pub struct Machine {
     files: Vec<Option<files::OpenFile>>,
     /// The `@serialize` stream (file handle 0) while that section runs.
     pub serial: Option<Serial>,
+    gfx: gfx::Gfx,
 }
 
 /// Values `@serialize` reads back (`writing` false) or writes.
@@ -903,6 +948,7 @@ impl Machine {
     pub fn new(mut vars: Vars) -> Self {
         let spl_slots = std::array::from_fn(|i| vars.slot(&format!("spl{i}")));
         let slider_slots = std::array::from_fn(|i| vars.slot(&format!("slider{}", i + 1)));
+        let gfx = gfx::Gfx::new(&mut vars);
         Self {
             vars,
             mem: vec![None; MEM_SIZE / BLOCK],
@@ -918,6 +964,7 @@ impl Machine {
             data_dirs: Vec::new(),
             files: Vec::new(),
             serial: None,
+            gfx,
         }
     }
 
@@ -1557,6 +1604,92 @@ impl Machine {
                 }
                 0.0
             }
+            StrcpySubstr => {
+                let (dst, src, offset) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                let s = self.string(src).into_bytes();
+                let from = if offset < 0.0 {
+                    s.len().saturating_sub(-offset as usize)
+                } else {
+                    (offset as usize).min(s.len())
+                };
+                let len = if args.len() > 3 { arg(self, 3) } else { f64::MAX };
+                let to = if len < 0.0 {
+                    s.len().saturating_sub(-len as usize).max(from)
+                } else {
+                    from.saturating_add(len.min(1e15) as usize).min(s.len())
+                };
+                self.set_string(dst, String::from_utf8_lossy(&s[from..to]).into_owned());
+                dst
+            }
+            StrSetchar => {
+                let (h, offset, value) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                let kind = if args.len() > 3 { arg(self, 3) as u32 } else { 0 };
+                let mut s = self.string(h).into_bytes();
+                let at = if offset < 0.0 { s.len() as f64 + offset } else { offset };
+                // The type (`'c'`, `'s'`, `'i'`, `'f'`, `'d'`, uppercase big-endian, a `u`
+                // for unsigned) is packed into one number, as `'iu'` is.
+                let letters: Vec<u8> =
+                    kind.to_be_bytes().into_iter().filter(|&c| c != 0 && c != b'u' && c != b'U').collect();
+                let bytes = match letters.first().copied().unwrap_or(b'c') {
+                    b's' => (value as i64 as u16).to_le_bytes().to_vec(),
+                    b'S' => (value as i64 as u16).to_be_bytes().to_vec(),
+                    b'i' => (value as i64 as u32).to_le_bytes().to_vec(),
+                    b'I' => (value as i64 as u32).to_be_bytes().to_vec(),
+                    b'f' => (value as f32).to_le_bytes().to_vec(),
+                    b'F' => (value as f32).to_be_bytes().to_vec(),
+                    b'd' => value.to_le_bytes().to_vec(),
+                    b'D' => value.to_be_bytes().to_vec(),
+                    _ => vec![(value as i64 & 0xff) as u8],
+                };
+                if at >= 0.0 && (at as usize) <= s.len() {
+                    let at = at as usize;
+                    if s.len() < at + bytes.len() {
+                        s.resize(at + bytes.len(), 0);
+                    }
+                    s[at..at + bytes.len()].copy_from_slice(&bytes);
+                    self.set_string(h, String::from_utf8_lossy(&s).into_owned());
+                }
+                h
+            }
+            StrcpyFromslider => {
+                let dst = arg(self, 0);
+                let name = match args.get(1) {
+                    Some(Node::Var(slot)) => {
+                        self.file_sliders.iter().find(|(s, _)| s == slot).and_then(|(_, files)| {
+                            let i = self.vars.values[*slot].round();
+                            files.get(i.max(0.0) as usize)?.file_name().map(|n| n.to_string_lossy().into_owned())
+                        })
+                    }
+                    _ => None,
+                };
+                self.set_string(dst, name.unwrap_or_default());
+                dst
+            }
+            Match(exact) => {
+                let (p, t) = (arg(self, 0), arg(self, 1));
+                let Some(fields) = matching::matches(&self.string(p), &self.string(t), !exact) else { return 0.0 };
+                for (target, f) in args.iter().skip(2).zip(fields) {
+                    match f {
+                        matching::Field::Num(v) => {
+                            self.store(target, v);
+                        }
+                        matching::Field::Text(s) => {
+                            let h = self.eval(target);
+                            self.set_string(h, s);
+                        }
+                    }
+                }
+                1.0
+            }
+            HostNumchan => self.vars.get("num_ch").filter(|&n| n > 0.0).unwrap_or(2.0),
+            PinMapping => {
+                let (pin, start) = (arg(self, 1), arg(self, 2));
+                arg(self, 0);
+                arg(self, 3);
+                let k = pin - start;
+                if (0.0..32.0).contains(&k) { (1u64 << k as u32) as f64 } else { 0.0 }
+            }
+            Gfx(call) => self.gfx_call(call, args),
         }
     }
 }
@@ -1685,5 +1818,15 @@ mod tests {
         assert_eq!(var(&m, "n"), 2.0);
         assert_eq!(m.output, "a07|xy|3.14|5  |\n");
         assert_eq!(var(&m, "same"), 1.0);
+    }
+
+    #[test]
+    fn gfx_era_syntax() {
+        let m = run("x = 1; x > 0 && y = 5; 0 || z = 'ab'; loop(2, w += 1;;); #s = \"a\" \"b\"; n = strlen(#s); \
+             strcpy_substr(#t, \"hello\", 1, 3); same = strcmp(#t, \"ell\") == 0; \
+             hit = match(\"%d-*\", \"42-x\", v);");
+        assert_eq!((var(&m, "y"), var(&m, "z")), (5.0, 97.0 * 256.0 + 98.0), "the rightmost operand is assigned");
+        assert_eq!((var(&m, "w"), var(&m, "n"), var(&m, "same")), (2.0, 2.0, 1.0));
+        assert_eq!((var(&m, "hit"), var(&m, "v")), (1.0, 42.0));
     }
 }

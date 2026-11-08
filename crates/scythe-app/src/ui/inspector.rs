@@ -256,13 +256,14 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
-        let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)));
+        let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
+            || app.has_gfx(Some(track_id), i);
         if hosted {
             let open = app.editor_open(Some(track_id), i);
             let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
             let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
             if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
-                .on_hover_text(if open { "Close the plugin's editor" } else { "Open the plugin's own editor" })
+                .on_hover_text(if open { "Close the plugin's editor" } else { "Open the plugin's own editor or view" })
                 .clicked()
             {
                 app.toggle_editor(Some(track_id), i);

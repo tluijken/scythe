@@ -1,4 +1,5 @@
 mod arrange;
+mod gfx_view;
 mod inspector;
 pub mod midi_editor;
 mod mixer;
@@ -57,6 +58,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
         inspector::show(app, ui, r);
     }
 
+    gfx_view::show(app, ui);
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);
