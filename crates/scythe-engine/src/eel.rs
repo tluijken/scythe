@@ -81,6 +81,7 @@ pub enum Builtin {
     TimePrecise,
     MidiRecvBuf,
     MidiSendBuf,
+    MidiSyx,
     FileOpen,
     FileClose,
     FileRewind,
@@ -185,6 +186,7 @@ impl Builtin {
             "file_mem" => (FileMem, 3),
             "file_string" => (FileString, 2),
             "midisend_buf" => (MidiSendBuf, 3),
+            "midisyx" => (MidiSyx, 3),
             "atomic_get" => (AtomicGet, 1),
             "atomic_set" => (AtomicSet, 2),
             "atomic_add" => (AtomicAdd, 2),
@@ -896,8 +898,9 @@ pub struct Machine {
     /// `spl0` … `spl63` and `slider1` … `slider64`, for `spl()` and `slider()`.
     pub spl_slots: [usize; 64],
     pub slider_slots: [usize; 64],
-    pub midi_in: Vec<(f64, [u8; 3])>,
-    pub midi_out: Vec<(f64, [u8; 3])>,
+    /// The block's incoming messages and whether a `midirecv` took each; the rest pass on.
+    pub midi_in: Vec<(f64, MidiMsg, bool)>,
+    pub midi_out: Vec<(f64, MidiMsg)>,
     midi_read: usize,
     /// What `printf` wrote.
     pub output: String,
@@ -926,6 +929,13 @@ impl Serial {
         self.pos += 1;
         Some(v)
     }
+}
+
+/// A MIDI message in a JSFX's queue: a channel message, or system exclusive / meta kept whole.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MidiMsg {
+    Short([u8; 3]),
+    Long(Vec<u8>),
 }
 
 /// Bytes in a channel message with this status byte.
@@ -1047,25 +1057,40 @@ impl Machine {
         out
     }
 
-    /// Clears what MIDI the previous block left and queues `events` for `midirecv`.
-    pub fn set_midi(&mut self, events: impl Iterator<Item = (f64, [u8; 3])>) {
+    /// Clears what MIDI the previous block left and queues `events` for `midirecv`, in frame
+    /// order (channel messages before long ones at the same frame).
+    pub fn set_midi(&mut self, events: impl Iterator<Item = (f64, MidiMsg)>) {
         self.midi_in.clear();
-        self.midi_in.extend(events);
+        self.midi_in.extend(events.map(|(o, m)| (o, m, false)));
+        self.midi_in.sort_by(|a, b| {
+            a.0.total_cmp(&b.0).then((matches!(a.1, MidiMsg::Long(_))).cmp(&matches!(b.1, MidiMsg::Long(_))))
+        });
         self.midi_read = 0;
         self.midi_out.clear();
     }
 
     /// What the block passes on into `out`, offsets within `n` frames and moved by `base`:
-    /// the messages `midirecv` left unread, then those `midisend` sent, in frame order.
-    pub fn drain_midi(&mut self, n: usize, base: usize, out: &mut Vec<(usize, [u8; 3])>) {
-        let from = out.len();
+    /// the messages no `midirecv` took, then those sent, in frame order.
+    pub fn drain_midi(&mut self, n: usize, base: usize, out: &mut crate::fx::MidiBlock) {
+        let (from_short, from_long) = (out.short.len(), out.long.len());
         let last = n.saturating_sub(1) as f64;
         let at = |offset: f64| base + offset.clamp(0.0, last) as usize;
-        out.extend(self.midi_in.drain(self.midi_read.min(self.midi_in.len())..).map(|(o, m)| (at(o), m)));
-        out.extend(self.midi_out.drain(..).map(|(o, m)| (at(o), m)));
-        out[from..].sort_by_key(|e| e.0);
-        self.midi_in.clear();
+        let kept = self.midi_in.drain(..).filter(|e| !e.2).map(|(o, m, _)| (o, m));
+        for (o, m) in kept.chain(self.midi_out.drain(..)) {
+            match m {
+                MidiMsg::Short(b) => out.short.push((at(o), b)),
+                MidiMsg::Long(d) => out.long.push((at(o), d)),
+            }
+        }
+        out.short[from_short..].sort_by_key(|e| e.0);
+        out.long[from_long..].sort_by_key(|e| e.0);
         self.midi_read = 0;
+    }
+
+    /// The next message `midirecv` (channel messages only) or `midirecv_buf` (any) takes.
+    fn next_midi(&self, long_too: bool) -> Option<usize> {
+        (self.midi_read..self.midi_in.len())
+            .find(|&i| !self.midi_in[i].2 && (long_too || matches!(self.midi_in[i].1, MidiMsg::Short(_))))
     }
 
     fn file_slot(&mut self, handle: f64) -> Option<&mut Option<files::OpenFile>> {
@@ -1284,8 +1309,10 @@ impl Machine {
                 i.checked_sub(1).and_then(|i| self.slider_slots.get(i)).map_or(0.0, |&s| self.vars.values[s])
             }
             MidiRecv => {
-                let Some(&(offset, msg)) = self.midi_in.get(self.midi_read) else { return 0.0 };
-                self.midi_read += 1;
+                let Some(i) = self.next_midi(false) else { return 0.0 };
+                let (offset, MidiMsg::Short(msg), _) = self.midi_in[i] else { return 0.0 };
+                self.midi_in[i].2 = true;
+                self.midi_read = i + 1;
                 let targets: &[f64] = if args.len() == 3 {
                     &[offset, msg[0] as f64, msg[1] as f64 + msg[2] as f64 * 256.0]
                 } else {
@@ -1299,38 +1326,54 @@ impl Machine {
             MidiSend => {
                 let (offset, a, b) = (arg(self, 0), arg(self, 1), arg(self, 2));
                 let (b, c) = if args.len() == 3 { (b % 256.0, (b / 256.0).floor()) } else { (b, arg(self, 3)) };
-                self.midi_out.push((offset, [a as u8, b as u8, c as u8]));
+                self.midi_out.push((offset, MidiMsg::Short([a as u8, b as u8, c as u8])));
                 a
             }
             MidiRecvBuf => {
                 let (at, max) = (arg(self, 1), arg(self, 2));
-                let Some(&(offset, msg)) = self.midi_in.get(self.midi_read) else { return 0.0 };
-                let len = midi_len(msg[0]);
-                if (len as f64) > max {
+                let Some(i) = self.next_midi(true) else { return 0.0 };
+                let (offset, bytes) = match &self.midi_in[i] {
+                    (o, MidiMsg::Short(m), _) => (*o, m[..midi_len(m[0])].to_vec()),
+                    (o, MidiMsg::Long(d), _) => (*o, d.clone()),
+                };
+                if (bytes.len() as f64) > max {
                     return 0.0;
                 }
-                self.midi_read += 1;
+                self.midi_in[i].2 = true;
+                self.midi_read = i + 1;
                 if let Some(t) = args.first() {
                     self.store(t, offset);
                 }
-                for (k, &byte) in msg.iter().take(len).enumerate() {
+                for (k, &byte) in bytes.iter().enumerate() {
                     if let Some(c) = self.cell(at + k as f64) {
                         *c = byte as f64;
                     }
                 }
-                len as f64
+                bytes.len() as f64
             }
-            MidiSendBuf => {
+            MidiSendBuf | MidiSyx => {
                 let (offset, at, len) = (arg(self, 0), arg(self, 1), arg(self, 2));
-                let len = len.max(0.0) as usize;
-                // Only channel messages travel; system exclusive is dropped.
-                if !(1..=3).contains(&len) {
+                let len = (len.max(0.0) as usize).min(65536);
+                if len == 0 {
                     return 0.0;
                 }
-                let mut msg = [0u8; 3];
-                for (k, b) in msg.iter_mut().take(len).enumerate() {
-                    *b = self.read(at + k as f64) as u8;
-                }
+                let mut bytes: Vec<u8> = (0..len).map(|k| self.read(at + k as f64) as u8).collect();
+                let msg = if matches!(b, MidiSyx) {
+                    // The F0 and F7 framing is optional for midisyx.
+                    if bytes.first() != Some(&0xf0) {
+                        bytes.insert(0, 0xf0);
+                    }
+                    if bytes.last() != Some(&0xf7) {
+                        bytes.push(0xf7);
+                    }
+                    MidiMsg::Long(bytes)
+                } else if len <= 3 {
+                    let mut m = [0u8; 3];
+                    m[..len].copy_from_slice(&bytes);
+                    MidiMsg::Short(m)
+                } else {
+                    MidiMsg::Long(bytes)
+                };
                 self.midi_out.push((offset, msg));
                 len as f64
             }
@@ -1803,10 +1846,10 @@ mod tests {
             &mut HashMap::new(),
         )
         .unwrap();
-        m.set_midi([(4.0, [0x90, 60, 100]), (5.0, [0xc0, 3, 0])].into_iter());
+        m.set_midi([(4.0, MidiMsg::Short([0x90, 60, 100])), (5.0, MidiMsg::Short([0xc0, 3, 0]))].into_iter());
         m.run(&code);
         assert_eq!((var(&m, "n"), var(&m, "at"), var(&m, "c")), (3.0, 4.0, 0.0), "a 2-byte message does not fit 1");
-        assert_eq!(m.midi_out, [(5.0, [0x90, 60, 100])]);
+        assert_eq!(m.midi_out, [(5.0, MidiMsg::Short([0x90, 60, 100]))]);
     }
 
     #[test]

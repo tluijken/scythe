@@ -218,10 +218,7 @@ pub struct AuxChannels(std::sync::Mutex<Vec<Vec<f32>>>);
 
 /// The MIDI the chain carries in the current block and the next effect's output.
 #[derive(Debug, Default)]
-pub struct ChainMidi(std::sync::Mutex<[MidiBlock; 2]>);
-
-/// MIDI messages as frame offsets within a block.
-type MidiBlock = Vec<(usize, [u8; 3])>;
+pub struct ChainMidi(std::sync::Mutex<[crate::fx::MidiBlock; 2]>);
 
 impl AuxChannels {
     fn new(channels: usize) -> Self {
@@ -570,7 +567,8 @@ impl RenderGraph {
                         .collect();
                     let notes = lists.iter().flat_map(|l| l.notes.iter().copied()).collect();
                     let controls = lists.iter().flat_map(|l| l.controls().iter().copied()).collect();
-                    (audio, Some(Arc::new(NoteList::new(notes, sample_rate).with_controls(controls))))
+                    let long = lists.iter().flat_map(|l| l.long().iter().cloned()).collect();
+                    (audio, Some(Arc::new(NoteList::new(notes, sample_rate).with_controls(controls).with_long(long))))
                 } else {
                     (items, None)
                 };
@@ -907,7 +905,7 @@ impl RenderGraph {
                     midi_from: 0,
                 };
                 let (chain_midi, next_midi) = match midi_bufs.as_deref_mut() {
-                    Some([held, next]) => (chain_has_midi.then_some(&held[..]), Some(next)),
+                    Some([held, next]) => (chain_has_midi.then_some(&*held), Some(next)),
                     None => (None, None),
                 };
                 ctx.midi = chain_midi;
@@ -1362,7 +1360,8 @@ fn midi_notes(
         .into_iter()
         .map(|e| ControlEvent { frame: (e.time * sr).round() as i64, bytes: e.bytes, len: e.len })
         .collect();
-    Some(NoteList::new(notes, sample_rate).with_controls(controls))
+    let long = source.place_long(item, take, timeline).into_iter().map(|(t, d)| ((t * sr).round() as i64, d)).collect();
+    Some(NoteList::new(notes, sample_rate).with_controls(controls).with_long(long))
 }
 
 fn mix_item(

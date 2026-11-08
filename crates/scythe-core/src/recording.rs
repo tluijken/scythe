@@ -124,7 +124,7 @@ pub fn place_midi_recording(
     for (ch, k) in held {
         out.push(MidiEvent { tick: length, bytes: [0x80 | ch, k, 0], len: 3 });
     }
-    let source = MidiSource { ticks_per_qn: RECORD_PPQ, events: out, length_ticks: length };
+    let source = MidiSource { ticks_per_qn: RECORD_PPQ, events: out, long: Vec::new(), length_ticks: length };
     let mut take = Take::from_file(PathBuf::new());
     take.source = Source::Raw(source.to_chunk());
     Some(Item::new(from, to - from, take))

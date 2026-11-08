@@ -214,6 +214,7 @@ compare with scythe's output sample by sample:
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
 | WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
+| System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
@@ -236,7 +237,8 @@ compares the two files.
 - JSFX views (`@gfx`) are drawn from shapes, not pixels: images cannot be loaded
   (`gfx_loadimg` fails), `gfx_getpixel` sees only filled rectangles, blits ignore rotation,
   additive `gfx_mode` blends normally, `gfx_showmenu` shows no menu, and text is laid out on a
-  fixed-width grid in the UI's monospace font rather than the font asked for. System exclusive (`midisyx`) is not passed on. REAPER runs
+  fixed-width grid in the UI's monospace font rather than the font asked for. System exclusive reaches VST 2, CLAP and LV2 plugins but not
+  VST 3 ones. REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
   that count its runs. NaN follows IEEE rules; REAPER compares it as both less than and equal
   to anything.

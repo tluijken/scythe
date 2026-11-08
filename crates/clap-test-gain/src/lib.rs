@@ -34,13 +34,15 @@ static SYNTH_DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_d
     manual_url: c"".as_ptr(),
     support_url: c"".as_ptr(),
     version: c"1.0".as_ptr(),
-    description: c"Outputs the held key / 128".as_ptr(),
+    description: c"Outputs the held key / 128, scaled by system exclusive F0 7D level F7".as_ptr(),
     features: SYNTH_FEATURES.0.as_ptr(),
 });
 
 struct Synth {
     plugin: clap_plugin,
     key: std::cell::Cell<Option<i16>>,
+    /// Output scale set by `F0 7D level F7` (level / 100).
+    scale: std::cell::Cell<f32>,
 }
 
 unsafe extern "C" fn synth_destroy(p: *const clap_plugin) {
@@ -54,7 +56,9 @@ unsafe extern "C" fn synth_reset(p: *const clap_plugin) {
 }
 
 unsafe extern "C" fn synth_process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
-    use clap_sys::events::{CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, clap_event_note};
+    use clap_sys::events::{
+        CLAP_EVENT_MIDI_SYSEX, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, clap_event_midi_sysex, clap_event_note,
+    };
     // SAFETY: the host passes valid buffers and events for the block.
     unsafe {
         let synth = &*((*p).plugin_data as *const Synth);
@@ -62,6 +66,9 @@ unsafe extern "C" fn synth_process(p: *const clap_plugin, process: *const clap_p
         let events = &*pr.in_events;
         let count = (events.size.unwrap())(events);
         let mut next = 0;
+        if pr.audio_outputs_count == 0 {
+            return CLAP_PROCESS_CONTINUE;
+        }
         let output = &*pr.audio_outputs;
         for i in 0..pr.frames_count {
             while next < count {
@@ -73,11 +80,18 @@ unsafe extern "C" fn synth_process(p: *const clap_plugin, process: *const clap_p
                 match e.type_ {
                     CLAP_EVENT_NOTE_ON => synth.key.set(Some(note.key)),
                     CLAP_EVENT_NOTE_OFF if synth.key.get() == Some(note.key) => synth.key.set(None),
+                    CLAP_EVENT_MIDI_SYSEX => {
+                        let x = &*(e as *const _ as *const clap_event_midi_sysex);
+                        let data = std::slice::from_raw_parts(x.buffer, x.size as usize);
+                        if let [0xf0, 0x7d, level, 0xf7] = data {
+                            synth.scale.set(*level as f32 / 100.0);
+                        }
+                    }
                     _ => {}
                 }
                 next += 1;
             }
-            let v = synth.key.get().map_or(0.0, |k| k as f32 / 128.0);
+            let v = synth.key.get().map_or(0.0, |k| k as f32 / 128.0) * synth.scale.get();
             for c in 0..output.channel_count as usize {
                 *(*output.data32.add(c)).add(i as usize) += v;
             }
@@ -86,9 +100,66 @@ unsafe extern "C" fn synth_process(p: *const clap_plugin, process: *const clap_p
     CLAP_PROCESS_CONTINUE
 }
 
-unsafe extern "C" fn no_extension(_p: *const clap_plugin, _id: *const c_char) -> *const c_void {
-    std::ptr::null()
+/// The synth's ports: one note input (CLAP notes and MIDI) and one stereo audio output.
+unsafe extern "C" fn synth_extension(_p: *const clap_plugin, id: *const c_char) -> *const c_void {
+    // SAFETY: id is a C string.
+    let id = unsafe { CStr::from_ptr(id) };
+    if id == clap_sys::ext::note_ports::CLAP_EXT_NOTE_PORTS {
+        &SYNTH_NOTE_PORTS as *const _ as *const c_void
+    } else if id == clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS {
+        &SYNTH_AUDIO_PORTS as *const _ as *const c_void
+    } else {
+        std::ptr::null()
+    }
 }
+
+unsafe extern "C" fn synth_note_count(_p: *const clap_plugin, is_input: bool) -> u32 {
+    is_input as u32
+}
+
+unsafe extern "C" fn synth_note_get(
+    _p: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_sys::ext::note_ports::clap_note_port_info,
+) -> bool {
+    use clap_sys::ext::note_ports::{CLAP_NOTE_DIALECT_CLAP, CLAP_NOTE_DIALECT_MIDI};
+    if !is_input || index != 0 {
+        return false;
+    }
+    // SAFETY: the host passes a writable info struct.
+    let info = unsafe { &mut *info };
+    info.id = 0;
+    info.supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
+    info.preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
+    for (d, &c) in info.name.iter_mut().zip(b"Notes\0") {
+        *d = c as c_char;
+    }
+    true
+}
+
+static SYNTH_NOTE_PORTS: clap_sys::ext::note_ports::clap_plugin_note_ports =
+    clap_sys::ext::note_ports::clap_plugin_note_ports { count: Some(synth_note_count), get: Some(synth_note_get) };
+
+unsafe extern "C" fn synth_audio_count(_p: *const clap_plugin, is_input: bool) -> u32 {
+    !is_input as u32
+}
+
+unsafe extern "C" fn synth_audio_get(
+    p: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_sys::ext::audio_ports::clap_audio_port_info,
+) -> bool {
+    if is_input || index != 0 {
+        return false;
+    }
+    // SAFETY: as for the gain's main port.
+    unsafe { ports_get(p, 0, false, info) }
+}
+
+static SYNTH_AUDIO_PORTS: clap_sys::ext::audio_ports::clap_plugin_audio_ports =
+    clap_sys::ext::audio_ports::clap_plugin_audio_ports { count: Some(synth_audio_count), get: Some(synth_audio_get) };
 
 static DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,
@@ -556,10 +627,11 @@ unsafe extern "C" fn create_plugin(
                 stop_processing: Some(nop),
                 reset: Some(synth_reset),
                 process: Some(synth_process),
-                get_extension: Some(no_extension),
+                get_extension: Some(synth_extension),
                 on_main_thread: Some(nop),
             },
             key: std::cell::Cell::new(None),
+            scale: std::cell::Cell::new(1.0),
         }));
         // SAFETY: the box was just leaked and is valid.
         return unsafe {

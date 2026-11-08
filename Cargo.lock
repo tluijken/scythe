@@ -3357,6 +3357,7 @@ dependencies = [
 name = "scythe-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "thiserror 2.0.21",
 ]
 

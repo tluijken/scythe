@@ -118,6 +118,22 @@ struct MidiEvent {
     reserved2: u8,
 }
 
+/// `VstMidiSysexEvent`: shares the event list with `MidiEvent`, told apart by `kind`.
+#[repr(C)]
+struct SysexEvent {
+    kind: i32,
+    byte_size: i32,
+    delta_frames: i32,
+    flags: i32,
+    dump_bytes: i32,
+    reserved1: isize,
+    sysex_dump: *mut u8,
+    reserved2: isize,
+}
+
+const KVST_SYSEX_TYPE: i32 = 6;
+const MAX_SYSEX: usize = 64;
+
 const MAX_EVENTS: usize = 512;
 
 #[repr(C)]
@@ -200,6 +216,7 @@ pub struct Vst2Plugin {
     host: Box<HostData>,
     events: Box<Events>,
     event_storage: Box<[MidiEvent; MAX_EVENTS]>,
+    sysex_storage: Box<[SysexEvent; MAX_SYSEX]>,
     pub path: PathBuf,
     // Dropped last, after the effect is closed.
     _lib: libloading::Library,
@@ -244,7 +261,17 @@ impl Vst2Plugin {
             reserved2: 0,
         }));
         let events = Box::new(Events { num_events: 0, reserved: 0, events: [std::ptr::null_mut(); MAX_EVENTS] });
-        let mut plugin = Self { effect, host, events, event_storage, path: path.into(), _lib: lib };
+        let sysex_storage = Box::new(std::array::from_fn(|_| SysexEvent {
+            kind: KVST_SYSEX_TYPE,
+            byte_size: std::mem::size_of::<SysexEvent>() as i32,
+            delta_frames: 0,
+            flags: 0,
+            dump_bytes: 0,
+            reserved1: 0,
+            sysex_dump: std::ptr::null_mut(),
+            reserved2: 0,
+        }));
+        let mut plugin = Self { effect, host, events, event_storage, sysex_storage, path: path.into(), _lib: lib };
         plugin.dispatch(EFF_OPEN, 0, 0, std::ptr::null_mut(), 0.0);
         plugin.dispatch(EFF_SET_SAMPLE_RATE, 0, 0, std::ptr::null_mut(), sample_rate);
         plugin.dispatch(EFF_SET_BLOCK_SIZE, 0, block_size as isize, std::ptr::null_mut(), 0.0);
@@ -361,8 +388,9 @@ impl Vst2Plugin {
         self.host.time = TimeInfo { sample_rate: self.host.sample_rate as f64, ..time };
     }
 
-    /// Queues MIDI for the next `process` call: `(frame offset, bytes)`. Allocation free.
-    pub fn send_midi(&mut self, events: impl Iterator<Item = (usize, [u8; 3])>) {
+    /// Queues MIDI for the next `process` call: `(frame offset, bytes)` channel messages and
+    /// system exclusive messages, which must stay alive until then. Allocation free.
+    pub fn send_midi(&mut self, events: impl Iterator<Item = (usize, [u8; 3])>, sysex: &mut [(usize, Vec<u8>)]) {
         let mut n = 0;
         for (offset, bytes) in events.take(MAX_EVENTS) {
             let e = &mut self.event_storage[n];
@@ -370,6 +398,23 @@ impl Vst2Plugin {
             e.midi_data = [bytes[0], bytes[1], bytes[2], 0];
             self.events.events[n] = e as *mut MidiEvent;
             n += 1;
+        }
+        let short = n;
+        for (i, (offset, data)) in sysex.iter_mut().take(MAX_SYSEX).enumerate() {
+            if n == MAX_EVENTS {
+                break;
+            }
+            let e = &mut self.sysex_storage[i];
+            e.delta_frames = *offset as i32;
+            e.dump_bytes = data.len() as i32;
+            e.sysex_dump = data.as_mut_ptr();
+            self.events.events[n] = e as *mut SysexEvent as *mut MidiEvent;
+            n += 1;
+        }
+        // The list goes in frame order.
+        if n > short {
+            // SAFETY: both event kinds start with the same header layout up to `delta_frames`.
+            self.events.events[..n].sort_by_key(|&e| unsafe { (*e).delta_frames });
         }
         if n == 0 {
             return;

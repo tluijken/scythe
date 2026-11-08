@@ -423,6 +423,22 @@ pub fn midi_event(offset: u32, data: [u8; 3]) -> clap_event_midi {
     }
 }
 
+/// A system exclusive event for `process`, pointing at `data`, which must outlive the call.
+pub fn sysex_event(offset: u32, data: &[u8]) -> clap_sys::events::clap_event_midi_sysex {
+    clap_sys::events::clap_event_midi_sysex {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_sys::events::clap_event_midi_sysex>() as u32,
+            time: offset,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: clap_sys::events::CLAP_EVENT_MIDI_SYSEX,
+            flags: 0,
+        },
+        port_index: 0,
+        buffer: data.as_ptr(),
+        size: data.len() as u32,
+    }
+}
+
 unsafe extern "C" fn drop_event(_list: *const clap_output_events, _event: *const clap_event_header) -> bool {
     true
 }
@@ -464,6 +480,8 @@ pub struct ClapPlugin {
     pub events: Vec<clap_event_note>,
     /// Other MIDI messages (controllers, pitch bend) for the next `process` call.
     pub midi: Vec<clap_event_midi>,
+    /// System exclusive for the next `process` call; the bytes belong to the caller.
+    pub sysex: Vec<clap_sys::events::clap_event_midi_sysex>,
     /// Parameter changes to apply at the start of the next `process` call.
     pending_params: Vec<clap_event_param_value>,
     /// All events of a `process` call in time order, as handed to the plugin.
@@ -512,6 +530,7 @@ impl ClapPlugin {
             out_ports: Vec::new(),
             events: Vec::with_capacity(1024),
             midi: Vec::with_capacity(256),
+            sysex: Vec::with_capacity(16),
             pending_params: Vec::with_capacity(64),
             order: Vec::with_capacity(1100),
         };
@@ -697,7 +716,10 @@ impl ClapPlugin {
     /// Processes a stereo block in place on the main ports; other inputs get silence.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
         let n = left.len().min(right.len()).min(self.inputs.first().or(self.outputs.first()).map_or(0, Vec::len));
-        for (c, buf) in self.inputs.iter_mut().enumerate() {
+        let ins = self.inputs.len();
+        for (c, buf) in self.inputs.iter_mut().chain(self.outputs.iter_mut()).enumerate() {
+            // Outputs start out holding the track's channels, as REAPER processes in place.
+            let c = if c >= ins { c - ins } else { c };
             match c {
                 0 => buf[..n].copy_from_slice(&left[..n]),
                 1 => buf[..n].copy_from_slice(&right[..n]),
@@ -715,7 +737,10 @@ impl ClapPlugin {
     /// channel k goes to it, over frames `range`.
     pub fn process_channels(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>) {
         let n = range.len().min(self.inputs.first().or(self.outputs.first()).map_or(0, Vec::len));
-        for (c, buf) in self.inputs.iter_mut().enumerate() {
+        let ins = self.inputs.len();
+        for (c, buf) in self.inputs.iter_mut().chain(self.outputs.iter_mut()).enumerate() {
+            // Outputs start out holding the track's channels, as REAPER processes in place.
+            let c = if c >= ins { c - ins } else { c };
             match bufs.get(c) {
                 Some(src) => buf[..n].copy_from_slice(&src[range.start..range.start + n]),
                 None => buf[..n].fill(0.0),
@@ -737,8 +762,9 @@ impl ClapPlugin {
         self.order.clear();
         self.order.extend(self.pending_params.iter().map(|e| &e.header as *const clap_event_header));
         self.order.extend(self.events.iter().map(|e| &e.header as *const clap_event_header));
-        if !self.midi.is_empty() {
+        if !self.midi.is_empty() || !self.sysex.is_empty() {
             self.order.extend(self.midi.iter().map(|e| &e.header as *const clap_event_header));
+            self.order.extend(self.sysex.iter().map(|e| &e.header as *const clap_event_header));
             // Insertion sort: stable without allocating on the audio thread, and the lists are
             // each sorted already. SAFETY: every pointer refers into the event vectors above.
             let time = |e: *const clap_event_header| unsafe { (*e).time };
@@ -773,6 +799,7 @@ impl ClapPlugin {
         }
         self.events.clear();
         self.midi.clear();
+        self.sysex.clear();
         self.pending_params.clear();
         self.order.clear();
     }

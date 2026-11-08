@@ -144,7 +144,7 @@ pub fn read_smf(data: &[u8]) -> Result<(MidiSource, SmfInfo), SmfError> {
     }
     // Stable: events of the same tick keep their file order across tracks.
     events.sort_by_key(|e| e.tick);
-    Ok((MidiSource { ticks_per_qn: division.max(1) as u32, events, length_ticks: length }, info))
+    Ok((MidiSource { ticks_per_qn: division.max(1) as u32, events, long: Vec::new(), length_ticks: length }, info))
 }
 
 fn put_varlen(out: &mut Vec<u8>, mut v: u64) {
@@ -245,6 +245,7 @@ mod tests {
     fn round_trips_through_a_file_and_a_chunk() {
         let src = MidiSource {
             ticks_per_qn: 960,
+            long: Vec::new(),
             events: vec![
                 MidiEvent { tick: 0, bytes: [0xc0, 5, 0], len: 2 },
                 MidiEvent { tick: 0, bytes: [0x99, 36, 110], len: 3 },

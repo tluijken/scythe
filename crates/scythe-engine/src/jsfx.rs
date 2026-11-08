@@ -311,8 +311,9 @@ pub struct JsfxEffect {
     /// Whether the script reads or writes MIDI; others leave the chain's MIDI alone.
     uses_midi: bool,
     midi_in: Vec<(usize, [u8; 3])>,
+    long_in: Vec<(usize, Vec<u8>)>,
     /// What the effect passed on since the chain last took it.
-    midi_sent: Vec<(usize, [u8; 3])>,
+    midi_sent: crate::fx::MidiBlock,
     /// Whether it ran since; a bypassed effect lets the chain's MIDI go past it.
     midi_ran: bool,
 }
@@ -376,7 +377,8 @@ impl JsfxEffect {
             was_playing: false,
             uses_midi,
             midi_in: Vec::new(),
-            midi_sent: Vec::new(),
+            long_in: Vec::new(),
+            midi_sent: Default::default(),
             midi_ran: false,
         };
         fx.ext_noinit = fx.machine.vars.slot("ext_noinit");
@@ -525,7 +527,10 @@ impl JsfxEffect {
     fn receive_midi(&mut self, n: usize, ctx: &ProcessContext) {
         if self.uses_midi {
             ctx.block_midi(n, &mut self.midi_in);
-            self.machine.set_midi(self.midi_in.iter().map(|&(at, m)| (at as f64, m)));
+            ctx.block_long(n, &mut self.long_in);
+            let short = self.midi_in.iter().map(|&(at, m)| (at as f64, crate::eel::MidiMsg::Short(m)));
+            let long = self.long_in.drain(..).map(|(at, d)| (at as f64, crate::eel::MidiMsg::Long(d)));
+            self.machine.set_midi(short.chain(long));
         }
     }
 
@@ -606,11 +611,12 @@ impl Effect for JsfxEffect {
         Some(self.run_serialize(crate::eel::Serial { writing: true, ..Default::default() }))
     }
 
-    fn take_midi(&mut self, out: &mut Vec<(usize, [u8; 3])>) -> bool {
+    fn take_midi(&mut self, out: &mut crate::fx::MidiBlock) -> bool {
         if !std::mem::take(&mut self.midi_ran) {
             return false;
         }
-        out.append(&mut self.midi_sent);
+        out.short.append(&mut self.midi_sent.short);
+        out.long.append(&mut self.midi_sent.long);
         true
     }
 

@@ -38,6 +38,7 @@ pub struct NoteList {
     pub notes: Vec<SynthNote>,
     max_span: i64,
     controls: Vec<ControlEvent>,
+    long: Vec<(i64, Vec<u8>)>,
 }
 
 impl NoteList {
@@ -45,13 +46,31 @@ impl NoteList {
         notes.sort_by_key(|n| n.start);
         let tail = (MAX_TAIL_SECONDS * sample_rate as f64) as i64;
         let max_span = notes.iter().map(|n| n.end - n.start + tail).max().unwrap_or(0);
-        Self { notes, max_span, controls: Vec::new() }
+        Self { notes, max_span, controls: Vec::new(), long: Vec::new() }
     }
 
     pub fn with_controls(mut self, mut controls: Vec<ControlEvent>) -> Self {
         controls.sort_by_key(|c| c.frame);
         self.controls = controls;
         self
+    }
+
+    /// The track's system exclusive and meta messages, by frame.
+    pub fn with_long(mut self, mut long: Vec<(i64, Vec<u8>)>) -> Self {
+        long.sort_by_key(|e| e.0);
+        self.long = long;
+        self
+    }
+
+    pub fn long(&self) -> &[(i64, Vec<u8>)] {
+        &self.long
+    }
+
+    /// System exclusive and meta messages in `range` (project frames).
+    pub fn long_in(&self, range: std::ops::Range<i64>) -> &[(i64, Vec<u8>)] {
+        let last = self.long.partition_point(|x| x.0 < range.end);
+        let first = self.long[..last].partition_point(|x| x.0 < range.start);
+        &self.long[first..last]
     }
 
     pub fn controls(&self) -> &[ControlEvent] {

@@ -37,9 +37,24 @@ pub struct ProcessContext<'a> {
     pub bpm: f64,
     /// MIDI an earlier effect in the chain passed on, as frame offsets from the start of the
     /// chain's block; when set it stands in for `notes` and `live`.
-    pub midi: Option<&'a [(usize, [u8; 3])]>,
+    pub midi: Option<&'a MidiBlock>,
     /// Where this call's frames start within the chain's block.
     pub midi_from: usize,
+}
+
+/// The MIDI an effect passes down the chain in a block, as frame offsets from its start:
+/// channel messages, and system exclusive or meta messages kept whole.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MidiBlock {
+    pub short: Vec<(usize, [u8; 3])>,
+    pub long: Vec<(usize, Vec<u8>)>,
+}
+
+impl MidiBlock {
+    pub fn clear(&mut self) {
+        self.short.clear();
+        self.long.clear();
+    }
 }
 
 impl ProcessContext<'_> {
@@ -51,8 +66,27 @@ impl ProcessContext<'_> {
     /// The chain's MIDI due in this call's `n` frames, as offsets from the call's first frame.
     pub fn chain_midi(&self, n: usize) -> Option<impl Iterator<Item = (usize, [u8; 3])> + '_> {
         let from = self.midi_from;
-        self.midi
-            .map(move |m| m.iter().filter(move |e| (from..from + n).contains(&e.0)).map(move |&(o, b)| (o - from, b)))
+        self.midi.map(move |m| {
+            m.short.iter().filter(move |e| (from..from + n).contains(&e.0)).map(move |&(o, b)| (o - from, b))
+        })
+    }
+
+    /// System exclusive and meta messages due in this call's `n` frames: the chain's, or else
+    /// the track's own.
+    pub fn block_long(&self, n: usize, out: &mut Vec<(usize, Vec<u8>)>) {
+        out.clear();
+        let from = self.midi_from;
+        match (self.midi, self.notes) {
+            (Some(m), _) => out
+                .extend(m.long.iter().filter(|e| (from..from + n).contains(&e.0)).map(|(o, d)| (o - from, d.clone()))),
+            (None, Some(notes)) => {
+                let start = self.position;
+                out.extend(
+                    notes.long_in(start..start + n as i64).iter().map(|(f, d)| ((f - start) as usize, d.clone())),
+                );
+            }
+            (None, None) => {}
+        }
     }
 
     /// Every MIDI message due in this call's `n` frames: the chain's, or else live input first
@@ -106,7 +140,7 @@ pub trait Effect: Send {
 
     /// Moves the MIDI the effect passed on since the last call into `out`, as offsets from the
     /// chain's block; false when the effect leaves the chain's MIDI as it is.
-    fn take_midi(&mut self, _out: &mut Vec<(usize, [u8; 3])>) -> bool {
+    fn take_midi(&mut self, _out: &mut MidiBlock) -> bool {
         false
     }
 
@@ -354,7 +388,7 @@ impl FxInstance {
         }
     }
 
-    pub fn take_midi(&self, out: &mut Vec<(usize, [u8; 3])>) -> bool {
+    pub fn take_midi(&self, out: &mut MidiBlock) -> bool {
         self.effect.try_lock().is_ok_and(|mut fx| fx.take_midi(out))
     }
 
@@ -817,7 +851,10 @@ impl FxRegistry {
                     plugin.load_state(&state);
                 }
                 let instrument = desc.is_instrument();
-                Ok((Box::new(ClapEffect { plugin, instrument, expected: None }), FxStatus::Hosted(desc.path)))
+                Ok((
+                    Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new() }),
+                    FxStatus::Hosted(desc.path),
+                ))
             }
             other => Err(format!("{other} plugins are not supported yet")),
         }
@@ -1084,6 +1121,8 @@ struct ClapEffect {
     instrument: bool,
     /// Where the next block should start if playback is continuous.
     expected: Option<i64>,
+    /// System exclusive for the next block, kept alive until the plugin has run it.
+    long: Vec<(usize, Vec<u8>)>,
 }
 
 impl Effect for ClapEffect {
@@ -1152,6 +1191,12 @@ impl ClapEffect {
             self.plugin.reset();
         }
         self.expected = Some(end);
+        if self.instrument {
+            ctx.block_long(n as usize, &mut self.long);
+            for (at, data) in &self.long {
+                self.plugin.sysex.push(crate::clap_host::sysex_event(*at as u32, data));
+            }
+        }
         if self.instrument
             && let Some(chain) = ctx.chain_midi(n as usize)
         {
@@ -1375,11 +1420,12 @@ struct Lv2Effect {
     plugin: crate::lv2::Lv2Plugin,
     midi: Vec<(u32, [u8; 3])>,
     scratch_midi: Vec<(usize, [u8; 3])>,
+    long: Vec<(usize, Vec<u8>)>,
 }
 
 impl Lv2Effect {
     fn new(plugin: crate::lv2::Lv2Plugin) -> Self {
-        Self { plugin, midi: Vec::with_capacity(256), scratch_midi: Vec::with_capacity(256) }
+        Self { plugin, midi: Vec::with_capacity(256), scratch_midi: Vec::with_capacity(256), long: Vec::new() }
     }
 
     fn control_ports(&self) -> impl Iterator<Item = &crate::lv2::PortInfo> {
@@ -1402,11 +1448,12 @@ impl Effect for Lv2Effect {
         ctx.block_midi(left.len(), &mut events);
         self.midi.extend(events.iter().map(|&(at, b)| (at as u32, b)));
         self.scratch_midi = events;
+        ctx.block_long(left.len(), &mut self.long);
         for (l, r) in left
             .chunks_mut(crate::render::RenderScratch::MAX_BLOCK)
             .zip(right.chunks_mut(crate::render::RenderScratch::MAX_BLOCK))
         {
-            self.plugin.process(l, r, &self.midi);
+            self.plugin.process(l, r, &self.midi, &self.long);
         }
     }
 
@@ -1463,6 +1510,8 @@ struct Vst2Effect {
     outputs: Vec<Vec<f32>>,
     /// MIDI for the next block: frame offset and message.
     midi: Vec<(usize, [u8; 3])>,
+    /// System exclusive for the next block, kept alive until the plugin has run it.
+    long: Vec<(usize, Vec<u8>)>,
 }
 
 impl Vst2Effect {
@@ -1475,7 +1524,7 @@ impl Vst2Effect {
         let n = crate::render::RenderScratch::MAX_BLOCK;
         let inputs = (0..plugin.num_inputs()).map(|_| vec![0.0; n]).collect();
         let outputs = (0..plugin.num_outputs()).map(|_| vec![0.0; n]).collect();
-        Self { plugin, inputs, outputs, midi: Vec::with_capacity(512) }
+        Self { plugin, inputs, outputs, midi: Vec::with_capacity(512), long: Vec::new() }
     }
 }
 
@@ -1501,8 +1550,9 @@ impl Effect for Vst2Effect {
             return;
         }
         self.queue_midi(n, ctx);
-        if !self.midi.is_empty() {
-            self.plugin.send_midi(self.midi.iter().copied());
+        ctx.block_long(n, &mut self.long);
+        if !self.midi.is_empty() || !self.long.is_empty() {
+            self.plugin.send_midi(self.midi.iter().copied(), &mut self.long);
         }
         for (c, buf) in self.inputs.iter_mut().enumerate() {
             match bufs.get(c) {
@@ -1534,8 +1584,9 @@ impl Effect for Vst2Effect {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         let n = left.len().min(crate::render::RenderScratch::MAX_BLOCK);
         self.queue_midi(n, ctx);
-        if !self.midi.is_empty() {
-            self.plugin.send_midi(self.midi.iter().copied());
+        ctx.block_long(n, &mut self.long);
+        if !self.midi.is_empty() || !self.long.is_empty() {
+            self.plugin.send_midi(self.midi.iter().copied(), &mut self.long);
         }
         for (c, buf) in self.inputs.iter_mut().enumerate() {
             match c {

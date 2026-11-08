@@ -11,10 +11,21 @@ pub struct MidiEvent {
     pub len: u8,
 }
 
+/// A system exclusive or meta event (`<X delta flags …` with base64 data), kept whole.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LongEvent {
+    pub tick: u64,
+    /// The chunk's arguments after the delta, written back as they were.
+    pub args: Vec<String>,
+    /// The message as stored: `F0 … F7` for system exclusive, `FF type …` for meta text.
+    pub data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MidiSource {
     pub ticks_per_qn: u32,
     pub events: Vec<MidiEvent>,
+    pub long: Vec<LongEvent>,
     /// Source length in ticks: the position of the last event, which REAPER writes as an
     /// end-of-source marker.
     pub length_ticks: u64,
@@ -40,7 +51,26 @@ impl MidiSource {
         let mut ticks_per_qn = 960;
         let mut tick = 0u64;
         let mut events = Vec::new();
+        let mut long = Vec::new();
         for node in &c.children {
+            if let Node::Chunk(x) = node
+                && matches!(x.name(), "X" | "x")
+            {
+                let args = x.args();
+                tick += args.first().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                let text: String = x
+                    .children
+                    .iter()
+                    .filter_map(|n| match n {
+                        Node::Line(l) => Some(l.trim()),
+                        Node::Chunk(_) => None,
+                    })
+                    .collect();
+                use base64::Engine as _;
+                let data = base64::engine::general_purpose::STANDARD.decode(text).unwrap_or_default();
+                long.push(LongEvent { tick, args: args.iter().skip(1).cloned().collect(), data });
+                continue;
+            }
             let Node::Line(l) = node else { continue };
             match line_key(l) {
                 "HASDATA" => {
@@ -69,7 +99,7 @@ impl MidiSource {
                 _ => {}
             }
         }
-        Some(Self { ticks_per_qn: ticks_per_qn.max(1), length_ticks: tick, events })
+        Some(Self { ticks_per_qn: ticks_per_qn.max(1), length_ticks: tick, events, long })
     }
 
     pub fn length_qn(&self) -> f64 {
@@ -140,13 +170,16 @@ impl MidiSource {
         }
         // Note-offs before note-ons at the same tick, so a repeated key is not cut short.
         events.sort_by_key(|e| (e.tick, e.bytes[0] & 0xf0 == 0x90, !is_note(e)));
-        MidiSource { ticks_per_qn: self.ticks_per_qn, events, length_ticks: length }
+        MidiSource { ticks_per_qn: self.ticks_per_qn, events, long: self.long.clone(), length_ticks: length }
     }
 
     /// Writes the events into a copy of the original chunk, keeping its other lines. Pooling
     /// is dropped: an edited source no longer shares events with its pool.
     pub fn write_chunk(&self, original: &Chunk) -> Chunk {
-        let is_event = |n: &Node| matches!(n, Node::Line(l) if matches!(line_key(l), "E" | "e" | "X" | "x"));
+        let is_event = |n: &Node| match n {
+            Node::Line(l) => matches!(line_key(l), "E" | "e" | "X" | "x"),
+            Node::Chunk(c) => matches!(c.name(), "X" | "x"),
+        };
         let first = original.children.iter().position(is_event).unwrap_or(original.children.len());
         let last = original.children.iter().rposition(is_event).map_or(first, |i| i + 1);
         let mut out = Chunk { header: original.header.clone(), children: Vec::new() };
@@ -157,11 +190,27 @@ impl MidiSource {
                 .cloned(),
         );
         let mut prev = 0;
+        let mut long = self.long.iter().peekable();
+        // Long events go after the channel messages at their tick, before later ones.
+        let mut write_long_until = |out: &mut Chunk, prev: &mut u64, before: Option<u64>| {
+            while let Some(x) = long.next_if(|x| before.is_none_or(|t| x.tick < t)) {
+                use base64::Engine as _;
+                let delta = (x.tick - *prev).to_string();
+                let args: Vec<&str> =
+                    std::iter::once(delta.as_str()).chain(x.args.iter().map(String::as_str)).collect();
+                let mut chunk = Chunk::new("X", &args);
+                chunk.children.push(Node::Line(base64::engine::general_purpose::STANDARD.encode(&x.data)));
+                out.children.push(Node::Chunk(chunk));
+                *prev = x.tick;
+            }
+        };
         for e in &self.events {
+            write_long_until(&mut out, &mut prev, Some(e.tick));
             let bytes: Vec<String> = e.bytes[..e.len as usize].iter().map(|b| format!("{b:02x}")).collect();
             out.children.push(Node::Line(format!("E {} {}", e.tick - prev, bytes.join(" "))));
             prev = e.tick;
         }
+        write_long_until(&mut out, &mut prev, None);
         out.children.extend(original.children[last..].iter().cloned());
         out
     }
@@ -245,7 +294,7 @@ impl MidiSource {
         events.extend(points.iter().map(|p| lane.event(tick(p.qn), p.channel, p.value)));
         // Stable, so the end marker stays after anything placed at the very end.
         events.sort_by_key(|e| (e.tick, e.tick == length && e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == 0x7b));
-        MidiSource { ticks_per_qn: self.ticks_per_qn, events, length_ticks: length }
+        MidiSource { ticks_per_qn: self.ticks_per_qn, events, long: self.long.clone(), length_ticks: length }
     }
 }
 
@@ -343,6 +392,31 @@ impl MidiSource {
         out
     }
 
+    /// The take's system exclusive and meta events, placed like [`MidiSource::place`].
+    pub fn place_long(
+        &self,
+        item: &crate::Item,
+        take: &crate::Take,
+        timeline: &crate::tempo::Timeline,
+    ) -> Vec<(f64, Vec<u8>)> {
+        let ppq = self.ticks_per_qn as f64;
+        let p = self.placement(item, take, timeline);
+        let mut out = Vec::new();
+        for base in &p.bases {
+            for x in &self.long {
+                let at = base + x.tick as f64 / ppq / p.rate;
+                if at < p.item_qn - 1e-9 || at >= p.end_qn {
+                    continue;
+                }
+                out.push((timeline.time_at_qn(at), x.data.clone()));
+            }
+            if out.len() > 100_000 {
+                break;
+            }
+        }
+        out
+    }
+
     /// The take's channel messages other than notes, placed like [`MidiSource::place`]. REAPER's
     /// end-of-source marker (all notes off at the very end) is left out.
     pub fn place_events(
@@ -398,6 +472,22 @@ mod tests {
         let again = MidiSource::parse(&chunk).unwrap();
         assert_eq!(again.length_qn(), 5.0);
         assert_eq!(again.notes(), notes);
+    }
+
+    #[test]
+    fn sysex_keeps_its_time_and_survives_edits() {
+        // As REAPER 7.73 saves a take with a system exclusive and a text event.
+        let c = parse(
+            "<SOURCE MIDI\n  HASDATA 1 960 QN\n  E 0 90 3c 64\n  E 240 80 3c 00\n  <X 240 0\n    8PB+fwYB9/c=\n  >\n  <X 240 0 0 0 1 hello\n    /wFoZWxsbw==\n  >\n  E 240 90 3e 64\n  E 10 80 3e 00\n  E 0 b0 7b 00\n>\n",
+        )
+        .unwrap();
+        let m = MidiSource::parse(&c).unwrap();
+        assert_eq!(m.long.iter().map(|x| x.tick).collect::<Vec<_>>(), [480, 720]);
+        assert_eq!(m.long[0].data, [0xf0, 0xf0, 0x7e, 0x7f, 0x06, 0x01, 0xf7, 0xf7]);
+        assert_eq!(m.long[1].data[..2], [0xff, 0x01]);
+        assert_eq!(m.notes()[1].start_qn, 1.0, "events after a long one keep their time");
+        let again = MidiSource::parse(&m.with_notes(&m.notes()).write_chunk(&c)).unwrap();
+        assert_eq!((again.notes(), again.long), (m.notes(), m.long.clone()));
     }
 
     #[test]

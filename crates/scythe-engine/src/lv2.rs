@@ -600,9 +600,9 @@ impl Lv2Plugin {
         true
     }
 
-    /// Runs one block in place on a stereo pair, with MIDI events `(frame, bytes)` for an atom
-    /// input that takes MIDI.
-    pub fn process(&mut self, left: &mut [f32], right: &mut [f32], midi: &[(u32, [u8; 3])]) {
+    /// Runs one block in place on a stereo pair, with MIDI events `(frame, bytes)` and system
+    /// exclusive messages for an atom input that takes MIDI.
+    pub fn process(&mut self, left: &mut [f32], right: &mut [f32], midi: &[(u32, [u8; 3])], long: &[(usize, Vec<u8>)]) {
         let n = left.len().min(right.len()).min(self.block);
         let writes = self.ui_writes.clone();
         if let Ok(mut writes) = writes.try_lock() {
@@ -638,15 +638,30 @@ impl Lv2Plugin {
                     // An LV2_Atom_Sequence: header, body (unit, pad), then events.
                     let mut at = 16usize;
                     if midi_port {
-                        for &(frame, data) in midi {
-                            if at + 32 > bytes {
+                        let (mut short, mut sysex) = (midi.iter().peekable(), long.iter().peekable());
+                        loop {
+                            let take_short = match (short.peek(), sysex.peek()) {
+                                (Some(s), Some(x)) => s.0 as usize <= x.0,
+                                (Some(_), None) => true,
+                                (None, Some(_)) => false,
+                                (None, None) => break,
+                            };
+                            let (frame, data): (u32, &[u8]) = if take_short {
+                                let (f, d) = short.next().unwrap();
+                                (*f, d)
+                            } else {
+                                let (f, d) = sysex.next().unwrap();
+                                (*f as u32, d)
+                            };
+                            let padded = (data.len() + 7) & !7;
+                            if at + 16 + padded + 8 > bytes {
                                 break;
                             }
                             (buf.add(at) as *mut i64).write(frame.min(n as u32 - 1) as i64);
-                            (buf.add(at + 8) as *mut u32).write(3);
+                            (buf.add(at + 8) as *mut u32).write(data.len() as u32);
                             (buf.add(at + 12) as *mut u32).write(self.midi_type);
-                            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.add(at + 16), 3);
-                            at += 16 + 8;
+                            std::ptr::copy_nonoverlapping(data.as_ptr(), buf.add(at + 16), data.len());
+                            at += 16 + padded;
                         }
                     }
                     (buf as *mut u32).write((at - 8) as u32);
