@@ -116,6 +116,17 @@ impl Effect for Gate {
         }
     }
 
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        use crate::normalized::{amp2_db, linear};
+        match index {
+            0 | 12 => self.set_param(index as u32, amp2_db(v)),
+            1 => self.set_param(1, linear(v, 0.0, 500.0)),
+            2 => self.set_param(2, linear(v, 0.0, 5000.0)),
+            _ => return false,
+        }
+        true
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         Some(marked_chunk(&self.params))
     }
@@ -230,6 +241,18 @@ impl Effect for Compressor {
                 *self = Compressor { env_db: self.env_db, ..fresh };
             }
         }
+    }
+
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        use crate::normalized::{amp2_db, linear};
+        match index {
+            0 => self.set_param(0, amp2_db(v)),
+            1 => self.set_param(1, linear(v, 1.0, 100.0)),
+            2 => self.set_param(2, linear(v, 0.0, 500.0)),
+            3 => self.set_param(3, linear(v, 0.0, 5000.0)),
+            _ => return false,
+        }
+        true
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {

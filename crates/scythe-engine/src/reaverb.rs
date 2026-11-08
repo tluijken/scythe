@@ -104,6 +104,14 @@ impl Effect for ReaVerbCompat {
         }
     }
 
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        if index > 1 {
+            return false;
+        }
+        self.set_param(index as u32, crate::normalized::amp2_db(v));
+        true
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         let mut c = self.chunk.clone();
         c.get_mut(4..8)?.copy_from_slice(&self.settings.wet.to_le_bytes());

@@ -84,11 +84,8 @@ impl PanLaw {
     /// The linear taper runs straight from the centre gain to 0 and 1. The sine taper is the
     /// constant-power curve through the centre gain, blended towards the one that ends at
     /// unity by `(1/cos(a pi/4) - 1) / (sqrt 2 - 1)` of the pan amount `a`; both are exact
-    /// for every law. The hybrid taper equals the sine taper from -3 dB down. Above it, both
-    /// channels follow sine arcs from the centre gain: the far side turns towards silence at
-    /// `asin(centre)` per unit of pan (held to the balance line `1 - a`), the near side reaches
-    /// unity at `a = hybrid_unity(centre)`. That is exact up to a centre of `sin 1` (-1.5 dB);
-    /// closer to 0 dB the far side's shape changes and stays within 2 %.
+    /// for every law. The hybrid taper equals the sine taper from -3 dB down and follows sine
+    /// arcs above it (see `hybrid`).
     pub fn gains(self, pan: f64) -> (f64, f64) {
         use std::f64::consts::{FRAC_PI_4, SQRT_2};
         let pan = pan.clamp(-1.0, 1.0);
@@ -108,47 +105,57 @@ impl PanLaw {
             PanTaper::Linear => linear,
             PanTaper::Sine => sine,
             PanTaper::Hybrid if centre <= std::f64::consts::FRAC_1_SQRT_2 + 1e-4 => sine,
-            PanTaper::Hybrid => {
-                use std::f64::consts::FRAC_PI_2;
-                let start = centre.asin();
-                let unity = hybrid_unity(centre);
-                let near = if a >= unity { 1.0 } else { (start + (FRAC_PI_2 - start) * a / unity).sin() };
-                let far = (centre.acos() + start * a).min(FRAC_PI_2).cos().min(1.0 - a);
-                (far, near)
-            }
+            PanTaper::Hybrid => hybrid(centre, a),
         };
         let (l, r) = if pan < 0.0 { (toward, away) } else { (away, toward) };
         (l * scale, r * scale)
     }
 }
 
-/// Pan amount at which the hybrid taper's near side reaches unity: `acos(c) / asin(c)` up to a
-/// centre gain of `sin 1`, then measured from REAPER renders (0 at a 0 dB centre).
-fn hybrid_unity(centre: f64) -> f64 {
-    const MEASURED: [(f64, f64); 16] = [
-        (0.8414, 0.5713),
-        (0.8511, 0.5368),
-        (0.8610, 0.5016),
-        (0.8710, 0.4659),
-        (0.8810, 0.4300),
-        (0.8912, 0.3934),
-        (0.9016, 0.3563),
-        (0.9120, 0.3191),
-        (0.9226, 0.2813),
-        (0.9333, 0.2427),
-        (0.9441, 0.2036),
-        (0.9550, 0.1644),
-        (0.9660, 0.1253),
-        (0.9772, 0.0861),
-        (0.9886, 0.0469),
-        (1.0, 0.0),
-    ];
-    if centre <= MEASURED[0].0 {
-        return centre.acos() / centre.asin();
+/// The hybrid taper above a centre of `sin 1`, measured from REAPER renders: per centre gain,
+/// the pan amount at which the near side reaches unity, and how much slower the far side's arc
+/// runs (the far side is the balance line `1 - a` times that slowed arc).
+const HYBRID_MEASURED: [(f64, f64, f64); 16] = [
+    (0.8414, 0.5713, 1.7760),
+    (0.8511, 0.5368, 1.7228),
+    (0.8610, 0.5016, 1.6753),
+    (0.8710, 0.4659, 1.6333),
+    (0.8810, 0.4300, 1.5976),
+    (0.8912, 0.3934, 1.5629),
+    (0.9016, 0.3563, 1.5308),
+    (0.9120, 0.3191, 1.5003),
+    (0.9226, 0.2813, 1.4725),
+    (0.9333, 0.2427, 1.4473),
+    (0.9441, 0.2036, 1.4248),
+    (0.9550, 0.1644, 1.4018),
+    (0.9660, 0.1253, 1.3717),
+    (0.9772, 0.0861, 1.3429),
+    (0.9886, 0.0469, 1.2341),
+    (1.0, 0.0, 1.2341),
+];
+
+/// Hybrid taper gains `(far, near)` above -3 dB. Both sides are sine arcs starting at the
+/// centre gain. Up to a centre of `sin 1` (-1.5 dB) the near side reaches unity at
+/// `a = acos(c) / asin(c)` and the far side turns at `asin(c)` per unit of pan, held to the
+/// balance line; above it both follow the measured table.
+fn hybrid(centre: f64, a: f64) -> (f64, f64) {
+    use std::f64::consts::FRAC_PI_2;
+    let start = centre.asin();
+    if centre <= HYBRID_MEASURED[0].0 {
+        let unity = centre.acos() / start;
+        let near = (start + (FRAC_PI_2 - start) * (a / unity).min(1.0)).sin();
+        let far = (centre.acos() + start * a).min(FRAC_PI_2).cos().min(1.0 - a);
+        return (far, near);
     }
-    let i = MEASURED.partition_point(|p| p.0 < centre).clamp(1, MEASURED.len() - 1);
-    let ((x0, y0), (x1, y1)) = (MEASURED[i - 1], MEASURED[i]);
-    y0 + (y1 - y0) * (centre - x0) / (x1 - x0)
+    let i = HYBRID_MEASURED.partition_point(|p| p.0 < centre).clamp(1, HYBRID_MEASURED.len() - 1);
+    let (lo, hi) = (HYBRID_MEASURED[i - 1], HYBRID_MEASURED[i]);
+    let k = (centre - lo.0) / (hi.0 - lo.0);
+    let (unity, slow) = (lo.1 + (hi.1 - lo.1) * k, lo.2 + (hi.2 - lo.2) * k);
+    let arc = |speed: f64| (start + (FRAC_PI_2 - start) * (a * speed).min(1.0)).sin();
+    if unity <= 0.0 {
+        return (1.0 - a, 1.0);
+    }
+    ((1.0 - a) * arc(1.0 / (unity * slow)), arc(1.0 / unity))
 }
 
 #[cfg(test)]

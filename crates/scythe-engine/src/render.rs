@@ -624,13 +624,14 @@ impl RenderGraph {
                 if automation.is_empty() {
                     fx.process(tl, tr, &ctx);
                 } else {
-                    // Automated effects run in short slices so parameter changes land close to
-                    // where the envelope puts them.
-                    const SLICE: usize = 64;
+                    // REAPER sets enveloped FX parameters once per 512-frame block, from the value
+                    // at the block's start.
+                    const SLICE: i64 = 512;
                     let mut at = 0;
                     while at < n {
-                        let len = SLICE.min(n - at);
-                        let slice_ctx = ProcessContext { position: ctx.position + at as i64, ..ctx };
+                        let frame = ctx.position + at as i64;
+                        let len = ((SLICE - frame.rem_euclid(SLICE)) as usize).min(n - at);
+                        let slice_ctx = ProcessContext { position: frame, ..ctx };
                         let st = t + at as f64 / self.sample_rate as f64;
                         fx.process_automated(&mut tl[at..at + len], &mut tr[at..at + len], &slice_ctx, automation, st);
                         at += len;

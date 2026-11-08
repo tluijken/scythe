@@ -74,6 +74,12 @@ pub trait Effect: Send {
         None
     }
 
+    /// Sets parameter `index` in REAPER's order from a normalised (0..=1) value, the way REAPER
+    /// maps it for its own effects. Returns false when the effect does not take it that way.
+    fn set_normalized(&mut self, _index: usize, _value: f64) -> bool {
+        false
+    }
+
     /// Sets a parameter by the name REAPER uses in `PARMENV` (`_Wet`, `_1__Enabled` …) for
     /// envelope playback. Returns false for names the effect does not know.
     fn set_named_param(&mut self, _name: &str, _value: f64) -> bool {
@@ -197,7 +203,10 @@ impl FxInstance {
             match &a.target {
                 Target::Bypass => bypassed = v >= 0.5,
                 Target::Named(name) => {
+                    let span = a.range.1 - a.range.0;
+                    let normalized = if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 };
                     if !fx.set_named_param(name, v)
+                        && !fx.set_normalized(a.index, normalized)
                         && let Some(m) = &a.fallback
                     {
                         fx.set_param(m.id, m.map(v));

@@ -176,6 +176,18 @@ impl Effect for ReaDelayCompat {
         }
     }
 
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        use crate::normalized::{amp2_db, linear};
+        match index {
+            0 | 1 => self.set_param(index as u32, amp2_db(v)),
+            3 => self.set_param(2, linear(v, 0.0, 10000.0)),
+            4 => self.set_param(3, linear(v, 0.0, 256.0)),
+            5 => self.set_param(4, amp2_db(v)),
+            _ => return false,
+        }
+        true
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         let mut c = self.chunk.clone();
         let mut put = |i: usize, v: f64| -> Option<()> {
@@ -268,6 +280,8 @@ impl Effect for ReaDelayCompat {
 /// `ceiling - threshold` and peaks above the ceiling are held down with an instant attack and
 /// a fixed 50 ms release.
 pub struct Limiter {
+    threshold_db: f64,
+    ceiling_db: f64,
     makeup: f32,
     ceiling: f32,
     release: f32,
@@ -284,6 +298,8 @@ impl Limiter {
         }
         let db = |v: f64| 10f64.powf(v / 20.0) as f32;
         Some(Self {
+            threshold_db: threshold,
+            ceiling_db: ceiling,
             makeup: db(ceiling - threshold),
             ceiling: db(ceiling),
             release: (-1.0 / (0.05 * sample_rate as f32)).exp(),
@@ -293,6 +309,18 @@ impl Limiter {
 }
 
 impl Effect for Limiter {
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        use crate::normalized::linear;
+        match index {
+            0 => self.threshold_db = linear(v, -60.0, 12.0),
+            1 => self.ceiling_db = linear(v, -24.0, 0.0),
+            _ => return false,
+        }
+        self.makeup = 10f64.powf((self.ceiling_db - self.threshold_db) / 20.0) as f32;
+        self.ceiling = 10f64.powf(self.ceiling_db / 20.0) as f32;
+        true
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let peak = l.abs().max(r.abs()) * self.makeup;

@@ -12,6 +12,7 @@ pub mod lv2;
 pub mod media;
 pub mod meter;
 pub mod nam;
+pub mod normalized;
 pub mod reaeq;
 pub mod reaverb;
 pub mod record;

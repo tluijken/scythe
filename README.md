@@ -114,20 +114,17 @@ compare with scythe's output sample by sample:
 
 | Area | Result |
 |---|---|
-| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), hybrid at every law from -1.5 dB down and at 0 dB, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
+| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), all three tapers at every law, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
 | Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
 | Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
 | Reversed sections | exact |
-| ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain | exact (35/35 cases) |
+| ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate) | exact (35/35 cases, 10 high-frequency cases) |
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
 | ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project) | levels and pan per channel identical; difference -27 to -32 dB from the resampling filter |
-| FX parameter envelopes (`PARMENV`): ReaVerb wet ramp, ReaVerb bypass | within -33 dB overall, -50 dB during the ramp (applied every 64 samples) |
+| FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry | exact; its low-/high-pass filters approximate (impulse response within 0.04) |
 | Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`) | exact (all lanes play) |
-
-The hybrid taper between -1.5 and 0 dB keeps its far side within 2 % (the near side is exact);
-no project in the corpus uses such a law.
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.
@@ -135,7 +132,7 @@ compares the two files.
 ### Not there yet
 
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
-  parameter; logarithmic parameters of the built-in effects are not mapped specially. NAM models are run at the project rate without resampling
+  plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - MIDI to VST 2 instruments, MIDI controller editing, MIDI input. (MIDI items do play through
   CLAP instruments, the built-in sampler and the preview synth.)

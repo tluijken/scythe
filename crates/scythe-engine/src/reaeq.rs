@@ -63,7 +63,10 @@ impl Biquad {
         let w0 = std::f64::consts::TAU * f / sample_rate;
         let (sin, cos) = w0.sin_cos();
         let bw = band.bandwidth.clamp(0.01, 8.0);
-        let alpha = sin * (std::f64::consts::LN_2 / 2.0 * bw * w0 / sin).sinh();
+        // REAPER widens the bandwidth by w0/sin(w0) up to a quarter of the sample rate and
+        // holds that factor at pi/2 above it.
+        let warp = w0.min(std::f64::consts::FRAC_PI_2);
+        let alpha = sin * (std::f64::consts::LN_2 / 2.0 * bw * warp / warp.sin()).sinh();
         let a = band.gain.max(1e-9).sqrt();
         // Measured against REAPER: the alternative band has half the Q, and shelves use the slope
         // parameter S = 1/bw², capped at 1.2.
@@ -165,9 +168,18 @@ impl ReaEqCompat {
         Self { bands, output: 1.0, filters, chunk: Vec::new(), offsets: Vec::new(), sample_rate }
     }
 
+    /// New coefficients for the current band settings. Filter memories carry over when the
+    /// set of enabled bands stays the same, so automated parameters do not click.
     fn redesign(&mut self) {
         let sr = self.sample_rate as f64;
-        self.filters = self.bands.iter().filter(|b| b.enabled).map(|b| Biquad::design(b, sr)).collect();
+        let fresh: Vec<Biquad> = self.bands.iter().filter(|b| b.enabled).map(|b| Biquad::design(b, sr)).collect();
+        if fresh.len() == self.filters.len() {
+            for (old, new) in self.filters.iter_mut().zip(fresh) {
+                *old = Biquad { z: old.z, ..new };
+            }
+        } else {
+            self.filters = fresh;
+        }
     }
 }
 
@@ -254,6 +266,25 @@ impl Effect for ReaEqCompat {
             _ => b.bandwidth = value.clamp(0.01, 8.0),
         }
         self.redesign();
+    }
+
+    fn set_normalized(&mut self, index: usize, v: f64) -> bool {
+        use crate::normalized::{eq_freq, eq_gain_db, linear};
+        let (band, k) = (index / 3, index % 3);
+        if band < self.bands.len() {
+            let id = band as u32 * 4;
+            match k {
+                0 => self.set_param(id + 1, eq_freq(v)),
+                1 => self.set_param(id + 2, eq_gain_db(v)),
+                _ => self.set_param(id + 3, linear(v, 0.0, 4.0)),
+            }
+            return true;
+        }
+        if index == self.bands.len() * 3 {
+            self.output = 10f64.powf(eq_gain_db(v) / 20.0);
+            return true;
+        }
+        false
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
