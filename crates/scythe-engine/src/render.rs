@@ -549,7 +549,7 @@ impl RenderGraph {
                         })
                     })
                     .collect::<Vec<_>>();
-                let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx);
+                let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx, (t.channels as usize).max(2));
                 // Aligned with `chain`: the enabled slots that have an instance.
                 let fx_pins = effective_pins(&t.fx, &chain, |s, i| fx.instance(Some(t.id), s, i).is_some());
                 let pin_count = pin_buffer_count(&chain, &fx_pins);
@@ -634,7 +634,7 @@ impl RenderGraph {
                 }
             })
             .collect::<Vec<_>>();
-        let master_fx = fx.chain(None, &project.master.fx);
+        let master_fx = fx.chain_with_automation(None, &project.master.fx, (project.master.channels as usize).max(2)).0;
         let master_fx_latency = chain_latency(&master_fx);
         let master_channels = (project.master.channels as usize).max(2);
         let master_fx_pins = effective_pins(&project.master.fx, &master_fx, |s, i| fx.instance(None, s, i).is_some());

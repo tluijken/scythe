@@ -2,11 +2,16 @@
 //! its one parameter, keeps that gain in its component state and has a separate controller.
 //! "Test Synth" is an instrument that writes the held key / 128 times its gain as a constant
 //! level; controller 7 is mapped to the gain.
+//!
+//! Both accept any main bus of one to eight channels (the gain's input and output alike) and
+//! report the arrangements a host asks for: each `setBusArrangements` call is appended to the
+//! file `SCYTHE_VST3_ARRANGEMENT_LOG` names, as hex arrangements and the answer.
 
 #![allow(non_snake_case)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{c_char, c_void};
+use std::io::Write as _;
 use std::slice;
 
 use vst3::Steinberg::Vst::*;
@@ -44,6 +49,42 @@ struct Processor {
     gain: Cell<f64>,
     instrument: bool,
     key: Cell<Option<i16>>,
+    inputs: RefCell<Vec<SpeakerArrangement>>,
+    outputs: RefCell<Vec<SpeakerArrangement>>,
+}
+
+impl Processor {
+    fn new(gain: f64, instrument: bool) -> Self {
+        let inputs = if instrument { vec![] } else { vec![SpeakerArr::kStereo, SpeakerArr::kStereo] };
+        Self {
+            gain: Cell::new(gain),
+            instrument,
+            key: Cell::new(None),
+            inputs: RefCell::new(inputs),
+            outputs: RefCell::new(vec![SpeakerArr::kStereo]),
+        }
+    }
+
+    fn arrangements(&self, dir: BusDirection) -> std::cell::Ref<'_, Vec<SpeakerArrangement>> {
+        if dir == BusDirections_::kInput as BusDirection { self.inputs.borrow() } else { self.outputs.borrow() }
+    }
+}
+
+fn channels(arr: SpeakerArrangement) -> usize {
+    arr.count_ones() as usize
+}
+
+/// Widest main bus accepted: 8, or `SCYTHE_VST3_MAX_CHANNELS` to see how a host falls back.
+fn max_channels() -> usize {
+    std::env::var("SCYTHE_VST3_MAX_CHANNELS").ok().and_then(|v| v.parse().ok()).unwrap_or(8)
+}
+
+fn log_arrangements(ins: &[SpeakerArrangement], outs: &[SpeakerArrangement], accepted: bool) {
+    let Some(path) = std::env::var_os("SCYTHE_VST3_ARRANGEMENT_LOG") else { return };
+    let hex = |a: &[SpeakerArrangement]| a.iter().map(|x| format!("{x:x}")).collect::<Vec<_>>().join(",");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "in={} out={} {}", hex(ins), hex(outs), if accepted { "ok" } else { "refused" });
+    }
 }
 
 impl Class for Processor {
@@ -88,7 +129,11 @@ impl IComponentTrait for Processor {
         let bus = unsafe { &mut *bus };
         bus.mediaType = media;
         bus.direction = dir;
-        bus.channelCount = if media == MediaTypes_::kAudio as MediaType { 2 } else { 1 };
+        bus.channelCount = if media == MediaTypes_::kAudio as MediaType {
+            channels(self.arrangements(dir)[index as usize]) as int32
+        } else {
+            1
+        };
         copy_wide(if index == 0 { "Main" } else { "Sidechain" }, &mut bus.name);
         bus.busType = if index == 0 { BusTypes_::kMain } else { BusTypes_::kAux } as BusType;
         bus.flags = if index == 0 { BusInfo_::BusFlags_::kDefaultActive as uint32 } else { 0 };
@@ -124,15 +169,38 @@ impl IComponentTrait for Processor {
 impl IAudioProcessorTrait for Processor {
     unsafe fn setBusArrangements(
         &self,
-        _i: *mut SpeakerArrangement,
-        _ni: int32,
-        _o: *mut SpeakerArrangement,
-        _no: int32,
+        i: *mut SpeakerArrangement,
+        ni: int32,
+        o: *mut SpeakerArrangement,
+        no: int32,
     ) -> tresult {
+        let read = |p: *mut SpeakerArrangement, n: int32| -> Vec<SpeakerArrangement> {
+            if p.is_null() || n <= 0 {
+                return Vec::new();
+            }
+            // SAFETY: the host passes `n` arrangements at `p`.
+            unsafe { slice::from_raw_parts(p, n as usize) }.to_vec()
+        };
+        let (ins, outs) = (read(i, ni), read(o, no));
+        let main = |a: &[SpeakerArrangement]| a.first().map_or(0, |&x| channels(x));
+        let accepted = ins.len() == self.inputs.borrow().len()
+            && outs.len() == 1
+            && (1..=max_channels()).contains(&main(&outs))
+            && (self.instrument || main(&ins) == main(&outs))
+            && ins.iter().skip(1).all(|&a| (1..=8).contains(&channels(a)));
+        log_arrangements(&ins, &outs, accepted);
+        if !accepted {
+            return kResultFalse;
+        }
+        *self.inputs.borrow_mut() = ins;
+        *self.outputs.borrow_mut() = outs;
         kResultTrue
     }
-    unsafe fn getBusArrangement(&self, _dir: BusDirection, _index: int32, arr: *mut SpeakerArrangement) -> tresult {
-        unsafe { *arr = SpeakerArr::kStereo };
+    unsafe fn getBusArrangement(&self, dir: BusDirection, index: int32, arr: *mut SpeakerArrangement) -> tresult {
+        let Some(a) = usize::try_from(index).ok().and_then(|i| self.arrangements(dir).get(i).copied()) else {
+            return kInvalidArgument;
+        };
+        unsafe { *arr = a };
         kResultOk
     }
     unsafe fn canProcessSampleSize(&self, size: int32) -> tresult {
@@ -181,7 +249,7 @@ impl IAudioProcessorTrait for Processor {
             let n = data.numSamples as usize;
             let out = slice::from_raw_parts(data.outputs, data.numOutputs as usize);
             let Some(out) = out.first() else { return kResultOk };
-            let outs = slice::from_raw_parts(out.__field0.channelBuffers32, 2);
+            let outs = slice::from_raw_parts(out.__field0.channelBuffers32, out.numChannels as usize);
             if self.instrument {
                 let events = ComRef::from_raw(data.inputEvents);
                 let count = events.as_ref().map_or(0, |e| e.getEventCount());
@@ -204,17 +272,20 @@ impl IAudioProcessorTrait for Processor {
                         next += 1;
                     }
                     let v = self.key.get().map_or(0.0, |k| k as f32 / 128.0) * self.gain.get() as f32;
-                    *outs[0].add(i) = v;
-                    *outs[1].add(i) = v;
+                    for o in outs {
+                        *o.add(i) = v;
+                    }
                 }
             } else {
                 let buses = slice::from_raw_parts(data.inputs, data.numInputs as usize);
-                let ins = slice::from_raw_parts(buses[0].__field0.channelBuffers32, 2);
-                let side = buses.get(1).map(|b| slice::from_raw_parts(b.__field0.channelBuffers32, 2));
+                let bus =
+                    |b: &AudioBusBuffers| slice::from_raw_parts(b.__field0.channelBuffers32, b.numChannels as usize);
+                let ins = bus(&buses[0]);
+                let side = buses.get(1).map(bus);
                 let g = self.gain.get() as f32;
-                for c in 0..2 {
+                for c in 0..outs.len().min(ins.len()) {
                     for i in 0..n {
-                        let key = side.map_or(0.0, |s| *s[c].add(i));
+                        let key = side.and_then(|s| s.get(c)).map_or(0.0, |s| *s.add(i));
                         *outs[c].add(i) = *ins[c].add(i) * g + key;
                     }
                 }
@@ -357,10 +428,8 @@ impl IPluginFactoryTrait for Factory {
     }
     unsafe fn createInstance(&self, cid: FIDString, iid: FIDString, obj: *mut *mut c_void) -> tresult {
         let instance = match unsafe { *(cid as *const TUID) } {
-            GAIN_CID => ComWrapper::new(Processor { gain: Cell::new(0.5), instrument: false, key: Cell::new(None) })
-                .to_com_ptr::<FUnknown>(),
-            SYNTH_CID => ComWrapper::new(Processor { gain: Cell::new(1.0), instrument: true, key: Cell::new(None) })
-                .to_com_ptr::<FUnknown>(),
+            GAIN_CID => ComWrapper::new(Processor::new(0.5, false)).to_com_ptr::<FUnknown>(),
+            SYNTH_CID => ComWrapper::new(Processor::new(1.0, true)).to_com_ptr::<FUnknown>(),
             CONTROLLER_CID => ComWrapper::new(Controller { gain: Cell::new(0.5) }).to_com_ptr::<FUnknown>(),
             _ => None,
         };

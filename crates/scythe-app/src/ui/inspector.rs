@@ -4,7 +4,7 @@ use scythe_core::{EnvelopeKind, Send, TrackId};
 use scythe_engine::fx::FxStatus;
 use scythe_engine::midi_io::{ALL_MIDI_INPUTS, midi_input_channel};
 
-use crate::app::{InspectorTab, ScytheApp};
+use crate::app::{InspectorTab, PresetSource, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
 use crate::ui::widgets::{self, Icon, switch, text_pill};
 
@@ -277,7 +277,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             ui.menu_button("Save preset", |ui| {
                 let id = Id::unique(("fx-preset-name", track_id, i));
                 let mut name =
-                    ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| ScytheApp::new_preset_name(fx));
+                    ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| app.new_preset_name(track_id, i));
                 let edit = ui.text_edit_singleline(&mut name);
                 let entered = edit.lost_focus() && ui.input(|inp| inp.key_pressed(egui::Key::Enter));
                 if ui.button("Save").clicked() || entered {
@@ -288,7 +288,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                     ui.data_mut(|d| d.insert_temp(id, name));
                 }
             });
-            let presets = ScytheApp::fx_presets(fx);
+            let presets = app.fx_presets(track_id, i);
             ui.add_enabled_ui(!presets.is_empty(), |ui| {
                 ui.menu_button("Load preset", |ui| {
                     for (name, source) in &presets {
@@ -299,6 +299,41 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                     }
                 });
             });
+            let own: Vec<_> = presets
+                .iter()
+                .filter(|(_, s)| matches!(s, PresetSource::Reaper(..) | PresetSource::FxChain(_)))
+                .collect();
+            ui.add_enabled_ui(!own.is_empty(), |ui| {
+                ui.menu_button("Rename or delete preset", |ui| {
+                    for (n, (name, source)) in own.iter().enumerate() {
+                        ui.menu_button(name.as_str(), |ui| {
+                            let id = Id::unique(("fx-preset-rename", track_id, i, n));
+                            let mut to = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| name.clone());
+                            let edit = ui.text_edit_singleline(&mut to);
+                            let entered = edit.lost_focus() && ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                            if ui.button("Rename").clicked() || entered {
+                                app.rename_fx_preset(source, &to);
+                                ui.data_mut(|d| d.remove::<String>(id));
+                                ui.close();
+                            } else {
+                                ui.data_mut(|d| d.insert_temp(id, to));
+                            }
+                            if ui.button("Delete").clicked() {
+                                app.delete_fx_preset(source);
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            });
+            if ui.button("Import preset library…").clicked() {
+                app.import_fx_presets(track_id, i);
+                ui.close();
+            }
+            if ui.button("Export preset library…").clicked() {
+                app.export_fx_presets(track_id, i);
+                ui.close();
+            }
             if ui.button("Remove plugin").clicked() {
                 app.edit("Remove plugin", |p| {
                     p.track_mut(track_id).unwrap().fx.remove(i);

@@ -1,6 +1,7 @@
 pub mod bounce;
 pub mod builtin;
 pub mod clap_host;
+pub mod clap_presets;
 pub mod convolve;
 pub mod delay;
 pub mod dynamics;

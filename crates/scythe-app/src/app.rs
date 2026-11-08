@@ -1572,15 +1572,52 @@ impl ScytheApp {
         crate::demo::data_dir().join("presets").join(safe.trim())
     }
 
-    /// Presets of the plugin in `slot`: those in its REAPER preset file in file order, then
-    /// older `.RfxChain` presets by name.
-    pub fn fx_presets(slot: &scythe_core::FxSlot) -> Vec<(String, PresetSource)> {
-        let mut out = Vec::new();
-        if let Some(path) = crate::fx_preset::file_name(slot).map(|f| Self::preset_root().join(f))
-            && let Ok(text) = std::fs::read_to_string(&path)
+    /// The REAPER preset file of the plugin in `slot` and what it holds. Like REAPER, this first
+    /// takes in the plugin's default library (the `.rpl` beside it) when that changed since the
+    /// last import.
+    fn preset_file(&self, slot: &scythe_core::FxSlot) -> Option<(PathBuf, crate::fx_preset::PresetFile)> {
+        use crate::fx_preset::{Library, PresetFile};
+        let path = Self::preset_root().join(crate::fx_preset::file_name(slot)?);
+        let mut file = std::fs::read_to_string(&path).map(|t| PresetFile::parse(&t)).unwrap_or_default();
+        let library = self.engine.fx().plugin_file(slot).and_then(|plugin| {
+            crate::fx_preset::default_libraries(slot, &plugin).into_iter().find_map(|lib| {
+                let modified = std::fs::metadata(&lib).ok()?.modified().ok()?;
+                let secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+                Some((Library::parse(&std::fs::read_to_string(&lib).ok()?)?, secs))
+            })
+        });
+        if let Some((library, modified)) = library
+            && file.import_default(&library, modified)
         {
-            let file = crate::fx_preset::PresetFile::parse(&text);
+            let _ = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(&path, file.to_text()));
+        }
+        Some((path, file))
+    }
+
+    /// Presets of a track's effect, in REAPER's order: those in its REAPER preset file, then a
+    /// VST 3 plugin's `.vstpreset` files or a VST 2 plugin's own programs; then older
+    /// `.RfxChain` presets by name.
+    pub fn fx_presets(&self, track: TrackId, index: usize) -> Vec<(String, PresetSource)> {
+        let Some(slot) = self.project.track(track).and_then(|t| t.fx.get(index)) else { return Vec::new() };
+        let mut out = Vec::new();
+        if let Some((path, file)) = self.preset_file(slot) {
             out.extend(file.presets.into_iter().map(|p| (p.name.clone(), PresetSource::Reaper(path.clone(), p.name))));
+        }
+        if let Some((_, vendor, name)) = crate::fx_preset::vst3_identity(slot)
+            && let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+        {
+            let root = home.join(".vst3/presets").join(&vendor).join(&name);
+            out.extend(crate::fx_preset::vst3_preset_files(&home, &vendor, &name).into_iter().map(|p| {
+                let shown = p.strip_prefix(&root).unwrap_or(&p).with_extension("");
+                (shown.to_string_lossy().into_owned(), PresetSource::Vst3File(p))
+            }));
+        }
+        if let Some(inst) = self.engine.fx().instance(Some(track), slot, index) {
+            let programs = inst.with(|e| e.programs()).unwrap_or_default();
+            out.extend(programs.into_iter().enumerate().map(|(i, name)| (name, PresetSource::Program(i))));
         }
         if let Ok(entries) = std::fs::read_dir(Self::legacy_preset_dir(slot)) {
             let mut chains: Vec<(String, PresetSource)> = entries
@@ -1595,10 +1632,19 @@ impl ScytheApp {
         out
     }
 
-    /// A free preset name for the plugin in `slot`.
-    pub fn new_preset_name(slot: &scythe_core::FxSlot) -> String {
-        let taken: HashSet<String> = Self::fx_presets(slot).into_iter().map(|(n, _)| n).collect();
+    /// A free preset name for a track's effect.
+    pub fn new_preset_name(&self, track: TrackId, index: usize) -> String {
+        let taken: HashSet<String> = self.fx_presets(track, index).into_iter().map(|(n, _)| n).collect();
         (1..).map(|n| format!("Preset {n}")).find(|n| !taken.contains(n)).unwrap_or_default()
+    }
+
+    fn write_presets(&mut self, path: &Path, file: &crate::fx_preset::PresetFile, done: String) {
+        let written =
+            path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, file.to_text()));
+        match written {
+            Ok(()) => self.notify(done),
+            Err(e) => self.notify(format!("Could not save: {e}")),
+        }
     }
 
     /// Saves the current settings of a track's effect as a preset in REAPER's preset file for
@@ -1611,25 +1657,105 @@ impl ScytheApp {
         let mut project = self.project.clone();
         self.engine.store_plugin_states(&mut project);
         let Some(slot) = project.track(track).and_then(|t| t.fx.get(index)) else { return };
-        let (Some(file), Some(data)) = (crate::fx_preset::file_name(slot), crate::fx_preset::capture(slot)) else {
+        let (Some((path, mut presets)), Some(data)) = (self.preset_file(slot), crate::fx_preset::capture(slot)) else {
             return self.notify("This effect has no presets");
         };
-        let path = Self::preset_root().join(file);
-        let mut presets =
-            std::fs::read_to_string(&path).map(|t| crate::fx_preset::PresetFile::parse(&t)).unwrap_or_default();
         presets.put(crate::fx_preset::Preset { name: name.to_owned(), data });
-        let written = path
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&path, presets.to_text()));
-        match written {
-            Ok(()) => self.notify(format!("Saved preset {name}")),
-            Err(e) => self.notify(format!("Could not save: {e}")),
+        self.write_presets(&path, &presets, format!("Saved preset {name}"));
+    }
+
+    /// Renames a preset in its REAPER preset file, or an older `.RfxChain` preset's file.
+    /// Factory presets keep their names.
+    pub fn rename_fx_preset(&mut self, source: &PresetSource, to: &str) {
+        let to = to.trim();
+        if to.is_empty() || to.contains(['\n', '\r']) {
+            return self.notify("Give the preset a name");
         }
+        match source {
+            PresetSource::Reaper(path, name) => {
+                let mut file =
+                    std::fs::read_to_string(path).map(|t| crate::fx_preset::PresetFile::parse(&t)).unwrap_or_default();
+                if !file.rename(name, to) {
+                    return self.notify(format!("A preset named {to} already exists"));
+                }
+                self.write_presets(path, &file, format!("Renamed preset {name} to {to}"));
+            }
+            PresetSource::FxChain(path) => {
+                let target = path.with_file_name(format!("{to}.RfxChain"));
+                if target.exists() {
+                    return self.notify(format!("A preset named {to} already exists"));
+                }
+                match std::fs::rename(path, &target) {
+                    Ok(()) => self.notify(format!("Renamed preset to {to}")),
+                    Err(e) => self.notify(format!("Could not rename: {e}")),
+                }
+            }
+            PresetSource::Vst3File(_) | PresetSource::Program(_) => self.notify("Factory presets cannot be renamed"),
+        }
+    }
+
+    /// Deletes a preset from its REAPER preset file, or an older `.RfxChain` preset.
+    pub fn delete_fx_preset(&mut self, source: &PresetSource) {
+        match source {
+            PresetSource::Reaper(path, name) => {
+                let mut file =
+                    std::fs::read_to_string(path).map(|t| crate::fx_preset::PresetFile::parse(&t)).unwrap_or_default();
+                if file.remove(name) {
+                    self.write_presets(path, &file, format!("Deleted preset {name}"));
+                }
+            }
+            PresetSource::FxChain(path) => match std::fs::remove_file(path) {
+                Ok(()) => self.notify("Deleted preset"),
+                Err(e) => self.notify(format!("Could not delete: {e}")),
+            },
+            PresetSource::Vst3File(_) | PresetSource::Program(_) => self.notify("Factory presets cannot be deleted"),
+        }
+    }
+
+    /// Writes the presets in a track's effect's REAPER preset file to a REAPER preset library.
+    pub fn export_fx_presets(&mut self, track: TrackId, index: usize) {
+        let Some(slot) = self.project.track(track).and_then(|t| t.fx.get(index)) else { return };
+        let (Some((_, file)), Some(plugin)) = (self.preset_file(slot), crate::fx_preset::library_name(slot)) else {
+            return self.notify("This effect has no presets");
+        };
+        if file.presets.is_empty() {
+            return self.notify("This effect has no presets to export");
+        }
+        let library = crate::fx_preset::Library { plugin, presets: file.presets };
+        let Some(path) = resource_dialog("presets")
+            .add_filter("REAPER preset library", &["RPL", "rpl"])
+            .set_file_name("presets.RPL")
+            .save_file()
+        else {
+            return;
+        };
+        match std::fs::write(&path, library.to_text()) {
+            Ok(()) => self.notify(format!("Exported {} presets", library.presets.len())),
+            Err(e) => self.notify(format!("Could not export: {e}")),
+        }
+    }
+
+    /// Adds the presets of a REAPER preset library to a track's effect's preset file,
+    /// replacing presets of the same name.
+    pub fn import_fx_presets(&mut self, track: TrackId, index: usize) {
+        let Some(path) = resource_dialog("presets").add_filter("REAPER preset library", &["RPL", "rpl"]).pick_file()
+        else {
+            return;
+        };
+        let Some(slot) = self.project.track(track).and_then(|t| t.fx.get(index)) else { return };
+        let Some((ini, mut file)) = self.preset_file(slot) else { return self.notify("This effect has no presets") };
+        let library = std::fs::read_to_string(&path).ok().and_then(|t| crate::fx_preset::Library::parse(&t));
+        let Some(library) = library else { return self.notify(format!("{} is not a preset library", path.display())) };
+        let count = library.presets.len();
+        for preset in library.presets {
+            file.put(preset);
+        }
+        self.write_presets(&ini, &file, format!("Imported {count} presets"));
     }
 
     /// Loads a preset into a track's effect, keeping the slot's identity, bypass and envelopes.
     pub fn load_fx_preset(&mut self, track: TrackId, index: usize, source: &PresetSource) {
+        let Some(mut slot) = self.project.track(track).and_then(|t| t.fx.get(index)).cloned() else { return };
         match source {
             PresetSource::Reaper(path, name) => {
                 let preset = std::fs::read_to_string(path)
@@ -1637,15 +1763,32 @@ impl ScytheApp {
                     .map(|t| crate::fx_preset::PresetFile::parse(&t))
                     .and_then(|f| f.presets.into_iter().find(|p| &p.name == name));
                 let Some(preset) = preset else { return self.notify(format!("Preset {name} is gone")) };
-                let Some(mut slot) = self.project.track(track).and_then(|t| t.fx.get(index)).cloned() else { return };
                 if !crate::fx_preset::apply(&mut slot, &preset.data, name) {
                     return self.notify(format!("Preset {name} does not fit this effect"));
                 }
-                self.edit("Load FX preset", |p| {
-                    if let Some(s) = p.track_mut(track).and_then(|t| t.fx.get_mut(index)) {
-                        *s = slot;
-                    }
+            }
+            PresetSource::Vst3File(path) => {
+                let preset = std::fs::read(path).ok().and_then(|b| crate::fx_preset::VstPreset::parse(&b));
+                let Some(preset) = preset else { return self.notify(format!("Could not read {}", path.display())) };
+                let fits = crate::fx_preset::vst3_identity(&slot).is_some_and(|(cid, ..)| cid == preset.class_id);
+                let data = preset.data_for(&slot).filter(|_| fits);
+                // REAPER names a `.vstpreset` by its full path.
+                let name = path.to_string_lossy();
+                if !data.is_some_and(|d| crate::fx_preset::apply(&mut slot, &d, &name)) {
+                    return self.notify(format!("{} does not fit this effect", path.display()));
+                }
+            }
+            PresetSource::Program(program) => {
+                let Some(inst) = self.engine.fx().instance(Some(track), &slot, index) else { return };
+                let name = inst.with(|e| {
+                    e.set_program(*program);
+                    e.programs().get(*program).cloned()
                 });
+                let mut project = self.project.clone();
+                self.engine.store_plugin_states(&mut project);
+                let Some(stored) = project.track(track).and_then(|t| t.fx.get(index)).cloned() else { return };
+                slot = stored;
+                crate::fx_preset::name_program(&mut slot, &name.flatten().unwrap_or_default());
             }
             PresetSource::FxChain(path) => {
                 let preset = std::fs::read_to_string(path)
@@ -1659,14 +1802,16 @@ impl ScytheApp {
                     Err(e) => return self.notify(format!("Could not load {}: {e}", path.display())),
                 };
                 let Some(plugin) = plugin else { return self.notify("The preset holds no plugin") };
-                self.edit("Load FX preset", |p| {
-                    let Some(slot) = p.track_mut(track).and_then(|t| t.fx.get_mut(index)) else { return };
-                    if let Some(chunk) = slot.raw.iter_mut().find(|n| matches!(n, scythe_core::rpp::Node::Chunk(_))) {
-                        *chunk = plugin;
-                    }
-                });
+                if let Some(chunk) = slot.raw.iter_mut().find(|n| matches!(n, scythe_core::rpp::Node::Chunk(_))) {
+                    *chunk = plugin;
+                }
             }
         }
+        self.edit("Load FX preset", |p| {
+            if let Some(s) = p.track_mut(track).and_then(|t| t.fx.get_mut(index)) {
+                *s = slot;
+            }
+        });
     }
 
     pub fn run_script_dialog(&mut self) {
@@ -1903,6 +2048,10 @@ pub enum PresetSource {
     Reaper(PathBuf, String),
     /// A single-effect `.RfxChain`, as earlier versions of Scythe saved presets.
     FxChain(PathBuf),
+    /// A VST 3 plugin's `.vstpreset` file.
+    Vst3File(PathBuf),
+    /// One of a VST 2 plugin's own programs, by index.
+    Program(usize),
 }
 
 /// REAPER's resource folder, when REAPER has been run here.

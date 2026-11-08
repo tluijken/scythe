@@ -49,6 +49,23 @@ fn hosts_scans_processes_and_restores_state() {
 }
 
 #[test]
+fn discovers_and_loads_factory_presets() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut plugin = ClapPlugin::create(lib.clone(), "org.scythe.test-gain", 48000.0, 512).unwrap();
+    let presets = plugin.presets();
+    let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["Quiet", "Loud"]);
+    assert_eq!(presets[1].load_key.as_deref(), Some("0.75"));
+    assert!(plugin.load_preset(&presets[1]));
+    assert_eq!(plugin.save_state().unwrap(), 0.75f32.to_le_bytes());
+    assert!(lib.presets("org.scythe.test-synth").is_empty(), "presets name the plugin they are for");
+}
+
+#[test]
 fn midi_items_play_through_a_clap_instrument() {
     use scythe_core::rpp::project_from_rpp;
     use scythe_engine::MediaPool;

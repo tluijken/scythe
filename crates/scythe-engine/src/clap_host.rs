@@ -101,6 +101,14 @@ impl ClapLibrary {
         Ok(Arc::new(Self { entry, path: path.into(), _lib: lib }))
     }
 
+    /// The library's factory `id`, or `None` when it has none.
+    pub(crate) fn factory_ptr(&self, id: &CStr) -> Option<*const c_void> {
+        // SAFETY: entry is valid while the library is loaded; `id` is a C string.
+        let get = unsafe { (*self.entry).get_factory }?;
+        let f = unsafe { get(id.as_ptr()) };
+        (!f.is_null()).then_some(f)
+    }
+
     fn factory(&self) -> Option<&clap_plugin_factory> {
         // SAFETY: entry is valid while the library is loaded.
         let get = unsafe { (*self.entry).get_factory }?;
@@ -702,6 +710,27 @@ impl ClapPlugin {
         let stream = clap_ostream { ctx: &mut out as *mut Vec<u8> as *mut c_void, write: Some(write_vec) };
         // SAFETY: the stream and its buffer outlive the call.
         unsafe { save(self.plugin, &stream) }.then_some(out)
+    }
+
+    /// The presets the plugin's preset providers list for it.
+    pub fn presets(&self) -> Vec<crate::clap_presets::ClapPreset> {
+        self._lib.presets(&self.id)
+    }
+
+    /// Loads a listed preset through the plugin's preset-load extension.
+    pub fn load_preset(&mut self, preset: &crate::clap_presets::ClapPreset) -> bool {
+        use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_plugin_preset_load};
+        let Some(get) = self.raw().get_extension else { return false };
+        // SAFETY: extension ids are C strings; the result has that type or is null.
+        let ext = [CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT]
+            .into_iter()
+            .find_map(|id| unsafe { (get(self.plugin, id.as_ptr()) as *const clap_plugin_preset_load).as_ref() });
+        let Some(load) = ext.and_then(|e| e.from_location) else { return false };
+        let location = preset.location.as_deref().and_then(|l| CString::new(l).ok());
+        let key = preset.load_key.as_deref().and_then(|k| CString::new(k).ok());
+        let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
+        // SAFETY: the strings outlive the call.
+        unsafe { load(self.plugin, preset.kind, ptr(&location), ptr(&key)) }
     }
 
     pub fn load_state(&mut self, data: &[u8]) -> bool {

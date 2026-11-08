@@ -127,6 +127,26 @@ pub trait Effect: Send {
         (2, 2)
     }
 
+    /// Pins in the plugin's own bus arrangements, for plugins a host sets up for the track's
+    /// width (VST 3).
+    fn default_pins(&self) -> Option<(usize, usize)> {
+        None
+    }
+
+    /// The plugin's factory presets by name: a VST 2 plugin's programs, the presets a CLAP
+    /// plugin's preset discovery lists.
+    fn programs(&mut self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The current program, for plugins with programs.
+    fn program(&mut self) -> Option<usize> {
+        None
+    }
+
+    /// Selects one of [`Effect::programs`].
+    fn set_program(&mut self, _index: usize) {}
+
     /// Whether parameter envelopes reach the effect with their value at the last frame of
     /// each block, as REAPER automates hosted plugins (its own effects take the first).
     fn automates_at_block_end(&self) -> bool {
@@ -424,6 +444,8 @@ struct Entry {
     state: Vec<Node>,
     instance: Option<Arc<FxInstance>>,
     status: FxStatus,
+    /// Channels of the track the instance was set up for.
+    channels: usize,
 }
 
 /// Owns every effect instance across graph rebuilds.
@@ -460,14 +482,16 @@ impl FxRegistry {
     /// The effect chain for a track (or the master when `track` is `None`), creating or
     /// replacing instances whose slot changed. Bypassed and unsupported slots are skipped.
     pub fn chain(&mut self, track: Option<TrackId>, slots: &[FxSlot]) -> Vec<Arc<FxInstance>> {
-        self.chain_with_automation(track, slots).0
+        self.chain_with_automation(track, slots, 2).0
     }
 
-    /// Like `chain`, with each effect's parameter envelopes.
+    /// Like `chain`, on a track of `channels` channels, with each effect's parameter envelopes.
+    /// VST 3 instances are set up anew when the track's width changes, as REAPER does.
     pub fn chain_with_automation(
         &mut self,
         track: Option<TrackId>,
         slots: &[FxSlot],
+        channels: usize,
     ) -> (Vec<Arc<FxInstance>>, Vec<Vec<ParamAutomation>>) {
         let owner = track.map_or(Owner::Master, Owner::Track);
         let mut out = Vec::new();
@@ -475,13 +499,14 @@ impl FxRegistry {
         for (i, slot) in slots.iter().enumerate() {
             let key = (owner.clone(), slot_key(slot, i));
             let state = plugin_state(slot);
-            let stale = self.entries.get(&key).is_none_or(|e| e.state != state);
+            let stale =
+                self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
             if stale {
-                let (instance, status) = match self.create(slot) {
+                let (instance, status) = match self.create(slot, channels) {
                     Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
                     Err(reason) => (None, FxStatus::Unavailable(reason)),
                 };
-                self.entries.insert(key.clone(), Entry { state, instance, status });
+                self.entries.insert(key.clone(), Entry { state, instance, status, channels });
             }
             if slot.enabled
                 && let Some(inst) = &self.entries[&key].instance
@@ -515,6 +540,8 @@ impl FxRegistry {
             .chain(project.tracks.iter().enumerate().map(|(i, t)| (Some(t.id), i)))
             .collect();
         for (owner, ti) in owners {
+            let channels = if ti == usize::MAX { project.master.channels } else { project.tracks[ti].channels };
+            let channels = (channels as usize).max(2);
             let slots = if ti == usize::MAX { &mut project.master.fx } else { &mut project.tracks[ti].fx };
             for (i, slot) in slots.iter_mut().enumerate() {
                 let Some(inst) = self.instance(owner, slot, i) else { continue };
@@ -579,11 +606,39 @@ impl FxRegistry {
                             Node::Chunk(_) => None,
                         })
                         .collect();
-                    if ReaperVstState::decode(&lines).is_some_and(|old| old.chunk == state) {
+                    let mut new_lines = match ReaperVstState::decode(&lines) {
+                        Some(old) if old.chunk == state => lines.clone(),
+                        _ => ReaperVstState::reencode(&lines, &state)
+                            .unwrap_or_else(|| crate::builtin::vst_lines(id, &state)),
+                    };
+                    // REAPER maps the input pins of the plugin's own arrangement and an output
+                    // pin per track channel, growing the map with the track but never shrinking it.
+                    if let Some((inputs, _)) = inst.with(|e| e.default_pins()).flatten()
+                        && let Some(old) = ReaperVstState::decode(&new_lines)
+                        && (old.inputs.len() < inputs || old.outputs.len() < channels)
+                    {
+                        let grow = |mut masks: Vec<u64>, n: usize| {
+                            let from = masks.len();
+                            masks.extend((from..n).map(|p| 1u64 << p.min(63)));
+                            masks
+                        };
+                        let (ins, outs) = (grow(old.inputs, inputs), grow(old.outputs, channels));
+                        if let Some(grown) = ReaperVstState::with_pins(&new_lines, &ins, &outs) {
+                            new_lines = grown;
+                        }
+                    }
+                    if let Some(program) = inst.with(|e| e.program()).flatten()
+                        && let Some(old) = ReaperVstState::decode(&new_lines)
+                        && let Some(l) = ReaperVstState::with_words(
+                            &new_lines,
+                            [old.words[0], old.words[1] & 0xffff_0000 | program as u32],
+                        )
+                    {
+                        new_lines = l;
+                    }
+                    if new_lines == lines {
                         continue;
                     }
-                    let new_lines = ReaperVstState::reencode(&lines, &state)
-                        .unwrap_or_else(|| crate::builtin::vst_lines(id, &state));
                     chunk.children = new_lines.into_iter().map(Node::Line).collect();
                 } else {
                     chunk.children.retain(|n| !matches!(n, Node::Chunk(c) if c.name() == "STATE"));
@@ -662,7 +717,7 @@ impl FxRegistry {
         self.clap_cache.get_or_init(crate::clap_host::scan)
     }
 
-    fn create(&self, slot: &FxSlot) -> Result<(Box<dyn Effect>, FxStatus), String> {
+    fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
         let plugin_chunk = plugin;
         let args = plugin.args();
@@ -695,6 +750,7 @@ impl FxRegistry {
                         &info,
                         self.sample_rate as f64,
                         crate::render::RenderScratch::MAX_BLOCK,
+                        channels,
                     )?;
                     if let Some(state) = state {
                         plugin.load_state(&state.chunk);
@@ -755,6 +811,11 @@ impl FxRegistry {
                         .map_err(|e| e.to_string())?;
                 if let Some(state) = state {
                     plugin.set_chunk(&state.chunk);
+                    // REAPER selects the stored program after restoring the chunk.
+                    let program = (state.words[1] & 0xffff) as usize;
+                    if program < plugin.num_programs() {
+                        plugin.set_program(program);
+                    }
                 }
                 plugin.resume();
                 Ok((Box::new(Vst2Effect::new(plugin)), FxStatus::Hosted(path)))
@@ -853,11 +914,27 @@ impl FxRegistry {
                 }
                 let instrument = desc.is_instrument();
                 Ok((
-                    Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new() }),
+                    Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new(), presets: None }),
                     FxStatus::Hosted(desc.path),
                 ))
             }
             other => Err(format!("{other} plugins are not supported yet")),
+        }
+    }
+
+    /// The file a VST 2 or JSFX slot's plugin lives in, also looking in REAPER's own plugin
+    /// folder for its stock effects.
+    pub fn plugin_file(&self, slot: &FxSlot) -> Option<PathBuf> {
+        let plugin = slot_plugin(slot)?;
+        let args = plugin.args();
+        match plugin.name() {
+            "VST" if !is_vst3(slot) => {
+                let file = args.get(1)?;
+                self.find_vst(file)
+                    .or_else(|| reaper_plugin_dirs().into_iter().map(|d| d.join(file)).find(|p| p.exists()))
+            }
+            "JS" => crate::jsfx::find(args.first()?, self.jsfx_paths.get_or_init(crate::jsfx::search_paths)),
+            _ => None,
         }
     }
 
@@ -871,6 +948,27 @@ impl FxRegistry {
         }
         self.search_paths.iter().map(|d| d.join(file)).find(|p| p.exists())
     }
+}
+
+/// REAPER's stock plugin folders (`Plugins/FX` of an installed REAPER), found from the
+/// `reaper` executable on the `PATH` and the usual install locations.
+fn reaper_plugin_dirs() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("reaper")).filter(|r| r.exists()).collect())
+        .unwrap_or_default();
+    roots = roots
+        .into_iter()
+        .flat_map(|r| {
+            let real = r.canonicalize().unwrap_or(r.clone());
+            [r.parent().map(|d| d.join("../opt/REAPER")), real.parent().map(PathBuf::from)]
+        })
+        .flatten()
+        .collect();
+    roots.push(PathBuf::from("/opt/REAPER"));
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("opt/REAPER"));
+    }
+    roots.into_iter().map(|r| r.join("Plugins/FX")).filter(|d| d.is_dir()).collect()
 }
 
 /// `SCYTHE_VST_PATH` and `VST_PATH` (colon separated), then the usual Linux locations.
@@ -905,6 +1003,11 @@ fn slot_plugin(slot: &FxSlot) -> Option<&Chunk> {
         Node::Chunk(c) => Some(c),
         Node::Line(_) => None,
     })
+}
+
+/// A VST 3 plugin, which REAPER keeps in a `<VST` block naming its bundle.
+fn is_vst3(slot: &FxSlot) -> bool {
+    slot_plugin(slot).is_some_and(|c| c.name() == "VST" && c.args().first().is_some_and(|d| d.starts_with("VST3")))
 }
 
 /// Which track channels an effect's pins connect to, as bitmasks (channel 1 is bit 0). Only
@@ -1124,9 +1227,21 @@ struct ClapEffect {
     expected: Option<i64>,
     /// System exclusive for the next block, kept alive until the plugin has run it.
     long: Vec<(usize, Vec<u8>)>,
+    /// The plugin's discovered presets, listed on first use.
+    presets: Option<Vec<crate::clap_presets::ClapPreset>>,
 }
 
 impl Effect for ClapEffect {
+    fn programs(&mut self) -> Vec<String> {
+        self.presets.get_or_insert_with(|| self.plugin.presets()).iter().map(|p| p.name.clone()).collect()
+    }
+
+    fn set_program(&mut self, index: usize) {
+        if let Some(preset) = self.presets.get_or_insert_with(|| self.plugin.presets()).get(index).cloned() {
+            self.plugin.load_preset(&preset);
+        }
+    }
+
     fn automates_at_block_end(&self) -> bool {
         true
     }
@@ -1379,6 +1494,10 @@ impl Effect for Vst3Effect {
         self.plugin.process(left, right, &self.notes, &self.controls, ctx.position, ctx.bpm);
     }
 
+    fn default_pins(&self) -> Option<(usize, usize)> {
+        Some(self.plugin.default_pins())
+    }
+
     fn pins(&self) -> (usize, usize) {
         self.plugin.pins()
     }
@@ -1531,6 +1650,22 @@ impl Vst2Effect {
 }
 
 impl Effect for Vst2Effect {
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        self.plugin.programs_are_chunks().then(|| self.plugin.chunk())
+    }
+
+    fn programs(&mut self) -> Vec<String> {
+        self.plugin.programs()
+    }
+
+    fn program(&mut self) -> Option<usize> {
+        (self.plugin.num_programs() > 0).then(|| self.plugin.program())
+    }
+
+    fn set_program(&mut self, index: usize) {
+        self.plugin.set_program(index);
+    }
+
     fn automates_at_block_end(&self) -> bool {
         true
     }

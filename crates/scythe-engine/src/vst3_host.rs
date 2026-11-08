@@ -601,6 +601,19 @@ pub fn scan_cached(dirs: &[PathBuf], cache: Option<PathBuf>) -> Vec<Vst3Info> {
     found
 }
 
+/// A VST 3 state in REAPER's layout: the component state with its size and a 1, then the
+/// controller state the same way (REAPER writes a zero size and flag when there is none).
+pub fn reaper_state(component: &[u8], controller: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend((component.len() as u32).to_le_bytes());
+    out.extend(1u32.to_le_bytes());
+    out.extend(component);
+    out.extend((controller.len() as u32).to_le_bytes());
+    out.extend((!controller.is_empty() as u32).to_le_bytes());
+    out.extend(controller);
+    out
+}
+
 // ---- instances ---------------------------------------------------------------------------
 
 pub struct ParamDesc {
@@ -632,6 +645,8 @@ pub struct Vst3Plugin {
     out_ptrs: Vec<*mut f32>,
     in_buses: Vec<AudioBusBuffers>,
     out_buses: Vec<AudioBusBuffers>,
+    /// Input and output channels in the plugin's own arrangements, before any were set.
+    default_pins: (usize, usize),
     sample_rate: f64,
     block: usize,
     pub instrument: bool,
@@ -639,6 +654,44 @@ pub struct Vst3Plugin {
     /// `channel * MIDI_CONTROLLERS + controller`.
     midi_map: Vec<Option<ParamID>>,
     _module: Arc<Vst3Module>,
+}
+
+/// The speaker arrangements REAPER 7.73 offers a plugin, in the order it tries them: mono,
+/// stereo, 3.0, 4.0 and first-order ambisonics, 5.0, 5.1, 7.0, 7.1, then the wider layouts up
+/// to 16 channels.
+const LAYOUTS: [SpeakerArrangement; 23] = [
+    0x80000,
+    0x3,
+    0x103,
+    0x33,
+    0xf00000,
+    0x37,
+    0x3f,
+    0x637,
+    0x63f,
+    0x2d037,
+    0x7c000f00000,
+    0x300063f,
+    0x2d83f,
+    0x2d63f,
+    0x2f83f,
+    0x1800_0000_0002_d637,
+    0x2d6ff,
+    0x1800_0000_0002_d63f,
+    0x2fe3f,
+    0x1800_0000_0302_d637,
+    0x302d6ff,
+    0x1800_0000_0302_d63f,
+    0x3ffc000f00000,
+];
+
+/// The arrangements REAPER tries on a track of `channels` channels.
+pub fn layouts_up_to(channels: usize) -> impl Iterator<Item = SpeakerArrangement> {
+    LAYOUTS.into_iter().filter(move |a| a.count_ones() as usize <= channels)
+}
+
+fn channel_count(buses: &[SpeakerArrangement]) -> usize {
+    buses.iter().map(|a| a.count_ones() as usize).sum()
 }
 
 /// Controllers 0-127, then channel aftertouch (128) and pitch bend (129), as VST 3 numbers them.
@@ -659,7 +712,14 @@ fn midi_controller(bytes: [u8; 3]) -> Option<(u8, usize, f64)> {
 unsafe impl Send for Vst3Plugin {}
 
 impl Vst3Plugin {
-    pub fn new(module: Arc<Vst3Module>, info: &Vst3Info, sample_rate: f64, block: usize) -> Result<Self, String> {
+    /// An instance whose audio buses are set up for a track of `channels` channels.
+    pub fn new(
+        module: Arc<Vst3Module>,
+        info: &Vst3Info,
+        sample_rate: f64,
+        block: usize,
+        channels: usize,
+    ) -> Result<Self, String> {
         let host = ComWrapper::new(HostApp);
         let host_unknown = host.as_com_ref::<FUnknown>().map_or(std::ptr::null_mut(), |r| r.as_ptr());
         let cid: TUID = info.cid.map(|b| b as c_char);
@@ -715,7 +775,6 @@ impl Vst3Plugin {
             let event = MediaTypes_::kEvent as MediaType;
             let input = BusDirections_::kInput as BusDirection;
             let output = BusDirections_::kOutput as BusDirection;
-            // Every audio bus in the plugin's own arrangement, sidechains included, all active.
             let arrangements = |dir: BusDirection| -> Vec<SpeakerArrangement> {
                 (0..component.getBusCount(audio, dir))
                     .map(|i| {
@@ -726,7 +785,29 @@ impl Vst3Plugin {
                     .collect()
             };
             let (mut ins, mut outs) = (arrangements(input), arrangements(output));
-            processor.setBusArrangements(ins.as_mut_ptr(), ins.len() as int32, outs.as_mut_ptr(), outs.len() as int32);
+            let default_pins = (channel_count(&ins), channel_count(&outs));
+            let set = |ins: &mut [SpeakerArrangement], outs: &mut [SpeakerArrangement]| {
+                processor.setBusArrangements(
+                    ins.as_mut_ptr(),
+                    ins.len() as int32,
+                    outs.as_mut_ptr(),
+                    outs.len() as int32,
+                ) == kResultTrue
+            };
+            // As REAPER: every candidate up to the track's width on every bus at once; the last
+            // one accepted stays. A plugin that takes none keeps its own arrangements.
+            let accepted = layouts_up_to(channels)
+                .filter(|&arr| set(&mut vec![arr; ins.len()], &mut vec![arr; outs.len()]))
+                .last();
+            match accepted {
+                Some(arr) => {
+                    set(&mut vec![arr; ins.len()], &mut vec![arr; outs.len()]);
+                    (ins, outs) = (arrangements(input), arrangements(output));
+                }
+                None => {
+                    set(&mut ins, &mut outs);
+                }
+            }
             for i in 0..ins.len() as int32 {
                 component.activateBus(audio, input, i, 1);
             }
@@ -778,6 +859,7 @@ impl Vst3Plugin {
                 out_ptrs: Vec::new(),
                 in_buses: Vec::new(),
                 out_buses: Vec::new(),
+                default_pins,
                 sample_rate,
                 block,
                 instrument: info.instrument,
@@ -818,6 +900,11 @@ impl Vst3Plugin {
         (self.inputs.len(), self.outputs.len())
     }
 
+    /// Audio channels over all buses in the plugin's own arrangements, as first created.
+    pub fn default_pins(&self) -> (usize, usize) {
+        self.default_pins
+    }
+
     /// Hands the component's state to a separate controller, as hosts do after loading.
     fn sync_controller(&mut self) {
         let Some(controller) = &self.controller else { return };
@@ -854,18 +941,9 @@ impl Vst3Plugin {
         stream.data.borrow().clone()
     }
 
-    /// State in REAPER's layout: the component state with its size and a 1, then the
-    /// controller state the same way (REAPER writes a zero size and flag when there is none).
+    /// State in REAPER's layout ([`reaper_state`]).
     pub fn save_state(&self) -> Vec<u8> {
-        let (component, controller) = (self.component_state(), self.controller_state());
-        let mut out = Vec::new();
-        out.extend((component.len() as u32).to_le_bytes());
-        out.extend(1u32.to_le_bytes());
-        out.extend(&component);
-        out.extend((controller.len() as u32).to_le_bytes());
-        out.extend((!controller.is_empty() as u32).to_le_bytes());
-        out.extend(&controller);
-        out
+        reaper_state(&self.component_state(), &self.controller_state())
     }
 
     pub fn load_state(&mut self, data: &[u8]) -> bool {

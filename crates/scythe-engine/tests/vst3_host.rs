@@ -193,3 +193,69 @@ fn sidechain_bus_takes_pins_three_and_four() {
     assert_eq!((bufs[0][3], bufs[1][3]), (0.75, 0.75), "main at the default gain of 0.5 plus the sidechain");
     std::fs::remove_dir_all(root).ok();
 }
+
+/// What REAPER 7.73 asks of the test gain on tracks of 2 to 16 channels: every main and
+/// sidechain bus in the widest layout it takes (up to eight channels) that fits the track.
+#[test]
+fn buses_follow_the_track_width_like_reaper() {
+    let Some(root) = bundle("buses") else {
+        eprintln!("vst3-test-plugin not built; skipping");
+        return;
+    };
+    let mut fx = registry(&root, 1000);
+    let gain = fx.vst3_plugins().iter().find(|p| p.name == "Test Gain").unwrap().clone();
+    let synth = fx.vst3_plugins().iter().find(|p| p.name == "Test Synth").unwrap().clone();
+    let mut project = Project::default();
+    for (channels, pins) in [(2, (4, 2)), (4, (8, 4)), (6, (12, 6)), (8, (16, 8)), (16, (16, 8))] {
+        let mut track = Track::new("t");
+        track.channels = channels as u32;
+        track.fx.push(vst3_slot(&gain));
+        track.fx.push(vst3_slot(&synth));
+        let (chain, _) = fx.chain_with_automation(Some(track.id), &track.fx, channels);
+        assert_eq!(chain[0].pins, pins, "gain on {channels} channels");
+        assert_eq!(chain[1].pins, (0, pins.1), "synth on {channels} channels");
+        project.tracks.push(track);
+    }
+
+    // A 6-channel bus gains every channel; the sidechain (pins 6 and up) adds to the first.
+    let id = project.tracks[2].id;
+    let chain = fx.chain_with_automation(Some(id), &project.tracks[2].fx, 6).0;
+    let ctx = ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 1000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let mut bufs: Vec<Vec<f32>> = (0..12).map(|k| vec![if k < 6 { k as f32 + 1.0 } else { 0.0 }; 8]).collect();
+    bufs[6] = vec![0.125; 8];
+    chain[0].process_pins(&mut bufs, 0..8, &ctx);
+    let out: Vec<f32> = bufs[..6].iter().map(|b| b[7]).collect();
+    assert_eq!(out, [0.625, 1.0, 1.5, 2.0, 2.5, 3.0]);
+
+    // REAPER's header after adding the gain to a 6-channel track: the input pins of the
+    // plugin's own stereo buses, an output pin per track channel.
+    fx.store_states(&mut project);
+    let map = scythe_engine::fx::pin_map(&project.tracks[2].fx[0]).unwrap();
+    assert_eq!(map.inputs, [1, 2, 4, 8]);
+    assert_eq!(map.outputs, [1, 2, 4, 8, 16, 32]);
+    assert_eq!(scythe_engine::fx::pin_map(&project.tracks[0].fx[0]), None, "plain stereo on 2 channels");
+
+    // Narrowing the track sets the instance up anew, as REAPER does.
+    let chain = fx.chain_with_automation(Some(id), &project.tracks[2].fx, 2).0;
+    assert_eq!(chain[0].pins, (4, 2));
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn arrangements_are_offered_in_reapers_order() {
+    let counts: Vec<u32> = vst3_host::layouts_up_to(16).map(|a| a.count_ones()).collect();
+    assert_eq!(counts, [1, 2, 3, 4, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12, 12, 13, 14, 14, 14, 15, 16, 16, 16]);
+    let six: Vec<u64> = vst3_host::layouts_up_to(6).collect();
+    assert_eq!(six, [0x80000, 0x3, 0x103, 0x33, 0xf00000, 0x37, 0x3f]);
+}

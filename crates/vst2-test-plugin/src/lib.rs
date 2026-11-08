@@ -1,7 +1,9 @@
 //! A minimal VST 2.4 instrument used to test scythe's VST 2 host: it writes the held key / 128
-//! as a constant level on both outputs, following note-on and note-off events.
+//! times its level as a constant on both outputs, following note-on and note-off events. The
+//! level is its one parameter and its chunk (a little-endian `f32`); its programs "Full",
+//! "Half" and "Quiet" set it to 1, 0.5 and 0.25.
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 type HostCallback = extern "C" fn(*mut AEffect, i32, i32, isize, *mut c_void, f32) -> isize;
 type Dispatcher = extern "C" fn(*mut AEffect, i32, i32, isize, *mut c_void, f32) -> isize;
@@ -9,9 +11,21 @@ type ProcessReplacing = extern "C" fn(*mut AEffect, *const *const f32, *mut *mut
 type SetParameter = extern "C" fn(*mut AEffect, i32, f32);
 type GetParameter = extern "C" fn(*mut AEffect, i32) -> f32;
 
+const EFF_SET_PROGRAM: i32 = 2;
+const EFF_GET_PROGRAM: i32 = 3;
+const EFF_SET_PROGRAM_NAME: i32 = 4;
+const EFF_GET_PROGRAM_NAME: i32 = 5;
+const EFF_GET_PARAM_DISPLAY: i32 = 7;
+const EFF_GET_PARAM_NAME: i32 = 8;
+const EFF_GET_CHUNK: i32 = 23;
+const EFF_SET_CHUNK: i32 = 24;
 const EFF_PROCESS_EVENTS: i32 = 25;
+const EFF_GET_PROGRAM_NAME_INDEXED: i32 = 29;
 const FLAG_CAN_REPLACING: i32 = 1 << 4;
+const FLAG_PROGRAM_CHUNKS: i32 = 1 << 5;
 const FLAG_IS_SYNTH: i32 = 1 << 8;
+
+const PROGRAMS: [(&str, f32); 3] = [("Full", 1.0), ("Half", 0.5), ("Quiet", 0.25)];
 
 #[repr(C)]
 pub struct AEffect {
@@ -62,10 +76,28 @@ struct Events {
     events: [*mut MidiEvent; 2],
 }
 
-/// Plugin state behind `AEffect::object`: pending events of the block, and the held key.
+/// Plugin state behind `AEffect::object`: pending events of the block, the held key, the
+/// level, the current program and the chunk last handed to the host.
 struct Synth {
     pending: Vec<(i32, [u8; 3])>,
     key: Option<u8>,
+    level: f32,
+    program: usize,
+    names: [String; 3],
+    chunk: [u8; 4],
+}
+
+/// Copies `s` into a host string buffer, NUL-terminated within `max` bytes.
+fn put_string(s: &str, ptr: *mut c_void, max: usize) {
+    if ptr.is_null() {
+        return;
+    }
+    let n = s.len().min(max - 1);
+    // SAFETY: hosts pass buffers of at least `max` bytes for these strings.
+    unsafe {
+        std::ptr::copy_nonoverlapping(s.as_ptr(), ptr as *mut u8, n);
+        *(ptr as *mut u8).add(n) = 0;
+    }
 }
 
 fn synth(effect: *mut AEffect) -> &'static mut Synth {
@@ -76,11 +108,58 @@ fn synth(effect: *mut AEffect) -> &'static mut Synth {
 extern "C" fn dispatcher(
     effect: *mut AEffect,
     opcode: i32,
-    _index: i32,
-    _value: isize,
+    index: i32,
+    value: isize,
     ptr: *mut c_void,
     _opt: f32,
 ) -> isize {
+    let s = synth(effect);
+    match opcode {
+        EFF_SET_PROGRAM => {
+            if let Some(&(_, level)) = PROGRAMS.get(value as usize) {
+                s.program = value as usize;
+                s.level = level;
+            }
+            return 0;
+        }
+        EFF_GET_PROGRAM => return s.program as isize,
+        EFF_SET_PROGRAM_NAME if !ptr.is_null() => {
+            // SAFETY: the host passes a NUL-terminated name.
+            let name = unsafe { std::ffi::CStr::from_ptr(ptr as *const c_char) };
+            s.names[s.program] = name.to_string_lossy().into_owned();
+            return 0;
+        }
+        EFF_GET_PROGRAM_NAME => {
+            put_string(&s.names[s.program], ptr, 24);
+            return 1;
+        }
+        EFF_GET_PROGRAM_NAME_INDEXED => {
+            let Some(name) = s.names.get(index as usize) else { return 0 };
+            put_string(name, ptr, 24);
+            return 1;
+        }
+        EFF_GET_PARAM_NAME => {
+            put_string("Level", ptr, 8);
+            return 0;
+        }
+        EFF_GET_PARAM_DISPLAY => {
+            put_string(&format!("{:.2}", s.level), ptr, 8);
+            return 0;
+        }
+        EFF_GET_CHUNK if !ptr.is_null() => {
+            s.chunk = s.level.to_le_bytes();
+            // SAFETY: the host passes a pointer to receive the chunk's address.
+            unsafe { *(ptr as *mut *mut u8) = s.chunk.as_mut_ptr() };
+            return 4;
+        }
+        EFF_SET_CHUNK if !ptr.is_null() && value >= 4 => {
+            // SAFETY: the host passes `value` bytes.
+            let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, 4) };
+            s.level = f32::from_le_bytes(bytes.try_into().unwrap());
+            return 1;
+        }
+        _ => {}
+    }
     if opcode == EFF_PROCESS_EVENTS && !ptr.is_null() {
         // SAFETY: the host passes a VstEvents block with `num_events` valid pointers.
         unsafe {
@@ -112,7 +191,7 @@ extern "C" fn process_replacing(effect: *mut AEffect, _inputs: *const *const f32
             }
             next += 1;
         }
-        let v = s.key.map_or(0.0, |k| k as f32 / 128.0);
+        let v = s.key.map_or(0.0, |k| k as f32 / 128.0) * s.level;
         // SAFETY: as above.
         unsafe {
             *outs[0].add(i as usize) = v;
@@ -122,28 +201,39 @@ extern "C" fn process_replacing(effect: *mut AEffect, _inputs: *const *const f32
     s.pending.clear();
 }
 
-extern "C" fn set_parameter(_: *mut AEffect, _: i32, _: f32) {}
+extern "C" fn set_parameter(effect: *mut AEffect, index: i32, value: f32) {
+    if index == 0 {
+        synth(effect).level = value;
+    }
+}
 
-extern "C" fn get_parameter(_: *mut AEffect, _: i32) -> f32 {
-    0.0
+extern "C" fn get_parameter(effect: *mut AEffect, index: i32) -> f32 {
+    if index == 0 { synth(effect).level } else { 0.0 }
 }
 
 /// # Safety
 /// Called by a VST 2 host with its callback.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn VSTPluginMain(_host: HostCallback) -> *mut AEffect {
-    let object = Box::into_raw(Box::new(Synth { pending: Vec::with_capacity(512), key: None })) as *mut c_void;
+    let object = Box::into_raw(Box::new(Synth {
+        pending: Vec::with_capacity(512),
+        key: None,
+        level: 1.0,
+        program: 0,
+        names: PROGRAMS.map(|(n, _)| n.to_owned()),
+        chunk: [0; 4],
+    })) as *mut c_void;
     Box::into_raw(Box::new(AEffect {
         magic: i32::from_be_bytes(*b"VstP"),
         dispatcher,
         process: std::ptr::null(),
         set_parameter,
         get_parameter,
-        num_programs: 0,
-        num_params: 0,
+        num_programs: PROGRAMS.len() as i32,
+        num_params: 1,
         num_inputs: 0,
         num_outputs: 2,
-        flags: FLAG_CAN_REPLACING | FLAG_IS_SYNTH,
+        flags: FLAG_CAN_REPLACING | FLAG_PROGRAM_CHUNKS | FLAG_IS_SYNTH,
         reserved1: 0,
         reserved2: 0,
         initial_delay: 0,

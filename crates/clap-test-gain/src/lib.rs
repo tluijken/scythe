@@ -1,14 +1,22 @@
 //! Minimal CLAP plugins used to test scythe's CLAP host: an effect that scales stereo audio by
 //! a gain that round-trips through the state extension, an instrument that writes each held
 //! key number as a constant level (key / 128) so tests can read note timing exactly, and a
-//! delay that reports its delay as latency.
+//! delay that reports its delay as latency. The gain offers two factory presets through preset
+//! discovery, loaded with the preset-load extension.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use clap_sys::entry::clap_plugin_entry;
+use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_plugin_preset_load};
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
+use clap_sys::factory::preset_discovery::{
+    CLAP_PRESET_DISCOVERY_FACTORY_ID, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT, CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+    clap_preset_discovery_factory, clap_preset_discovery_indexer, clap_preset_discovery_location,
+    clap_preset_discovery_location_kind, clap_preset_discovery_metadata_receiver, clap_preset_discovery_provider,
+    clap_preset_discovery_provider_descriptor,
+};
 use clap_sys::host::clap_host;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::{CLAP_PROCESS_CONTINUE, clap_process, clap_process_status};
@@ -501,6 +509,8 @@ unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) ->
         &TIMER as *const _ as *const c_void
     } else if id == clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS {
         &PORTS as *const _ as *const c_void
+    } else if id == CLAP_EXT_PRESET_LOAD || id == CLAP_EXT_PRESET_LOAD_COMPAT {
+        &PRESET_LOAD as *const _ as *const c_void
     } else {
         std::ptr::null()
     }
@@ -669,6 +679,130 @@ unsafe extern "C" fn create_plugin(
     }
 }
 
+/// The gain's factory presets: name and gain, which is also the load key.
+const PRESETS: [(&CStr, &CStr); 2] = [(c"Quiet", c"0.25"), (c"Loud", c"0.75")];
+
+/// Sets the gain from a factory preset's load key.
+unsafe extern "C" fn preset_from_location(
+    p: *const clap_plugin,
+    kind: clap_preset_discovery_location_kind,
+    _location: *const c_char,
+    load_key: *const c_char,
+) -> bool {
+    if kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN || load_key.is_null() {
+        return false;
+    }
+    // SAFETY: the host passes a C string.
+    let key = unsafe { CStr::from_ptr(load_key) };
+    let Some(gain) = PRESETS.iter().find(|(_, k)| *k == key).and_then(|(_, k)| k.to_str().ok()?.parse::<f32>().ok())
+    else {
+        return false;
+    };
+    // SAFETY: `p` is a live Test Gain.
+    unsafe { gain_of(p) }.gain.store(gain.to_bits(), Ordering::Relaxed);
+    true
+}
+
+static PRESET_LOAD: clap_plugin_preset_load = clap_plugin_preset_load { from_location: Some(preset_from_location) };
+
+static PROVIDER_DESCRIPTOR: SyncPtr<clap_preset_discovery_provider_descriptor> =
+    SyncPtr(clap_preset_discovery_provider_descriptor {
+        clap_version: CLAP_VERSION,
+        id: c"org.scythe.test-gain.presets".as_ptr(),
+        name: c"Test Gain presets".as_ptr(),
+        vendor: c"Scythe".as_ptr(),
+    });
+
+/// The provider's indexer is kept in `provider_data`.
+unsafe extern "C" fn provider_init(provider: *const clap_preset_discovery_provider) -> bool {
+    // SAFETY: the indexer outlives the provider.
+    let indexer = unsafe { &*((*provider).provider_data as *const clap_preset_discovery_indexer) };
+    let location = clap_preset_discovery_location {
+        flags: CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT,
+        name: c"Test Gain factory presets".as_ptr(),
+        kind: CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN,
+        location: std::ptr::null(),
+    };
+    // SAFETY: declaring a location to the indexer that created us.
+    indexer.declare_location.is_some_and(|declare| unsafe { declare(indexer, &location) })
+}
+
+unsafe extern "C" fn provider_destroy(provider: *const clap_preset_discovery_provider) {
+    // SAFETY: undoes the Box::into_raw in `create_provider`.
+    drop(unsafe { Box::from_raw(provider as *mut clap_preset_discovery_provider) });
+}
+
+unsafe extern "C" fn provider_metadata(
+    _provider: *const clap_preset_discovery_provider,
+    kind: clap_preset_discovery_location_kind,
+    _location: *const c_char,
+    receiver: *const clap_preset_discovery_metadata_receiver,
+) -> bool {
+    if kind != CLAP_PRESET_DISCOVERY_LOCATION_PLUGIN {
+        return false;
+    }
+    // SAFETY: the host passes a receiver that stays valid for this call.
+    unsafe {
+        let r = &*receiver;
+        let plugin = clap_sys::universal_plugin_id::clap_universal_plugin_id { abi: c"clap".as_ptr(), id: ID.as_ptr() };
+        for (name, key) in PRESETS {
+            if !r.begin_preset.is_some_and(|begin| begin(receiver, name.as_ptr(), key.as_ptr())) {
+                return false;
+            }
+            if let Some(add) = r.add_plugin_id {
+                add(receiver, &plugin);
+            }
+            if let Some(flags) = r.set_flags {
+                flags(receiver, CLAP_PRESET_DISCOVERY_IS_FACTORY_CONTENT);
+            }
+        }
+    }
+    true
+}
+
+unsafe extern "C" fn provider_extension(
+    _p: *const clap_preset_discovery_provider,
+    _id: *const c_char,
+) -> *const c_void {
+    std::ptr::null()
+}
+
+unsafe extern "C" fn provider_count(_f: *const clap_preset_discovery_factory) -> u32 {
+    1
+}
+
+unsafe extern "C" fn provider_descriptor(
+    _f: *const clap_preset_discovery_factory,
+    index: u32,
+) -> *const clap_preset_discovery_provider_descriptor {
+    if index == 0 { &PROVIDER_DESCRIPTOR.0 } else { std::ptr::null() }
+}
+
+unsafe extern "C" fn create_provider(
+    _f: *const clap_preset_discovery_factory,
+    indexer: *const clap_preset_discovery_indexer,
+    id: *const c_char,
+) -> *const clap_preset_discovery_provider {
+    // SAFETY: id is a C string.
+    if unsafe { CStr::from_ptr(id) } != unsafe { CStr::from_ptr(PROVIDER_DESCRIPTOR.0.id) } {
+        return std::ptr::null();
+    }
+    Box::into_raw(Box::new(clap_preset_discovery_provider {
+        desc: &PROVIDER_DESCRIPTOR.0,
+        provider_data: indexer as *mut c_void,
+        init: Some(provider_init),
+        destroy: Some(provider_destroy),
+        get_metadata: Some(provider_metadata),
+        get_extension: Some(provider_extension),
+    }))
+}
+
+static PRESET_FACTORY: clap_preset_discovery_factory = clap_preset_discovery_factory {
+    count: Some(provider_count),
+    get_descriptor: Some(provider_descriptor),
+    create: Some(create_provider),
+};
+
 static FACTORY: clap_plugin_factory = clap_plugin_factory {
     get_plugin_count: Some(count),
     get_plugin_descriptor: Some(descriptor),
@@ -683,6 +817,8 @@ unsafe extern "C" fn get_factory(id: *const c_char) -> *const c_void {
     // SAFETY: id is a C string.
     if unsafe { CStr::from_ptr(id) } == CLAP_PLUGIN_FACTORY_ID {
         &FACTORY as *const _ as *const c_void
+    } else if unsafe { CStr::from_ptr(id) } == CLAP_PRESET_DISCOVERY_FACTORY_ID {
+        &PRESET_FACTORY as *const _ as *const c_void
     } else {
         std::ptr::null()
     }

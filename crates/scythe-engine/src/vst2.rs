@@ -9,6 +9,9 @@ const MAGIC: i32 = i32::from_be_bytes(*b"VstP");
 
 const EFF_OPEN: i32 = 0;
 const EFF_CLOSE: i32 = 1;
+const EFF_SET_PROGRAM: i32 = 2;
+const EFF_GET_PROGRAM: i32 = 3;
+const EFF_GET_PROGRAM_NAME_INDEXED: i32 = 29;
 const EFF_GET_PARAM_NAME: i32 = 8;
 const EFF_GET_PARAM_DISPLAY: i32 = 7;
 const EFF_SET_SAMPLE_RATE: i32 = 10;
@@ -306,6 +309,11 @@ impl Vst2Plugin {
         self.info().flags
     }
 
+    /// Whether the plugin keeps its state in a chunk (`effFlagsProgramChunks`).
+    pub fn programs_are_chunks(&self) -> bool {
+        self.flags() & FLAG_PROGRAM_CHUNKS != 0
+    }
+
     pub fn is_synth(&self) -> bool {
         self.flags() & FLAG_IS_SYNTH != 0
     }
@@ -320,6 +328,23 @@ impl Vst2Plugin {
 
     pub fn num_params(&self) -> usize {
         self.info().num_params.max(0) as usize
+    }
+
+    /// The names of the plugin's own programs (`effGetProgramNameIndexed`).
+    pub fn programs(&mut self) -> Vec<String> {
+        (0..self.num_programs() as i32).map(|i| self.string(EFF_GET_PROGRAM_NAME_INDEXED, i)).collect()
+    }
+
+    pub fn num_programs(&self) -> usize {
+        self.info().num_programs.max(0) as usize
+    }
+
+    pub fn program(&mut self) -> usize {
+        self.dispatch(EFF_GET_PROGRAM, 0, 0, std::ptr::null_mut(), 0.0).max(0) as usize
+    }
+
+    pub fn set_program(&mut self, index: usize) {
+        self.dispatch(EFF_SET_PROGRAM, 0, index as isize, std::ptr::null_mut(), 0.0);
     }
 
     pub fn latency(&self) -> usize {
@@ -439,6 +464,15 @@ impl Drop for Vst2Plugin {
     }
 }
 
+/// Where a REAPER `<VST` header's output pin count and state size sit: after the id, the magic
+/// and the input pins come the output pins, then the size and two flag words.
+pub fn header_layout(header: &[u8]) -> Option<(usize, usize)> {
+    let word = |at: usize| header.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    let after_in = 12 + word(8)? as usize * 8;
+    let size_at = after_in + 4 + word(after_in)? as usize * 8;
+    (header.len() >= size_at + 12).then_some((after_in, size_at))
+}
+
 /// REAPER's per-plugin state block in an RPP `<VST` chunk: a header with the plugin id and pin
 /// mappings, the plugin's own chunk, and the program name.
 #[derive(Debug, Clone, PartialEq)]
@@ -450,6 +484,9 @@ pub struct ReaperVstState {
     /// bit 0).
     pub inputs: Vec<u64>,
     pub outputs: Vec<u64>,
+    /// The two words after the state size: 1 when the state is the plugin's chunk, then the
+    /// current program (0xffff for none) in the low half and flags in the high half.
+    pub words: [u32; 2],
 }
 
 impl ReaperVstState {
@@ -459,15 +496,41 @@ impl ReaperVstState {
         use base64::Engine as _;
         let b64 = base64::engine::general_purpose::STANDARD;
         let mut header = b64.decode(original.first()?.trim()).ok()?;
-        let word = |h: &[u8], at: usize| h.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
-        let n_in = word(&header, 8)? as usize;
-        let after_in = 12 + n_in * 8;
-        let n_out = word(&header, after_in)? as usize;
-        let size_at = after_in + 4 + n_out * 8;
+        let (_, size_at) = header_layout(&header)?;
         header.get_mut(size_at..size_at + 4)?.copy_from_slice(&(chunk.len() as u32).to_le_bytes());
         let mut lines = vec![b64.encode(&header)];
         lines.extend(b64.encode(chunk).as_bytes().chunks(128).map(|c| String::from_utf8_lossy(c).into_owned()));
         lines.push(original.last()?.trim().to_owned());
+        Some(lines)
+    }
+
+    /// The lines of `original` with the header's pin maps replaced by `inputs` and `outputs`.
+    pub fn with_pins(original: &[String], inputs: &[u64], outputs: &[u64]) -> Option<Vec<String>> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let header = b64.decode(original.first()?.trim()).ok()?;
+        let (_, size_at) = header_layout(&header)?;
+        let mut new = header.get(..8)?.to_vec();
+        for masks in [inputs, outputs] {
+            new.extend((masks.len() as u32).to_le_bytes());
+            new.extend(masks.iter().flat_map(|m| m.to_le_bytes()));
+        }
+        new.extend(header.get(size_at..)?);
+        let mut lines = original.to_vec();
+        lines[0] = b64.encode(&new);
+        Some(lines)
+    }
+
+    /// The lines of `original` with the header's two flag words replaced by `words`.
+    pub fn with_words(original: &[String], words: [u32; 2]) -> Option<Vec<String>> {
+        use base64::Engine as _;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut header = b64.decode(original.first()?.trim()).ok()?;
+        let (_, size_at) = header_layout(&header)?;
+        header[size_at + 4..size_at + 8].copy_from_slice(&words[0].to_le_bytes());
+        header[size_at + 8..size_at + 12].copy_from_slice(&words[1].to_le_bytes());
+        let mut lines = original.to_vec();
+        lines[0] = b64.encode(&header);
         Some(lines)
     }
 
@@ -489,6 +552,7 @@ impl ReaperVstState {
         let n_out = word(after_in)? as usize;
         let size_at = after_in + 4 + n_out * 8;
         let size = word(size_at)? as usize;
+        let words = [word(size_at + 4).unwrap_or(0), word(size_at + 8).unwrap_or(0)];
         let inputs = (0..n_in).filter_map(|i| mask(12 + i * 8)).collect();
         let outputs = (0..n_out).filter_map(|i| mask(after_in + 4 + i * 8)).collect();
 
@@ -501,7 +565,7 @@ impl ReaperVstState {
         let mut chunk = b64.decode(joined).ok()?;
         chunk.truncate(size);
         let program = program_line.and_then(|l| b64.decode(l.trim()).ok()).unwrap_or_default();
-        Some(Self { unique_id, chunk, program, inputs, outputs })
+        Some(Self { unique_id, chunk, program, inputs, outputs, words })
     }
 }
 

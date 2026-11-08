@@ -33,7 +33,7 @@ The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`
 |---|---|
 | `scythe-core` | Project model (tracks, folders, items, takes, sends, markers, tempo map, envelopes, fades, MIDI sources), lossless `.RPP` reader/writer, pan and fader laws, undo history |
 | `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia) and REAPER's 192-point sinc resampling, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
-| `clap-test-gain`, `lv2-test-plugins`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
+| `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-app` | egui UI: arrange view, mixer dock, inspector, action palette (Ctrl+K), demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back
@@ -68,7 +68,13 @@ Working:
   other channels pass through, and input pins 3/4 of a stereo effect are its sidechain (JSFX
   see it as `spl2`/`spl3`). Effects with more pins (JSFX band splitters and mixers, VST 2 with
   more inputs or outputs, VST 3 buses and CLAP audio ports beyond the main pair, such as a
-  sidechain input) work on all of them, by default pin n on channel n. The master can
+  sidechain input) work on all of them, by default pin n on channel n. VST 3 buses are set up
+  for the track's width as REAPER 7.73 does: it offers each layout up to the track's channel
+  count (mono, stereo, 3.0, 4.0, first-order ambisonics, 5.0, 5.1, 7.0, 7.1, then wider ones up
+  to 16 channels) on every bus at once and keeps the last one the plugin takes, so a 6-channel
+  track gets a 5.1 main bus (and sidechain); a new slot's header maps the input pins of the
+  plugin's own buses and an output pin per track channel, and the buses are set up anew when
+  the track's width changes. The master can
   have more channels too ("Master: More channels"): master effects work across them, and a
   render with more channels (`RENDER_CHANNELS`) writes them all.
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
@@ -136,9 +142,17 @@ Working:
   between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
   REAPER's own per-plugin preset files (`presets/vst-<plugin>.ini`, `vst3-…`, `js-…`,
   `clap-…`, `lv2-…` in REAPER's resource folder): the slot's context menu lists the presets
-  saved in REAPER (and the stock presets REAPER has imported there), loads one into the plugin, and saves the plugin's
-  current settings under a name so REAPER lists it too. Presets saved as `.RfxChain` files by
-  earlier versions are still listed. Plugin scans are cached per binary (path, size,
+  saved in REAPER, loads one into the plugin, saves the plugin's current settings under a name
+  so REAPER lists it too, and renames and deletes them. Like REAPER it first imports a plugin's
+  default library (the `.rpl` beside a VST 2 binary, such as REAPER's stock ReaComp presets, or
+  beside a JSFX) when the library changed since `LastDefImpTime`, and preset libraries (`.RPL`)
+  import into and export from the preset file. Factory presets follow: a VST 3 plugin's
+  `.vstpreset` files under `~/.vst3/presets/<vendor>/<plugin>/`, a VST 2 plugin's own programs
+  (REAPER restores the chunk, then selects the stored program) and the presets a CLAP plugin's
+  preset-discovery providers list, loaded through its preset-load extension. Loading a preset
+  does what REAPER does with the `<VST` header: the preset's pin maps and flag bits replace the
+  slot's, and its state is taken only when its state kind matches. Presets saved as `.RfxChain`
+  files by earlier versions are still listed. Plugin scans are cached per binary (path, size,
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
   (the sampler receives the track's MIDI, live input and MIDI an earlier effect sends; musical
@@ -228,6 +242,8 @@ compare with scythe's output sample by sample:
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
+| VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
+| FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
@@ -238,12 +254,12 @@ compares the two files.
 - FX parameter envelopes on LV2 plugins take each block's first value; REAPER gives a block
   that holds an envelope point the value after it. NAM models are run at the project rate
   without resampling to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel: VST 3 buses are set to the plugin's own arrangements; other speaker layouts
-  are not requested. Master channels go to the audio device's outputs in order, as many as the
+- Multichannel: master channels go to the audio device's outputs in order, as many as the
   device offers; channels beyond that reach only multichannel renders.
-- FX presets: loading one keeps the slot's pin mapping; presets cannot be renamed or deleted
-  from Scythe; factory presets (`.vstpreset`, plugin programs, `.RPL` libraries REAPER has
-  not imported yet) and preset library import and export are not offered.
+- FX presets: VST 3 `.vstpreset` files are looked for only where REAPER 7.73 lists them
+  (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER 7.73 asks CLAP
+  plugins for their preset-discovery factory but lists none of the discovered presets through
+  its preset API, so their order and naming beside REAPER's own presets are unverified.
 - ReaScript covers a subset of the API (above); Python needs `python3` on the PATH, and its
   `print` goes to Scythe's stderr, not the console. EEL2 `eval`, `extension_api`, `gfx_*`
   windows and EEL file/network functions are not there.
