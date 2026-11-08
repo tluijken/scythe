@@ -77,7 +77,7 @@ pub enum ResampleMode {
     LinearIir {
         stages: u8,
     },
-    /// r8brain free; converted with the 192-point sinc.
+    /// r8brain free, with r8brain-free-src's default settings.
     R8brain,
 }
 

@@ -49,9 +49,10 @@ Working:
   instrument: drums on channel 10, a soft synth elsewhere). MP3s are read the way REAPER reads
   them: items keep the encoder delay and padding and play a Xing/Info header frame as a frame of
   silence, the sampler trims them (gapless) and holds them to 16-bit range, and both scale by
-  32767/32768. Media at another rate is converted with the 192-point sinc; renders follow the
-  project's `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or two
-  IIR low-passes; r8brain falls back to the 192-point sinc).
+  32767/32768; mid/side granules of MPEG-2 and 2.5 streams come out 3 dB low, as REAPER's
+  decoder plays them. Media at another rate is converted with the 192-point sinc; renders follow
+  the project's `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or
+  two IIR low-passes, r8brain free).
 - **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
   meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
   REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
@@ -247,8 +248,10 @@ compare with scythe's output sample by sample:
 | Reversed sections | exact |
 | ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate); the alternative band, whose width grows with its gain (the stock "Basic 11 band Kick" preset) | exact (35/35 cases, 10 high-frequency cases, 7 alternative-band cases) |
 | Sample-rate conversion of media: impulses at 44.1, 88.2 and 96 kHz in a 48 kHz project, as items and through the sampler (a Blackman-Harris sinc over 96 input frames each side, cut off at 1/1.03 of the output's Nyquist when going down, read from a 32-step table) | exact |
-| Resample modes (`RENDER_RESAMPLE` 0–9): impulses up (44.1 → 48 kHz) and down (88.2 → 48 kHz) and white noise up (44.1 → 48 kHz) and down (48 → 44.1 kHz) per mode. Sinc: Blackman-Harris over 8/32/96 input frames each side read from a 32-step table (16/64/192 points), over 192/256/384 computed exactly (384/512/768 points); linear; point (the frame before the read position, so exact hits read the previous frame); linear plus an RBJ low-pass (Q 0.707) at 0.693 (one stage) or 0.792 (two stages) of the lower Nyquist frequency, run at the higher rate | within 5e-6 (35/36 cases); point sampling misses one frame of noise (REAPER reads the exact hit at 147 input frames the other way); r8brain (mode 10) is a far steeper filter and differs by up to 0.018 |
-| MP3 media items at their own rate: LAME-tagged (CBR, VBR, 44.1/48/32 kHz, mono, a 160 kbps LAME 3.92 crash cymbal), untagged, MPEG-2 (22.05/24 kHz mono and plain stereo) | within 4e-7 (17/18 cases); REAPER plays the Xing/Info frame as 1152 (MPEG-2: 576) frames of silence, keeps encoder delay and padding, and scales by 32767/32768 |
+| Resample modes (`RENDER_RESAMPLE` 0–9): impulses up (44.1 → 48 kHz) and down (88.2 → 48 kHz) and white noise up (44.1 → 48 kHz) and down (48 → 44.1 kHz) per mode. Sinc: Blackman-Harris over 8/32/96 input frames each side read from a 32-step table (16/64/192 points), over 192/256/384 computed exactly (384/512/768 points); linear; point (the frame before the read position, so exact hits read the previous frame); linear plus an RBJ low-pass (Q 0.707) at 0.693 (one stage) or 0.792 (two stages) of the lower Nyquist frequency, run at the higher rate | within 5e-6 (35/36 cases); point sampling misses one frame of noise (REAPER reads the exact hit at 147 input frames the other way); r8brain (mode 10) is the next row |
+| r8brain free (`RENDER_RESAMPLE 10`), a Rust implementation of r8brain-free-src 6.x (MIT, Aleksey Vaneev) with its `CDSPResampler` defaults: 2 % transition band, 206.91 dB attenuation, linear phase. Found by sweeping the two settings against impulse renders (TB 1/2/3, 136.45/180.15/206.91 dB: only 2/206.91 nulls). Impulses 44.1 → 48 and 88.2 → 48 kHz, noise for 31 rate pairs from 8 to 192 kHz covering every stage r8brain picks (2x/3x FFT convolution, whole-step and spline fractional interpolation, intermediate interpolation, half-band up- and downsamplers) | within 1e-7 (33/33) |
+| MP3 media items at their own rate: LAME-tagged (CBR, VBR, 44.1/48/32 kHz, mono, a 160 kbps LAME 3.92 crash cymbal), untagged, MPEG-2 (22.05/24 kHz mono and plain stereo, a 64 kbps 22.05 kHz joint-stereo file) | within 1e-6 (18/18 cases); REAPER plays the Xing/Info frame as 1152 (MPEG-2: 576) frames of silence, keeps encoder delay and padding, and scales by 32767/32768 |
+| MP3 mid/side stereo in MPEG-2 and 2.5 (LAME `-m j` and `-m f` at 8/11.025/16/22.05/24 kHz, CBR and VBR, a 22.05 kHz file mixing left/right and mid/side frames; `-m s`, `-m d`, mono and MPEG-1 `-m j`/`-m f` as controls). REAPER's decoder plays every mid/side granule of an LSF stream at exactly 1/sqrt(2) of the correct level (MPEG-1 is right): the mid/side factor is applied twice. Scythe lowers those granules' global gain by 2 steps before symphonia decodes them, which is the same scaling ahead of the IMDCT, so transitions between frame modes match too | within 1e-6 (14/14) |
 | MP3 through ReaSamplOmatic5000 (the crash cymbal at 44.1 and 48 kHz) | within 3e-5: gapless, clipped to 16-bit range, one 16-bit step off on 0.06 % of the samples |
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
 | ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project), with its voice limit: a note beyond the limit takes over the oldest voice, which fades out over the 512-frame block holding that note (or never sounds when it started in the same block); retriggers within a block, zero-length notes, 1 to 9 voices, a velocity range | exact (18 cases); a 14-sampler drum kit (seven MP3 cymbals) within 1e-4 |
@@ -310,13 +313,11 @@ compares the two files.
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
   null against REAPER.
-- Resample mode 10 (r8brain free) is converted with the 192-point sinc. Playback and the
-  plain render commands use the 192-point sinc whatever the project's mode; only renders with
-  the project's settings follow `RENDER_RESAMPLE`. Time-stretched and pitch-shifted takes are
-  always read with the 192-point sinc.
-- MPEG-2 joint-stereo MP3s (a 64 kbps 22.05 kHz file) come out of REAPER's decoder at about
-  0.72 of the level symphonia and mpg123 agree on, with a 10 dB residual; scythe keeps the
-  correct decode. A VBRI header frame is assumed to play as silence like a Xing/Info frame.
+- Playback and the plain render commands use the 192-point sinc whatever the project's mode;
+  only renders with the project's settings follow `RENDER_RESAMPLE`. Time-stretched and
+  pitch-shifted takes are always read with the 192-point sinc.
+- MPEG-2/2.5 intensity stereo is untested against REAPER (LAME cannot encode it). A VBRI
+  header frame is assumed to play as silence like a Xing/Info frame.
 - Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image and DDP (video,
   REAPER's FFmpeg and video sinks; WAV's 8-bit, 64-bit float and ADPCM modes). CD image and DDP
   renders are always 44.1 kHz.

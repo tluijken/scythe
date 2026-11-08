@@ -18,6 +18,7 @@ pub mod meter;
 pub mod midi_io;
 pub mod nam;
 pub mod normalized;
+mod r8brain;
 pub mod reaeq;
 pub mod reaverb;
 pub mod record;
