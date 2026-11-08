@@ -273,16 +273,26 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 app.toggle_editor(Some(track_id), i);
                 ui.close();
             }
-            if ui.button("Save preset…").clicked() {
-                app.save_fx_preset(track_id, i);
-                ui.close();
-            }
+            ui.menu_button("Save preset", |ui| {
+                let id = Id::unique(("fx-preset-name", track_id, i));
+                let mut name =
+                    ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_else(|| ScytheApp::new_preset_name(fx));
+                let edit = ui.text_edit_singleline(&mut name);
+                let entered = edit.lost_focus() && ui.input(|inp| inp.key_pressed(egui::Key::Enter));
+                if ui.button("Save").clicked() || entered {
+                    app.save_fx_preset(track_id, i, &name);
+                    ui.data_mut(|d| d.remove::<String>(id));
+                    ui.close();
+                } else {
+                    ui.data_mut(|d| d.insert_temp(id, name));
+                }
+            });
             let presets = ScytheApp::fx_presets(fx);
             ui.add_enabled_ui(!presets.is_empty(), |ui| {
                 ui.menu_button("Load preset", |ui| {
-                    for (name, path) in &presets {
+                    for (name, source) in &presets {
                         if ui.button(name).clicked() {
-                            app.load_fx_preset(track_id, i, path);
+                            app.load_fx_preset(track_id, i, source);
                             ui.close();
                         }
                     }

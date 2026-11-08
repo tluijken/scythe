@@ -3341,6 +3341,7 @@ name = "scythe-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "eframe",
  "egui",
  "hound",

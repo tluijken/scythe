@@ -1,5 +1,6 @@
 mod app;
 mod demo;
+mod fx_preset;
 mod palette;
 mod plugin_window;
 mod script;

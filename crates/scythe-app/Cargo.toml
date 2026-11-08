@@ -8,6 +8,7 @@ license.workspace = true
 scythe-core.workspace = true
 scythe-engine.workspace = true
 anyhow.workspace = true
+base64.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true

@@ -128,9 +128,12 @@ Working:
   `atexit` functions.
 - **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
   load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
-  between the saved tracks kept), starting in REAPER's own resource folders. FX presets: the
-  slot's context menu saves the plugin's current settings under a name and loads them back
-  (`~/.local/share/scythe/presets/<plugin>/`). Plugin scans are cached per binary (path, size,
+  between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
+  REAPER's own per-plugin preset files (`presets/vst-<plugin>.ini`, `vst3-…`, `js-…`,
+  `clap-…`, `lv2-…` in REAPER's resource folder): the slot's context menu lists the presets
+  saved in REAPER (and the stock presets REAPER has imported there), loads one into the plugin, and saves the plugin's
+  current settings under a name so REAPER lists it too. Presets saved as `.RfxChain` files by
+  earlier versions are still listed. Plugin scans are cached per binary (path, size,
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
   (the sampler receives the track's MIDI, live input and MIDI an earlier effect sends; musical
@@ -217,8 +220,11 @@ compares the two files.
   that holds an envelope point the value after it. NAM models are run at the project rate
   without resampling to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: VST 3 buses are set to the plugin's own arrangements; other speaker layouts
-  are not requested. Master channels go to the audio device's outputs in order, as many as the device offers; channels beyond that reach only multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
-  kept as single-effect `.RfxChain` files instead.
+  are not requested. Master channels go to the audio device's outputs in order, as many as the
+  device offers; channels beyond that reach only multichannel renders.
+- FX presets: loading one keeps the slot's pin mapping; presets cannot be renamed or deleted
+  from Scythe; factory presets (`.vstpreset`, plugin programs, `.RPL` libraries REAPER has
+  not imported yet) and preset library import and export are not offered.
 - ReaScript covers a subset of the API (below), in Lua only; no EEL or Python.
 - JSFX: no graphics (`@gfx`); system exclusive (`midisyx`) is not passed on. REAPER runs
   `@serialize` a few more times after loading (to save state), which only matters to scripts
