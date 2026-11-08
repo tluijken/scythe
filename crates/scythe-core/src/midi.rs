@@ -9,6 +9,27 @@ pub struct MidiEvent {
     pub tick: u64,
     pub bytes: [u8; 3],
     pub len: u8,
+    /// [`SELECTED`] and [`MUTED`], as the line's keyword marks them (`e`, `Em`).
+    pub flags: u8,
+}
+
+pub const SELECTED: u8 = 1;
+pub const MUTED: u8 = 2;
+
+impl MidiEvent {
+    pub fn muted(&self) -> bool {
+        self.flags & MUTED != 0
+    }
+
+    /// The RPP keyword: `E`, `e` when selected, with `m` added when muted.
+    pub(crate) fn keyword(&self) -> &'static str {
+        match (self.flags & SELECTED != 0, self.muted()) {
+            (false, false) => "E",
+            (true, false) => "e",
+            (false, true) => "Em",
+            (true, true) => "em",
+        }
+    }
 }
 
 /// A system exclusive or meta event (`<X delta flags …` with base64 data), kept whole.
@@ -77,7 +98,9 @@ impl MidiSource {
                     let t = tokenize(l);
                     ticks_per_qn = t.get(2).and_then(|v| v.parse().ok()).unwrap_or(960);
                 }
-                "E" | "e" => {
+                key @ ("E" | "e" | "Em" | "em") => {
+                    let flags =
+                        if key.starts_with('e') { SELECTED } else { 0 } | if key.ends_with('m') { MUTED } else { 0 };
                     let t = tokenize(l);
                     let delta: u64 = t.get(1).and_then(|v| v.parse().ok()).unwrap_or(0);
                     tick += delta;
@@ -89,7 +112,7 @@ impl MidiSource {
                             len = i as u8 + 1;
                         }
                     }
-                    events.push(MidiEvent { tick, bytes, len });
+                    events.push(MidiEvent { tick, bytes, len, flags });
                 }
                 // Sysex and other long events only advance time.
                 "X" | "x" => {
@@ -112,7 +135,8 @@ impl MidiSource {
         let ppq = self.ticks_per_qn as f64;
         let mut open: Vec<(u8, u8, u64, u8)> = Vec::new();
         let mut notes = Vec::new();
-        for e in &self.events {
+        // Muted notes do not play; the editor leaves them as they are.
+        for e in self.events.iter().filter(|e| !e.muted()) {
             let status = e.bytes[0] & 0xf0;
             let channel = e.bytes[0] & 0x0f;
             let (key, vel) = (e.bytes[1], e.bytes[2]);
@@ -160,13 +184,18 @@ impl MidiSource {
         let mut events: Vec<MidiEvent> = self
             .events
             .iter()
-            .filter(|e| !is_note(e))
+            .filter(|e| !is_note(e) || e.muted())
             .map(|e| if e.tick == self.length_ticks { MidiEvent { tick: length, ..e.clone() } } else { e.clone() })
             .collect();
         for n in notes {
             let (start, end) = (tick(n.start_qn), tick(n.end_qn).max(tick(n.start_qn) + 1));
-            events.push(MidiEvent { tick: start, bytes: [0x90 | n.channel, n.key, n.velocity.max(1)], len: 3 });
-            events.push(MidiEvent { tick: end, bytes: [0x80 | n.channel, n.key, 0], len: 3 });
+            events.push(MidiEvent {
+                tick: start,
+                bytes: [0x90 | n.channel, n.key, n.velocity.max(1)],
+                len: 3,
+                flags: 0,
+            });
+            events.push(MidiEvent { tick: end, bytes: [0x80 | n.channel, n.key, 0], len: 3, flags: 0 });
         }
         // Note-offs before note-ons at the same tick, so a repeated key is not cut short.
         events.sort_by_key(|e| (e.tick, e.bytes[0] & 0xf0 == 0x90, !is_note(e)));
@@ -177,7 +206,7 @@ impl MidiSource {
     /// is dropped: an edited source no longer shares events with its pool.
     pub fn write_chunk(&self, original: &Chunk) -> Chunk {
         let is_event = |n: &Node| match n {
-            Node::Line(l) => matches!(line_key(l), "E" | "e" | "X" | "x"),
+            Node::Line(l) => matches!(line_key(l), "E" | "e" | "Em" | "em" | "X" | "x"),
             Node::Chunk(c) => matches!(c.name(), "X" | "x"),
         };
         let first = original.children.iter().position(is_event).unwrap_or(original.children.len());
@@ -207,7 +236,7 @@ impl MidiSource {
         for e in &self.events {
             write_long_until(&mut out, &mut prev, Some(e.tick));
             let bytes: Vec<String> = e.bytes[..e.len as usize].iter().map(|b| format!("{b:02x}")).collect();
-            out.children.push(Node::Line(format!("E {} {}", e.tick - prev, bytes.join(" "))));
+            out.children.push(Node::Line(format!("{} {} {}", e.keyword(), e.tick - prev, bytes.join(" "))));
             prev = e.tick;
         }
         write_long_until(&mut out, &mut prev, None);
@@ -257,9 +286,11 @@ impl ControlLane {
         let value = value.min(self.max());
         let ch = channel & 0x0f;
         match self {
-            Self::Cc(n) => MidiEvent { tick, bytes: [0xb0 | ch, n, value as u8], len: 3 },
-            Self::PitchBend => MidiEvent { tick, bytes: [0xe0 | ch, (value & 0x7f) as u8, (value >> 7) as u8], len: 3 },
-            Self::ChannelPressure => MidiEvent { tick, bytes: [0xd0 | ch, value as u8, 0], len: 2 },
+            Self::Cc(n) => MidiEvent { tick, bytes: [0xb0 | ch, n, value as u8], len: 3, flags: 0 },
+            Self::PitchBend => {
+                MidiEvent { tick, bytes: [0xe0 | ch, (value & 0x7f) as u8, (value >> 7) as u8], len: 3, flags: 0 }
+            }
+            Self::ChannelPressure => MidiEvent { tick, bytes: [0xd0 | ch, value as u8, 0], len: 2, flags: 0 },
         }
     }
 }
@@ -429,7 +460,7 @@ impl MidiSource {
         let controls: Vec<&MidiEvent> = self
             .events
             .iter()
-            .filter(|e| matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0))
+            .filter(|e| matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0) && !e.muted())
             .filter(|e| !self.is_end_marker(e))
             .collect();
         let p = self.placement(item, take, timeline);

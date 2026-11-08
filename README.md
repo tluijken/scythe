@@ -128,20 +128,80 @@ Working:
   with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
   file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
-  output in a console window. The `reaper.*` subset: tracks (`CountTracks`, `GetTrack`, `GetMasterTrack`, `GetSelectedTrack`,
-  `InsertTrackAtIndex`, `DeleteTrack`, `GetTrackName`, `GetSetMediaTrackInfo_String`,
-  `Get/SetMediaTrackInfo_Value`, `TrackFX_GetCount/GetFXName/GetEnabled/SetEnabled`), items
-  (`CountMediaItems`, `GetMediaItem`, `CountTrackMediaItems`, `GetTrackMediaItem`,
-  `GetSelectedMediaItem`, `Get/SetMediaItemInfo_Value`, `SplitMediaItem`, `DeleteTrackMediaItem`),
-  markers (`AddProjectMarker`, `CountProjectMarkers`, `EnumProjectMarkers`), transport and time
-  (`GetCursorPosition`, `SetEditCurPos`, `GetPlayState`, `GetPlayPosition(2)(Ex)`,
-  `OnPlayButton`, `OnStopButton`, `GetProjectLength`, `Master_GetTempo`,
-  `TimeMap2_timeToQN/QNToTime`, `time_precise`) and undo/console calls. `defer` and `runloop`
-  keep a script running: its deferred functions run once per frame over the current project
-  until it stops deferring or "Script: Stop the running script" ends it, which runs its
-  `atexit` functions. EEL2 scripts call the same functions without `reaper.`, with outputs
-  passed as variables or `#strings` (`GetTrackName(tr, #name)`) and tracks and items as
-  numbers; `defer("code")` takes code. Python scripts (`from reaper_python import *`, then
+  output in a console window. 246 `reaper.*` functions:
+  - tracks: `CountTracks`, `GetTrack`, `GetMasterTrack`, `InsertTrackAtIndex`, `DeleteTrack`,
+    `GetTrackName`, `GetSetMediaTrackInfo_String` (`P_NAME`, `GUID`, `P_EXT:`),
+    `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo, arm, record input and monitoring,
+    main send and its channel offset, folder depth, automation mode, channels, track number,
+    selection, custom color, pan law, fixed lanes, MIDI hardware output, `P_PARTRACK`),
+    `Get/SetTrackColor`, `GetParentTrack`, `GetTrackDepth`, `GetTrackUIVolPan`, selection
+    (`CountSelectedTracks(2)`, `GetSelectedTrack(2)`, `IsTrackSelected`, `SetTrackSelected`,
+    `SetOnlyTrackSelected`);
+  - sends and receives: `CreateTrackSend`, `RemoveTrackSend`, `GetTrackNumSends`,
+    `Get/SetTrackSendInfo_Value` (volume, pan, mute, channels, `P_DESTTRACK`/`P_SRCTRACK`),
+    `GetTrackSendName`, `GetTrackReceiveName`;
+  - effects: `TrackFX_GetCount/GetFXName/GetEnabled/SetEnabled/GetOffline/GetInstrument`,
+    `TrackFX_AddByName`/`GetByName` (Scythe's own effects and installed CLAP, LV2 and VST 3
+    plugins), `TrackFX_Delete`, `TrackFX_CopyToTrack` (copy or move), parameters of running
+    effects (`TrackFX_GetNumParams`, `Get/SetParam(Ex)`, `Get/SetParamNormalized`,
+    `GetFormattedParamValue`, `GetParamName`) and presets from REAPER's preset files
+    (`TrackFX_GetPreset`, `GetPresetIndex`, `SetPreset`, `SetPresetByIndex`, `NavigatePresets`);
+  - envelopes of tracks and takes: `CountTrackEnvelopes`, `GetTrackEnvelope(ByName/ByChunkName)`,
+    `Count/GetTakeEnvelope(ByName)`, `GetEnvelopeName`, `GetEnvelopeScalingMode`,
+    `ScaleTo/FromEnvelopeMode`, `CountEnvelopePoints(Ex)`, `Get/Set/InsertEnvelopePoint(Ex)`,
+    `DeleteEnvelopePointEx`, `DeleteEnvelopePointRange(Ex)`, `GetEnvelopePointByTime(Ex)`,
+    `Envelope_Evaluate`, `Envelope_SortPoints(Ex)`; volume envelopes give fader-scaled values,
+    as REAPER's API does;
+  - items, takes and sources: `CountMediaItems`, `GetMediaItem`, `Count/GetTrackMediaItem`,
+    `GetMediaItem(_)Track`, `AddMediaItemToTrack`, `CreateNewMIDIItemInProj`, `SplitMediaItem`,
+    `DeleteTrackMediaItem`, `MoveMediaItemToTrack`, `Get/SetMediaItemInfo_Value` (position,
+    length, mute, volume, loop, fades with their shapes, active take, lane, selection, item
+    number), `GetSetMediaItemInfo_String` (`GUID`, `P_EXT:`), `SetMediaItemPosition/Length`,
+    selection (`CountSelectedMediaItems`, `GetSelectedMediaItem`, `IsMediaItemSelected`,
+    `SetMediaItemSelected`, `SelectAllMediaItems`), `CountTakes`, `GetTake`, `GetActiveTake`,
+    `SetActiveTake`, `AddTakeToMediaItem`, `GetMediaItemTake_Item/Track`, `GetTakeName`,
+    `GetSetMediaItemTakeInfo_String`, `Get/SetMediaItemTakeInfo_Value` (offset, volume, pan,
+    rate, pitch, `P_SOURCE`), `TakeIsMIDI`, `Get/SetMediaItemTake_Source`,
+    `PCM_Source_CreateFromFile`, `GetMediaSourceFileName/Type/Length`;
+  - MIDI in MIDI takes: `MIDI_CountEvts`, `MIDI_Get/Set/Insert/DeleteNote`,
+    `MIDI_Get/Set/Insert/DeleteCC`, `MIDI_Sort`, PPQ conversions; selected and muted events are
+    kept (`e`, `Em` lines) and muted ones do not play;
+  - markers and regions: `AddProjectMarker(2)`, `CountProjectMarkers`, `EnumProjectMarkers(2)(3)`,
+    `SetProjectMarker(2)(3)(4)`, `SetProjectMarkerByIndex(2)`, `DeleteProjectMarker(ByIndex)`,
+    `GetLastMarkerAndCurRegion`, `ColorToNative`, `ColorFromNative`;
+  - transport, time selection and tempo: `GetCursorPosition(Ex)`, `SetEditCurPos`,
+    `MoveEditCursor`, `GetPlayState`, `GetPlayPosition(2)(Ex)`, `OnPlayButton`, `OnStopButton`,
+    `GetSet_LoopTimeRange(2)`, `GetSetRepeat(Ex)`, `Master_GetTempo`, `SetCurrentBPM`, tempo and
+    time signature markers (`Count/Get/Set/Add/DeleteTempoTimeSigMarker`, a signature moving to
+    the next bar line as in REAPER), `TimeMap(2)_timeToQN/QNToTime`,
+    `TimeMap(2)_GetDividedBpmAtTime`, `TimeMap_GetTimeSigAtTime`, `TimeMap2_timeToBeats`,
+    `TimeMap2_beatsToTime`, `TimeMap_GetMeasureInfo`, `TimeMap2_GetNextChangeTime`,
+    `format_timestr(_pos)`, `parse_timestr(_pos)`;
+  - the project: `GetProjectName`, `GetProjectPath(Ex)`, `EnumProjects`, `GetProjectLength`,
+    `GetSetProjectInfo` (sample rate and its use, render channels and rate),
+    `GetSetProjectInfo_String` (title, author, render file and pattern, record path),
+    `GetSetProjectNotes`, `GetSetProjectAuthor`, `Set/Get/EnumProjExtState` (kept in the
+    project's `<EXTSTATE`, as REAPER writes it), `Get/Set/Has/DeleteExtState` (persisting to
+    `reaper-extstate.ini` in Scythe's data folder), `Main_OnCommand` (REAPER's command ids for
+    transport, track and item edits, selection, markers and the time selection run inside the
+    script; undo, redo, file, render, glue, copy and paste, zoom and other actions Scythe has
+    run once the script's changes are in), `NamedCommandLookup`, `GetToggleCommandState`,
+    `Undo_*` (`Undo_CanUndo2`, `Undo_DoUndo2` …), `MarkProjectDirty`, `IsProjectDirty`;
+  - dialogs and the rest: `ShowMessageBox` and `GetUserInputs` (modal windows; the script
+    waits for the answer), `ValidatePtr(2)`, `DB2SLIDER`, `SLIDER2DB`, `mkvolstr`, `mkpanstr`,
+    `GetAppVersion`, `GetOS`, `GetResourcePath`, `GetExePath`, `time_precise`, console and
+    refresh calls.
+
+  `defer` and `runloop` keep a script running: its deferred functions run once per frame over
+  the current project until it stops deferring or "Script: Stop the running script" ends it,
+  which runs its `atexit` functions. Lua's `gfx.*` and EEL2's `gfx_*` draw in a window that
+  `gfx_init` opens (the JSFX graphics: shapes, text, images, blits), with `gfx_getchar`
+  returning -1 once it is closed. EEL2 scripts call the same functions without `reaper.`, with
+  outputs passed as variables or `#strings` (`GetTrackName(tr, #name)`) and pointers as
+  numbers; `defer("code")` takes code, `eval("code")` runs code, and the file (`fopen`,
+  `fread`, `fgets`, `fgetc`, `fwrite`, `fprintf`, `fseek`, `ftell`, `feof`, `fflush`,
+  `fclose`) and TCP functions (`tcp_connect`, `tcp_listen`, `tcp_send`, `tcp_recv`,
+  `tcp_set_block`, `tcp_close`) work. Python scripts (`from reaper_python import *`, then
   `RPR_GetTrack(0, 0)`) run in a `python3` process and get REAPER's return conventions: a tuple
   of the value and every argument when a call has outputs, pointers as `(MediaTrack*)0x…`
   strings, `RPR_defer("step()")` taking code or a function. As in REAPER, `print` goes to
@@ -305,6 +365,7 @@ compare with scythe's output sample by sample:
 | CD image and DDP renders of a mono and a 4-channel project | same empty files (`.cue` and `.bin`; `OUT.DAT`) and the same error; 48 kHz projects render at 44.1 kHz as REAPER's do |
 | JSFX font 0: `gfx_texth` (0 before the first `@gfx`, then 8), `gfx_measurestr`/`gfx_measurechar` of every byte and of strings with spaces, tabs, `\r` and `\n`, multi-byte UTF-8, the empty string, and `gfx_x`/`gfx_y` after `gfx_drawstr`, `gfx_drawchar` and `gfx_drawnumber` (read back through `gmem` from REAPER's JSFX window) | same values (34 cases) |
 | Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
+| ReaScript API: one Lua script (sends, track colors and selection, markers and regions with colors, time selection, repeat, tempo and time signature markers and the time map, `format_timestr`, `mkvolstr`, fader scaling, a volume envelope's points and `Envelope_Evaluate`, MIDI notes and CCs with selection and mute, PPQ conversions, items, takes and sources, project and global extended state, project title and notes, `Main_OnCommand(40001)`), one EEL2 script (`eval`, `extension_api`, file functions, MIDI with optional arguments left out, `#retval` strings) and one Python script, run in REAPER and in Scythe with their outputs compared | same values (126 lines), but for beat positions REAPER gives as 1e-11 where Scythe gives 0; REAPER 7.73's Python module fails some calls (`RPR_MIDI_InsertNote`, `RPR_GetTakeName` of an unnamed take, `RPR_ValidatePtr`) and gives region names as empty strings, which Scythe does not copy |
 | WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
 | Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames (REAPER's 25 fps decode repeats and skips a few source frames), pixels within 25-28 dB PSNR (another scaler) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
@@ -329,8 +390,14 @@ compares the two files.
   plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name
   (`TrackFX_SetPreset`), but not by index or by navigating, so where they sit in its preset
   menu is unverified; only plugin-internal presets were tested, not preset files.
-- ReaScript covers a subset of the API (above); Python needs `python3` on the PATH. EEL2 `eval`, `extension_api`, `gfx_*`
-  windows and EEL file/network functions are not there.
+- ReaScript covers part of the API (above); Python needs `python3` on the PATH. Calls that
+  take or return chunks (`Get/SetTrackStateChunk` …), automation items, FX containers, take
+  FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
+  returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
+  windows do not show menus (`gfx_showmenu` returns 0) or dock, and `gfx_getdropfile` finds
+  nothing. MIDI events are kept in time order, so `noSort` changes nothing. Effect parameters
+  are those of running effects, set live as the inspector does; their presets come from
+  REAPER's preset files only. `Track_GetPeakInfo` returns 0.
 - JSFX views (`@gfx`): `gfx_showmenu` does not wait inside the script; the run stops at the
   call, drops what it drew, and runs again with the same mouse once a choice is made, so code
   before the call runs twice. Font 0 measures as REAPER's, but its glyphs are Scythe's own

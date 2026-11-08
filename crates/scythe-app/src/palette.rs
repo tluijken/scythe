@@ -230,6 +230,52 @@ impl Action {
         }
     }
 
+    /// The action REAPER runs for command `id` (`Main_OnCommand`), where Scythe has one.
+    pub fn from_reaper_command(id: i64) -> Option<Self> {
+        Some(match id {
+            1011 => Action::ZoomOut,
+            1012 => Action::ZoomIn,
+            1013 => Action::Record,
+            1157 => Action::ToggleSnap,
+            40015 => Action::RenderToWav,
+            40018 => Action::ImportMedia,
+            40022 => Action::SaveProjectAs,
+            40023 => Action::NewProject,
+            40025 => Action::OpenProject,
+            40026 => Action::SaveProject,
+            40029 => Action::Undo,
+            40030 => Action::Redo,
+            40061 => Action::SplitAtSelection,
+            40078 => Action::ToggleMixer,
+            40125 => Action::NextTake,
+            40153 => Action::OpenMidiEditor,
+            40172 => Action::PreviousMarker,
+            40173 => Action::NextMarker,
+            40200 => Action::InsertSpace,
+            40201 => Action::RippleCutSelection,
+            40209 => Action::ApplyTrackFx,
+            40285 => Action::NextTrack,
+            40286 => Action::PreviousTrack,
+            40295 => Action::ZoomToProject,
+            40312 => Action::RemoveSelectionContents,
+            40362 | 41588 | 42432 => Action::GlueItems,
+            40364 => Action::ToggleMetronome,
+            40613 => Action::DeleteMarker,
+            40698 => Action::CopyItem,
+            40699 => Action::CutItem,
+            41051 => Action::ReverseItem,
+            41295 => Action::DuplicateItem,
+            41325 => Action::TallerTracks,
+            41326 => Action::ShorterTracks,
+            41824 => Action::RenderProjectSettings,
+            42330 => Action::InsertTempoMarker,
+            42398 => Action::PasteItem,
+            43647 => Action::MoveTrackUp,
+            43648 => Action::MoveTrackDown,
+            _ => return None,
+        })
+    }
+
     pub fn shortcut(self) -> Option<KeyboardShortcut> {
         let k = |m, key| Some(KeyboardShortcut::new(m, key));
         match self {

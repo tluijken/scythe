@@ -3,28 +3,81 @@
 //! apply as a single undo step. A script that calls `defer` keeps running: the app calls its
 //! deferred code once per frame, each time over a fresh copy of the project.
 //!
-//! The API is implemented once, here, over language-neutral values; each language passes
-//! arguments and returns results its own way, as REAPER's signatures for it say (`API`).
+//! The API is implemented once, in `tracks`, `items` and `project`, over language-neutral
+//! values; each language passes arguments and returns results its own way, as REAPER's
+//! signatures for it say (`API`).
 
 mod eel;
+mod items;
 mod lua;
+mod project;
 mod python;
+mod tracks;
+
+pub(crate) use tracks::fx_name_matches;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use scythe_core::model::MIN_ITEM_LENGTH;
-use scythe_core::{ItemId, Marker, Project, Track, TrackId};
+use scythe_core::{EnvelopeKind, FxSlot, ItemId, Project, Source, Track, TrackId};
+use scythe_engine::eel::Machine;
+use scythe_engine::eel::gfx::{Bitmap, Input};
+
+/// What the app does for a script: dialogs, plugins and media it knows about.
+pub trait Services {
+    /// `ShowMessageBox`: the button pressed, as REAPER numbers them (1 OK, 2 Cancel, 6 Yes…).
+    fn message_box(&self, text: &str, title: &str, kind: i64) -> i64;
+    /// `GetUserInputs`: the values entered, or `None` when the user cancelled.
+    fn user_inputs(&self, title: &str, captions: &[String], values: &[String]) -> Option<Vec<String>>;
+    /// A new slot for the installed plugin named `name` (`ReaEQ`, `VST3: Surge XT`…).
+    fn plugin(&self, name: &str) -> Option<FxSlot>;
+    /// The length of a media file in seconds.
+    fn media_length(&self, path: &Path) -> Option<f64>;
+}
+
+/// A parameter of a running effect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FxParam {
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub value: f64,
+    /// The value as the effect shows it.
+    pub text: String,
+}
+
+/// A running effect whose parameters a script reads and sets.
+pub trait LiveFx {
+    fn params(&self) -> Vec<FxParam>;
+    fn set_param(&self, index: usize, value: f64);
+    fn is_instrument(&self) -> bool;
+}
 
 /// What a script sees besides the project, and what it asks of the app.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct ScriptContext {
-    pub selected_track: Option<TrackId>,
+    pub selected_tracks: Vec<TrackId>,
     pub selected_items: Vec<ItemId>,
     pub cursor: f64,
     pub playing: bool,
     /// The playhead while playing, else the cursor.
     pub play_position: f64,
+    /// The running effects of each track, in slot order (`None` for one not running).
+    pub fx: HashMap<TrackId, Vec<Option<Rc<dyn LiveFx>>>>,
+    pub services: Option<Rc<dyn Services>>,
+    /// What `GetResourcePath` names; presets are looked up under it.
+    pub resource_dir: Option<PathBuf>,
+    /// Where `SetExtState` keeps what persists, like REAPER's `reaper-extstate.ini`.
+    pub ext_state_file: Option<PathBuf>,
+    /// The undo and redo steps' names, for `Undo_CanUndo2` and `Undo_CanRedo2`.
+    pub undo: Option<String>,
+    pub redo: Option<String>,
+    pub dirty: bool,
+    /// The mouse and keys over the script's graphics window, and whether the user closed it.
+    pub gfx: Input,
+    pub gfx_closed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -35,6 +88,24 @@ pub struct ScriptOutcome {
     pub undo: Option<String>,
     pub cursor: Option<f64>,
     pub play: Option<bool>,
+    /// The track and item selection, when the script changed it.
+    pub selection: Option<(Vec<TrackId>, Vec<ItemId>)>,
+    /// REAPER command ids passed to `Main_OnCommand` for the app to run once the project is
+    /// applied (those the script could not run itself).
+    pub commands: Vec<i64>,
+    /// An effect parameter was set.
+    pub fx_touched: bool,
+    pub dirty: bool,
+}
+
+/// A script's graphics window and what it drew last.
+#[derive(Debug, Clone)]
+pub struct GfxWindow {
+    pub title: String,
+    pub w: u32,
+    pub h: u32,
+    pub open: bool,
+    pub frame: Option<Bitmap>,
 }
 
 struct State {
@@ -42,6 +113,46 @@ struct State {
     ctx: ScriptContext,
     out: ScriptOutcome,
     changed: bool,
+    sel_tracks: Vec<TrackId>,
+    sel_items: Vec<ItemId>,
+    sel_changed: bool,
+    /// `PCM_source*` handles: sources a script made or asked for, by handle.
+    sources: Vec<Source>,
+}
+
+impl State {
+    fn new(project: &Project, ctx: ScriptContext) -> Self {
+        let mut s = State {
+            project: project.clone(),
+            ctx: ScriptContext::default(),
+            out: ScriptOutcome::default(),
+            changed: false,
+            sel_tracks: Vec::new(),
+            sel_items: Vec::new(),
+            sel_changed: false,
+            sources: Vec::new(),
+        };
+        s.reset(project, ctx);
+        s
+    }
+
+    fn reset(&mut self, project: &Project, ctx: ScriptContext) {
+        self.project = project.clone();
+        self.sel_tracks = ctx.selected_tracks.clone();
+        self.sel_items = ctx.selected_items.clone();
+        self.sel_changed = false;
+        self.changed = false;
+        self.ctx = ctx;
+    }
+
+    /// The edit cursor as the script left it.
+    fn cursor(&self) -> f64 {
+        self.out.cursor.unwrap_or(self.ctx.cursor)
+    }
+
+    fn playing(&self) -> bool {
+        self.out.play.unwrap_or(self.ctx.playing)
+    }
 }
 
 type Shared = Rc<RefCell<State>>;
@@ -54,6 +165,48 @@ trait Engine {
     fn run_deferred(&mut self) -> Result<(), String>;
     /// Runs the code registered with `atexit`.
     fn run_at_exit(&mut self) -> Result<(), String>;
+    /// The script's graphics window, if it opened one, with the frame drawn since the last call.
+    fn gfx_window(&mut self) -> Option<GfxWindow> {
+        None
+    }
+}
+
+/// The graphics window of a Lua or EEL script, which an EEL machine's `gfx_*` draw on (Lua's
+/// `gfx.*` included).
+#[derive(Default)]
+struct ScriptGfx {
+    window: Option<GfxWindow>,
+}
+
+impl ScriptGfx {
+    /// Before a run: hands the open window's mouse and keys to the machine, or closes it.
+    fn begin(&mut self, m: &mut Machine, ctx: &ScriptContext) {
+        let Some(w) = m.gfx_window().filter(|w| w.open) else { return };
+        if ctx.gfx_closed {
+            m.close_gfx_window();
+            return;
+        }
+        let mut input = ctx.gfx.clone();
+        if input.w <= 0.0 || input.h <= 0.0 {
+            (input.w, input.h) = (w.w as f64, w.h as f64);
+        }
+        m.gfx_begin(&input);
+    }
+
+    /// The window, taking its frame so it is uploaded once.
+    fn take(&mut self) -> Option<GfxWindow> {
+        let w = self.window.as_mut()?;
+        let frame = w.frame.take();
+        Some(GfxWindow { frame, ..w.clone() })
+    }
+
+    /// After a run: draws what it queued, keeping the last frame until the app takes it.
+    fn end(&mut self, m: &mut Machine) {
+        let Some(w) = m.gfx_window().cloned() else { return };
+        let frame = if w.open { m.gfx_end().render() } else { None };
+        let kept = self.window.as_mut().and_then(|x| x.frame.take());
+        self.window = Some(GfxWindow { title: w.title, w: w.w, h: w.h, open: w.open, frame: frame.or(kept) });
+    }
 }
 
 /// Runs `source` and returns what it did, and the script itself when it deferred work to
@@ -65,9 +218,8 @@ pub fn run(
     project: &Project,
     ctx: ScriptContext,
 ) -> Result<(ScriptOutcome, Option<RunningScript>), String> {
-    let state: Shared =
-        Rc::new(RefCell::new(State { project: project.clone(), ctx, out: ScriptOutcome::default(), changed: false }));
-    let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let state: Shared = Rc::new(RefCell::new(State::new(project, ctx)));
+    let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let engine: Result<Box<dyn Engine>, String> = match ext.as_str() {
         "eel" => eel::start(source, name, &state).map(|e| Box::new(e) as _),
         "py" => python::start(source, name, &state).map(|e| Box::new(e) as _),
@@ -105,7 +257,7 @@ impl RunningScript {
 
     /// Runs the code deferred in the last frame over `project`.
     pub fn tick(&mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
-        self.reset(project, ctx);
+        self.state.borrow_mut().reset(project, ctx);
         let result = self.engine.run_deferred();
         self.result(result)
     }
@@ -115,9 +267,14 @@ impl RunningScript {
         self.finish(Some((project, ctx)))
     }
 
+    /// The script's graphics window and its last frame, taken so it is uploaded once.
+    pub fn gfx_window(&mut self) -> Option<GfxWindow> {
+        self.engine.gfx_window()
+    }
+
     fn finish(&mut self, fresh: Option<(&Project, ScriptContext)>) -> Result<ScriptOutcome, String> {
         if let Some((project, ctx)) = fresh {
-            self.reset(project, ctx);
+            self.state.borrow_mut().reset(project, ctx);
         }
         let result = self.engine.run_at_exit();
         self.result(result)
@@ -130,13 +287,6 @@ impl RunningScript {
         }
     }
 
-    fn reset(&mut self, project: &Project, ctx: ScriptContext) {
-        let mut s = self.state.borrow_mut();
-        s.project = project.clone();
-        s.ctx = ctx;
-        s.changed = false;
-    }
-
     /// What the script did since the last outcome was taken.
     fn outcome(&mut self) -> ScriptOutcome {
         let mut s = self.state.borrow_mut();
@@ -144,11 +294,21 @@ impl RunningScript {
         if std::mem::take(&mut s.changed) {
             out.project = Some(s.project.clone());
         }
+        if std::mem::take(&mut s.sel_changed) {
+            out.selection = Some((s.sel_tracks.clone(), s.sel_items.clone()));
+        }
         out
     }
 }
 
 // ---- the API -------------------------------------------------------------------------------
+
+/// An envelope a script can hold: one of a track's or one of a take's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Env {
+    Track(TrackId, EnvelopeKind),
+    Take(ItemId, usize, EnvelopeKind),
+}
 
 /// A value crossing the API, whatever the language.
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +321,13 @@ enum Val {
     Str(String),
     Track(TrackId),
     Item(ItemId),
+    /// A take: its item and its index there.
+    Take(ItemId, usize),
+    Env(Env),
+    /// A `PCM_source*`: its handle in `State::sources`.
+    Src(usize),
+    /// The current project.
+    Proj,
 }
 
 impl Val {
@@ -193,12 +360,28 @@ impl Val {
         }
     }
 
+    fn is_nil(&self) -> bool {
+        *self == Val::Nil
+    }
+
     fn track(&self) -> Option<TrackId> {
         if let Val::Track(t) = self { Some(*t) } else { None }
     }
 
     fn item(&self) -> Option<ItemId> {
         if let Val::Item(i) = self { Some(*i) } else { None }
+    }
+
+    fn take(&self) -> Option<(ItemId, usize)> {
+        if let Val::Take(i, t) = self { Some((*i, *t)) } else { None }
+    }
+
+    fn env(&self) -> Option<Env> {
+        if let Val::Env(e) = self { Some(*e) } else { None }
+    }
+
+    fn src(&self) -> Option<usize> {
+        if let Val::Src(s) = self { Some(*s) } else { None }
     }
 }
 
@@ -212,18 +395,31 @@ enum Kind {
     Str,
     Track,
     Item,
+    Take,
+    Env,
+    Src,
     /// A `ReaProject*`; always the current project.
     Proj,
+    /// A pointer of any kind (`ValidatePtr`'s).
+    Ptr,
 }
 
 impl Kind {
-    /// The C type, as Python's pointer strings name it.
+    /// The C type, as Python's pointer strings and `ValidatePtr` name it.
     fn pointer_type(self) -> &'static str {
         match self {
             Kind::Track => "MediaTrack*",
             Kind::Item => "MediaItem*",
+            Kind::Take => "MediaItem_Take*",
+            Kind::Env => "TrackEnvelope*",
+            Kind::Src => "PCM_source*",
+            Kind::Ptr => "void*",
             _ => "ReaProject*",
         }
+    }
+
+    fn is_pointer(self) -> bool {
+        matches!(self, Kind::Track | Kind::Item | Kind::Take | Kind::Env | Kind::Src | Kind::Proj | Kind::Ptr)
     }
 
     /// The value an output of this kind has when nothing was written.
@@ -280,6 +476,10 @@ impl Sig {
 const P: Param = (Kind::Proj, Dir::In);
 const T: Param = (Kind::Track, Dir::In);
 const I: Param = (Kind::Item, Dir::In);
+const K: Param = (Kind::Take, Dir::In);
+const E: Param = (Kind::Env, Dir::In);
+const R: Param = (Kind::Src, Dir::In);
+const V: Param = (Kind::Ptr, Dir::In);
 const B: Param = (Kind::Bool, Dir::In);
 const Z: Param = (Kind::Int, Dir::In);
 const N: Param = (Kind::Num, Dir::In);
@@ -287,6 +487,9 @@ const S: Param = (Kind::Str, Dir::In);
 const BO: Param = (Kind::Bool, Dir::Out);
 const ZO: Param = (Kind::Int, Dir::Out);
 const NO: Param = (Kind::Num, Dir::Out);
+const NIO: Param = (Kind::Num, Dir::InOut);
+const ZIO: Param = (Kind::Int, Dir::InOut);
+const BIO: Param = (Kind::Bool, Dir::InOut);
 const SO: Param = (Kind::Str, Dir::Out);
 const SIO: Param = (Kind::Str, Dir::InOut);
 const SZ: Param = (Kind::Int, Dir::Size);
@@ -300,20 +503,76 @@ macro_rules! sigs {
 /// The functions scripts can call (besides `defer`, `runloop` and `atexit`, which each
 /// language takes code for its own way).
 static API: &[Sig] = sigs! {
+    // General.
     "ShowConsoleMsg" Void [S];
     "ClearConsole" Void [];
     "GetAppVersion" Str [];
+    "GetOS" Str [];
+    "GetResourcePath" Str [];
+    "GetExePath" Str [];
+    "time_precise" Num [];
+    "ShowMessageBox" Int [S, S, Z];
+    "GetUserInputs" Bool [S, Z, S, SIO, SZ];
+    "ValidatePtr" Bool [V, S];
+    "ValidatePtr2" Bool [P, V, S];
+    "DB2SLIDER" Num [N];
+    "SLIDER2DB" Num [N];
+    "mkvolstr" Void [SIO, N];
+    "mkpanstr" Void [SIO, N];
+    "ColorToNative" Int [Z, Z, Z];
+    "ColorFromNative" Void [Z, ZO, ZO, ZO];
+    "format_timestr" Void [N, SIO, SZ];
+    "format_timestr_pos" Void [N, SIO, SZ, Z];
+    "parse_timestr" Num [S];
+    "parse_timestr_pos" Num [S, Z];
+    "GetExtState" Str [S, S];
+    "SetExtState" Void [S, S, S, B];
+    "HasExtState" Bool [S, S];
+    "DeleteExtState" Void [S, S, B];
+
+    // Undo and refreshes.
     "Undo_BeginBlock" Void [];
     "Undo_BeginBlock2" Void [P];
     "Undo_EndBlock" Void [S, Z];
     "Undo_EndBlock2" Void [P, S, Z];
+    "Undo_OnStateChange" Void [S];
+    "Undo_OnStateChange2" Void [P, S];
+    "Undo_CanUndo2" Str [P];
+    "Undo_CanRedo2" Str [P];
+    "Undo_DoUndo2" Int [P];
+    "Undo_DoRedo2" Int [P];
     "UpdateArrange" Void [];
     "UpdateTimeline" Void [];
+    "UpdateItemInProject" Void [I];
     "TrackList_AdjustWindows" Void [B];
     "PreventUIRefresh" Void [Z];
-    "time_precise" Num [];
+    "MarkProjectDirty" Void [P];
+    "IsProjectDirty" Int [P];
+    "GetProjectStateChangeCount" Int [P];
+
+    // Project.
+    "EnumProjects" Proj [Z, SO, SZ];
+    "GetProjectName" Void [P, SO, SZ];
+    "GetProjectPath" Void [SO, SZ];
+    "GetProjectPathEx" Void [P, SO, SZ];
+    "GetProjectLength" Num [P];
+    "GetSetProjectInfo" Num [P, S, N, B];
+    "GetSetProjectInfo_String" Bool [P, S, SIO, B];
+    "GetSetProjectAuthor" Void [P, B, SIO, SZ];
+    "GetSetProjectNotes" Void [P, B, SIO, SZ];
+    "SetProjExtState" Int [P, S, S, S];
+    "GetProjExtState" Int [P, S, S, SO, SZ];
+    "EnumProjExtState" Bool [P, S, Z, SO, SZ, SO, SZ];
+    "Main_OnCommand" Void [Z, Z];
+    "Main_OnCommandEx" Void [Z, Z, P];
+    "NamedCommandLookup" Int [S];
+    "GetToggleCommandState" Int [Z];
+
+    // Transport and cursor.
     "GetCursorPosition" Num [];
+    "GetCursorPositionEx" Num [P];
     "SetEditCurPos" Void [N, B, B];
+    "MoveEditCursor" Void [N, B];
     "GetPlayState" Int [];
     "GetPlayPosition" Num [];
     "GetPlayPosition2" Num [];
@@ -321,59 +580,254 @@ static API: &[Sig] = sigs! {
     "GetPlayPosition2Ex" Num [P];
     "OnPlayButton" Void [];
     "OnStopButton" Void [];
-    "GetProjectLength" Num [P];
+    "GetSet_LoopTimeRange" Void [B, B, NIO, NIO, B];
+    "GetSet_LoopTimeRange2" Void [P, B, B, NIO, NIO, B];
+    "GetSetRepeat" Int [Z];
+    "GetSetRepeatEx" Int [P, Z];
+
+    // Tempo and time signature.
     "Master_GetTempo" Num [];
+    "SetCurrentBPM" Void [P, N, B];
     "TimeMap2_timeToQN" Num [P, N];
     "TimeMap2_QNToTime" Num [P, N];
+    "TimeMap_timeToQN" Num [N];
+    "TimeMap_QNToTime" Num [N];
+    "TimeMap_GetDividedBpmAtTime" Num [N];
+    "TimeMap2_GetDividedBpmAtTime" Num [P, N];
+    "TimeMap_GetTimeSigAtTime" Void [P, N, ZO, ZO, NO];
+    "GetProjectTimeSignature2" Void [P, NO, NO];
+    "TimeMap2_timeToBeats" Num [P, N, ZO, ZO, NO, ZO];
+    "TimeMap2_beatsToTime" Num [P, N, Z];
+    "TimeMap_GetMeasureInfo" Num [P, Z, NO, NO, ZO, ZO, NO];
+    "TimeMap2_GetNextChangeTime" Num [P, N];
+    "CountTempoTimeSigMarkers" Int [P];
+    "GetTempoTimeSigMarker" Bool [P, Z, NO, ZO, NO, NO, ZO, ZO, BO];
+    "SetTempoTimeSigMarker" Bool [P, Z, N, Z, N, N, Z, Z, B];
+    "AddTempoTimeSigMarker" Bool [P, N, N, Z, Z, B];
+    "DeleteTempoTimeSigMarker" Bool [P, Z];
+
+    // Markers and regions.
+    "AddProjectMarker" Int [P, B, N, N, S, Z];
+    "AddProjectMarker2" Int [P, B, N, N, S, Z, Z];
+    "CountProjectMarkers" Int [P, ZO, ZO];
+    "EnumProjectMarkers" Int [Z, BO, NO, NO, SO, ZO];
+    "EnumProjectMarkers2" Int [P, Z, BO, NO, NO, SO, ZO];
+    "EnumProjectMarkers3" Int [P, Z, BO, NO, NO, SO, ZO, ZO];
+    "SetProjectMarker" Bool [Z, B, N, N, S];
+    "SetProjectMarker2" Bool [P, Z, B, N, N, S];
+    "SetProjectMarker3" Bool [P, Z, B, N, N, S, Z];
+    "SetProjectMarker4" Bool [P, Z, B, N, N, S, Z, Z];
+    "SetProjectMarkerByIndex" Bool [P, Z, B, N, N, Z, S, Z];
+    "SetProjectMarkerByIndex2" Bool [P, Z, B, N, N, Z, S, Z, Z];
+    "DeleteProjectMarker" Bool [P, Z, B];
+    "DeleteProjectMarkerByIndex" Bool [P, Z];
+    "GetLastMarkerAndCurRegion" Void [P, N, ZO, ZO];
+
+    // Tracks.
     "CountTracks" Int [P];
     "GetTrack" Track [P, Z];
     "GetMasterTrack" Track [P];
-    "CountSelectedTracks" Int [P];
-    "GetSelectedTrack" Track [P, Z];
     "InsertTrackAtIndex" Void [Z, B];
     "DeleteTrack" Void [T];
     "GetTrackName" Bool [T, SO, SZ];
     "GetSetMediaTrackInfo_String" Bool [T, S, SIO, B];
     "GetMediaTrackInfo_Value" Num [T, S];
     "SetMediaTrackInfo_Value" Bool [T, S, N];
+    "GetTrackColor" Int [T];
+    "SetTrackColor" Void [T, Z];
+    "GetParentTrack" Track [T];
+    "GetTrackDepth" Int [T];
+    "GetTrackUIVolPan" Bool [T, NO, NO];
+    "CountSelectedTracks" Int [P];
+    "CountSelectedTracks2" Int [P, B];
+    "GetSelectedTrack" Track [P, Z];
+    "GetSelectedTrack2" Track [P, Z, B];
+    "IsTrackSelected" Bool [T];
+    "SetTrackSelected" Void [T, B];
+    "SetOnlyTrackSelected" Void [T];
+    "Track_GetPeakInfo" Num [T, Z];
+
+    // Sends and receives.
+    "CreateTrackSend" Int [T, T];
+    "RemoveTrackSend" Bool [T, Z, Z];
+    "GetTrackNumSends" Int [T, Z];
+    "GetTrackSendInfo_Value" Num [T, Z, Z, S];
+    "SetTrackSendInfo_Value" Bool [T, Z, Z, S, N];
+    "GetTrackSendName" Bool [T, Z, SO, SZ];
+    "GetTrackReceiveName" Bool [T, Z, SO, SZ];
+
+    // Effects.
     "TrackFX_GetCount" Int [T];
     "TrackFX_GetFXName" Bool [T, Z, SO, SZ];
     "TrackFX_GetEnabled" Bool [T, Z];
     "TrackFX_SetEnabled" Void [T, Z, B];
+    "TrackFX_GetOffline" Bool [T, Z];
+    "TrackFX_GetInstrument" Int [T];
+    "TrackFX_AddByName" Int [T, S, B, Z];
+    "TrackFX_GetByName" Int [T, S, B];
+    "TrackFX_Delete" Bool [T, Z];
+    "TrackFX_CopyToTrack" Void [T, Z, T, Z, B];
+    "TrackFX_GetNumParams" Int [T, Z];
+    "TrackFX_GetParam" Num [T, Z, Z, NO, NO];
+    "TrackFX_GetParamEx" Num [T, Z, Z, NO, NO, NO];
+    "TrackFX_SetParam" Bool [T, Z, Z, N];
+    "TrackFX_GetParamNormalized" Num [T, Z, Z];
+    "TrackFX_SetParamNormalized" Bool [T, Z, Z, N];
+    "TrackFX_GetFormattedParamValue" Bool [T, Z, Z, SO, SZ];
+    "TrackFX_GetParamName" Bool [T, Z, Z, SO, SZ];
+    "TrackFX_GetPreset" Bool [T, Z, SO, SZ];
+    "TrackFX_SetPreset" Bool [T, Z, S];
+    "TrackFX_GetPresetIndex" Int [T, Z, ZO];
+    "TrackFX_SetPresetByIndex" Bool [T, Z, Z];
+    "TrackFX_NavigatePresets" Bool [T, Z, Z];
+
+    // Envelopes.
+    "CountTrackEnvelopes" Int [T];
+    "GetTrackEnvelope" Env [T, Z];
+    "GetTrackEnvelopeByName" Env [T, S];
+    "GetTrackEnvelopeByChunkName" Env [T, S];
+    "CountTakeEnvelopes" Int [K];
+    "GetTakeEnvelope" Env [K, Z];
+    "GetTakeEnvelopeByName" Env [K, S];
+    "GetEnvelopeName" Bool [E, SO, SZ];
+    "GetEnvelopeScalingMode" Int [E];
+    "ScaleFromEnvelopeMode" Num [Z, N];
+    "ScaleToEnvelopeMode" Num [Z, N];
+    "CountEnvelopePoints" Int [E];
+    "CountEnvelopePointsEx" Int [E, Z];
+    "GetEnvelopePoint" Bool [E, Z, NO, NO, ZO, NO, BO];
+    "GetEnvelopePointEx" Bool [E, Z, Z, NO, NO, ZO, NO, BO];
+    "SetEnvelopePoint" Bool [E, Z, NIO, NIO, ZIO, NIO, BIO, BIO];
+    "SetEnvelopePointEx" Bool [E, Z, Z, NIO, NIO, ZIO, NIO, BIO, BIO];
+    "InsertEnvelopePoint" Bool [E, N, N, Z, N, B, BIO];
+    "InsertEnvelopePointEx" Bool [E, Z, N, N, Z, N, B, BIO];
+    "DeleteEnvelopePointEx" Bool [E, Z, Z];
+    "DeleteEnvelopePointRange" Bool [E, N, N];
+    "DeleteEnvelopePointRangeEx" Bool [E, Z, N, N];
+    "GetEnvelopePointByTime" Int [E, N];
+    "GetEnvelopePointByTimeEx" Int [E, Z, N];
+    "Envelope_Evaluate" Int [E, N, N, Z, NO, NO, NO, NO];
+    "Envelope_SortPoints" Bool [E];
+    "Envelope_SortPointsEx" Bool [E, Z];
+    "CountAutomationItems" Int [E];
+
+    // Items.
     "CountMediaItems" Int [P];
     "GetMediaItem" Item [P, Z];
     "CountTrackMediaItems" Int [T];
+    "GetTrackNumMediaItems" Int [T];
     "GetTrackMediaItem" Item [T, Z];
     "GetMediaItem_Track" Track [I];
+    "GetMediaItemTrack" Track [I];
     "CountSelectedMediaItems" Int [P];
     "GetSelectedMediaItem" Item [P, Z];
+    "IsMediaItemSelected" Bool [I];
+    "SetMediaItemSelected" Void [I, B];
+    "SelectAllMediaItems" Void [P, B];
     "GetMediaItemInfo_Value" Num [I, S];
     "SetMediaItemInfo_Value" Bool [I, S, N];
+    "GetSetMediaItemInfo_String" Bool [I, S, SIO, B];
+    "SetMediaItemPosition" Bool [I, N, B];
+    "SetMediaItemLength" Bool [I, N, B];
+    "AddMediaItemToTrack" Item [T];
+    "CreateNewMIDIItemInProj" Item [T, N, N, B];
     "SplitMediaItem" Item [I, N];
     "DeleteTrackMediaItem" Bool [T, I];
-    "AddProjectMarker" Int [P, B, N, N, S, Z];
-    "CountProjectMarkers" Int [P, ZO, ZO];
-    "EnumProjectMarkers" Int [Z, BO, NO, NO, SO, ZO];
+    "MoveMediaItemToTrack" Bool [I, T];
+
+    // Takes and sources.
+    "CountTakes" Int [I];
+    "GetMediaItemNumTakes" Int [I];
+    "GetTake" Take [I, Z];
+    "GetMediaItemTake" Take [I, Z];
+    "GetActiveTake" Take [I];
+    "SetActiveTake" Void [K];
+    "AddTakeToMediaItem" Take [I];
+    "GetMediaItemTake_Item" Item [K];
+    "GetMediaItemTake_Track" Track [K];
+    "GetTakeName" Str [K];
+    "GetSetMediaItemTakeInfo_String" Bool [K, S, SIO, B];
+    "GetMediaItemTakeInfo_Value" Num [K, S];
+    "SetMediaItemTakeInfo_Value" Bool [K, S, N];
+    "TakeIsMIDI" Bool [K];
+    "GetMediaItemTake_Source" Src [K];
+    "SetMediaItemTake_Source" Bool [K, R];
+    "PCM_Source_CreateFromFile" Src [S];
+    "PCM_Source_Destroy" Void [R];
+    "GetMediaSourceFileName" Void [R, SO, SZ];
+    "GetMediaSourceType" Void [R, SO, SZ];
+    "GetMediaSourceLength" Num [R, BO];
+
+    // MIDI.
+    "MIDI_CountEvts" Int [K, ZO, ZO, ZO];
+    "MIDI_GetNote" Bool [K, Z, BO, BO, NO, NO, ZO, ZO, ZO];
+    "MIDI_SetNote" Bool [K, Z, B, B, N, N, Z, Z, Z, B];
+    "MIDI_InsertNote" Bool [K, B, B, N, N, Z, Z, Z, B];
+    "MIDI_DeleteNote" Bool [K, Z];
+    "MIDI_GetCC" Bool [K, Z, BO, BO, NO, ZO, ZO, ZO, ZO];
+    "MIDI_SetCC" Bool [K, Z, B, B, N, Z, Z, Z, Z, B];
+    "MIDI_InsertCC" Bool [K, B, B, N, Z, Z, Z, Z];
+    "MIDI_DeleteCC" Bool [K, Z];
+    "MIDI_Sort" Void [K];
+    "MIDI_DisableSort" Void [K];
+    "MIDI_GetPPQPosFromProjTime" Num [K, N];
+    "MIDI_GetProjTimeFromPPQPos" Num [K, N];
+    "MIDI_GetPPQPosFromProjQN" Num [K, N];
+    "MIDI_GetProjQNFromPPQPos" Num [K, N];
 };
 
-/// Pointers to tracks and items as EEL and Python see them: the id, tagged by kind so a
-/// track's pointer is never taken for an item.
+/// Pointers as EEL and Python see them: a tag for the kind above 40 bits of identity, so a
+/// track's pointer is never taken for an item. Takes and envelopes pack their owner's id in
+/// the low 32 bits and their index or kind above it.
 const POINTER_TAG: u64 = 1 << 40;
+const LOW: u64 = 1 << 32;
+
+fn env_kind_index(kind: EnvelopeKind) -> u64 {
+    EnvelopeKind::ALL.iter().position(|&k| k == kind).unwrap_or(0) as u64
+}
 
 fn to_pointer(v: &Val) -> u64 {
     match v {
         Val::Track(t) => POINTER_TAG | t.0,
         Val::Item(i) => (2 * POINTER_TAG) | i.0,
+        Val::Take(i, t) => (3 * POINTER_TAG) | ((*t as u64 % 256) * LOW) | (i.0 % LOW),
+        Val::Env(Env::Track(t, k)) => (4 * POINTER_TAG) | (env_kind_index(*k) * LOW) | (t.0 % LOW),
+        Val::Env(Env::Take(i, t, k)) => {
+            (5 * POINTER_TAG) | ((*t as u64 % 32) * 8 * LOW) | (env_kind_index(*k) * LOW) | (i.0 % LOW)
+        }
+        Val::Src(s) => (6 * POINTER_TAG) | *s as u64,
+        Val::Proj => (7 * POINTER_TAG) | 1,
         _ => 0,
     }
 }
 
 fn from_pointer(kind: Kind, p: u64) -> Val {
-    match (kind, p / POINTER_TAG) {
-        (Kind::Track, 1) => Val::Track(TrackId(p % POINTER_TAG)),
-        (Kind::Item, 2) => Val::Item(ItemId(p % POINTER_TAG)),
+    let (tag, id) = (p / POINTER_TAG, p % POINTER_TAG);
+    let env_kind = |id: u64| EnvelopeKind::ALL.get((id / LOW % 8) as usize).copied();
+    let v = match tag {
+        1 => Val::Track(TrackId(id)),
+        2 => Val::Item(ItemId(id)),
+        3 => Val::Take(ItemId(id % LOW), (id / LOW) as usize),
+        4 => env_kind(id).map_or(Val::Nil, |k| Val::Env(Env::Track(TrackId(id % LOW), k))),
+        5 => env_kind(id).map_or(Val::Nil, |k| Val::Env(Env::Take(ItemId(id % LOW), (id / LOW / 8) as usize, k))),
+        6 => Val::Src(id as usize),
+        7 => Val::Proj,
         _ => Val::Nil,
-    }
+    };
+    if kind == Kind::Ptr || value_kind(&v) == Some(kind) { v } else { Val::Nil }
+}
+
+/// The pointer kind of a value.
+fn value_kind(v: &Val) -> Option<Kind> {
+    Some(match v {
+        Val::Track(_) => Kind::Track,
+        Val::Item(_) => Kind::Item,
+        Val::Take(..) => Kind::Take,
+        Val::Env(_) => Kind::Env,
+        Val::Src(_) => Kind::Src,
+        Val::Proj => Kind::Proj,
+        _ => return None,
+    })
 }
 
 fn track(p: &mut Project, id: Option<TrackId>) -> Option<&mut Track> {
@@ -381,309 +835,56 @@ fn track(p: &mut Project, id: Option<TrackId>) -> Option<&mut Track> {
     if p.master.id == id { Some(&mut p.master) } else { p.track_mut(id) }
 }
 
-fn all_items(p: &Project) -> Vec<ItemId> {
-    p.tracks.iter().flat_map(|t| t.items.iter().map(|i| i.id)).collect()
-}
-
 fn index(list_len: usize, i: i64) -> Option<usize> {
     usize::try_from(i).ok().filter(|&i| i < list_len)
 }
 
+/// A call's inputs, in order.
+struct Args<'a>(&'a [Val]);
+
+impl Args<'_> {
+    fn get(&self, i: usize) -> &Val {
+        self.0.get(i).unwrap_or(&Val::Nil)
+    }
+
+    fn num(&self, i: usize) -> f64 {
+        self.get(i).num()
+    }
+
+    fn int(&self, i: usize) -> i64 {
+        self.get(i).int()
+    }
+
+    fn bool(&self, i: usize) -> bool {
+        self.get(i).truthy()
+    }
+
+    fn text(&self, i: usize) -> String {
+        self.get(i).text()
+    }
+
+    /// An optional input: `None` when nil.
+    fn opt(&self, i: usize) -> Option<f64> {
+        (!self.get(i).is_nil()).then(|| self.num(i))
+    }
+}
+
+/// What a call returns: its value and its outputs in order (`Sig::outputs`).
+type Ret = (Val, Vec<Val>);
+
+fn ret(v: Val) -> Ret {
+    (v, Vec::new())
+}
+
 /// Calls `sig` with its inputs in order (`Sig::inputs`); returns its value and its outputs in
 /// order (`Sig::outputs`), `Nil` for an output it leaves alone. Pointers that do not name a
-/// track or item make the call do nothing, as REAPER's null checks do.
-fn call(s: &mut State, sig: &Sig, args: &[Val]) -> (Val, Vec<Val>) {
-    let nil = Val::Nil;
-    let a = |i: usize| args.get(i).unwrap_or(&nil);
-    let ret = |v: Val| (v, Vec::new());
-    match sig.name {
-        "ShowConsoleMsg" => {
-            s.out.console.push_str(&a(0).text());
-            ret(Val::Nil)
-        }
-        "ClearConsole" => {
-            s.out.console.clear();
-            ret(Val::Nil)
-        }
-        "GetAppVersion" => ret(Val::Str("7.73/scythe".to_owned())),
-        "Undo_EndBlock" => {
-            s.out.undo = Some(a(0).text());
-            ret(Val::Nil)
-        }
-        "Undo_EndBlock2" => {
-            s.out.undo = Some(a(1).text());
-            ret(Val::Nil)
-        }
-        "time_precise" => ret(Val::Num(
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()),
-        )),
-
-        // Transport and cursor.
-        "GetCursorPosition" => ret(Val::Num(s.out.cursor.unwrap_or(s.ctx.cursor))),
-        "SetEditCurPos" => {
-            s.out.cursor = Some(a(0).num().max(0.0));
-            ret(Val::Nil)
-        }
-        "GetPlayState" => ret(Val::Int(s.out.play.unwrap_or(s.ctx.playing) as i64)),
-        "GetPlayPosition" | "GetPlayPosition2" | "GetPlayPositionEx" | "GetPlayPosition2Ex" => {
-            ret(Val::Num(s.ctx.play_position))
-        }
-        "OnPlayButton" => {
-            s.out.play = Some(true);
-            ret(Val::Nil)
-        }
-        "OnStopButton" => {
-            s.out.play = Some(false);
-            ret(Val::Nil)
-        }
-        "GetProjectLength" => ret(Val::Num(s.project.length())),
-        "Master_GetTempo" => ret(Val::Num(s.project.tempo.bpm_at(0.0))),
-        "TimeMap2_timeToQN" => ret(Val::Num(s.project.tempo.timeline().qn_at(a(1).num()))),
-        "TimeMap2_QNToTime" => ret(Val::Num(s.project.tempo.timeline().time_at_qn(a(1).num()))),
-
-        // Tracks.
-        "CountTracks" => ret(Val::Int(s.project.tracks.len() as i64)),
-        "GetTrack" => {
-            ret(index(s.project.tracks.len(), a(1).int()).map_or(Val::Nil, |i| Val::Track(s.project.tracks[i].id)))
-        }
-        "GetMasterTrack" => ret(Val::Track(s.project.master.id)),
-        "CountSelectedTracks" => ret(Val::Int(s.ctx.selected_track.is_some() as i64)),
-        "GetSelectedTrack" => ret(s.ctx.selected_track.filter(|_| a(1).int() == 0).map_or(Val::Nil, Val::Track)),
-        "InsertTrackAtIndex" => {
-            s.project.add_track("");
-            let t = s.project.tracks.pop().unwrap();
-            let at = (a(0).int().max(0) as usize).min(s.project.tracks.len());
-            s.project.tracks.insert(at, t);
-            s.changed = true;
-            ret(Val::Nil)
-        }
-        "DeleteTrack" => {
-            if let Some(t) = a(0).track() {
-                s.project.remove_track(t);
-                s.changed = true;
-            }
-            ret(Val::Nil)
-        }
-        "GetTrackName" => {
-            let number = a(0).track().and_then(|t| s.project.track_index(t)).map_or(0, |i| i + 1);
-            let master = s.project.master.id;
-            match track(&mut s.project, a(0).track()) {
-                Some(t) if t.id == master => (Val::Bool(true), vec![Val::Str("MASTER".to_owned())]),
-                Some(t) if t.name.is_empty() => (Val::Bool(true), vec![Val::Str(format!("Track {number}"))]),
-                Some(t) => (Val::Bool(true), vec![Val::Str(t.name.clone())]),
-                None => (Val::Bool(false), vec![Val::Str(String::new())]),
-            }
-        }
-        "GetSetMediaTrackInfo_String" => {
-            let set = a(3).truthy();
-            let Some(t) = track(&mut s.project, a(0).track()) else {
-                return (Val::Bool(false), vec![Val::Str(String::new())]);
-            };
-            let value = match a(1).text().as_str() {
-                "P_NAME" if set => {
-                    t.name = a(2).text();
-                    s.changed = true;
-                    t.name.clone()
-                }
-                "P_NAME" => t.name.clone(),
-                "GUID" => t.guid.clone(),
-                _ => return (Val::Bool(false), vec![Val::Str(String::new())]),
-            };
-            (Val::Bool(true), vec![Val::Str(value)])
-        }
-        "GetMediaTrackInfo_Value" => {
-            let number = a(0).track().and_then(|t| s.project.track_index(t)).map_or(-1.0, |i| i as f64 + 1.0);
-            let Some(t) = track(&mut s.project, a(0).track()) else { return ret(Val::Num(0.0)) };
-            ret(Val::Num(match a(1).text().as_str() {
-                "D_VOL" => t.volume,
-                "D_PAN" => t.pan,
-                "B_MUTE" => t.muted as u8 as f64,
-                "I_SOLO" => t.solo as u8 as f64,
-                "I_RECARM" => t.armed as u8 as f64,
-                "I_RECINPUT" => t.rec_input as f64,
-                "I_RECMON" => t.monitor as u8 as f64,
-                "B_MAINSEND" => t.main_send as u8 as f64,
-                "I_FOLDERDEPTH" => t.folder_depth as f64,
-                "I_AUTOMODE" => t.auto_mode.rpp_code() as f64,
-                "I_NCHAN" => 2.0,
-                "IP_TRACKNUMBER" => number,
-                "I_MIDIHWOUT" => t.midi_out.map_or(-1.0, |(d, c)| (d as i64 * 32 + c as i64) as f64),
-                _ => 0.0,
-            }))
-        }
-        "SetMediaTrackInfo_Value" => {
-            let v = a(2).num();
-            let Some(t) = track(&mut s.project, a(0).track()) else { return ret(Val::Bool(false)) };
-            match a(1).text().as_str() {
-                "D_VOL" => t.volume = v.max(0.0),
-                "D_PAN" => t.pan = v.clamp(-1.0, 1.0),
-                "B_MUTE" => t.muted = v != 0.0,
-                "I_SOLO" => t.solo = v != 0.0,
-                "I_RECARM" => t.armed = v != 0.0,
-                "I_RECINPUT" => t.rec_input = v as i64,
-                "I_RECMON" => t.monitor = v != 0.0,
-                "B_MAINSEND" => t.main_send = v != 0.0,
-                "I_FOLDERDEPTH" => t.folder_depth = v as i32,
-                "I_AUTOMODE" => t.auto_mode = scythe_core::AutoMode::from_rpp(v as i64),
-                "I_MIDIHWOUT" => {
-                    t.midi_out = (v >= 0.0).then_some(((v as i64 >> 5) as u8, (v as i64 & 31) as u8));
-                }
-                _ => return ret(Val::Bool(false)),
-            }
-            s.changed = true;
-            ret(Val::Bool(true))
-        }
-        "TrackFX_GetCount" => ret(Val::Int(track(&mut s.project, a(0).track()).map_or(0, |t| t.fx.len() as i64))),
-        "TrackFX_GetFXName" => {
-            let fx = a(1).int();
-            let name =
-                track(&mut s.project, a(0).track()).and_then(|t| index(t.fx.len(), fx).map(|i| t.fx[i].name.clone()));
-            (Val::Bool(name.is_some()), vec![Val::Str(name.unwrap_or_default())])
-        }
-        "TrackFX_GetEnabled" => {
-            let fx = a(1).int();
-            let on = track(&mut s.project, a(0).track()).and_then(|t| index(t.fx.len(), fx).map(|i| t.fx[i].enabled));
-            ret(Val::Bool(on.unwrap_or(false)))
-        }
-        "TrackFX_SetEnabled" => {
-            let (fx, on) = (a(1).int(), a(2).truthy());
-            if let Some(t) = track(&mut s.project, a(0).track())
-                && let Some(i) = index(t.fx.len(), fx)
-            {
-                t.fx[i].enabled = on;
-                s.changed = true;
-            }
-            ret(Val::Nil)
-        }
-
-        // Items.
-        "CountMediaItems" => ret(Val::Int(all_items(&s.project).len() as i64)),
-        "GetMediaItem" => {
-            let items = all_items(&s.project);
-            ret(index(items.len(), a(1).int()).map_or(Val::Nil, |i| Val::Item(items[i])))
-        }
-        "CountTrackMediaItems" => {
-            ret(Val::Int(track(&mut s.project, a(0).track()).map_or(0, |t| t.items.len() as i64)))
-        }
-        "GetTrackMediaItem" => {
-            let i = a(1).int();
-            let item = track(&mut s.project, a(0).track()).and_then(|t| index(t.items.len(), i).map(|i| t.items[i].id));
-            ret(item.map_or(Val::Nil, Val::Item))
-        }
-        "GetMediaItem_Track" => {
-            ret(a(0).item().and_then(|i| s.project.find_item(i)).map_or(Val::Nil, |(t, _)| Val::Track(t)))
-        }
-        "CountSelectedMediaItems" => ret(Val::Int(s.ctx.selected_items.len() as i64)),
-        "GetSelectedMediaItem" => {
-            ret(index(s.ctx.selected_items.len(), a(1).int()).map_or(Val::Nil, |i| Val::Item(s.ctx.selected_items[i])))
-        }
-        "GetMediaItemInfo_Value" => {
-            let Some((_, item)) = a(0).item().and_then(|i| s.project.find_item(i)) else { return ret(Val::Num(0.0)) };
-            ret(Val::Num(match a(1).text().as_str() {
-                "D_POSITION" => item.position,
-                "D_LENGTH" => item.length,
-                "B_MUTE" => item.muted as u8 as f64,
-                "D_VOL" => item.volume,
-                "B_LOOPSRC" => item.looped as u8 as f64,
-                "D_FADEINLEN" => item.fade_in.length,
-                "D_FADEOUTLEN" => item.fade_out.length,
-                "I_CURTAKE" => item.active_take as f64,
-                _ => 0.0,
-            }))
-        }
-        "SetMediaItemInfo_Value" => {
-            let v = a(2).num();
-            let Some(id) = a(0).item() else { return ret(Val::Bool(false)) };
-            let Some(item) = s.project.tracks.iter_mut().find_map(|t| t.item_mut(id)) else {
-                return ret(Val::Bool(false));
-            };
-            match a(1).text().as_str() {
-                "D_POSITION" => item.position = v.max(0.0),
-                "D_LENGTH" => item.length = v.max(MIN_ITEM_LENGTH),
-                "B_MUTE" => item.muted = v != 0.0,
-                "D_VOL" => item.volume = v.max(0.0),
-                "B_LOOPSRC" => item.looped = v != 0.0,
-                "D_FADEINLEN" => item.fade_in.length = v.max(0.0),
-                "D_FADEOUTLEN" => item.fade_out.length = v.max(0.0),
-                "I_CURTAKE" => item.active_take = (v.max(0.0) as usize).min(item.takes.len().saturating_sub(1)),
-                _ => return ret(Val::Bool(false)),
-            }
-            s.changed = true;
-            ret(Val::Bool(true))
-        }
-        "SplitMediaItem" => {
-            let Some(id) = a(0).item() else { return ret(Val::Nil) };
-            let Some((tid, _)) = s.project.find_item(id) else { return ret(Val::Nil) };
-            let t = s.project.track_mut(tid).unwrap();
-            let Some(right) = t.item_mut(id).and_then(|i| i.split_at(a(1).num())) else { return ret(Val::Nil) };
-            let right_id = right.id;
-            t.items.push(right);
-            s.changed = true;
-            ret(Val::Item(right_id))
-        }
-        "DeleteTrackMediaItem" => {
-            let item = a(1).item();
-            let Some(t) = track(&mut s.project, a(0).track()) else { return ret(Val::Bool(false)) };
-            let before = t.items.len();
-            t.items.retain(|i| Some(i.id) != item);
-            let removed = t.items.len() != before;
-            s.changed |= removed;
-            ret(Val::Bool(removed))
-        }
-
-        // Markers and regions.
-        "AddProjectMarker" => {
-            let region = a(1).truthy();
-            let want = a(5).int();
-            let index = if want > 0 {
-                want as u32
-            } else {
-                s.project
-                    .markers
-                    .iter()
-                    .filter(|m| m.region_end.is_some() == region)
-                    .map(|m| m.index)
-                    .max()
-                    .unwrap_or(0)
-                    + 1
-            };
-            s.project.markers.push(Marker {
-                index,
-                position: a(2).num(),
-                name: a(4).text(),
-                color: None,
-                region_end: region.then_some(a(3).num()),
-                lines: Default::default(),
-            });
-            s.project.markers.sort_by(|a, b| a.position.total_cmp(&b.position));
-            s.changed = true;
-            ret(Val::Int(index as i64))
-        }
-        "CountProjectMarkers" => {
-            let regions = s.project.markers.iter().filter(|m| m.region_end.is_some()).count() as i64;
-            let total = s.project.markers.len() as i64;
-            (Val::Int(total), vec![Val::Int(total - regions), Val::Int(regions)])
-        }
-        "EnumProjectMarkers" => {
-            let i = a(0).int();
-            match index(s.project.markers.len(), i).map(|i| &s.project.markers[i]) {
-                Some(m) => (
-                    Val::Int(i + 1),
-                    vec![
-                        Val::Bool(m.region_end.is_some()),
-                        Val::Num(m.position),
-                        Val::Num(m.region_end.unwrap_or(0.0)),
-                        Val::Str(m.name.clone()),
-                        Val::Int(m.index as i64),
-                    ],
-                ),
-                None => (Val::Int(0), vec![Val::Nil; 5]),
-            }
-        }
-
-        // Undo blocks, refreshes and the like have nothing to do here.
-        _ => ret(Val::Nil),
-    }
+/// track, item or take make the call do nothing, as REAPER's null checks do.
+fn call(s: &mut State, sig: &Sig, args: &[Val]) -> Ret {
+    let a = Args(args);
+    tracks::call(s, sig.name, &a)
+        .or_else(|| items::call(s, sig.name, &a))
+        .or_else(|| project::call(s, sig.name, &a))
+        .unwrap_or_else(|| ret(Val::Nil))
 }
 
 #[cfg(test)]
@@ -711,6 +912,14 @@ mod tests {
         assert_eq!((p.markers[0].name.as_str(), p.markers[0].position), ("Verse", 1.5));
     }
 
+    pub(super) fn state(p: Project) -> State {
+        State::new(&p, ScriptContext::default())
+    }
+
+    pub(super) fn api(s: &mut State, name: &str, args: &[Val]) -> Ret {
+        call(s, API.iter().find(|x| x.name == name).unwrap_or_else(|| panic!("no {name}")), args)
+    }
+
     #[test]
     fn every_function_has_one_signature() {
         let mut names: Vec<_> = API.iter().map(|s| s.name).collect();
@@ -725,6 +934,19 @@ mod tests {
         assert_eq!(from_pointer(Kind::Track, to_pointer(&t)), t);
         assert_eq!(from_pointer(Kind::Item, to_pointer(&t)), Val::Nil);
         assert_eq!(from_pointer(Kind::Track, 0), Val::Nil);
+        for v in [
+            Val::Take(ItemId(12), 3),
+            Val::Env(Env::Track(TrackId(5), EnvelopeKind::Pan)),
+            Val::Env(Env::Take(ItemId(9), 2, EnvelopeKind::Mute)),
+            Val::Src(4),
+            Val::Proj,
+        ] {
+            let p = to_pointer(&v);
+            assert!(p < 1 << 53, "EEL keeps pointers in doubles");
+            assert_eq!(from_pointer(value_kind(&v).unwrap(), p), v);
+            assert_eq!(from_pointer(Kind::Ptr, p), v);
+            assert_eq!(from_pointer(Kind::Track, p), Val::Nil);
+        }
     }
 
     #[test]
@@ -732,8 +954,7 @@ mod tests {
         let mut p = project();
         p.add_track("");
         let id = p.tracks[2].id;
-        let mut s = State { project: p, ctx: ScriptContext::default(), out: ScriptOutcome::default(), changed: false };
-        let sig = API.iter().find(|s| s.name == "GetTrackName").unwrap();
-        assert_eq!(call(&mut s, sig, &[Val::Track(id)]), (Val::Bool(true), vec![Val::Str("Track 3".into())]));
+        let mut s = state(p);
+        assert_eq!(api(&mut s, "GetTrackName", &[Val::Track(id)]), (Val::Bool(true), vec![Val::Str("Track 3".into())]));
     }
 }

@@ -52,6 +52,23 @@ impl HostArgs<'_> {
             self.machine.set_string(self.values[i], s);
         }
     }
+
+    /// The arguments from `i` on formatted as `sprintf` does, argument `i` being the format.
+    pub fn format(&mut self, i: usize) -> String {
+        let fmt = self.string(i);
+        let mut next = i + 1;
+        let values = &self.values;
+        self.machine.format_with(&fmt, |_| {
+            let v = values.get(next).copied().unwrap_or(0.0);
+            next += 1;
+            v
+        })
+    }
+
+    /// The machine the call runs on, for host functions that run code of their own.
+    pub fn machine(&mut self) -> &mut Machine {
+        self.machine
+    }
 }
 
 thread_local! {
@@ -79,10 +96,11 @@ pub fn compile_with_host(
 
 impl Machine {
     /// Runs `code` with `host` answering its host calls.
-    pub fn run_hosted(&mut self, code: &Code, host: Box<dyn Host>) {
+    pub fn run_hosted(&mut self, code: &Code, host: Box<dyn Host>) -> f64 {
         let outer = HOST.with(|h| h.replace(Some(host)));
-        self.run(code);
+        let v = self.run(code);
         HOST.with(|h| *h.borrow_mut() = outer);
+        v
     }
 
     pub(super) fn host_call(&mut self, index: usize, args: &[Node]) -> f64 {

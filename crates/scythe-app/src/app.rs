@@ -143,6 +143,10 @@ pub struct ScytheApp {
     pub script_console: Option<String>,
     /// A script that deferred work, run once per frame, and its file name.
     running_script: Option<(crate::script::RunningScript, String)>,
+    /// What the app does for scripts, made when a script starts.
+    script_services: Option<std::rc::Rc<crate::script_host::AppServices>>,
+    /// The running script's graphics window.
+    pub script_gfx: crate::ui::gfx_view::ScriptGfxView,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
     autosaved_at: Instant,
@@ -211,11 +215,7 @@ pub struct GfxView {
     /// A menu the script waits on.
     pub menu: Option<crate::ui::gfx_view::GfxMenu>,
     pub ran: Option<Instant>,
-    /// Buttons pressed since the last run, so a quick click is not missed.
-    pub pressed: u32,
-    pub wheel: (f64, f64),
-    pub chars: Vec<u32>,
-    pub mouse: (f64, f64),
+    pub pointer: crate::ui::gfx_view::GfxPointer,
 }
 
 impl ScytheApp {
@@ -258,6 +258,8 @@ impl ScytheApp {
             last_script: None,
             script_console: None,
             running_script: None,
+            script_services: None,
+            script_gfx: Default::default(),
             no_input: false,
             autosaved_at: Instant::now(),
             midi_cache: HashMap::new(),
@@ -1288,10 +1290,7 @@ impl ScytheApp {
                 texture: None,
                 menu: None,
                 ran: None,
-                pressed: 0,
-                wheel: (0.0, 0.0),
-                chars: Vec::new(),
-                mouse: (-1.0, -1.0),
+                pointer: Default::default(),
             });
             return;
         }
@@ -1844,11 +1843,15 @@ impl ScytheApp {
             Err(e) => return self.notify(format!("Could not read {}: {e}", path.display())),
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        match crate::script::run(&source, &name, &self.project, self.script_context()) {
+        self.script_services = Some(std::rc::Rc::new(self.make_script_services()));
+        self.script_gfx = Default::default();
+        let ctx = self.script_context();
+        match crate::script::run(&source, &name, &self.project, ctx) {
             Ok((out, running)) => {
                 self.apply_script(&name, out);
                 match running {
-                    Some(script) => {
+                    Some(mut script) => {
+                        self.show_script_gfx(&mut script);
                         self.notify(format!("{name} is running"));
                         self.running_script = Some((script, name));
                     }
@@ -1869,6 +1872,7 @@ impl ScytheApp {
         match script.tick(&self.project, ctx) {
             Ok(out) => {
                 self.apply_script(&name, out);
+                self.show_script_gfx(&mut script);
                 if script.is_running() {
                     self.running_script = Some((script, name));
                 } else {
@@ -1876,6 +1880,7 @@ impl ScytheApp {
                 }
             }
             Err(e) => {
+                self.script_gfx.open = false;
                 self.script_console = Some(e);
                 self.notify(format!("{name} failed"));
             }
@@ -1894,7 +1899,9 @@ impl ScytheApp {
     }
 
     fn finish_script(&mut self, script: crate::script::RunningScript, name: String) {
-        match script.stop(&self.project, self.script_context()) {
+        self.script_gfx.open = false;
+        let ctx = self.script_context();
+        match script.stop(&self.project, ctx) {
             Ok(out) => {
                 self.apply_script(&name, out);
                 self.notify(format!("{name} ended"));
@@ -1906,13 +1913,63 @@ impl ScytheApp {
         }
     }
 
-    fn script_context(&self) -> crate::script::ScriptContext {
+    fn show_script_gfx(&mut self, script: &mut crate::script::RunningScript) {
+        if let Some(w) = script.gfx_window() {
+            self.script_gfx.update(&self.ctx, w);
+        }
+    }
+
+    /// Slots for every effect a script can add by name, and the media pool for lengths.
+    fn make_script_services(&self) -> crate::script_host::AppServices {
+        let fx = self.engine.fx();
+        let mut plugins: Vec<scythe_core::FxSlot> =
+            scythe_engine::builtin::Builtin::ALL.iter().map(|b| b.slot()).collect();
+        plugins.extend(fx.clap_plugins().iter().map(scythe_engine::fx::clap_slot));
+        plugins.extend(fx.lv2_plugins().iter().map(scythe_engine::fx::lv2_slot));
+        plugins.extend(fx.vst3_plugins().iter().map(scythe_engine::fx::vst3_slot));
+        crate::script_host::AppServices { plugins, pool: self.engine.pool().clone() }
+    }
+
+    /// The running effects of each track, by slot.
+    fn live_fx(&self) -> HashMap<TrackId, Vec<Option<std::rc::Rc<dyn crate::script::LiveFx>>>> {
+        let master = std::iter::once((None, &self.project.master));
+        let tracks = self.project.tracks.iter().map(|t| (Some(t.id), t));
+        master
+            .chain(tracks)
+            .map(|(key, t)| {
+                let live =
+                    t.fx.iter()
+                        .enumerate()
+                        .map(|(i, slot)| {
+                            self.engine.fx().instance(key, slot, i).map(|inst| {
+                                std::rc::Rc::new(crate::script_host::LiveInstance(inst))
+                                    as std::rc::Rc<dyn crate::script::LiveFx>
+                            })
+                        })
+                        .collect();
+                (t.id, live)
+            })
+            .collect()
+    }
+
+    fn script_context(&mut self) -> crate::script::ScriptContext {
+        let resource_dir = reaper_resource_dir().unwrap_or_else(crate::demo::data_dir);
+        let closed = std::mem::take(&mut self.script_gfx.closed);
         crate::script::ScriptContext {
-            selected_track: self.sel.track,
+            selected_tracks: self.sel.track.into_iter().collect(),
             selected_items: self.selected_items(),
             cursor: self.project.cursor,
             playing: self.is_playing(),
             play_position: self.position(),
+            fx: self.live_fx(),
+            services: self.script_services.clone().map(|s| s as std::rc::Rc<dyn crate::script::Services>),
+            resource_dir: Some(resource_dir),
+            ext_state_file: Some(crate::demo::data_dir().join("reaper-extstate.ini")),
+            undo: self.history.undo_label().map(str::to_owned),
+            redo: self.history.redo_label().map(str::to_owned),
+            dirty: self.dirty,
+            gfx: self.script_gfx.pointer.take_input(),
+            gfx_closed: closed,
         }
     }
 
@@ -1921,6 +1978,11 @@ impl ScytheApp {
             let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
             self.edit(&label, |p| *p = project);
         }
+        if let Some((tracks, items)) = out.selection {
+            self.sel.track = tracks.iter().copied().find(|t| self.project.track(*t).is_some());
+            self.multi = items.iter().copied().collect();
+            self.sel.item = items.first().copied();
+        }
         if let Some(t) = out.cursor {
             self.set_cursor(t);
         }
@@ -1928,6 +1990,14 @@ impl ScytheApp {
             Some(true) if !self.is_playing() => self.toggle_play(),
             Some(false) => self.stop(),
             _ => {}
+        }
+        if out.fx_touched {
+            self.engine.wake_effects();
+            self.dirty = true;
+        }
+        self.dirty |= out.dirty;
+        for action in out.commands.into_iter().filter_map(crate::palette::Action::from_reaper_command) {
+            action.run(self);
         }
         if !out.console.is_empty() {
             match &mut self.script_console {

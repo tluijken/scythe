@@ -111,6 +111,10 @@ def RPR_atexit(code):
     return True
 "#;
 
+/// Functions REAPER's Python module answers with a tuple although they have no outputs: their
+/// optional `noSort` is a pointer in C (seen for `RPR_MIDI_InsertNote` in REAPER 7.73).
+const TUPLE_WITHOUT_OUTPUTS: &[&str] = &["MIDI_InsertNote", "MIDI_SetNote", "MIDI_SetCC"];
+
 fn module() -> String {
     let mut src = MODULE.to_owned();
     for sig in API {
@@ -207,7 +211,7 @@ impl PythonEngine {
         args.resize(sig.params.len(), Value::Null);
         let inputs: Vec<Val> = sig.inputs().map(|(i, kind)| from_json(kind, &args[i])).collect();
         let (ret, outs) = call(&mut self.state.borrow_mut(), sig, &inputs);
-        if sig.outputs().next().is_none() {
+        if sig.outputs().next().is_none() && !TUPLE_WITHOUT_OUTPUTS.contains(&sig.name) {
             return json!({"ret": to_json(sig.ret, &ret)});
         }
         for ((i, kind), v) in sig.outputs().zip(outs) {
@@ -226,10 +230,10 @@ fn from_json(kind: Kind, v: &Value) -> Val {
     let num = || v.as_f64().or_else(|| v.as_bool().map(|b| b as u8 as f64));
     match kind {
         Kind::Proj | Kind::Void => Val::Nil,
-        Kind::Track | Kind::Item => {
+        k if k.is_pointer() => {
             let pointer = v.as_str().and_then(|s| {
                 let (ty, hex) = s.strip_prefix('(')?.split_once(")0x")?;
-                (ty == kind.pointer_type()).then(|| u64::from_str_radix(hex, 16).ok())?
+                (k == Kind::Ptr || ty == kind.pointer_type()).then(|| u64::from_str_radix(hex, 16).ok())?
             });
             pointer.map_or(Val::Nil, |p| from_pointer(kind, p))
         }
@@ -240,14 +244,14 @@ fn from_json(kind: Kind, v: &Value) -> Val {
         },
         Kind::Bool => num().map_or(Val::Nil, |x| Val::Bool(x != 0.0)),
         Kind::Int => v.as_i64().map(Val::Int).or_else(|| num().map(|x| Val::Int(x as i64))).unwrap_or(Val::Nil),
-        Kind::Num => num().map_or(Val::Nil, Val::Num),
+        _ => num().map_or(Val::Nil, Val::Num),
     }
 }
 
 /// A value as REAPER's Python module returns it: booleans as 0 or 1.
 fn to_json(kind: Kind, v: &Val) -> Value {
     match (kind, v) {
-        (Kind::Track | Kind::Item, v) => {
+        (k, v) if k.is_pointer() => {
             json!(format!("({})0x{:016X}", kind.pointer_type(), to_pointer(v)))
         }
         (Kind::Void, _) => Value::Null,
@@ -356,6 +360,39 @@ RPR_Undo_EndBlock("Tidy up", -1)
         let (out, _) = run_py(quiet, "y.py").unwrap().unwrap();
         assert!(out.project.is_none());
         assert!(out.console.is_empty(), "print and stderr stay out of the console: {:?}", out.console);
+    }
+
+    #[test]
+    fn takes_envelopes_and_markers() {
+        let script = r#"
+from reaper_python import *
+
+a, b = RPR_GetTrack(0, 0), RPR_GetTrack(0, 1)
+item = RPR_CreateNewMIDIItemInProj(b, 0.0, 2.0, False)
+take = RPR_GetActiveTake(item)
+assert take.startswith("(MediaItem_Take*)0x"), take
+assert RPR_MIDI_InsertNote(take, False, False, 0, 480, 0, 64, 90, False)[0] == 1
+r = RPR_MIDI_GetNote(take, 0, 0, 0, 0, 0, 0, 0, 0)
+assert r[0] == 1 and r[5:9] == (0.0, 480.0, 0, 64), r
+assert RPR_MIDI_CountEvts(take, 0, 0, 0) == (1, take, 1, 0, 0)
+assert RPR_ValidatePtr(take, "MediaItem_Take*") == 1
+assert RPR_ValidatePtr(take, "MediaTrack*") == 0
+RPR_SetMediaTrackInfo_Value(a, "I_SELECTED", 1)
+assert RPR_GetSelectedTrack(0, 0) == a
+assert RPR_AddProjectMarker2(0, True, 1.0, 3.0, "Chorus", -1, RPR_ColorToNative(255, 0, 0) | 0x1000000) == 1
+r = RPR_EnumProjectMarkers3(0, 0, 0, 0, 0, "", 0, 0)
+assert r[:2] == (1, 0) and r[3:] == (1, 1.0, 3.0, "Chorus", 1, 0x1ff0000), r
+assert RPR_GetSet_LoopTimeRange(True, False, 1.5, 2.5, False) == (True, False, 1.5, 2.5, False)
+assert RPR_GetExtState("ScythePythonTest", "nope") == ""
+assert RPR_GetProjExtState(0, "ScythePythonTest", "k", "", 64)[0] == 0
+proj = RPR_EnumProjects(-1, "", 512)[0]
+assert proj.startswith("(ReaProject*)0x"), proj
+"#;
+        let Some(result) = run_py(script, "t.py") else { return };
+        let (out, _) = result.unwrap();
+        let p = out.project.unwrap();
+        assert_eq!(p.markers[0].name, "Chorus");
+        assert_eq!(out.selection.unwrap().0.len(), 1);
     }
 
     #[test]

@@ -95,7 +95,12 @@ pub enum Call {
     MulAddRect,
     ShowMenu,
     SysCol,
-    /// Dropped files, cursors, windows and the blits through coordinate tables, which this
+    /// A ReaScript's window: `gfx_init`, `gfx_quit`, `gfx_update` and `gfx_dock`.
+    Init,
+    Quit,
+    Update,
+    Dock,
+    /// Dropped files, cursors and the blits through coordinate tables, which this
     /// host does not have.
     Nothing,
 }
@@ -135,8 +140,13 @@ impl Call {
             "gfx_muladdrect" => (MulAddRect, ANY),
             "gfx_showmenu" => (ShowMenu, 1),
             "gfx_getsyscol" => (SysCol, ANY),
-            "gfx_getdropfile" | "gfx_setcursor" | "gfx_deltablit" | "gfx_transformblit" | "gfx_update" | "gfx_init"
-            | "gfx_quit" | "gfx_dock" | "gfx_setimgdim_ext" => (Nothing, ANY),
+            "gfx_init" => (Init, ANY),
+            "gfx_quit" => (Quit, ANY),
+            "gfx_update" => (Update, ANY),
+            "gfx_dock" => (Dock, ANY),
+            "gfx_getdropfile" | "gfx_setcursor" | "gfx_deltablit" | "gfx_transformblit" | "gfx_setimgdim_ext" => {
+                (Nothing, ANY)
+            }
             _ => return None,
         })
     }
@@ -181,6 +191,18 @@ pub(super) struct Gfx {
     halted: bool,
     /// Where `gfx_loadimg` looks for a file named without a folder.
     image_dirs: Vec<PathBuf>,
+    /// The window a ReaScript opened with `gfx_init`; effects have none.
+    window: Option<Window>,
+}
+
+/// A ReaScript's graphics window as the script left it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Window {
+    pub title: String,
+    pub w: u32,
+    pub h: u32,
+    /// False once `gfx_quit` closed it or the user did; `gfx_getchar` then returns -1.
+    pub open: bool,
 }
 
 impl Gfx {
@@ -222,6 +244,7 @@ impl Gfx {
             menu: None,
             halted: false,
             image_dirs: Vec::new(),
+            window: None,
         }
     }
 
@@ -279,6 +302,18 @@ impl Machine {
         self.gfx.menu_choice = None;
         self.send_queue();
         Output { canvas: self.gfx.canvas.clone(), menu: self.gfx.menu.take() }
+    }
+
+    /// The window a ReaScript opened with `gfx_init`.
+    pub fn gfx_window(&self) -> Option<&Window> {
+        self.gfx.window.as_ref()
+    }
+
+    /// The user closed the script's window.
+    pub fn close_gfx_window(&mut self) {
+        if let Some(w) = &mut self.gfx.window {
+            w.open = false;
+        }
     }
 
     /// Sets the folders `gfx_loadimg` looks in, the effect's own first.
@@ -609,6 +644,7 @@ impl Machine {
                 self.blit(a[0].round() as i64, [p[0], p[1], p[2], p[3]], [p[4], p[5], p[6], p[7]], a[2], [p[8], p[9]]);
                 a[0]
             }
+            GetChar if self.gfx.window.as_ref().is_some_and(|w| !w.open) => -1.0,
             GetChar => match a[0] as i64 {
                 65536 => (1 | 4 | if self.gfx.mouse_in { 2 | 8 } else { 0 }) as f64,
                 0 => self.gfx.chars.pop_front().map_or(0.0, |c| c as f64),
@@ -626,6 +662,9 @@ impl Machine {
                 self.draw(Op::MulAdd { rect: [a[0], a[1], a[2], a[3]], mul, add });
                 0.0
             }
+            // A script's deferred code cannot be run again with the choice, as an effect's
+            // `@gfx` is, so its menus are not shown.
+            ShowMenu if self.gfx.window.is_some() => 0.0,
             ShowMenu => {
                 if let Some(choice) = self.gfx.menu_choice.take() {
                     return choice as f64;
@@ -638,7 +677,31 @@ impl Machine {
                 0.0
             }
             SysCol => SYSCOL,
-            Nothing => 0.0,
+            Init => {
+                let title = c_text(&self.string(a[0])).to_owned();
+                let (w, h) = (get(1, 0.0).max(0.0) as u32, get(2, 0.0).max(0.0) as u32);
+                let window = self.gfx.window.get_or_insert(Window { title: String::new(), w: 640, h: 400, open: true });
+                // An empty title on an open window only resizes it.
+                if !title.is_empty() || !window.open {
+                    window.title = title;
+                }
+                if w > 0 && h > 0 {
+                    (window.w, window.h) = (w, h);
+                }
+                window.open = true;
+                let (w, h) = (window.w as usize, window.h as usize);
+                self.set_gvar(|v| v.w, w as f64);
+                self.set_gvar(|v| v.h, h as f64);
+                self.push(Cmd { dest: -1, paint: Paint::default(), clip: None, op: Op::Resize(w, h) });
+                1.0
+            }
+            Quit => {
+                if let Some(w) = &mut self.gfx.window {
+                    w.open = false;
+                }
+                0.0
+            }
+            Update | Dock | Nothing => 0.0,
         }
     }
 }

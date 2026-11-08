@@ -1026,6 +1026,21 @@ impl Machine {
         }
     }
 
+    /// The string a handle names, as `string` arguments are passed.
+    pub fn string_at(&self, handle: f64) -> String {
+        self.string(handle)
+    }
+
+    /// Writes the string a handle names, if it is writable.
+    pub fn set_string_at(&mut self, handle: f64, s: String) {
+        self.set_string(handle, s);
+    }
+
+    /// The handle of the named string `#name` (given with its `#`), creating it if needed.
+    pub fn named_string(&mut self, name: &str) -> f64 {
+        self.vars.named(name) as f64
+    }
+
     /// C `printf` formatting over EEL values; `%s` takes a string handle.
     fn format(&mut self, args: &[Node]) -> String {
         let fmt = args.first().map_or(String::new(), |a| {
@@ -1033,6 +1048,15 @@ impl Machine {
             self.string(h)
         });
         let mut next = 1;
+        self.format_with(&fmt, |m| {
+            let v = args.get(next).map_or(0.0, |a| m.eval(a));
+            next += 1;
+            v
+        })
+    }
+
+    /// Formats `fmt`, taking each value from `next` as a conversion needs it.
+    pub fn format_with(&mut self, fmt: &str, mut next: impl FnMut(&mut Self) -> f64) -> String {
         let mut out = String::new();
         let mut chars = fmt.chars().peekable();
         while let Some(c) = chars.next() {
@@ -1054,8 +1078,7 @@ impl Machine {
                 out.push('%');
                 continue;
             }
-            let v = args.get(next).map_or(0.0, |a| self.eval(a));
-            next += 1;
+            let v = next(self);
             let left = spec.starts_with('-');
             let zero = spec.trim_start_matches(['-', '+', ' ', '#']).starts_with('0');
             let (width, prec) = {
@@ -1155,8 +1178,9 @@ impl Machine {
         Some(&mut block[i % BLOCK])
     }
 
-    pub fn run(&mut self, code: &Code) {
-        self.eval(&code.0);
+    /// Runs `code`; its value is that of its last expression.
+    pub fn run(&mut self, code: &Code) -> f64 {
+        self.eval(&code.0)
     }
 
     fn store(&mut self, target: &Node, v: f64) -> f64 {

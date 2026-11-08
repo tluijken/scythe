@@ -136,7 +136,7 @@ pub fn read_smf(data: &[u8]) -> Result<(MidiSource, SmfInfo), SmfError> {
                             _ => t.byte("event")?,
                         };
                     }
-                    events.push(MidiEvent { tick, bytes, len: n as u8 + 1 });
+                    events.push(MidiEvent { tick, bytes, len: n as u8 + 1, flags: 0 });
                 }
             }
         }
@@ -200,12 +200,12 @@ impl MidiSource {
         c.children.push(Node::Line(format!("HASDATA 1 {} QN", self.ticks_per_qn)));
         let mut events = self.events.clone();
         if events.last().is_none_or(|e| e.tick < self.length_ticks) {
-            events.push(MidiEvent { tick: self.length_ticks, bytes: [0xb0, 0x7b, 0], len: 3 });
+            events.push(MidiEvent { tick: self.length_ticks, bytes: [0xb0, 0x7b, 0], len: 3, flags: 0 });
         }
         let mut prev = 0;
         for e in &events {
             let bytes: Vec<String> = e.bytes[..e.len as usize].iter().map(|b| format!("{b:02x}")).collect();
-            c.children.push(Node::Line(format!("E {} {}", e.tick - prev, bytes.join(" "))));
+            c.children.push(Node::Line(format!("{} {} {}", e.keyword(), e.tick - prev, bytes.join(" "))));
             prev = e.tick;
         }
         c
@@ -247,10 +247,10 @@ mod tests {
             ticks_per_qn: 960,
             long: Vec::new(),
             events: vec![
-                MidiEvent { tick: 0, bytes: [0xc0, 5, 0], len: 2 },
-                MidiEvent { tick: 0, bytes: [0x99, 36, 110], len: 3 },
-                MidiEvent { tick: 240, bytes: [0x89, 36, 0], len: 3 },
-                MidiEvent { tick: 200_000, bytes: [0xe0, 0, 64], len: 3 },
+                MidiEvent { tick: 0, bytes: [0xc0, 5, 0], len: 2, flags: 0 },
+                MidiEvent { tick: 0, bytes: [0x99, 36, 110], len: 3, flags: 0 },
+                MidiEvent { tick: 240, bytes: [0x89, 36, 0], len: 3, flags: 0 },
+                MidiEvent { tick: 200_000, bytes: [0xe0, 0, 64], len: 3, flags: 0 },
             ],
             length_ticks: 230_400,
         };

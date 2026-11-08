@@ -1,9 +1,11 @@
 mod app;
 mod demo;
+mod dialog;
 mod fx_preset;
 mod palette;
 mod plugin_window;
 mod script;
+mod script_host;
 mod theme;
 mod ui;
 
@@ -108,6 +110,10 @@ fn render_headless(
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--script-dialog") {
+        dialog::run_child();
+        return Ok(());
+    }
     // `--view START-END` (seconds) opens zoomed to that range.
     let view = args.iter().find_map(|a| a.strip_prefix("--view=")).and_then(|v| {
         let (a, b) = v.split_once('-')?;
