@@ -1,0 +1,9 @@
+[package]
+name = "scythe-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scythe-core.workspace = true
+scythe-engine.workspace = true

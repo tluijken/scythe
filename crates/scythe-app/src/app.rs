@@ -1,21 +1,17 @@
 use std::collections::{HashMap, HashSet};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use scythe_core::history::History;
 use scythe_core::midi::{MidiSource, TimedNote};
-use scythe_core::model::MIN_ITEM_LENGTH;
-use scythe_core::recording::{RecordPass, place_midi_recording, place_recording};
-use scythe_core::render_settings::ResampleMode;
-use scythe_core::rpp::{autosave_path, read_project, resolve_media_path, save_project, write_project};
-use scythe_core::smf::{read_smf, write_smf};
-use scythe_core::{AutoMode, EnvelopeKind, Item, ItemId, Project, Source, Take, TempoMap, TimeRange, TrackId};
+use scythe_core::smf::write_smf;
+use scythe_core::{Item, ItemId, Project, Source, TempoMap, TimeRange, TrackId};
 use scythe_engine::bounce::{BitDepth, Encoding, Finish, bounce_finished, bounce_to_wav};
-use scythe_engine::midi_io::{LiveMidi, midi_input_channel};
-use scythe_engine::record::{RecordTarget, Recording};
-use scythe_engine::{Engine, Media, MediaPool, MediaState};
+use scythe_engine::{Engine, MediaPool, MediaState};
+use scythe_session::{LoaderMsg, RenderedItems, Session};
+
+pub use scythe_session::{AutoTarget, Selection};
 
 use crate::palette::PaletteState;
 
@@ -48,44 +44,9 @@ pub struct ViewState {
     pub midi_editor: Option<ItemId>,
     pub midi_state: crate::ui::midi_editor::EditorState,
     pub snap: bool,
-    pub metronome: bool,
     /// Range to zoom the arrange view to on the next frame, once its width is known.
     pub fit: Option<TimeRange>,
 }
-
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Selection {
-    pub track: Option<TrackId>,
-    pub item: Option<ItemId>,
-}
-
-enum LoaderMsg {
-    Loaded {
-        path: PathBuf,
-        result: Result<Arc<Media>, String>,
-        place: Option<(TrackId, f64)>,
-    },
-    Bounced(Result<PathBuf, String>),
-    /// Isolated items were rendered to `path` for gluing or applying track FX.
-    ItemsRendered {
-        path: PathBuf,
-        result: Result<(), String>,
-        then: RenderedItems,
-    },
-    /// A stretched, pitch-shifted or rate-changed copy is ready.
-    Stretched(StretchKey),
-}
-
-/// What becomes of a render of isolated items.
-enum RenderedItems {
-    /// The items are replaced with one item playing the render.
-    Glue { track: TrackId, items: Vec<ItemId>, range: TimeRange },
-    /// The render becomes the item's new, active take.
-    NewTake { item: ItemId },
-}
-
-/// A file and the `Processing::key` of a processed copy.
-type StretchKey = (PathBuf, (u64, u64, u64, i32));
 
 /// What a cached MIDI note layout depends on.
 type MidiKey = (u64, u64, u64, u64, bool, usize, TempoMap);
@@ -102,24 +63,11 @@ pub enum RenderKind {
 /// Snap grid choices: label and step in quarter notes.
 pub const GRID_STEPS: [(&str, f64); 5] = [("1/4", 1.0), ("1/8", 0.5), ("1/16", 0.25), ("1/32", 0.125), ("bar", 4.0)];
 
-pub struct ActiveRecording {
-    /// Audio input, when an armed track records audio.
-    pub session: Option<Recording>,
-    pub pass: RecordPass,
-    /// Every armed track.
-    pub tracks: Vec<TrackId>,
-    /// Tracks recording audio, in the order of the session's levels.
-    audio_tracks: Vec<TrackId>,
-    /// Tracks recording MIDI, with the channel they listen to (`None` for all).
-    midi_tracks: Vec<(TrackId, Option<u8>)>,
-    /// MIDI received so far, with the project frame it arrived at.
-    midi: Vec<(i64, LiveMidi)>,
-}
-
+/// The window around a [`Session`]: selection, view, clipboard, editors and scripts. The
+/// session's fields and methods are reachable through `Deref`, so `app.project` and
+/// `app.edit(…)` read as before the split.
 pub struct ScytheApp {
-    pub project: Project,
-    pub history: History,
-    pub engine: Engine,
+    pub session: Session,
     pub sel: Selection,
     pub view: ViewState,
     pub palette: Option<PaletteState>,
@@ -131,11 +79,6 @@ pub struct ScytheApp {
     pub razor: Vec<(TrackId, TimeRange)>,
     /// Where the copied material starts, so a paste keeps space before the first item.
     clipboard_origin: f64,
-    pub recording: Option<ActiveRecording>,
-    /// Record mode "time selection auto-punch": keep only what falls inside the time selection.
-    pub auto_punch: bool,
-    /// The last MIDI input error shown, so it is not repeated on every edit.
-    midi_error: Option<String>,
     /// Hardware MIDI outputs, listed once.
     midi_out_names: Option<Vec<String>>,
     pub last_script: Option<PathBuf>,
@@ -147,52 +90,30 @@ pub struct ScytheApp {
     script_services: Option<std::rc::Rc<crate::script_host::AppServices>>,
     /// The running script's graphics window.
     pub script_gfx: crate::ui::gfx_view::ScriptGfxView,
-    /// Live input (monitoring) is off for the whole session (`--no-input`).
-    pub no_input: bool,
-    autosaved_at: Instant,
     midi_cache: HashMap<ItemId, (MidiKey, Arc<Vec<TimedNote>>)>,
-    pub dirty: bool,
-    pub saved_at: Option<Instant>,
-    toast: Option<(String, Instant)>,
-    gesture: Option<(String, Project)>,
-    loader_tx: Sender<LoaderMsg>,
-    loader_rx: Receiver<LoaderMsg>,
-    pending: HashSet<PathBuf>,
-    pending_stretch: HashSet<StretchKey>,
-    pub busy: Option<String>,
-    /// Glue and apply-FX renders still running.
-    items_rendering: usize,
     pub ctx: egui::Context,
-    /// Displayed meter levels with peak decay, per track and for the master.
-    pub levels: HashMap<TrackId, (f32, f32)>,
-    pub master_level: (f32, f32),
-    meters_at: Instant,
     /// Plugin editors open in their own windows.
     editors: Vec<OpenEditor>,
     /// JSFX views (`@gfx`) open in windows inside the main one.
     pub gfx_views: Vec<GfxView>,
-    /// Controls being written as automation during this pass.
-    auto_writes: Vec<AutoWrite>,
+    /// The session's load count the view was last reset for.
+    seen_loads: u64,
     /// The NAM model library, TONE3000 and the NAM panel.
     pub nam: crate::nam::NamHub,
 }
 
-/// A control that automation writing follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoTarget {
-    Volume,
-    Pan,
+impl Deref for ScytheApp {
+    type Target = Session;
+
+    fn deref(&self) -> &Session {
+        &self.session
+    }
 }
 
-#[derive(Debug, Clone)]
-struct AutoWrite {
-    track: TrackId,
-    target: AutoTarget,
-    /// The control's value (volume as gain, pan -1..=1).
-    value: f64,
-    touching: bool,
-    /// Time of the last written point; points after it are replaced as the pass moves on.
-    last: Option<f64>,
+impl DerefMut for ScytheApp {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
 }
 
 /// A plugin editor in its window. The instance is held so the plugin outlives its editor.
@@ -226,13 +147,17 @@ pub struct GfxView {
 
 impl ScytheApp {
     pub fn new(ctx: egui::Context, project: Project) -> Self {
-        let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
-        let engine = Engine::start(pool);
-        let (loader_tx, loader_rx) = channel();
+        let pool = Arc::new(MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK));
+        let mut session = Session::new(Engine::start(pool));
+        session.load(project);
+        Self::with_session(ctx, session)
+    }
+
+    pub fn with_session(ctx: egui::Context, mut session: Session) -> Self {
+        let wake = ctx.clone();
+        session.set_waker(Arc::new(move || wake.request_repaint()));
         let mut app = Self {
-            project,
-            history: History::default(),
-            engine,
+            session,
             sel: Selection::default(),
             view: ViewState {
                 start: 0.0,
@@ -249,7 +174,6 @@ impl ScytheApp {
                 midi_editor: None,
                 midi_state: Default::default(),
                 snap: true,
-                metronome: false,
                 fit: None,
             },
             palette: None,
@@ -257,238 +181,70 @@ impl ScytheApp {
             multi: HashSet::new(),
             razor: Vec::new(),
             clipboard_origin: 0.0,
-            recording: None,
-            auto_punch: false,
-            midi_error: None,
             midi_out_names: None,
             last_script: None,
             script_console: None,
             running_script: None,
             script_services: None,
             script_gfx: Default::default(),
-            no_input: false,
-            autosaved_at: Instant::now(),
             midi_cache: HashMap::new(),
-            dirty: false,
-            saved_at: None,
-            toast: None,
-            gesture: None,
-            loader_tx,
-            loader_rx,
-            pending: HashSet::new(),
-            pending_stretch: HashSet::new(),
-            busy: None,
-            items_rendering: 0,
             ctx,
-            levels: HashMap::new(),
-            master_level: (0.0, 0.0),
             editors: Vec::new(),
             gfx_views: Vec::new(),
-            auto_writes: Vec::new(),
+            seen_loads: 0,
             nam: crate::nam::NamHub::new(),
-            meters_at: Instant::now(),
         };
-        if let Some(reason) = app.engine.info().fallback_reason.clone() {
-            app.notify(format!("Audio device unavailable, running silent: {reason}"));
-        }
-        app.after_load();
+        app.follow_session();
         app
     }
 
-    fn after_load(&mut self) {
-        self.sel = Selection { track: self.project.tracks.first().map(|t| t.id), item: None };
-        self.engine.stop();
-        self.engine.seek(self.project.cursor);
-        self.sync();
-        self.view.track_scroll = 0.0;
-        let end = self.project.length().max(self.project.tempo.bar_seconds() * 16.0);
-        self.view.fit = Some(TimeRange::new(0.0, end));
-    }
-
-    /// Drains the engine meters into display levels that fall back at ~20 dB/s.
-    pub fn update_meters(&mut self) {
-        let dt = self.meters_at.elapsed().as_secs_f32();
-        self.meters_at = Instant::now();
-        let decay = 10f32.powf(-dt);
-        let blend = |old: (f32, f32), new: (f32, f32)| (new.0.max(old.0 * decay), new.1.max(old.1 * decay));
-        for t in &self.project.tracks {
-            let peak = self.engine.meters().get(t.id).map(|m| m.take()).unwrap_or_default();
-            let old = self.levels.get(&t.id).copied().unwrap_or_default();
-            self.levels.insert(t.id, blend(old, peak));
+    /// Catches the view up with the session: a newly loaded project resets selection and
+    /// zoom, placed items become the selection, and selected things that are gone are let go.
+    pub fn follow_session(&mut self) {
+        if self.seen_loads != self.session.loads() {
+            self.seen_loads = self.session.loads();
+            self.sel = Selection { track: self.project.tracks.first().map(|t| t.id), item: None };
+            self.view.track_scroll = 0.0;
+            let end = self.project.length().max(self.project.tempo.bar_seconds() * 16.0);
+            self.view.fit = Some(TimeRange::new(0.0, end));
         }
-        if let Some(rec) = &mut self.recording {
-            if let Some(session) = &rec.session {
-                for (track, peak) in rec.audio_tracks.iter().zip(session.take_levels()) {
-                    let old = self.levels.get(track).copied().unwrap_or_default();
-                    self.levels.insert(*track, blend(old, (peak, peak)));
-                }
-            }
-            if !rec.midi_tracks.is_empty() {
-                rec.midi.extend(self.engine.take_recorded_midi());
-            }
+        if let Some(sel) = self.session.take_selection() {
+            self.multi.clear();
+            self.sel = sel;
         }
-        self.levels.retain(|id, _| self.project.track(*id).is_some());
-        self.master_level = blend(self.master_level, self.engine.meters().master.take());
-    }
-
-    // ---- editing -------------------------------------------------------------------------
-
-    /// Applies an undoable edit.
-    pub fn edit(&mut self, label: &str, f: impl FnOnce(&mut Project)) {
-        let before = self.project.clone();
-        f(&mut self.project);
-        if self.project != before {
-            self.history.record(label, before);
-            self.changed();
-        }
-    }
-
-    /// Continuous edits (fader drags, item moves) record one undo step for the whole gesture.
-    pub fn gesture(&mut self, label: &str, f: impl FnOnce(&mut Project)) {
-        if self.gesture.is_none() {
-            self.gesture = Some((label.to_owned(), self.project.clone()));
-        }
-        f(&mut self.project);
-        self.changed();
-    }
-
-    pub fn end_gesture(&mut self) {
-        // Item moves and trims end with automatic crossfades on the tracks they touched.
-        if self
-            .gesture
-            .as_ref()
-            .is_some_and(|(label, _)| matches!(label.as_str(), "Move item" | "Move items" | "Trim item"))
-        {
-            let tracks: HashSet<TrackId> =
-                self.selected_items().into_iter().filter_map(|id| self.project.find_item(id).map(|(t, _)| t)).collect();
-            for t in tracks {
-                self.project.auto_crossfade(t);
-            }
-            self.sync();
-        }
-        if let Some((label, before)) = self.gesture.take()
-            && before != self.project
-        {
-            self.history.record(label, before);
-        }
-    }
-
-    pub fn undo(&mut self) {
-        self.end_gesture();
-        match self.history.undo(&mut self.project) {
-            Some(label) => {
-                self.notify(format!("Undo: {label}"));
-                self.changed();
-            }
-            None => self.notify("Nothing to undo"),
-        }
-    }
-
-    pub fn redo(&mut self) {
-        match self.history.redo(&mut self.project) {
-            Some(label) => {
-                self.notify(format!("Redo: {label}"));
-                self.changed();
-            }
-            None => self.notify("Nothing to redo"),
-        }
-    }
-
-    fn changed(&mut self) {
-        self.dirty = true;
-        self.sync();
-    }
-
-    pub fn toggle_metronome(&mut self) {
-        self.view.metronome = !self.view.metronome;
-        self.engine.set_metronome(if self.view.metronome { 0.5 } else { 0.0 });
-        self.engine.sync(&self.project);
-    }
-
-    pub fn sync(&mut self) {
         if self.sel.track.is_some_and(|t| self.project.track(t).is_none()) {
             self.sel.track = None;
         }
         if self.sel.item.is_some_and(|i| self.project.find_item(i).is_none()) {
             self.sel.item = None;
         }
-        self.engine.sync(&self.project);
-        let is_midi = |t: &scythe_core::Track| midi_input_channel(t.rec_input).is_some();
-        let monitor = !self.no_input && self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t));
-        if let Err(e) = self.engine.set_monitoring(monitor) {
-            self.notify(format!("Input monitoring unavailable: {e}"));
-        }
-        let outputs = self.project.tracks.iter().any(|t| t.midi_out.is_some());
-        if let Err(e) = self.engine.set_midi_outputs(outputs) {
-            self.notify(format!("MIDI output unavailable: {e}"));
-        }
-        let midi = !self.no_input && self.project.tracks.iter().any(|t| t.armed && is_midi(t));
-        match self.engine.set_midi_input(midi) {
-            Err(e) if self.midi_error.as_deref() != Some(e.as_str()) => {
-                self.notify(format!("MIDI input unavailable: {e}"));
-                self.midi_error = Some(e);
-            }
-            Err(_) => {}
-            Ok(()) => self.midi_error = None,
-        }
-        self.request_media();
     }
 
-    // ---- media ---------------------------------------------------------------------------
-
-    fn request_media(&mut self) {
-        let paths: Vec<PathBuf> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| &t.items)
-            .flat_map(|i| &i.takes)
-            .filter_map(|t| t.source.file().map(|p| resolve_media_path(&self.project, p)))
-            .collect();
-        for path in paths {
-            if self.engine.pool().get(&path).is_none() && !self.pending.contains(&path) {
-                self.spawn_load(path, None);
-            }
-        }
-        let default_mode = self.project.default_pitch_mode;
-        let stretches: Vec<(PathBuf, scythe_core::Processing)> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| &t.items)
-            .flat_map(|i| &i.takes)
-            .filter_map(|t| Some((resolve_media_path(&self.project, t.source.file()?), t.processing(default_mode)?)))
-            .collect();
-        for (path, processing) in stretches {
-            let key = (path.clone(), processing.key());
-            let pool = self.engine.pool().clone();
-            if pool.ready(&path).is_none()
-                || pool.processed(&path, &processing).is_some()
-                || !self.pending_stretch.insert(key.clone())
-            {
-                continue;
-            }
-            let tx = self.loader_tx.clone();
-            let ctx = self.ctx.clone();
-            std::thread::spawn(move || {
-                pool.prepare_processed(&path, &processing);
-                let _ = tx.send(LoaderMsg::Stretched(key));
-                ctx.request_repaint();
-            });
-        }
+    pub fn poll(&mut self) {
+        self.session.poll();
+        self.poll_nam();
+        self.follow_session();
     }
 
-    fn spawn_load(&mut self, path: PathBuf, place: Option<(TrackId, f64)>) {
-        self.pending.insert(path.clone());
-        let pool = self.engine.pool().clone();
-        let rate = self.engine.sample_rate();
-        let tx = self.loader_tx.clone();
-        let ctx = self.ctx.clone();
-        std::thread::spawn(move || {
-            let result = pool.load(&path, rate).map_err(|e| e.to_string());
-            let _ = tx.send(LoaderMsg::Loaded { path, result, place });
-            ctx.request_repaint();
-        });
+    /// Ends the gesture, crossfading on the tracks of the selected items after a move or trim.
+    pub fn end_gesture(&mut self) {
+        if !self.session.in_gesture() {
+            return;
+        }
+        let tracks: Vec<TrackId> =
+            self.selected_items().into_iter().filter_map(|id| self.project.find_item(id).map(|(t, _)| t)).collect();
+        self.session.end_gesture_crossfading(tracks);
+    }
+
+    pub fn undo(&mut self) {
+        self.end_gesture();
+        self.session.undo();
+        self.follow_session();
+    }
+
+    pub fn redo(&mut self) {
+        self.session.redo();
+        self.follow_session();
     }
 
     /// Notes of a MIDI item placed on the timeline, cached until the item or tempo changes.
@@ -513,60 +269,6 @@ impl ScytheApp {
         let notes = Arc::new(source.place(item, take, &self.project.tempo.timeline()));
         self.midi_cache.insert(item.id, (key, notes.clone()));
         Some(notes)
-    }
-
-    pub fn media(&self, take: &Take) -> Option<MediaState> {
-        take.source.file().and_then(|p| self.engine.pool().get(&resolve_media_path(&self.project, p)))
-    }
-
-    pub fn media_loading(&self) -> bool {
-        !self.pending.is_empty()
-    }
-
-    /// Imports audio and MIDI files onto `track` (or a new track) starting at `position`.
-    pub fn import_files(&mut self, files: Vec<PathBuf>, track: Option<TrackId>, position: f64) {
-        for (i, path) in files.into_iter().enumerate() {
-            let track = match (track, i) {
-                (Some(t), 0) => t,
-                _ => {
-                    let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                    let mut id = TrackId(0);
-                    self.edit("Add track", |p| id = p.add_track(name));
-                    id
-                }
-            };
-            if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("mid") || e.eq_ignore_ascii_case("midi")) {
-                self.import_midi(&path, track, position);
-            } else {
-                self.spawn_load(path, Some((track, position)));
-            }
-        }
-    }
-
-    /// Places a MIDI file as an in-project MIDI item (REAPER's default for imported MIDI), its
-    /// length following the project tempo map.
-    fn import_midi(&mut self, path: &Path, track: TrackId, position: f64) {
-        let parsed =
-            std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| read_smf(&b).map_err(|e| e.to_string()));
-        let (source, _) = match parsed {
-            Ok(s) => s,
-            Err(e) => {
-                self.notify(format!("Could not load {}: {e}", path.display()));
-                return;
-            }
-        };
-        let timeline = self.project.tempo.timeline();
-        let end = timeline.time_at_qn(timeline.qn_at(position) + source.length_qn());
-        let mut take = Take::from_file(path.to_owned());
-        take.source = Source::Raw(source.to_chunk());
-        let item = Item::new(position, (end - position).max(MIN_ITEM_LENGTH), take);
-        let id = item.id;
-        self.edit("Import MIDI", |p| {
-            if let Some(t) = p.track_mut(track) {
-                t.items.push(item);
-            }
-        });
-        self.sel = Selection { track: Some(track), item: Some(id) };
     }
 
     /// Saves the selected MIDI item's source as a standard MIDI file.
@@ -595,263 +297,9 @@ impl ScytheApp {
         }
     }
 
-    pub fn poll(&mut self) {
-        self.autosave();
-        self.poll_nam();
-        while let Ok(msg) = self.loader_rx.try_recv() {
-            match msg {
-                LoaderMsg::Loaded { path, result, place } => {
-                    self.pending.remove(&path);
-                    match result {
-                        Ok(media) => {
-                            if let Some((track, position)) = place {
-                                let length = media.duration();
-                                let item = Item::new(position, length, Take::from_file(path.clone()));
-                                let id = item.id;
-                                self.edit("Import media", |p| {
-                                    if let Some(t) = p.track_mut(track) {
-                                        t.items.push(item);
-                                    }
-                                });
-                                self.sel = Selection { track: Some(track), item: Some(id) };
-                            }
-                            self.engine.sync(&self.project);
-                            self.request_media();
-                        }
-                        Err(e) => self.notify(format!("Could not load {}: {e}", path.display())),
-                    }
-                }
-                LoaderMsg::Stretched(key) => {
-                    self.pending_stretch.remove(&key);
-                    self.engine.sync(&self.project);
-                }
-                LoaderMsg::ItemsRendered { path, result, then } => {
-                    self.items_rendering = self.items_rendering.saturating_sub(1);
-                    if self.items_rendering == 0 {
-                        self.busy = None;
-                    }
-                    match result {
-                        Ok(()) => self.place_rendered_items(path, then),
-                        Err(e) => self.notify(format!("Render failed: {e}")),
-                    }
-                }
-                LoaderMsg::Bounced(result) => {
-                    self.busy = None;
-                    match result {
-                        Ok(path) => self.notify(format!("Rendered {}", path.display())),
-                        Err(e) => self.notify(format!("Render failed: {e}")),
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- transport -----------------------------------------------------------------------
-
-    pub fn position(&self) -> f64 {
-        if self.engine.transport().is_playing() {
-            self.engine.transport().position_seconds()
-        } else {
-            self.project.cursor
-        }
-    }
-
-    pub fn is_playing(&self) -> bool {
-        self.engine.transport().is_playing()
-    }
-
-    /// Play/pause: pausing leaves the edit cursor where playback stopped.
-    pub fn is_recording(&self) -> bool {
-        self.recording.is_some()
-    }
-
-    /// Starts recording every armed track from the edit cursor (or the playhead while playing),
-    /// or stops and adds the takes.
-    pub fn toggle_record(&mut self) {
-        if let Some(rec) = self.recording.take() {
-            self.finish_recording(rec);
-            return;
-        }
-
-        let armed: Vec<_> = self.project.tracks.iter().filter(|t| t.armed).cloned().collect();
-        if armed.is_empty() {
-            self.notify("Arm a track to record");
-            return;
-        }
-        let (midi_armed, audio_armed): (Vec<_>, Vec<_>) =
-            armed.iter().partition(|t| midi_input_channel(t.rec_input).is_some());
-        let dir = match self.project.path.as_deref().and_then(Path::parent) {
-            Some(d) => d.to_owned(),
-            None => crate::demo::data_dir().join("recordings"),
-        };
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let targets: Vec<RecordTarget> = audio_armed
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let base: String = if t.name.is_empty() { format!("Track {}", i + 1) } else { t.name.clone() };
-                let safe: String =
-                    base.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
-                RecordTarget {
-                    track: t.id,
-                    channels: RecordTarget::channels_for_input(t.rec_input),
-                    path: dir.join(format!("{}-{stamp}.wav", safe.trim())),
-                }
-            })
-            .collect();
-        let session = if targets.is_empty() {
-            None
-        } else {
-            match Recording::start(targets, self.engine.sample_rate()) {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    self.notify(format!("Cannot record: {e}"));
-                    return;
-                }
-            }
-        };
-        if !midi_armed.is_empty() {
-            if let Err(e) = self.engine.set_midi_input(true) {
-                self.notify(format!("Cannot record MIDI: {e}"));
-                if session.is_none() {
-                    return;
-                }
-            }
-            // Whatever was played before recording started is not part of the take.
-            self.engine.take_recorded_midi();
-        }
-        // Recording during playback punches in at the playhead.
-        let playing = self.is_playing();
-        let start = if playing { self.engine.transport().position_seconds() } else { self.project.cursor };
-        let selection = self.project.time_selection.filter(|r| !r.is_empty());
-        let pass = RecordPass {
-            start,
-            looped: selection.filter(|_| self.project.loop_enabled),
-            punch: selection.filter(|_| self.auto_punch),
-        };
-        if !playing {
-            self.engine.seek(start);
-            self.engine.play();
-        }
-        let from = session.as_ref().map(|s| s.device.clone());
-        let midi = self.engine.midi_input_names().join(", ");
-        self.notify(match (from, midi.is_empty()) {
-            (Some(d), true) => format!("Recording from {d}"),
-            (Some(d), false) => format!("Recording from {d} and {midi}"),
-            (None, _) => format!("Recording MIDI from {midi}"),
-        });
-        self.recording = Some(ActiveRecording {
-            session,
-            pass,
-            tracks: armed.iter().map(|t| t.id).collect(),
-            audio_tracks: audio_armed.iter().map(|t| t.id).collect(),
-            midi_tracks: midi_armed.iter().map(|t| (t.id, midi_input_channel(t.rec_input).flatten())).collect(),
-            midi: Vec::new(),
-        });
-    }
-
-    fn finish_recording(&mut self, mut rec: ActiveRecording) {
-        let stop = self.engine.transport().position_seconds();
-        self.engine.stop();
-        rec.midi.extend(self.engine.take_recorded_midi());
-        let sr = self.engine.sample_rate() as f64;
-        let timeline = self.project.tempo.timeline();
-        let mut items: Vec<(TrackId, Item)> = Vec::new();
-        for &(track, channel) in &rec.midi_tracks {
-            let events: Vec<(f64, [u8; 3], u8)> = rec
-                .midi
-                .iter()
-                .filter(|(_, m)| channel.is_none_or(|c| m.channel() == c))
-                .map(|(frame, m)| (*frame as f64 / sr, m.bytes, m.len))
-                .collect();
-            if let Some(item) = place_midi_recording(&events, rec.pass, stop, &timeline) {
-                items.push((track, item));
-            }
-        }
-        let midi_count = items.len();
-        let mut note = String::new();
-        let mut failed = false;
-        if let Some(session) = rec.session {
-            let overruns = session.overruns();
-            match session.finish() {
-                Ok(takes) => {
-                    // What was played along to left the speakers `output_latency` late and
-                    // reached the file `input_latency` after that.
-                    let output_latency = self.engine.transport().output_latency();
-                    for take in &takes {
-                        let offset = take.input_latency + output_latency;
-                        let len = take.frames as f64 / take.sample_rate as f64;
-                        if let Some(item) = place_recording(take.path.clone(), len, offset, rec.pass) {
-                            items.push((take.track, item));
-                        }
-                    }
-                    if overruns > 0 {
-                        note = format!(" ({overruns} samples dropped)");
-                    }
-                }
-                Err(e) => {
-                    self.notify(format!("Recording failed: {e}"));
-                    failed = true;
-                }
-            }
-        }
-        let first = items.first().map(|(_, it)| it.id);
-        let count = items.len();
-        if count > 0 {
-            self.edit("Record", |p| {
-                for (track, item) in items {
-                    if let Some(t) = p.track_mut(track) {
-                        t.items.push(item);
-                    }
-                }
-            });
-            self.sel.item = first;
-            let midi = if midi_count > 0 { format!(", {midi_count} MIDI") } else { String::new() };
-            self.notify(format!("Recorded {count} take(s){midi}{note}"));
-            self.request_media();
-        } else if !failed {
-            self.notify("Nothing was recorded");
-        }
-        self.engine.seek(self.project.cursor);
-    }
-
-    pub fn toggle_play(&mut self) {
-        if self.is_playing() {
-            self.project.cursor = self.engine.transport().position_seconds();
-            self.engine.stop();
-        } else {
-            self.engine.seek(self.project.cursor);
-            self.engine.play();
-        }
-    }
-
-    /// Stop returns the play cursor to the edit cursor, as in REAPER.
-    pub fn stop(&mut self) {
-        if self.is_recording() {
-            self.toggle_record();
-            return;
-        }
-        self.engine.stop();
-        self.engine.seek(self.project.cursor);
-    }
-
-    pub fn set_cursor(&mut self, seconds: f64) {
-        self.project.cursor = seconds.max(0.0);
-        self.engine.seek(self.project.cursor);
-    }
-
     pub fn go_to_start(&mut self) {
         self.set_cursor(0.0);
         self.view.start = 0.0;
-    }
-
-    pub fn toggle_loop(&mut self) {
-        let enabled = !self.project.loop_enabled;
-        self.edit(if enabled { "Enable repeat" } else { "Disable repeat" }, |p| p.loop_enabled = enabled);
-    }
-
-    pub fn set_loop_range(&mut self, range: Option<TimeRange>) {
-        self.gesture("Set loop points", |p| p.time_selection = range);
     }
 
     pub fn snap(&self, seconds: f64, bypass: bool) -> f64 {
@@ -865,23 +313,15 @@ impl ScytheApp {
     // ---- project files -------------------------------------------------------------------
 
     pub fn new_project(&mut self) {
-        self.engine.pool().clear();
-        self.project = Project::default();
-        self.history.clear();
-        self.dirty = false;
-        self.saved_at = None;
-        self.after_load();
+        self.session.new_project();
+        self.follow_session();
     }
 
     pub fn load_demo(&mut self) {
         match crate::demo::build(self.engine.sample_rate()) {
             Ok(project) => {
-                self.project = project;
-                self.history.clear();
-                self.history.set_limit(200);
-                self.dirty = false;
-                self.saved_at = None;
-                self.after_load();
+                self.session.load(project);
+                self.follow_session();
                 self.sel.track = self.project.tracks.get(2).map(|t| t.id);
                 let tempo = self.project.tempo.clone();
                 self.view.fit = Some(TimeRange::new(tempo.bar_start(33), tempo.bar_start(49)));
@@ -891,20 +331,8 @@ impl ScytheApp {
     }
 
     pub fn open_path(&mut self, path: &Path) {
-        match read_project(path) {
-            Ok(project) => {
-                self.project = project;
-                self.history.clear();
-                // Undo keeps whole snapshots: bound them to roughly 256 MB for big projects.
-                let bytes = std::fs::metadata(path).map_or(0, |m| m.len() as usize).max(1);
-                self.history.set_limit((256_000_000 / (bytes * 3)).clamp(30, 200));
-                self.dirty = false;
-                self.saved_at = None;
-                self.after_load();
-                self.notify(format!("Opened {}", path.display()));
-            }
-            Err(e) => self.notify(format!("Could not open {}: {e}", path.display())),
-        }
+        let _ = self.session.open_path(path);
+        self.follow_session();
     }
 
     pub fn open_dialog(&mut self) {
@@ -913,30 +341,11 @@ impl ScytheApp {
         }
     }
 
-    /// Every few minutes, writes unsaved changes to a timestamped file in the project's
-    /// `Backups` folder. The project file itself is only written by an explicit save.
-    fn autosave(&mut self) {
-        const INTERVAL: Duration = Duration::from_secs(300);
-        if !self.dirty || self.autosaved_at.elapsed() < INTERVAL || self.gesture.is_some() {
-            return;
-        }
-        self.autosaved_at = Instant::now();
-        let Some(path) = self.project.path.clone() else { return };
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let target = autosave_path(&path, now);
-        let result = target
-            .parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
-            .map_err(Into::into)
-            .and_then(|()| write_project(&self.project, &target));
-        if let Err(e) = result {
-            self.notify(format!("Auto-save failed: {e}"));
-        }
-    }
-
     pub fn save(&mut self) {
         match self.project.path.clone() {
-            Some(path) => self.save_to(&path),
+            Some(path) => {
+                let _ = self.save_to(&path);
+            }
             None => self.save_as(),
         }
     }
@@ -946,21 +355,7 @@ impl ScytheApp {
             .add_filter("REAPER project", &["rpp"])
             .set_file_name(format!("{}.rpp", self.project.name()));
         if let Some(path) = dialog.save_file() {
-            self.save_to(&path);
-        }
-    }
-
-    fn save_to(&mut self, path: &Path) {
-        self.project.path = Some(path.to_owned());
-        self.engine.store_plugin_states(&mut self.project);
-        match save_project(&self.project, path) {
-            Ok(()) => {
-                self.dirty = false;
-                self.autosaved_at = Instant::now();
-                self.saved_at = Some(Instant::now());
-                self.notify(format!("Saved {}", path.display()));
-            }
-            Err(e) => self.notify(format!("Could not save: {e}")),
+            let _ = self.save_to(&path);
         }
     }
 
@@ -970,7 +365,7 @@ impl ScytheApp {
             .pick_files();
         if let Some(files) = files {
             let at = self.project.cursor;
-            self.import_files(files, self.sel.track, at);
+            self.session.import_files(files, self.sel.track, at);
         }
     }
 
@@ -1143,128 +538,6 @@ impl ScytheApp {
         });
     }
 
-    fn place_rendered_items(&mut self, path: PathBuf, then: RenderedItems) {
-        match then {
-            RenderedItems::Glue { track, items, range } => {
-                let mut glued = Item::new(range.start, range.length(), Take::from_file(path));
-                (glued.fade_in.length, glued.fade_out.length) = (0.0, 0.0);
-                let id = glued.id;
-                self.edit("Glue items", |p| {
-                    if let Some(t) = p.track_mut(track) {
-                        t.items.retain(|it| !items.contains(&it.id));
-                        t.items.push(glued);
-                    }
-                });
-                self.multi.clear();
-                self.sel = Selection { track: Some(track), item: Some(id) };
-            }
-            RenderedItems::NewTake { item } => {
-                self.edit("Apply track FX to item as new take", |p| {
-                    if let Some(it) = p.tracks.iter_mut().find_map(|t| t.item_mut(item)) {
-                        it.takes.push(Take::from_file(path));
-                        it.active_take = it.takes.len() - 1;
-                    }
-                });
-            }
-        }
-        self.request_media();
-    }
-
-    // ---- automation writing ------------------------------------------------------------------
-
-    /// Routes a control move on `track` into its envelope when the track writes automation and
-    /// the transport runs. Returns false when the move should change the control itself.
-    pub fn automate(&mut self, track: TrackId, target: AutoTarget, value: f64) -> bool {
-        let writes = self.project.track(track).is_some_and(|t| t.auto_mode.writes());
-        if !writes || !self.is_playing() {
-            return false;
-        }
-        match self.auto_writes.iter_mut().find(|w| w.track == track && w.target == target) {
-            Some(w) => {
-                w.value = value;
-                w.touching = true;
-            }
-            None => self.auto_writes.push(AutoWrite { track, target, value, touching: true, last: None }),
-        }
-        true
-    }
-
-    /// The control was let go: touch mode stops writing it.
-    pub fn release_automation(&mut self, track: TrackId, target: AutoTarget) {
-        if let Some(w) = self.auto_writes.iter_mut().find(|w| w.track == track && w.target == target) {
-            w.touching = false;
-        }
-    }
-
-    /// The value being written for a control, for the mixer to show instead of the stored one.
-    pub fn automation_value(&self, track: TrackId, target: AutoTarget) -> Option<f64> {
-        self.auto_writes.iter().find(|w| w.track == track && w.target == target).map(|w| w.value)
-    }
-
-    /// Writes the controls of this pass at the play position: touched ones in touch mode,
-    /// everything moved since the start in latch mode, and every control in write mode. The
-    /// pass becomes one undo step when playback stops.
-    pub fn tick_automation(&mut self) {
-        if !self.is_playing() {
-            if !self.auto_writes.is_empty() {
-                self.auto_writes.clear();
-                self.end_gesture();
-            }
-            return;
-        }
-        let now = self.engine.transport().position_seconds();
-        // Write mode records both controls even when nobody touches them.
-        for t in self.project.tracks.iter().filter(|t| t.auto_mode == AutoMode::Write) {
-            for target in [AutoTarget::Volume, AutoTarget::Pan] {
-                if !self.auto_writes.iter().any(|w| w.track == t.id && w.target == target) {
-                    let value = match target {
-                        AutoTarget::Volume => {
-                            t.envelope(EnvelopeKind::Volume).and_then(|e| e.value_at(now)).unwrap_or(1.0)
-                        }
-                        AutoTarget::Pan => {
-                            t.pan - t.envelope(EnvelopeKind::Pan).and_then(|e| e.value_at(now)).unwrap_or(0.0)
-                        }
-                    };
-                    self.auto_writes.push(AutoWrite { track: t.id, target, value, touching: false, last: None });
-                }
-            }
-        }
-        let mut writes = std::mem::take(&mut self.auto_writes);
-        let modes: HashMap<TrackId, AutoMode> = self.project.tracks.iter().map(|t| (t.id, t.auto_mode)).collect();
-        let active: Vec<usize> = writes
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| match modes.get(&w.track) {
-                Some(AutoMode::Touch) => w.touching,
-                Some(AutoMode::Latch | AutoMode::Write) => true,
-                _ => false,
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if !active.is_empty() {
-            self.gesture("Write automation", |p| {
-                for &i in &active {
-                    let w = &writes[i];
-                    let Some(t) = p.track_mut(w.track) else { continue };
-                    let (kind, value) = match w.target {
-                        AutoTarget::Volume => (EnvelopeKind::Volume, w.value),
-                        // The pan envelope is subtracted from the track pan.
-                        AutoTarget::Pan => (EnvelopeKind::Pan, t.pan - w.value),
-                    };
-                    let env = t.envelope_mut(kind);
-                    let from = w.last.unwrap_or(now - 1e-6);
-                    env.points.retain(|pt| pt.time <= from || pt.time > now);
-                    env.points.push(scythe_core::EnvPoint::new(now, value));
-                    env.sort();
-                }
-            });
-            for &i in &active {
-                writes[i].last = Some(now);
-            }
-        }
-        self.auto_writes = writes;
-    }
-
     // ---- plugin editors --------------------------------------------------------------------
 
     /// Opens the editor of effect `index` on `track` (the master when `None`) in its own window,
@@ -1366,37 +639,6 @@ impl ScytheApp {
         self.gfx_views.retain(|v| Arc::strong_count(&v.instance) > 1);
     }
 
-    // ---- feedback ------------------------------------------------------------------------
-
-    pub fn notify(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
-    }
-
-    pub fn toast(&mut self) -> Option<&str> {
-        if self.toast.as_ref().is_some_and(|(_, t)| t.elapsed() > Duration::from_secs(4)) {
-            self.toast = None;
-        }
-        self.toast.as_ref().map(|(m, _)| m.as_str())
-    }
-
-    pub fn saved_label(&self) -> String {
-        if self.dirty {
-            return "Unsaved changes".into();
-        }
-        match self.saved_at {
-            None if self.project.path.is_none() => "Not saved yet".into(),
-            None => "No changes".into(),
-            Some(t) => {
-                let s = t.elapsed().as_secs();
-                match s {
-                    0..60 => "Saved just now".into(),
-                    60..3600 => format!("Saved {} min ago", s / 60),
-                    _ => format!("Saved {} h ago", s / 3600),
-                }
-            }
-        }
-    }
-
     pub fn selected_track_index(&self) -> Option<usize> {
         self.sel.track.and_then(|t| self.project.track_index(t))
     }
@@ -1454,7 +696,7 @@ impl ScytheApp {
     pub fn copy_item(&mut self, cut: bool) {
         if !self.razor.is_empty() {
             let pieces = self.project.pieces_in(&self.razor);
-            let index = |t: TrackId| self.project.track_index(t).unwrap_or(0);
+            let index = |t: TrackId| self.session.project.track_index(t).unwrap_or(0);
             let first_track = self.razor.iter().map(|(t, _)| index(*t)).min().unwrap_or(0);
             self.clipboard_origin = self.razor.iter().map(|(_, r)| r.start).fold(f64::INFINITY, f64::min);
             self.clipboard = pieces.into_iter().map(|(t, it)| (index(t) - first_track, it)).collect();

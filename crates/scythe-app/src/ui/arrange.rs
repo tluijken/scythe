@@ -601,7 +601,8 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         app.razor.clear();
         if let Some(t) = t {
             let bypass = ui.ctx().input(|i| i.modifiers.shift);
-            app.set_cursor(app.snap(t.max(0.0), bypass));
+            let at = app.snap(t.max(0.0), bypass);
+            app.set_cursor(at);
         }
     }
 

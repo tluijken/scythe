@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
+members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 scythe-core = { path = "crates/scythe-core" }
 scythe-engine = { path = "crates/scythe-engine" }
+scythe-session = { path = "crates/scythe-session" }
 anyhow = "1.0.104"
 thiserror = "2.0.21"
 base64 = "0.23.1"

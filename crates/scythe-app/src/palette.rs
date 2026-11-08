@@ -384,7 +384,7 @@ impl Action {
             Action::Record => app.toggle_record(),
             Action::ToggleAutoPunch => {
                 app.auto_punch ^= true;
-                app.notify(if app.auto_punch {
+                app.session.notify(if app.session.auto_punch {
                     "Record mode: time selection auto-punch"
                 } else {
                     "Record mode: normal"
@@ -587,7 +587,7 @@ impl Action {
             }
             Action::CycleGrid => {
                 app.view.grid = (app.view.grid + 1) % crate::app::GRID_STEPS.len();
-                app.notify(format!("Grid {}", crate::app::GRID_STEPS[app.view.grid].0));
+                app.session.notify(format!("Grid {}", crate::app::GRID_STEPS[app.view.grid].0));
             }
             Action::ZoomIn => app.view.px_per_sec = (app.view.px_per_sec * 1.5).min(2000.0),
             Action::ZoomOut => app.view.px_per_sec = (app.view.px_per_sec / 1.5).max(2.0),

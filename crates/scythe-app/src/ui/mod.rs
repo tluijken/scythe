@@ -165,7 +165,7 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         label_pill(ui, Rect::from_min_size(pos2(x, cy - 14.0), vec2(sig_w, 28.0)), &sig, RAISED, TEXT);
         x += sig_w + 4.0;
         let metro = Rect::from_min_size(pos2(x, cy - 16.0), vec2(32.0, 32.0));
-        let fg = if app.view.metronome { ACCENT } else { TEXT_DIM };
+        let fg = if app.metronome { ACCENT } else { TEXT_DIM };
         if icon_button(ui, metro, Icon::Metronome, RAISED, fg, 16.0, "Metronome").clicked() {
             app.toggle_metronome();
         }
