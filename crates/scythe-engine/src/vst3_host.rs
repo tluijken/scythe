@@ -618,10 +618,18 @@ pub struct Vst3Plugin {
     handler: ComWrapper<ComponentHandler>,
     events: ComWrapper<EventList>,
     changes: ComWrapper<ParamChanges>,
+    /// One buffer per channel of every audio bus, inputs and outputs in bus order.
     inputs: Vec<Vec<f32>>,
     outputs: Vec<Vec<f32>>,
-    in_buses: i32,
-    out_buses: i32,
+    /// Channels of each input and output bus.
+    in_layout: Vec<usize>,
+    out_layout: Vec<usize>,
+    /// What `process` hands the plugin: channel pointers into `inputs`/`outputs`, grouped by
+    /// bus. Built once; the buffers never move.
+    in_ptrs: Vec<*mut f32>,
+    out_ptrs: Vec<*mut f32>,
+    in_buses: Vec<AudioBusBuffers>,
+    out_buses: Vec<AudioBusBuffers>,
     sample_rate: f64,
     block: usize,
     pub instrument: bool,
@@ -705,17 +713,26 @@ impl Vst3Plugin {
             let event = MediaTypes_::kEvent as MediaType;
             let input = BusDirections_::kInput as BusDirection;
             let output = BusDirections_::kOutput as BusDirection;
-            let in_buses = component.getBusCount(audio, input).min(1);
-            let out_buses = component.getBusCount(audio, output).min(1);
-            let mut ins = vec![SpeakerArr::kStereo; in_buses as usize];
-            let mut outs = vec![SpeakerArr::kStereo; out_buses as usize];
-            processor.setBusArrangements(ins.as_mut_ptr(), in_buses, outs.as_mut_ptr(), out_buses);
-            for i in 0..component.getBusCount(audio, input) {
-                component.activateBus(audio, input, i, (i == 0) as TBool);
+            // Every audio bus in the plugin's own arrangement, sidechains included, all active.
+            let arrangements = |dir: BusDirection| -> Vec<SpeakerArrangement> {
+                (0..component.getBusCount(audio, dir))
+                    .map(|i| {
+                        let mut arr: SpeakerArrangement = SpeakerArr::kStereo;
+                        processor.getBusArrangement(dir, i, &mut arr);
+                        arr
+                    })
+                    .collect()
+            };
+            let (mut ins, mut outs) = (arrangements(input), arrangements(output));
+            processor.setBusArrangements(ins.as_mut_ptr(), ins.len() as int32, outs.as_mut_ptr(), outs.len() as int32);
+            for i in 0..ins.len() as int32 {
+                component.activateBus(audio, input, i, 1);
             }
-            for i in 0..component.getBusCount(audio, output) {
-                component.activateBus(audio, output, i, (i == 0) as TBool);
+            for i in 0..outs.len() as int32 {
+                component.activateBus(audio, output, i, 1);
             }
+            let in_layout: Vec<usize> = ins.iter().map(|a| a.count_ones() as usize).collect();
+            let out_layout: Vec<usize> = outs.iter().map(|a| a.count_ones() as usize).collect();
             if component.getBusCount(event, input) > 0 {
                 component.activateBus(event, input, 0, 1);
             }
@@ -750,18 +767,52 @@ impl Vst3Plugin {
                 handler,
                 events: ComWrapper::new(EventList::default()),
                 changes: ComWrapper::new(ParamChanges::default()),
-                inputs: vec![vec![0.0; block]; 2],
-                outputs: vec![vec![0.0; block]; 2],
-                in_buses,
-                out_buses,
+                inputs: vec![vec![0.0; block]; in_layout.iter().sum()],
+                outputs: vec![vec![0.0; block]; out_layout.iter().sum()],
+                in_layout,
+                out_layout,
+                in_ptrs: Vec::new(),
+                out_ptrs: Vec::new(),
+                in_buses: Vec::new(),
+                out_buses: Vec::new(),
                 sample_rate,
                 block,
                 instrument: info.instrument,
                 _module: module,
             };
+            plugin.wire_buses();
             plugin.sync_controller();
             Ok(plugin)
         }
+    }
+
+    /// Points the bus descriptions at the channel buffers.
+    fn wire_buses(&mut self) {
+        self.in_ptrs = self.inputs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        self.out_ptrs = self.outputs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        let buses = |layout: &[usize], ptrs: &mut Vec<*mut f32>| -> Vec<AudioBusBuffers> {
+            let mut at = 0;
+            layout
+                .iter()
+                .map(|&n| {
+                    let bus = AudioBusBuffers {
+                        numChannels: n as int32,
+                        silenceFlags: 0,
+                        // SAFETY: `at` stays within `ptrs`, whose length is the layout's sum.
+                        __field0: AudioBusBuffers__type0 { channelBuffers32: unsafe { ptrs.as_mut_ptr().add(at) } },
+                    };
+                    at += n;
+                    bus
+                })
+                .collect()
+        };
+        self.in_buses = buses(&self.in_layout, &mut self.in_ptrs);
+        self.out_buses = buses(&self.out_layout, &mut self.out_ptrs);
+    }
+
+    /// Audio channels over all input and output buses.
+    pub fn pins(&self) -> (usize, usize) {
+        (self.inputs.len(), self.outputs.len())
     }
 
     /// Hands the component's state to a separate controller, as hosts do after loading.
@@ -889,8 +940,9 @@ impl Vst3Plugin {
         self.changes.push(id, value);
     }
 
-    /// Processes a stereo block in place. `notes` are `(offset, on, channel, key, velocity)`;
-    /// `controls` are other MIDI messages, which reach the parameters the plugin maps them to.
+    /// Processes a stereo block in place on the main buses; other inputs get silence. `notes`
+    /// are `(offset, on, channel, key, velocity)`; `controls` are other MIDI messages, which
+    /// reach the parameters the plugin maps them to.
     pub fn process(
         &mut self,
         left: &mut [f32],
@@ -901,6 +953,54 @@ impl Vst3Plugin {
         bpm: f64,
     ) {
         let n = left.len().min(right.len()).min(self.block);
+        for (c, buf) in self.inputs.iter_mut().enumerate() {
+            match c {
+                0 => buf[..n].copy_from_slice(&left[..n]),
+                1 => buf[..n].copy_from_slice(&right[..n]),
+                _ => buf[..n].fill(0.0),
+            }
+        }
+        self.run(n, notes, controls, position, bpm);
+        if let Some(l) = self.outputs.first() {
+            left[..n].copy_from_slice(&l[..n]);
+            right[..n].copy_from_slice(&self.outputs.get(1).unwrap_or(l)[..n]);
+        }
+    }
+
+    /// Processes every channel of every bus: input channel k comes from `bufs[k]`, output
+    /// channel k goes to it, over frames `range`.
+    pub fn process_channels(
+        &mut self,
+        bufs: &mut [Vec<f32>],
+        range: std::ops::Range<usize>,
+        notes: &[(i32, bool, u8, u8, u8)],
+        controls: &[(i32, [u8; 3])],
+        position: i64,
+        bpm: f64,
+    ) {
+        let n = range.len().min(self.block);
+        for (c, buf) in self.inputs.iter_mut().enumerate() {
+            match bufs.get(c) {
+                Some(src) => buf[..n].copy_from_slice(&src[range.start..range.start + n]),
+                None => buf[..n].fill(0.0),
+            }
+        }
+        self.run(n, notes, controls, position, bpm);
+        for (c, out) in self.outputs.iter().enumerate() {
+            if let Some(dst) = bufs.get_mut(c) {
+                dst[range.start..range.start + n].copy_from_slice(&out[..n]);
+            }
+        }
+    }
+
+    fn run(
+        &mut self,
+        n: usize,
+        notes: &[(i32, bool, u8, u8, u8)],
+        controls: &[(i32, [u8; 3])],
+        position: i64,
+        bpm: f64,
+    ) {
         for (edit_id, value) in self.handler.edits.borrow_mut().drain(..) {
             self.changes.push(edit_id, value);
         }
@@ -941,20 +1041,6 @@ impl Vst3Plugin {
                 events.push(e);
             }
         }
-        self.inputs[0][..n].copy_from_slice(&left[..n]);
-        self.inputs[1][..n].copy_from_slice(&right[..n]);
-        let mut in_ptrs: [*mut f32; 2] = [self.inputs[0].as_mut_ptr(), self.inputs[1].as_mut_ptr()];
-        let mut out_ptrs: [*mut f32; 2] = [self.outputs[0].as_mut_ptr(), self.outputs[1].as_mut_ptr()];
-        let mut in_bus = AudioBusBuffers {
-            numChannels: 2,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 { channelBuffers32: in_ptrs.as_mut_ptr() },
-        };
-        let mut out_bus = AudioBusBuffers {
-            numChannels: 2,
-            silenceFlags: 0,
-            __field0: AudioBusBuffers__type0 { channelBuffers32: out_ptrs.as_mut_ptr() },
-        };
         // SAFETY: an all-zero ProcessContext is valid; the used fields are set below.
         let mut context: ProcessContext = unsafe { std::mem::zeroed() };
         context.state =
@@ -966,10 +1052,10 @@ impl Vst3Plugin {
             processMode: ProcessModes_::kRealtime as int32,
             symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
             numSamples: n as int32,
-            numInputs: self.in_buses,
-            numOutputs: self.out_buses,
-            inputs: if self.in_buses > 0 { &mut in_bus } else { std::ptr::null_mut() },
-            outputs: if self.out_buses > 0 { &mut out_bus } else { std::ptr::null_mut() },
+            numInputs: self.in_buses.len() as int32,
+            numOutputs: self.out_buses.len() as int32,
+            inputs: if self.in_buses.is_empty() { std::ptr::null_mut() } else { self.in_buses.as_mut_ptr() },
+            outputs: if self.out_buses.is_empty() { std::ptr::null_mut() } else { self.out_buses.as_mut_ptr() },
             inputParameterChanges: self
                 .changes
                 .as_com_ref::<IParameterChanges>()
@@ -982,10 +1068,6 @@ impl Vst3Plugin {
         // SAFETY: every buffer and object referenced by `data` lives through the call.
         unsafe { self.processor.process(&mut data) };
         self.changes.clear();
-        if self.out_buses > 0 {
-            left[..n].copy_from_slice(&self.outputs[0][..n]);
-            right[..n].copy_from_slice(&self.outputs[1][..n]);
-        }
     }
 
     pub fn reset(&mut self) {

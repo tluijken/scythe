@@ -443,7 +443,8 @@ unsafe extern "C" fn read_slice(stream: *const clap_istream, buffer: *mut c_void
     n as i64
 }
 
-/// An instantiated, activated CLAP plugin processing stereo in place.
+/// An instantiated, activated CLAP plugin, processing its audio ports (a stereo pair when it
+/// does not describe them).
 pub struct ClapPlugin {
     plugin: *const clap_plugin,
     _host: Box<clap_host>,
@@ -451,7 +452,14 @@ pub struct ClapPlugin {
     _lib: Arc<ClapLibrary>,
     pub id: String,
     processing: bool,
-    scratch: [Vec<f32>; 2],
+    /// One buffer per channel of every audio port, inputs and outputs in port order.
+    inputs: Vec<Vec<f32>>,
+    outputs: Vec<Vec<f32>>,
+    /// Channel pointers into the buffers and one `clap_audio_buffer` per port, built once.
+    in_ptrs: Vec<*mut f32>,
+    out_ptrs: Vec<*mut f32>,
+    in_ports: Vec<clap_audio_buffer>,
+    out_ports: Vec<clap_audio_buffer>,
     /// Note events for the next `process` call, sorted by time; capacity is reserved up front.
     pub events: Vec<clap_event_note>,
     /// Other MIDI messages (controllers, pitch bend) for the next `process` call.
@@ -496,7 +504,12 @@ impl ClapPlugin {
             _lib: lib,
             id: id.into(),
             processing: false,
-            scratch: [Vec::new(), Vec::new()],
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            in_ptrs: Vec::new(),
+            out_ptrs: Vec::new(),
+            in_ports: Vec::new(),
+            out_ports: Vec::new(),
             events: Vec::with_capacity(1024),
             midi: Vec::with_capacity(256),
             pending_params: Vec::with_capacity(64),
@@ -511,8 +524,59 @@ impl ClapPlugin {
             return Err(ClapError::Plugin(id.into(), "activate"));
         }
         let mut me = me;
-        me.scratch = [vec![0.0; max_frames as usize], vec![0.0; max_frames as usize]];
+        let (ins, outs) = (me.port_layout(true), me.port_layout(false));
+        me.inputs = vec![vec![0.0; max_frames as usize]; ins.iter().sum()];
+        me.outputs = vec![vec![0.0; max_frames as usize]; outs.iter().sum()];
+        me.in_ptrs = me.inputs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        me.out_ptrs = me.outputs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        let ports = |layout: &[usize], ptrs: &mut Vec<*mut f32>| -> Vec<clap_audio_buffer> {
+            let mut at = 0;
+            layout
+                .iter()
+                .map(|&n| {
+                    // SAFETY: `at` stays within `ptrs`, whose length is the layout's sum.
+                    let data32 = unsafe { ptrs.as_mut_ptr().add(at) };
+                    at += n;
+                    clap_audio_buffer {
+                        data32,
+                        data64: std::ptr::null_mut(),
+                        channel_count: n as u32,
+                        latency: 0,
+                        constant_mask: 0,
+                    }
+                })
+                .collect()
+        };
+        me.in_ports = ports(&ins, &mut me.in_ptrs);
+        me.out_ports = ports(&outs, &mut me.out_ptrs);
         Ok(me)
+    }
+
+    /// Channels of each input or output port, from the audio-ports extension; a stereo pair
+    /// each way when the plugin has none.
+    fn port_layout(&self, is_input: bool) -> Vec<usize> {
+        use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports};
+        // SAFETY: the plugin is alive; get_extension returns null or the requested interface.
+        let ext = unsafe {
+            (self.raw().get_extension.map(|f| f(self.plugin, CLAP_EXT_AUDIO_PORTS.as_ptr())) as Option<*const c_void>)
+                .and_then(|p| (p as *const clap_plugin_audio_ports).as_ref())
+        };
+        let Some(ports) = ext else { return vec![2] };
+        let (Some(count), Some(get)) = (ports.count, ports.get) else { return vec![2] };
+        // SAFETY: main-thread queries on a valid plugin with a writable info struct.
+        unsafe {
+            (0..count(self.plugin, is_input))
+                .filter_map(|i| {
+                    let mut info: clap_audio_port_info = std::mem::zeroed();
+                    get(self.plugin, i, is_input, &mut info).then_some(info.channel_count as usize)
+                })
+                .collect()
+        }
+    }
+
+    /// Audio channels over all input and output ports.
+    pub fn pins(&self) -> (usize, usize) {
+        (self.inputs.len(), self.outputs.len())
     }
 
     fn raw(&self) -> &clap_plugin {
@@ -630,30 +694,46 @@ impl ClapPlugin {
     }
 
     /// Processes a stereo block in place.
+    /// Processes a stereo block in place on the main ports; other inputs get silence.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
-        let n = left.len().min(right.len()).min(self.scratch[0].len());
+        let n = left.len().min(right.len()).min(self.inputs.first().or(self.outputs.first()).map_or(0, Vec::len));
+        for (c, buf) in self.inputs.iter_mut().enumerate() {
+            match c {
+                0 => buf[..n].copy_from_slice(&left[..n]),
+                1 => buf[..n].copy_from_slice(&right[..n]),
+                _ => buf[..n].fill(0.0),
+            }
+        }
+        self.run(n);
+        if let Some(l) = self.outputs.first() {
+            left[..n].copy_from_slice(&l[..n]);
+            right[..n].copy_from_slice(&self.outputs.get(1).unwrap_or(l)[..n]);
+        }
+    }
+
+    /// Processes every channel of every port: input channel k comes from `bufs[k]`, output
+    /// channel k goes to it, over frames `range`.
+    pub fn process_channels(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>) {
+        let n = range.len().min(self.inputs.first().or(self.outputs.first()).map_or(0, Vec::len));
+        for (c, buf) in self.inputs.iter_mut().enumerate() {
+            match bufs.get(c) {
+                Some(src) => buf[..n].copy_from_slice(&src[range.start..range.start + n]),
+                None => buf[..n].fill(0.0),
+            }
+        }
+        self.run(n);
+        for (c, out) in self.outputs.iter().enumerate() {
+            if let Some(dst) = bufs.get_mut(c) {
+                dst[range.start..range.start + n].copy_from_slice(&out[..n]);
+            }
+        }
+    }
+
+    fn run(&mut self, n: usize) {
         if !self.processing {
             // SAFETY: start_processing is an audio-thread call before the first process.
             self.processing = self.raw().start_processing.is_none_or(|f| unsafe { f(self.plugin) });
         }
-        self.scratch[0][..n].copy_from_slice(&left[..n]);
-        self.scratch[1][..n].copy_from_slice(&right[..n]);
-        let mut in_ptrs = [self.scratch[0].as_mut_ptr(), self.scratch[1].as_mut_ptr()];
-        let mut out_ptrs = [left.as_mut_ptr(), right.as_mut_ptr()];
-        let input = clap_audio_buffer {
-            data32: in_ptrs.as_mut_ptr(),
-            data64: std::ptr::null_mut(),
-            channel_count: 2,
-            latency: 0,
-            constant_mask: 0,
-        };
-        let mut output = clap_audio_buffer {
-            data32: out_ptrs.as_mut_ptr(),
-            data64: std::ptr::null_mut(),
-            channel_count: 2,
-            latency: 0,
-            constant_mask: 0,
-        };
         self.order.clear();
         self.order.extend(self.pending_params.iter().map(|e| &e.header as *const clap_event_header));
         self.order.extend(self.events.iter().map(|e| &e.header as *const clap_event_header));
@@ -680,10 +760,10 @@ impl ClapPlugin {
             steady_time: -1,
             frames_count: n as u32,
             transport: std::ptr::null(),
-            audio_inputs: &input,
-            audio_outputs: &mut output,
-            audio_inputs_count: 1,
-            audio_outputs_count: 1,
+            audio_inputs: self.in_ports.as_ptr(),
+            audio_outputs: self.out_ports.as_mut_ptr(),
+            audio_inputs_count: self.in_ports.len() as u32,
+            audio_outputs_count: self.out_ports.len() as u32,
             in_events: &in_events,
             out_events: &out_events,
         };

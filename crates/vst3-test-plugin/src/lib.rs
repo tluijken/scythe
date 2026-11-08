@@ -38,7 +38,8 @@ unsafe fn read_f64(stream: *mut IBStream) -> Option<f64> {
     (read == 8).then(|| f64::from_le_bytes(bytes))
 }
 
-/// Shared by the gain processor and the synth: one stereo bus or none, and an event bus.
+/// Shared by the gain processor and the synth. The gain has a stereo main input and a stereo
+/// sidechain input it adds to its output; the synth has an event bus instead.
 struct Processor {
     gain: Cell<f64>,
     instrument: bool,
@@ -68,23 +69,29 @@ impl IComponentTrait for Processor {
     }
     unsafe fn getBusCount(&self, media: MediaType, dir: BusDirection) -> int32 {
         match (media as MediaTypes, dir as BusDirections) {
-            (MediaTypes_::kAudio, BusDirections_::kInput) => (!self.instrument) as int32,
+            (MediaTypes_::kAudio, BusDirections_::kInput) => {
+                if self.instrument {
+                    0
+                } else {
+                    2
+                }
+            }
             (MediaTypes_::kAudio, BusDirections_::kOutput) => 1,
             (MediaTypes_::kEvent, BusDirections_::kInput) => self.instrument as int32,
             _ => 0,
         }
     }
     unsafe fn getBusInfo(&self, media: MediaType, dir: BusDirection, index: int32, bus: *mut BusInfo) -> tresult {
-        if index != 0 || unsafe { self.getBusCount(media, dir) } == 0 {
+        if index < 0 || index >= unsafe { self.getBusCount(media, dir) } {
             return kInvalidArgument;
         }
         let bus = unsafe { &mut *bus };
         bus.mediaType = media;
         bus.direction = dir;
         bus.channelCount = if media == MediaTypes_::kAudio as MediaType { 2 } else { 1 };
-        copy_wide("Main", &mut bus.name);
-        bus.busType = BusTypes_::kMain as BusType;
-        bus.flags = BusInfo_::BusFlags_::kDefaultActive as uint32;
+        copy_wide(if index == 0 { "Main" } else { "Sidechain" }, &mut bus.name);
+        bus.busType = if index == 0 { BusTypes_::kMain } else { BusTypes_::kAux } as BusType;
+        bus.flags = if index == 0 { BusInfo_::BusFlags_::kDefaultActive as uint32 } else { 0 };
         kResultOk
     }
     unsafe fn getRoutingInfo(&self, _i: *mut RoutingInfo, _o: *mut RoutingInfo) -> tresult {
@@ -201,12 +208,14 @@ impl IAudioProcessorTrait for Processor {
                     *outs[1].add(i) = v;
                 }
             } else {
-                let input = &*data.inputs;
-                let ins = slice::from_raw_parts(input.__field0.channelBuffers32, 2);
+                let buses = slice::from_raw_parts(data.inputs, data.numInputs as usize);
+                let ins = slice::from_raw_parts(buses[0].__field0.channelBuffers32, 2);
+                let side = buses.get(1).map(|b| slice::from_raw_parts(b.__field0.channelBuffers32, 2));
                 let g = self.gain.get() as f32;
                 for c in 0..2 {
                     for i in 0..n {
-                        *outs[c].add(i) = *ins[c].add(i) * g;
+                        let key = side.map_or(0.0, |s| *s[c].add(i));
+                        *outs[c].add(i) = *ins[c].add(i) * g + key;
                     }
                 }
             }

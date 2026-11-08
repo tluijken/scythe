@@ -67,7 +67,8 @@ Working:
   and `<OUT_PINS`): input pins sum the channels mapped to them, output pins replace theirs,
   other channels pass through, and input pins 3/4 of a stereo effect are its sidechain (JSFX
   see it as `spl2`/`spl3`). Effects with more pins (JSFX band splitters and mixers, VST 2 with
-  more inputs or outputs) work on all of them, by default pin n on channel n. The master can
+  more inputs or outputs, VST 3 buses and CLAP audio ports beyond the main pair, such as a
+  sidechain input) work on all of them, by default pin n on channel n. The master can
   have more channels too ("Master: More channels"): master effects work across them, and a
   render with more channels (`RENDER_CHANNELS`) writes them all.
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
@@ -194,9 +195,10 @@ compares the two files.
 - FX parameter envelopes on hosted plugins map REAPER's value range linearly onto the
   plugin's parameter range; REAPER's own effects use the curves measured from REAPER. NAM models are run at the project rate without resampling
   to the model's rate. Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel: VST 3 and CLAP plugins are hosted with one stereo bus, so their extra pins stay
-  unused; CLAP pin maps are read like LV2's but could not be checked against REAPER. The audio
-  device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
+- Multichannel: REAPER writes CLAP pin maps as `<IN_PINS`/`<OUT_PINS`, as for LV2, but its
+  render with the workspace's CLAP test plugin did not finish, so CLAP audio is checked against
+  the plugin alone, not against REAPER. VST 3 buses are set to the plugin's own arrangements;
+  other speaker layouts are not requested. The audio device gets the master's first pair; further master channels reach multichannel renders. REAPER's own `.ini` FX presets are not read; presets are
   kept as single-effect `.RfxChain` files instead. `MIDIHWOUT` follows the API's packing
   (device × 32 + channel); REAPER's file encoding of it is unverified.
 - ReaScript covers a subset of the API (below) and no `defer` loops; no EEL or Python.

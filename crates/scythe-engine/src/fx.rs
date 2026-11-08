@@ -988,7 +988,31 @@ impl Effect for ClapEffect {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        let n = left.len() as i64;
+        self.queue_events(left.len() as i64, ctx);
+        self.plugin.process(left, right);
+    }
+
+    fn pins(&self) -> (usize, usize) {
+        self.plugin.pins()
+    }
+
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        let (ins, outs) = self.plugin.pins();
+        if ins <= 2 && outs <= 2 {
+            if let [l, r, ..] = bufs {
+                self.process(&mut l[range.clone()], &mut r[range], ctx);
+            }
+            return;
+        }
+        self.queue_events(range.len() as i64, ctx);
+        self.plugin.process_channels(bufs, range);
+    }
+}
+
+impl ClapEffect {
+    /// Queues the block's notes, controllers and live MIDI for an instrument, resetting it
+    /// after a jump in the timeline.
+    fn queue_events(&mut self, n: i64, ctx: &ProcessContext) {
         let (start, end) = (ctx.position, ctx.position + n);
         if self.instrument && self.expected.is_some_and(|e| e != start) {
             // A jump in the timeline: drop held notes rather than leave them hanging.
@@ -1041,7 +1065,6 @@ impl Effect for ClapEffect {
                 .events
                 .sort_by_key(|e| (e.header.time, e.header.type_ != clap_sys::events::CLAP_EVENT_NOTE_OFF));
         }
-        self.plugin.process(left, right);
     }
 }
 
@@ -1078,35 +1101,12 @@ struct Vst3Effect {
 }
 
 impl Vst3Effect {
-    fn new(plugin: crate::vst3_host::Vst3Plugin) -> Self {
-        Self { plugin, notes: Vec::with_capacity(256), controls: Vec::with_capacity(256) }
-    }
-}
-
-impl Effect for Vst3Effect {
-    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
-        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
-    }
-
-    fn is_instrument(&self) -> bool {
-        self.plugin.instrument
-    }
-
-    fn latency(&mut self) -> usize {
-        self.plugin.latency() as usize
-    }
-
-    fn reset(&mut self) {
-        if self.plugin.instrument {
-            self.plugin.reset();
-        }
-    }
-
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+    /// Collects the notes and other MIDI of an `n`-frame block (the track's and live input).
+    fn queue_midi(&mut self, n: usize, ctx: &ProcessContext) {
         self.notes.clear();
         self.controls.clear();
         if let Some(notes) = ctx.notes {
-            let (start, end) = (ctx.position, ctx.position + left.len() as i64);
+            let (start, end) = (ctx.position, ctx.position + n as i64);
             for note in notes.starting_in(start - notes.max_span()..end) {
                 if (start..end).contains(&note.start) {
                     self.notes.push(((note.start - start) as i32, true, note.channel, note.key, note.velocity));
@@ -1136,7 +1136,51 @@ impl Effect for Vst3Effect {
                 }
             }
         }
+    }
+
+    fn new(plugin: crate::vst3_host::Vst3Plugin) -> Self {
+        Self { plugin, notes: Vec::with_capacity(256), controls: Vec::with_capacity(256) }
+    }
+}
+
+impl Effect for Vst3Effect {
+    fn editor(&mut self) -> Option<Box<dyn crate::editor::Editor>> {
+        self.plugin.editor().map(|e| Box::new(e) as Box<dyn crate::editor::Editor>)
+    }
+
+    fn is_instrument(&self) -> bool {
+        self.plugin.instrument
+    }
+
+    fn latency(&mut self) -> usize {
+        self.plugin.latency() as usize
+    }
+
+    fn reset(&mut self) {
+        if self.plugin.instrument {
+            self.plugin.reset();
+        }
+    }
+
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.queue_midi(left.len(), ctx);
         self.plugin.process(left, right, &self.notes, &self.controls, ctx.position, ctx.bpm);
+    }
+
+    fn pins(&self) -> (usize, usize) {
+        self.plugin.pins()
+    }
+
+    fn process_pins(&mut self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
+        let (ins, outs) = self.plugin.pins();
+        if ins <= 2 && outs <= 2 {
+            if let [l, r, ..] = bufs {
+                self.process(&mut l[range.clone()], &mut r[range], ctx);
+            }
+            return;
+        }
+        self.queue_midi(range.len(), ctx);
+        self.plugin.process_channels(bufs, range, &self.notes, &self.controls, ctx.position, ctx.bpm);
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -1406,5 +1450,15 @@ mod pin_tests {
         .unwrap();
         assert_eq!((map.inputs, map.outputs), (vec![4, 8], vec![1, 2]));
         assert_eq!(pin_map(&js_slot(None)), None, "no map means plain stereo");
+    }
+
+    #[test]
+    fn reads_clap_pin_maps() {
+        // Written by REAPER: inputs from channels 3/4, outputs left at 1/2 (an empty block).
+        let text = "<FXCHAIN\n  BYPASS 0 0 0\n  <CLAP \"CLAP: Test Gain\" org.scythe.test-gain \"\"\n    CFG 4 0 0 \"\"\n    <IN_PINS\n      PIN 0 2\n      PIN 1 3\n    >\n    <OUT_PINS\n    >\n    <STATE\n      AAAAPw==\n    >\n  >\n  WAK 0 0\n>\n";
+        let chain = scythe_core::rpp::parse(text).unwrap();
+        let slot = FxSlot { name: "CLAP".into(), enabled: true, raw: chain.children };
+        let map = pin_map(&slot).unwrap();
+        assert_eq!((map.inputs, map.outputs), (vec![4, 8], vec![1, 2]));
     }
 }

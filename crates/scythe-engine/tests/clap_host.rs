@@ -221,3 +221,22 @@ fn parameter_envelopes_drive_plugins_by_index() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn sidechain_port_takes_channels_three_and_four() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut plugin = ClapPlugin::create(lib, "org.scythe.test-gain", 48000.0, 512).unwrap();
+    assert_eq!(plugin.pins(), (4, 2), "main and sidechain ports in, main port out");
+    let mut bufs = vec![vec![1.0f32; 16], vec![-1.0; 16], vec![0.25; 16], vec![0.5; 16]];
+    plugin.process_channels(&mut bufs, 4..12);
+    assert_eq!((bufs[0][4], bufs[1][11]), (0.75, 0.0), "main at the default gain of 0.5 plus the sidechain");
+    assert_eq!(bufs[0][0], 1.0, "frames outside the range stay");
+    // The stereo path feeds the sidechain silence.
+    let (mut l, mut r) = (vec![1.0f32; 8], vec![1.0f32; 8]);
+    plugin.process(&mut l, &mut r);
+    assert_eq!(l[0], 0.5);
+}

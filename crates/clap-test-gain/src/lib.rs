@@ -148,16 +148,50 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
         let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed));
         let pr = &*process;
         let (input, output) = (&*pr.audio_inputs, &*pr.audio_outputs);
+        // A second input port is a sidechain, added to the output.
+        let side = (pr.audio_inputs_count > 1).then(|| &*pr.audio_inputs.add(1));
         for c in 0..output.channel_count.min(input.channel_count) as usize {
             let src = *input.data32.add(c);
             let dst = *output.data32.add(c);
+            let key = side.filter(|s| (c as u32) < s.channel_count).map(|s| *s.data32.add(c));
             for i in 0..pr.frames_count as usize {
-                *dst.add(i) = *src.add(i) * g;
+                *dst.add(i) = *src.add(i) * g + key.map_or(0.0, |k| *k.add(i));
             }
         }
     }
     CLAP_PROCESS_CONTINUE
 }
+
+unsafe extern "C" fn ports_count(_p: *const clap_plugin, is_input: bool) -> u32 {
+    if is_input { 2 } else { 1 }
+}
+
+unsafe extern "C" fn ports_get(
+    _p: *const clap_plugin,
+    index: u32,
+    is_input: bool,
+    info: *mut clap_sys::ext::audio_ports::clap_audio_port_info,
+) -> bool {
+    use clap_sys::ext::audio_ports::{CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_STEREO};
+    if index >= unsafe { ports_count(_p, is_input) } {
+        return false;
+    }
+    // SAFETY: the host passes a writable info struct.
+    let info = unsafe { &mut *info };
+    info.id = index;
+    let name: &[u8] = if index == 0 { b"Main\0" } else { b"Sidechain\0" };
+    for (d, &c) in info.name.iter_mut().zip(name) {
+        *d = c as c_char;
+    }
+    info.flags = if index == 0 { CLAP_AUDIO_PORT_IS_MAIN } else { 0 };
+    info.channel_count = 2;
+    info.port_type = CLAP_PORT_STEREO.as_ptr();
+    info.in_place_pair = clap_sys::id::CLAP_INVALID_ID;
+    true
+}
+
+static PORTS: clap_sys::ext::audio_ports::clap_plugin_audio_ports =
+    clap_sys::ext::audio_ports::clap_plugin_audio_ports { count: Some(ports_count), get: Some(ports_get) };
 
 unsafe extern "C" fn state_save(p: *const clap_plugin, stream: *const clap_ostream) -> bool {
     // SAFETY: valid plugin and stream for the call.
@@ -394,6 +428,8 @@ unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) ->
         &GUI as *const _ as *const c_void
     } else if id == clap_sys::ext::timer_support::CLAP_EXT_TIMER_SUPPORT {
         &TIMER as *const _ as *const c_void
+    } else if id == clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS {
+        &PORTS as *const _ as *const c_void
     } else {
         std::ptr::null()
     }

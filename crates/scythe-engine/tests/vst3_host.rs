@@ -161,3 +161,31 @@ fn live_midi_plays_an_armed_vst3_instrument() {
     assert_eq!(render(&[LiveMidi { bytes: [0x81, 64, 0], len: 3 }], &mut scratch), 0.0);
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn sidechain_bus_takes_pins_three_and_four() {
+    let Some(root) = bundle("sidechain") else {
+        eprintln!("vst3-test-plugin not built; skipping");
+        return;
+    };
+    let mut fx = registry(&root, 1000);
+    let gain = fx.vst3_plugins().iter().find(|p| p.name == "Test Gain").unwrap().clone();
+    let mut track = Track::new("t");
+    track.fx.push(vst3_slot(&gain));
+    let chain = fx.chain(Some(track.id), &track.fx);
+    assert_eq!(chain[0].pins, (4, 2), "main and sidechain bus in, main bus out");
+    let ctx = ProcessContext {
+        sample_rate: 1000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let mut bufs = vec![vec![1.0f32; 8], vec![1.0; 8], vec![0.25; 8], vec![0.25; 8]];
+    chain[0].process_pins(&mut bufs, 0..8, &ctx);
+    assert_eq!((bufs[0][3], bufs[1][3]), (0.75, 0.75), "main at the default gain of 0.5 plus the sidechain");
+    std::fs::remove_dir_all(root).ok();
+}
