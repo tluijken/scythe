@@ -144,7 +144,7 @@ pub enum Op {
         x: f64,
         y: f64,
     },
-    /// One line of text with its box's top-left corner at `(x, y)`.
+    /// Text with its box's top-left corner at `(x, y)`: a line, or any text in font 0.
     Text {
         x: f64,
         y: f64,

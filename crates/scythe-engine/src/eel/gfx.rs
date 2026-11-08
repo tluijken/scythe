@@ -3,6 +3,7 @@
 //! effect, so the audio thread waits on `@gfx` only for the script itself. The screen keeps
 //! what was drawn while `gfx_clear` is negative, as REAPER's framebuffer does.
 
+mod bitmap;
 mod menu;
 mod raster;
 mod text;
@@ -57,8 +58,6 @@ impl Output {
     }
 }
 
-/// `gfx_texth` of font 0.
-pub const DEFAULT_TEXTH: f32 = 10.0;
 /// Calls queued before they are drawn mid-run, to bound the queue.
 const MAX_QUEUE: usize = 1 << 16;
 /// `gfx_getsyscol`: the window background, as `r | g << 8 | b << 16`.
@@ -164,10 +163,6 @@ struct Slots {
     mouse_hwheel: usize,
 }
 
-fn default_font() -> FontSpec {
-    FontSpec { face: String::new(), size: DEFAULT_TEXTH, flags: 0 }
-}
-
 /// The graphics state of a machine.
 pub(super) struct Gfx {
     v: Slots,
@@ -211,7 +206,7 @@ impl Gfx {
             mouse_wheel: s("mouse_wheel"),
             mouse_hwheel: s("mouse_hwheel"),
         };
-        for (slot, value) in [(v.a, 1.0), (v.a2, 1.0), (v.dest, -1.0), (v.texth, DEFAULT_TEXTH as f64)] {
+        for (slot, value) in [(v.a, 1.0), (v.a2, 1.0), (v.dest, -1.0)] {
             vars.values[slot] = value;
         }
         Self {
@@ -219,7 +214,7 @@ impl Gfx {
             canvas: Default::default(),
             queue: Vec::new(),
             sizes: HashMap::new(),
-            fonts: vec![default_font(); 17],
+            fonts: vec![FontSpec::bitmap(); 17],
             font: 0,
             chars: VecDeque::new(),
             mouse_in: false,
@@ -357,6 +352,9 @@ impl Machine {
     /// Width and height of `text`, its lines split at `\n`.
     fn text_size(&self, text: &str) -> (f64, f64) {
         let font = self.current_font();
+        if font.bitmap {
+            return bitmap::measure(text);
+        }
         text.split('\n').map(|l| text::measure(font, l)).fold((0.0, 0.0), |(w, h), (lw, lh)| (w.max(lw), h + lh))
     }
 
@@ -364,6 +362,13 @@ impl Machine {
     fn draw_text(&mut self, text: &str, x: f64, y: f64, clip: Option<[i64; 4]>) {
         let text = c_text(text);
         let font = self.current_font().clone();
+        if font.bitmap {
+            let (dx, dy) = bitmap::advance(text);
+            self.draw_clipped(Op::Text { x, y, font, text: text.to_owned() }, clip);
+            self.set_gvar(|v| v.x, x + dx);
+            self.set_gvar(|v| v.y, y + dy);
+            return;
+        }
         let mut last = (x, y);
         let mut ly = y;
         for line in text.split('\n') {
@@ -520,6 +525,10 @@ impl Machine {
                     MeasureStr => c_text(&self.string(a[0])).to_owned(),
                     _ => char::from_u32(a[0].max(0.0) as u32).unwrap_or(' ').to_string(),
                 };
+                // REAPER leaves the outputs as they were for an empty string.
+                if text.is_empty() {
+                    return 0.0;
+                }
                 let (w, h) = self.text_size(&text);
                 self.store(&args[1], w);
                 self.store(&args[2], h);
@@ -532,6 +541,7 @@ impl Machine {
                     let face = c_text(&self.string(a[1])).to_owned();
                     let font = &mut self.gfx.fonts[idx];
                     font.face = face;
+                    font.bitmap = false;
                     if n >= 3 && a[2] > 0.0 {
                         font.size = a[2] as f32;
                     }
@@ -723,6 +733,32 @@ mod tests {
                 assert_eq!((rgb(&s, 31, 11), rgb(&s, 32, 11)), ([255, 0, 0], [0; 3]), "scaled up two times");
             }
         }
+    }
+
+    #[test]
+    fn font_0_is_eight_pixel_cells() {
+        let (m, s) = frame(
+            "th = gfx_texth; gfx_setfont(1, \"Sans\", 20); gfx_setfont(0); th0 = gfx_texth; \
+             w = h = -1; gfx_measurestr(\"Hello\", w, h); ew = eh = -1; gfx_measurestr(\"\", ew, eh); \
+             gfx_measurechar(233, cw, ch); gfx_set(1); gfx_x = 2; gfx_y = 3; gfx_drawstr(\"I\\nI\"); \
+             x_after = gfx_x; y_after = gfx_y;",
+        );
+        let var = |n: &str| m.vars.get(n).unwrap();
+        assert_eq!((var("th"), var("th0")), (8.0, 8.0));
+        assert_eq!((var("w"), var("h"), var("ew"), var("eh")), (40.0, 8.0, -1.0, -1.0));
+        assert_eq!((var("cw"), var("ch")), (16.0, 8.0), "a byte a cell");
+        assert_eq!((var("x_after"), var("y_after")), (10.0, 11.0));
+        let lit: Vec<(i64, i64)> =
+            (0..20).flat_map(|y| (0..20).map(move |x| (x, y))).filter(|&(x, y)| rgb(&s, x, y) != [0; 3]).collect();
+        assert!(!lit.is_empty() && lit.iter().all(|&(x, y)| (2..10).contains(&x) && (3..19).contains(&y)), "{lit:?}");
+        assert!(lit.iter().any(|&(_, y)| y >= 11), "the second line is drawn a cell lower");
+    }
+
+    #[test]
+    fn texth_is_0_until_the_first_view() {
+        let (mut m, code) = machine("th = gfx_texth;");
+        m.run(&code);
+        assert_eq!(m.vars.get("th"), Some(0.0));
     }
 
     #[test]

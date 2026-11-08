@@ -14,16 +14,27 @@ use serde_json::{Value, json};
 use super::{API, Engine, Kind, Shared, Val, call, from_pointer, to_pointer};
 
 /// Runs in the child: sets up the module, runs the script, then deferred code on request.
-/// `print` goes to stderr, keeping stdout for the calls.
+/// Stdout carries the calls, so `print` is sent as a message for Scythe to write to its own
+/// stdout, where REAPER's goes. As in REAPER, what a run writes to stderr is shown only above
+/// the traceback when the run fails.
 const RUNNER: &str = r#"
-import json, os, sys, traceback, types
+import io, json, os, sys, traceback, types
 _in, _out = sys.stdin, sys.stdout
-sys.stdout = sys.stderr
 sys.stdin = open(os.devnull)
 
 def send(msg):
     _out.write(json.dumps(msg) + "\n")
     _out.flush()
+
+class Out(io.TextIOBase):
+    def writable(self):
+        return True
+    def write(self, s):
+        if s:
+            send({"out": s})
+        return len(s)
+
+sys.stdout = Out()
 
 def recv():
     line = _in.readline()
@@ -46,13 +57,14 @@ def report(e):
     return "".join(traceback.format_exception(type(e), e, tb))
 
 def run(fns):
+    sys.stderr = io.StringIO()
     for f in fns:
         try:
             f()
         except SystemExit:
             pass
         except BaseException as e:
-            return report(e)
+            return sys.stderr.getvalue() + report(e)
     return None
 
 error = run([lambda: exec(compile(init["source"], name, "exec"), rp._globals)])
@@ -161,6 +173,11 @@ impl PythonEngine {
                 return Err("Python exited unexpectedly".to_owned());
             }
             let msg: Value = serde_json::from_str(&line).map_err(|e| format!("Bad message from Python: {e}"))?;
+            if let Some(text) = msg.get("out").and_then(Value::as_str) {
+                let mut out = std::io::stdout().lock();
+                let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+                continue;
+            }
             if let Some(name) = msg.get("call").and_then(Value::as_str) {
                 let args = msg.get("args").and_then(Value::as_array).cloned().unwrap_or_default();
                 let reply = self.answer(name, args);
@@ -323,18 +340,22 @@ RPR_Undo_EndBlock("Tidy up", -1)
 
     #[test]
     fn errors_name_the_line_and_change_nothing() {
-        let Some(result) = run_py("from reaper_python import *\nRPR_ShowConsoleMsg('a')\nnot_a_function()", "x.py")
-        else {
+        let script = "from reaper_python import *\nimport sys\nRPR_ShowConsoleMsg('a')\nprint('to stdout')\nsys.stderr.write('warned\\n')\nnot_a_function()";
+        let Some(result) = run_py(script, "x.py") else {
             return;
         };
         let err = result.unwrap_err();
-        assert!(err.starts_with('a'), "the console comes first: {err}");
-        assert!(err.contains("File \"x.py\", line 3"), "{err}");
+        assert!(err.starts_with("awarned\nTraceback"), "the console, then stderr, then the traceback: {err}");
+        assert!(!err.contains("to stdout"), "{err}");
+        assert!(err.contains("File \"x.py\", line 6"), "{err}");
         assert!(err.ends_with("NameError: name 'not_a_function' is not defined"), "{err}");
         let err = run_py("x = (", "s.py").unwrap().unwrap_err();
         assert!(err.contains("s.py") && err.contains("SyntaxError"), "{err}");
-        let (out, _) = run_py("from reaper_python import *\nn = RPR_CountTracks(0)", "y.py").unwrap().unwrap();
+        let quiet =
+            "from reaper_python import *\nimport sys\nprint('n', RPR_CountTracks(0))\nsys.stderr.write('dropped')";
+        let (out, _) = run_py(quiet, "y.py").unwrap().unwrap();
         assert!(out.project.is_none());
+        assert!(out.console.is_empty(), "print and stderr stay out of the console: {:?}", out.console);
     }
 
     #[test]

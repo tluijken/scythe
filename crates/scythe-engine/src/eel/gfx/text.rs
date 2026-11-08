@@ -21,12 +21,20 @@ const FALLBACK_FILES: [&str; 4] = [
 ];
 
 /// A font as `gfx_setfont` sets it: face name, height in pixels and flag characters
-/// packed as a multi-character constant (`'bi'`).
+/// packed as a multi-character constant (`'bi'`), or font 0's bitmap cells.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FontSpec {
     pub face: String,
     pub size: f32,
     pub flags: u32,
+    pub bitmap: bool,
+}
+
+impl FontSpec {
+    /// Font 0, which fonts are until `gfx_setfont` names a face.
+    pub fn bitmap() -> Self {
+        Self { face: String::new(), size: super::bitmap::CELL as f32, flags: 0, bitmap: true }
+    }
 }
 
 /// Which way text runs.
@@ -217,6 +225,9 @@ pub fn measure(spec: &FontSpec, text: &str) -> (f64, f64) {
 /// The pixels one line of `text` covers, relative to the top-left of its measured box, and
 /// how much of each (0..=255).
 pub fn rasterize(spec: &FontSpec, text: &str) -> Vec<(i32, i32, u8)> {
+    if spec.bitmap {
+        return super::bitmap::rasterize(text);
+    }
     let mut fonts = fonts();
     let Some(laid) = layout(&mut fonts, spec, text) else { return Vec::new() };
     let size = spec.size.max(1.0);

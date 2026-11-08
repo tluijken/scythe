@@ -149,6 +149,21 @@ pub fn bounce_finished(
         Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
         Encoding::CdImage(_) | Encoding::Ddp => BitDepth::Int16,
     };
+    if matches!(encoding, Encoding::CdImage(_) | Encoding::Ddp) && channels != 2 {
+        // REAPER creates the files, then its sink refuses anything but stereo and leaves them empty.
+        let file = match encoding {
+            Encoding::Ddp => path.with_file_name(path.file_name().unwrap_or_default().to_string_lossy().to_uppercase()),
+            _ => path.to_owned(),
+        };
+        std::fs::File::create(&file)?;
+        if matches!(encoding, Encoding::CdImage(_)) {
+            std::fs::File::create(path.with_extension("bin"))?;
+        }
+        return Err(BounceError::Encoder(format!(
+            "Unable to create output file {}, sample rate or channel count may not be compatible",
+            file.display()
+        )));
+    }
     if encoding.sample_rate().is_some_and(|r| r != sample_rate) {
         return Err(BounceError::Encoder(format!(
             "{} renders are written at {} Hz",
@@ -520,6 +535,7 @@ fn quantize(s: f32, bits: u32) -> i32 {
 mod tests {
     use super::*;
     use crate::media::decode_file;
+    use scythe_core::render_settings::CdTracks;
     use scythe_core::{Item, Take};
 
     #[test]
@@ -692,6 +708,29 @@ mod tests {
             "{:?}",
             (0..4).map(at).collect::<Vec<_>>()
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn disc_renders_other_than_stereo_leave_empty_files() {
+        let dir = std::env::temp_dir().join(format!("scythe-bounce-disc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = Project::default();
+        let pool = MediaPool::default();
+        let range = TimeRange::new(0.0, 1.0);
+        let cd = Encoding::CdImage(CdImage { tracks: CdTracks::Markers, lead_in_ms: 0, hash_markers_only: false });
+        for (encoding, out, files, channels) in [
+            (cd, "out.cue", &["out.cue", "out.bin"][..], 1),
+            (cd, "out.cue", &["out.cue", "out.bin"], 4),
+            (Encoding::Ddp, "out.DAT", &["OUT.DAT"], 1),
+        ] {
+            let out = dir.join(out);
+            let err = bounce(&p, &pool, range, crate::disc::RATE, channels, encoding, &out, |_| {}).unwrap_err();
+            assert!(err.to_string().contains("sample rate or channel count may not be compatible"), "{err}");
+            for f in files {
+                assert_eq!(std::fs::metadata(dir.join(f)).unwrap().len(), 0, "{f}");
+            }
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

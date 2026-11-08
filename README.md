@@ -141,7 +141,9 @@ Working:
   numbers; `defer("code")` takes code. Python scripts (`from reaper_python import *`, then
   `RPR_GetTrack(0, 0)`) run in a `python3` process and get REAPER's return conventions: a tuple
   of the value and every argument when a call has outputs, pointers as `(MediaTrack*)0x…`
-  strings, `RPR_defer("step()")` taking code or a function.
+  strings, `RPR_defer("step()")` taking code or a function. As in REAPER, `print` goes to
+  Scythe's standard output, not the console, and what a script writes to `sys.stderr` is shown
+  above the traceback only when it fails.
 - **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
   load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
   between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
@@ -175,7 +177,9 @@ Working:
   with the mouse (buttons, modifiers, wheel) and typed keys. It draws into pixels as REAPER
   does: rectangles, lines, circles, arcs, triangles, gradients and pixels blend with `gfx_a`
   and `gfx_mode` (additive too), into the screen or any of 1024 images (`gfx_dest`,
-  `gfx_setimgdim`); text is drawn in the face `gfx_setfont` names (found through fontconfig;
+  `gfx_setimgdim`); font 0, and a font before `gfx_setfont` names a face, is Scythe's own
+  8-pixel bitmap font with REAPER's measures; other text is drawn in the face `gfx_setfont`
+  names (found through fontconfig;
   bold, italic, underline and turned text) and measures as it draws; `gfx_blit` and
   `gfx_blitext` scale, turn and filter; `gfx_loadimg` reads PNG and JPEG files from the
   effect's folder or `Data`; `gfx_getpixel`, `gfx_blurto` and `gfx_muladdrect` work on the
@@ -223,7 +227,9 @@ Working:
   `@` markers hold the album, `KEY=value|…` metadata becomes ISRC, UPC/EAN and CD-TEXT (title,
   performer, songwriter, composer, arranger, message, disc identification, genre, language), and
   the Red Book rules (2 s before the first track, 4 s minimum tracks) move indexes as REAPER
-  moves them. Other sinks are written as WAV. The
+  moves them. As in REAPER, a CD image or DDP render of other than two channels fails with
+  "Unable to create output file …, sample rate or channel count may not be compatible" and
+  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks are written as WAV. The
   project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
   target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 16- and 24-bit) apply.
 
@@ -259,6 +265,9 @@ compare with scythe's output sample by sample:
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
 | WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
 | CD images and DDP filesets of a test signal: tracks from markers (the 4-second rule, `#`-only, lead-ins of 250, 256 and 333 ms, the first track named by the marker at the start, `PERF=`/`WRIT=`/`ISRC=` markers, a later start), from regions (overlapping, cut by the bounds, gaps left out); DDP with `#`/`!`/`@` markers, Red Book index moves, ISRC, UPC/EAN, every CD-TEXT field, genre and language; 32-bit integer WAV and WavPack | byte-identical files (14 images and filesets); 32-bit integer samples identical |
+| CD image and DDP renders of a mono and a 4-channel project | same empty files (`.cue` and `.bin`; `OUT.DAT`) and the same error; 48 kHz projects render at 44.1 kHz as REAPER's do |
+| JSFX font 0: `gfx_texth` (0 before the first `@gfx`, then 8), `gfx_measurestr`/`gfx_measurechar` of every byte and of strings with spaces, tabs, `\r` and `\n`, multi-byte UTF-8, the empty string, and `gfx_x`/`gfx_y` after `gfx_drawstr`, `gfx_drawchar` and `gfx_drawnumber` (read back through `gmem` from REAPER's JSFX window) | same values (34 cases) |
+| Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
@@ -281,13 +290,14 @@ compares the two files.
   (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER 7.73 asks CLAP
   plugins for their preset-discovery factory but lists none of the discovered presets through
   its preset API, so their order and naming beside REAPER's own presets are unverified.
-- ReaScript covers a subset of the API (above); Python needs `python3` on the PATH, and its
-  `print` goes to Scythe's stderr, not the console. EEL2 `eval`, `extension_api`, `gfx_*`
+- ReaScript covers a subset of the API (above); Python needs `python3` on the PATH. EEL2 `eval`, `extension_api`, `gfx_*`
   windows and EEL file/network functions are not there.
 - JSFX views (`@gfx`): `gfx_showmenu` does not wait inside the script; the run stops at the
   call, drops what it drew, and runs again with the same mouse once a choice is made, so code
-  before the call runs twice. Font 0 is the system sans at 10 pixels rather than REAPER's
-  8-pixel bitmap font, other font flags (outline, shadow, inverted) are ignored, and views
+  before the call runs twice. Font 0 measures as REAPER's, but its glyphs are Scythe's own
+  drawing. After a `gfx_drawstr` centred in a box, REAPER leaves `gfx_x`/`gfx_y` measured from
+  0 rather than from the box (from (10, 20) into a box to (100, 50): x 69, y 0, where Scythe
+  gives 79, 20); Scythe keeps the box's offset. Other font flags (outline, shadow, inverted) are ignored, and views
   draw one pixel per point (`gfx_ext_retina` stays 0). `gfx_deltablit`, `gfx_transformblit`
   and `gfx_getdropfile` do nothing. Audio passes the effect by while its `@gfx` script runs.
   REAPER runs
@@ -309,7 +319,7 @@ compares the two files.
   correct decode. A VBRI header frame is assumed to play as silence like a Xing/Info frame.
 - Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image and DDP (video,
   REAPER's FFmpeg and video sinks; WAV's 8-bit, 64-bit float and ADPCM modes). CD image and DDP
-  renders are always 44.1 kHz stereo, where REAPER leaves a mono CD image empty.
+  renders are always 44.1 kHz.
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.
