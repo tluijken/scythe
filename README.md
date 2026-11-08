@@ -32,7 +32,7 @@ The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`
 | Crate | Contents |
 |---|---|
 | `scythe-core` | Project model (tracks, folders, items, takes, sends, markers, tempo map, envelopes, fades, MIDI sources), lossless `.RPP` reader/writer, pan and fader laws, undo history |
-| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia) and zero-phase sinc resampling, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
+| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia) and REAPER's 192-point sinc resampling, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
 | `clap-test-gain`, `lv2-test-plugins`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-app` | egui UI: arrange view, mixer dock, inspector, action palette (Ctrl+K), demo generator |
 
@@ -191,9 +191,10 @@ compare with scythe's output sample by sample:
 | Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
 | Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
 | Reversed sections | exact |
-| ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate) | exact (35/35 cases, 10 high-frequency cases) |
+| ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate); the alternative band, whose width grows with its gain (the stock "Basic 11 band Kick" preset) | exact (35/35 cases, 10 high-frequency cases, 7 alternative-band cases) |
+| Sample-rate conversion of media: impulses at 44.1, 88.2 and 96 kHz in a 48 kHz project, as items and through the sampler (a Blackman-Harris sinc over 96 input frames each side, cut off at 1/1.03 of the output's Nyquist when going down, read from a 32-step table) | exact |
 | ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
-| ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project) | levels and pan per channel identical; difference -27 to -32 dB from the resampling filter |
+| ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project), with its voice limit: a note beyond the limit takes over the oldest voice, which fades out over the 512-frame block holding that note (or never sounds when it started in the same block); retriggers within a block, zero-length notes, 1 to 9 voices | exact (18 cases); a 14-sampler drum kit within 0.07, from the MP3 cymbal samples (symphonia decodes them slightly differently) |
 | FX parameter envelopes on hosted plugins: a ramp, a square step and a jump on CLAP and VST 3 gains (REAPER sends the value at each 512-frame block's last frame) and on a JSFX volume (its first frame, rounded to the slider step, with `@slider` and `@block` running as REAPER runs them) | exact (3 cases) |
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
@@ -234,6 +235,9 @@ compares the two files.
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Time-stretch quality is a phase vocoder, not REAPER's élastique, so stretched takes do not
   null against REAPER.
+- Media is resampled with REAPER's render default (192-point sinc, `RENDER_RESAMPLE 3`, which
+  every corpus project uses); its other modes (16/64/384/512/768-point sinc, linear, r8brain)
+  are not followed. MP3 samples decode slightly differently from REAPER's decoder.
 - Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus and WavPack (video, DDP, CD image);
   32-bit integer WavPack is written from 24-bit samples.
 

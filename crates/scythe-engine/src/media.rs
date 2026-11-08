@@ -114,18 +114,18 @@ pub fn resample(data: &AudioData, target_rate: u32) -> Result<AudioData, MediaEr
     Ok(AudioData { sample_rate: target_rate, channels })
 }
 
-/// Polyphase table of a windowed sinc low-pass, scaled for the conversion ratio.
+/// REAPER's 192-point sinc resampler (`RENDER_RESAMPLE 3`, the render default), measured from
+/// its renders of impulses: a Blackman-Harris window over 96 input frames each side, cut off
+/// at the input's Nyquist frequency or 1/1.03 of the output's, read from a table of 32 steps
+/// per input frame with linear interpolation between them.
 struct SincKernel {
-    half: usize,
-    phases: usize,
-    /// `phases + 1` rows of `2 * half` taps.
-    table: Vec<f32>,
+    /// The kernel from its centre outwards, `OVERSAMPLE` steps per input frame.
+    table: Vec<f64>,
 }
 
 impl SincKernel {
-    const HALF_TAPS: usize = 32;
-    const PHASES: usize = 512;
-    const BETA: f64 = 9.0;
+    const HALF: usize = 96;
+    const OVERSAMPLE: usize = 32;
 
     fn new(from: u32, to: u32) -> Self {
         Self::with_step(from as f64 / to as f64)
@@ -133,64 +133,46 @@ impl SincKernel {
 
     /// A kernel for reading the input `step` frames apart.
     fn with_step(step: f64) -> Self {
-        // Downsampling widens the kernel so the cutoff stays below the new Nyquist.
-        let scale = (1.0 / step).min(1.0);
-        let cutoff = 0.95 * scale;
-        let half = (Self::HALF_TAPS as f64 / scale).ceil() as usize;
-        let bessel_i0 = |x: f64| {
-            let (mut sum, mut term) = (1.0, 1.0);
-            for k in 1..32 {
-                term *= (x / (2.0 * k as f64)).powi(2);
-                sum += term;
-            }
-            sum
-        };
-        let norm = bessel_i0(Self::BETA);
-        let width = 2 * half;
-        let mut table = vec![0.0f32; (Self::PHASES + 1) * width];
-        for p in 0..=Self::PHASES {
-            let frac = p as f64 / Self::PHASES as f64;
-            for j in 0..width {
-                // Tap j sits at input offset j - half + 1 from floor(position).
-                let x = j as f64 - half as f64 + 1.0 - frac;
-                let sinc = if x.abs() < 1e-12 {
-                    1.0
-                } else {
-                    (std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
-                };
-                let w = (x / half as f64).clamp(-1.0, 1.0);
-                let window = bessel_i0(Self::BETA * (1.0 - w * w).max(0.0).sqrt()) / norm;
-                table[p * width + j] = (sinc * window) as f32;
-            }
-            // Normalise each phase to unity DC gain.
-            let row = &mut table[p * width..(p + 1) * width];
-            let sum: f32 = row.iter().sum();
-            if sum.abs() > 1e-9 {
-                row.iter_mut().for_each(|v| *v /= sum);
-            }
+        use std::f64::consts::PI;
+        let cutoff = if step > 1.0 { 1.0 / (step * 1.03) } else { 1.0 };
+        let steps = Self::HALF * Self::OVERSAMPLE;
+        let table = (0..=steps + 1)
+            .map(|q| {
+                let x = q as f64 / Self::OVERSAMPLE as f64;
+                if q >= steps {
+                    return 0.0;
+                }
+                let u = x / Self::HALF as f64;
+                let window = 0.35875
+                    + 0.48829 * (PI * u).cos()
+                    + 0.14128 * (2.0 * PI * u).cos()
+                    + 0.01168 * (3.0 * PI * u).cos();
+                let sinc = if x == 0.0 { 1.0 } else { (PI * cutoff * x).sin() / (PI * cutoff * x) };
+                cutoff * sinc * window
+            })
+            .collect();
+        Self { table }
+    }
+
+    fn tap(&self, distance: f64) -> f64 {
+        let t = distance.abs() * Self::OVERSAMPLE as f64;
+        let lo = t as usize;
+        if lo + 1 >= self.table.len() {
+            return 0.0;
         }
-        Self { half, phases: Self::PHASES, table }
+        let f = t - lo as f64;
+        self.table[lo] * (1.0 - f) + self.table[lo + 1] * f
     }
 
     fn sample(&self, input: &[f32], pos: f64) -> f32 {
-        let base = pos.floor();
-        let frac = pos - base;
-        let p = frac * self.phases as f64;
-        let pi = p as usize;
-        let t = (p - pi as f64) as f32;
-        let width = 2 * self.half;
-        let (row0, row1) = (&self.table[pi * width..(pi + 1) * width], &self.table[(pi + 1) * width..(pi + 2) * width]);
-        let start = base as i64 - self.half as i64 + 1;
-        let mut acc = 0.0f32;
-        for j in 0..width {
-            let idx = start + j as i64;
-            if idx < 0 || idx >= input.len() as i64 {
-                continue;
-            }
-            let h = row0[j] + (row1[j] - row0[j]) * t;
-            acc += input[idx as usize] * h;
+        let base = pos.floor() as i64;
+        let first = (base - Self::HALF as i64 + 1).max(0);
+        let last = (base + Self::HALF as i64).min(input.len() as i64 - 1);
+        let mut acc = 0.0f64;
+        for idx in first..=last {
+            acc += input[idx as usize] as f64 * self.tap(pos - idx as f64);
         }
-        acc
+        acc as f32
     }
 }
 

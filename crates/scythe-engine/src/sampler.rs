@@ -22,6 +22,8 @@ pub struct Rs5kSettings {
     /// 0 for omni, otherwise 1-based.
     pub channel: u8,
     pub obey_note_offs: bool,
+    /// Voices that sound at once; a note beyond them takes over the oldest.
+    pub max_voices: usize,
     /// Attack time in seconds (the parameter spans 0..2 s).
     pub attack: f64,
     pub start: f64,
@@ -48,6 +50,8 @@ impl Rs5kSettings {
             note_hi: note(v(4, 1.0)),
             channel: (v(7, 0.0) * 16.0).round() as u8,
             obey_note_offs: v(11, 0.0) >= 0.5,
+            // Measured from REAPER's renders: 0 is one voice, 1/16 two, 1/2 nine.
+            max_voices: (1.0 + 16.0 * v(8, 1.0).clamp(0.0, 1.0)).round() as usize,
             attack: v(9, 0.0005) * 2.0,
             start: v(13, 0.0).clamp(0.0, 1.0),
             end: v(14, 1.0).clamp(0.0, 1.0),
@@ -64,6 +68,18 @@ pub struct Rs5kCompat {
     /// the track's own notes.
     voices: Vec<Voice>,
     events: Vec<(usize, [u8; 3])>,
+    /// What happens to each of the track's notes, for the note list it was worked out for.
+    plan: Option<(usize, Vec<Fate>)>,
+}
+
+/// How a note of the track's own plays, once voices are taken over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Fate {
+    Plays,
+    /// Taken over by a later note: fades out over REAPER's block from this frame.
+    FadesFrom(i64),
+    /// Taken over within the block it starts in, before it is heard.
+    Silent,
 }
 
 struct Voice {
@@ -94,7 +110,7 @@ impl Rs5kCompat {
         let range = ((settings.start * frames as f64) as usize, ((settings.end * frames as f64) as usize).min(frames));
         let (l, r) = PanLaw::default().gains(settings.pan * 2.0 - 1.0);
         let gain = ((l * settings.volume) as f32, (r * settings.volume) as f32);
-        Ok(Self { settings, sample: Arc::new(audio), gain, range, voices: Vec::new(), events: Vec::new() })
+        Ok(Self { settings, sample: Arc::new(audio), gain, range, voices: Vec::new(), events: Vec::new(), plan: None })
     }
 
     fn velocity_gain(&self, velocity: u8) -> f32 {
@@ -103,7 +119,36 @@ impl Rs5kCompat {
     }
 }
 
+/// Frames over which a voice that is taken over fades out: one REAPER block, from the start
+/// of the block holding the note that takes it.
+const TAKEOVER_FADE: i64 = 512;
+
 impl Rs5kCompat {
+    /// Plays the track's notes through `max_voices` voices: a note beyond them takes over the
+    /// oldest sounding one.
+    fn fates(&self, notes: &crate::synth::NoteList) -> Vec<Fate> {
+        let len = self.range.1.saturating_sub(self.range.0) as i64;
+        let mut fates = vec![Fate::Plays; notes.notes.len()];
+        let mut sounding: Vec<(usize, i64, i64)> = Vec::new();
+        for (i, note) in notes.notes.iter().enumerate() {
+            if !self.accepts(note.channel, note.key) {
+                continue;
+            }
+            sounding.retain(|&(_, _, end)| end > note.start);
+            if sounding.len() >= self.settings.max_voices.max(1) {
+                let (oldest, start, _) = sounding.remove(0);
+                let block = note.start - note.start.rem_euclid(TAKEOVER_FADE);
+                fates[oldest] = if block <= start { Fate::Silent } else { Fate::FadesFrom(block) };
+            }
+            let mut end = note.start + len;
+            if self.settings.obey_note_offs {
+                end = end.min(note.end.min(note.cutoff));
+            }
+            sounding.push((i, note.start, end));
+        }
+        fates
+    }
+
     fn accepts(&self, channel: u8, key: u8) -> bool {
         (self.settings.channel == 0 || channel + 1 == self.settings.channel)
             && (self.settings.note_lo..=self.settings.note_hi).contains(&key)
@@ -125,6 +170,9 @@ impl Rs5kCompat {
             match status & 0xf0 {
                 0x90 if vel > 0 => {
                     if self.accepts(channel, key) {
+                        if self.voices.len() >= self.settings.max_voices.max(1) {
+                            self.voices.remove(0);
+                        }
                         let vg = self.velocity_gain(vel);
                         let gain = (self.gain.0 * vg, self.gain.1 * vg);
                         self.voices.push(Voice { channel, key, played: 0, gain });
@@ -182,9 +230,14 @@ impl Effect for Rs5kCompat {
         let (block_start, block_end) = (ctx.position, ctx.position + n);
         let lc = &self.sample.channels[0];
         let rc = self.sample.channels.get(1).unwrap_or(lc);
-        let plays = |note: &crate::synth::SynthNote| self.accepts(note.channel, note.key);
-        for note in notes.starting_in(block_start - len..block_end) {
-            if !plays(note) {
+        let key = notes as *const crate::synth::NoteList as usize;
+        if self.plan.as_ref().is_none_or(|(k, f)| *k != key || f.len() != notes.notes.len()) {
+            self.plan = Some((key, self.fates(notes)));
+        }
+        let Some((_, fates)) = &self.plan else { return };
+        let window = notes.index_range(block_start - len..block_end);
+        for (note, &fate) in notes.notes[window.clone()].iter().zip(&fates[window]) {
+            if !self.accepts(note.channel, note.key) || fate == Fate::Silent {
                 continue;
             }
             // The item end only sends a note-off, which a one-shot sample ignores.
@@ -192,13 +245,23 @@ impl Effect for Rs5kCompat {
             if self.settings.obey_note_offs {
                 stop = stop.min(note.end);
             }
+            let fade = match fate {
+                Fate::FadesFrom(block) => {
+                    stop = stop.min(block + TAKEOVER_FADE);
+                    Some(block)
+                }
+                _ => None,
+            };
             let vg = self.velocity_gain(note.velocity);
             let (gl, gr) = (self.gain.0 * vg, self.gain.1 * vg);
             let attack = (self.settings.attack * ctx.sample_rate as f64) as i64;
             for f in block_start.max(note.start)..block_end.min(stop) {
                 let rel = f - note.start;
                 let s = self.range.0 + rel as usize;
-                let env = if rel < attack { rel as f32 / attack as f32 } else { 1.0 };
+                let mut env = if rel < attack { rel as f32 / attack as f32 } else { 1.0 };
+                if let Some(fade) = fade.filter(|&b| f >= b) {
+                    env *= 1.0 - (f - fade) as f32 / TAKEOVER_FADE as f32;
+                }
                 let o = (f - block_start) as usize;
                 left[o] += lc[s] * gl * env;
                 right[o] += rc[s] * gr * env;
@@ -252,6 +315,7 @@ mod tests {
             note_hi: 36,
             channel: 0,
             obey_note_offs: false,
+            max_voices: 16,
             attack: 0.0,
             start: 0.0,
             end: 1.0,
@@ -264,6 +328,7 @@ mod tests {
             range: (0, 10),
             voices: Vec::new(),
             events: Vec::new(),
+            plan: None,
         };
         let note = |start, key| SynthNote { start, end: start + 1, cutoff: i64::MAX, channel: 9, key, velocity: 100 };
         let notes = crate::synth::NoteList::new(vec![note(5, 36), note(6, 38)], 100);

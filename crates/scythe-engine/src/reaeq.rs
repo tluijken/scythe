@@ -68,9 +68,9 @@ impl Biquad {
         let warp = w0.min(std::f64::consts::FRAC_PI_2);
         let alpha = sin * (std::f64::consts::LN_2 / 2.0 * bw * warp / warp.sin()).sinh();
         let a = band.gain.max(1e-9).sqrt();
-        // Measured against REAPER: the alternative band has half the Q, and shelves use the slope
-        // parameter S = 1/bw², capped at 1.2.
-        let alpha = if band.kind == BandKind::PeakWide { 2.0 * alpha } else { alpha };
+        // Measured against REAPER: the alternative band's width grows with its gain (alpha
+        // times sqrt(gain)), and shelves use the slope parameter S = 1/bw², capped at 1.2.
+        let alpha = if band.kind == BandKind::PeakWide { alpha * a } else { alpha };
         let shelf_alpha = {
             let s = (1.0 / (bw * bw)).min(1.2);
             sin / 2.0 * ((a + 1.0 / a) * (1.0 / s - 1.0) + 2.0).max(0.0).sqrt()

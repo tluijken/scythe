@@ -72,9 +72,14 @@ impl NoteList {
 
     /// Notes that start in `range` (project frames).
     pub fn starting_in(&self, range: std::ops::Range<i64>) -> &[SynthNote] {
+        &self.notes[self.index_range(range)]
+    }
+
+    /// Where in `notes` the notes that start in `range` are.
+    pub fn index_range(&self, range: std::ops::Range<i64>) -> std::ops::Range<usize> {
         let last = self.notes.partition_point(|x| x.start < range.end);
         let first = self.notes[..last].partition_point(|x| x.start < range.start);
-        &self.notes[first..last]
+        first..last
     }
 
     /// Adds the voices sounding in `[block_start, block_start + out.len())`.
