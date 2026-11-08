@@ -3,6 +3,7 @@
 //! are case-insensitive); `x[i]` addresses the shared memory. User functions are inlined at
 //! each call with their parameters, locals and instance variables renamed, as EEL2 itself does.
 
+mod files;
 mod spectral;
 
 use std::collections::HashMap;
@@ -78,6 +79,15 @@ pub enum Builtin {
     TimePrecise,
     MidiRecvBuf,
     MidiSendBuf,
+    FileOpen,
+    FileClose,
+    FileRewind,
+    FileRiff,
+    FileText,
+    FileAvail,
+    FileVar,
+    FileMem,
+    FileString,
     AtomicGet,
     AtomicSet,
     AtomicAdd,
@@ -143,6 +153,15 @@ impl Builtin {
             "time_precise" => (TimePrecise, usize::MAX),
             "slider_next_chg" => (NoChange, 2),
             "midirecv_buf" => (MidiRecvBuf, 3),
+            "file_open" => (FileOpen, 1),
+            "file_close" => (FileClose, 1),
+            "file_rewind" => (FileRewind, 1),
+            "file_riff" => (FileRiff, 3),
+            "file_text" => (FileText, 1),
+            "file_avail" => (FileAvail, 1),
+            "file_var" => (FileVar, 2),
+            "file_mem" => (FileMem, 3),
+            "file_string" => (FileString, 2),
             "midisend_buf" => (MidiSendBuf, 3),
             "atomic_get" => (AtomicGet, 1),
             "atomic_set" => (AtomicSet, 2),
@@ -839,6 +858,11 @@ pub struct Machine {
     /// What `printf` wrote.
     pub output: String,
     spectral: spectral::Spectral,
+    /// The slots of file sliders and the files each one chooses between.
+    pub file_sliders: Vec<(usize, Vec<std::path::PathBuf>)>,
+    /// Where `file_open` looks for a file named by a string.
+    pub data_dirs: Vec<std::path::PathBuf>,
+    files: Vec<Option<files::OpenFile>>,
 }
 
 /// Bytes in a channel message with this status byte.
@@ -872,6 +896,9 @@ impl Machine {
             midi_read: 0,
             output: String::new(),
             spectral: Default::default(),
+            file_sliders: Vec::new(),
+            data_dirs: Vec::new(),
+            files: Vec::new(),
         }
     }
 
@@ -973,6 +1000,14 @@ impl Machine {
         out[from..].sort_by_key(|e| e.0);
         self.midi_in.clear();
         self.midi_read = 0;
+    }
+
+    fn file_slot(&mut self, handle: f64) -> Option<&mut Option<files::OpenFile>> {
+        let i = handle.round();
+        if i < 1.0 {
+            return None;
+        }
+        self.files.get_mut(i as usize - 1)
     }
 
     fn mem_index(x: f64) -> Option<usize> {
@@ -1232,6 +1267,121 @@ impl Machine {
                 }
                 self.midi_out.push((offset, msg));
                 len as f64
+            }
+            FileOpen => {
+                let chosen = match args.first() {
+                    Some(Node::Var(slot)) => self.file_sliders.iter().find(|(s, _)| s == slot).map(|(_, files)| {
+                        let i = self.vars.values[*slot].round();
+                        (i >= 0.0).then(|| files.get(i as usize).cloned()).flatten()
+                    }),
+                    _ => None,
+                };
+                let path = match chosen {
+                    Some(path) => path,
+                    None => {
+                        let handle = arg(self, 0);
+                        let name = self.string(handle);
+                        let name = std::path::Path::new(&name);
+                        if name.is_absolute() {
+                            Some(name.to_path_buf())
+                        } else {
+                            self.data_dirs.iter().map(|d| d.join(name)).find(|p| p.is_file())
+                        }
+                    }
+                };
+                match path.and_then(|p| std::fs::read(p).ok()) {
+                    Some(bytes) => {
+                        let file = Some(files::OpenFile::new(bytes));
+                        match self.files.iter().position(Option::is_none) {
+                            Some(i) => {
+                                self.files[i] = file;
+                                (i + 1) as f64
+                            }
+                            None => {
+                                self.files.push(file);
+                                self.files.len() as f64
+                            }
+                        }
+                    }
+                    None => -1.0,
+                }
+            }
+            FileClose => {
+                let h = arg(self, 0);
+                if let Some(f) = self.file_slot(h) {
+                    *f = None;
+                }
+                0.0
+            }
+            FileRewind => {
+                let h = arg(self, 0);
+                if let Some(Some(f)) = self.file_slot(h) {
+                    f.rewind();
+                }
+                0.0
+            }
+            FileRiff => {
+                let h = arg(self, 0);
+                let (channels, rate) = match self.file_slot(h) {
+                    Some(Some(f)) => f.riff().unwrap_or((0, 0)),
+                    _ => (0, 0),
+                };
+                self.store(&args[1], channels as f64);
+                self.store(&args[2], rate as f64);
+                channels as f64
+            }
+            FileText => {
+                let h = arg(self, 0);
+                match self.file_slot(h) {
+                    Some(Some(f)) => f.riff().is_none() as u8 as f64,
+                    _ => 0.0,
+                }
+            }
+            FileAvail => {
+                let h = arg(self, 0);
+                match self.file_slot(h) {
+                    Some(Some(f)) => f.avail(),
+                    _ => 0.0,
+                }
+            }
+            FileVar => {
+                let h = arg(self, 0);
+                let Some(Some(f)) = self.file_slot(h) else { return 0.0 };
+                match f.next() {
+                    Some(v) => {
+                        self.store(&args[1], v);
+                        1.0
+                    }
+                    None => 0.0,
+                }
+            }
+            FileMem => {
+                let (h, at, len) = (arg(self, 0), arg(self, 1), arg(self, 2));
+                let mut read = 0;
+                for k in 0..(len.max(0.0) as usize).min(MEM_SIZE) {
+                    let Some(Some(f)) = self.file_slot(h) else { break };
+                    let Some(v) = f.next() else { break };
+                    if let Some(c) = self.cell(at + k as f64) {
+                        *c = v;
+                    }
+                    read += 1;
+                }
+                read as f64
+            }
+            FileString => {
+                let (h, target) = (arg(self, 0), arg(self, 1));
+                let line = match self.file_slot(h) {
+                    Some(Some(f)) => f.line(),
+                    _ => None,
+                };
+                match line {
+                    Some(line) => {
+                        let n = line.len();
+                        self.set_string(target, line);
+                        n as f64
+                    }
+                    None => 0.0,
+                }
             }
             AtomicGet => arg(self, 0),
             AtomicSet | AtomicAdd => {

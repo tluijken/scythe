@@ -23,6 +23,10 @@ pub struct Slider {
     pub hidden: bool,
     /// The variable the slider sets: `sliderN`, or a name given as `sliderN:name=…`.
     pub var: String,
+    /// A file slider's folder under `Data` and its default file, until `Script::load` lists
+    /// the folder into `files` (and their names into `choices`).
+    pub file_dir: Option<(String, String)>,
+    pub files: Vec<PathBuf>,
 }
 
 /// An effect file with its imports, split into sections.
@@ -37,11 +41,23 @@ pub struct Script {
     /// effect declares nothing and gets a stereo pair.
     pub in_pins: Option<usize>,
     pub out_pins: Option<usize>,
+    /// `Data` folders beside the effect folders, for file sliders and `file_open`.
+    pub data_dirs: Vec<PathBuf>,
+}
+
+/// The files of `dir` in the data folders, sorted by name as REAPER lists them.
+fn data_files(data_dirs: &[PathBuf], dir: &str) -> Vec<PathBuf> {
+    let Some(folder) = data_dirs.iter().map(|d| d.join(dir)).find(|p| p.is_dir()) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect())
+        .unwrap_or_default();
+    files.sort_by_key(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    files
 }
 
 fn parse_slider(index: usize, spec: &str) -> Option<Slider> {
-    // `default<min,max,step{a,b}>name`, optionally `var=default<…`; file sliders
-    // (`/path:default:name`) are kept as plain values.
+    // `default<min,max,step{a,b}>name`, optionally `var=default<…`; file sliders are
+    // `/folder:default file:name`.
     let (var, spec) = match spec.split_once('=') {
         Some((v, rest)) if !v.contains('<') && v.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') => {
             (v.trim().to_ascii_lowercase(), rest)
@@ -50,19 +66,21 @@ fn parse_slider(index: usize, spec: &str) -> Option<Slider> {
     };
     if spec.starts_with('/') {
         let mut parts = spec.splitn(3, ':');
-        parts.next();
-        let default = parts.next()?.trim().parse().ok()?;
-        let name = parts.next().unwrap_or("").to_owned();
+        let dir = parts.next()?.trim_start_matches('/').trim().to_owned();
+        let default = parts.next()?.trim().to_owned();
+        let name = parts.next().unwrap_or("").trim().to_owned();
         return Some(Slider {
             index,
-            default,
+            default: 0.0,
             min: 0.0,
             max: 0.0,
-            step: 0.0,
+            step: 1.0,
             hidden: name.starts_with('-'),
-            name,
+            name: name.trim_start_matches('-').to_owned(),
             choices: Vec::new(),
             var,
+            file_dir: Some((dir, default)),
+            files: Vec::new(),
         });
     }
     let (default, rest) = match spec.find('<') {
@@ -95,6 +113,8 @@ fn parse_slider(index: usize, spec: &str) -> Option<Slider> {
         name: name.trim_start_matches('-').to_owned(),
         choices,
         var,
+        file_dir: None,
+        files: Vec::new(),
     })
 }
 
@@ -158,6 +178,15 @@ impl Script {
                 let (_, sections) = split_sections(&read_text(&found)?);
                 script.imported.push(sections);
             }
+        }
+        script.data_dirs = roots.iter().filter_map(|r| Some(r.parent()?.join("Data"))).filter(|d| d.is_dir()).collect();
+        for slider in &mut script.sliders {
+            let Some((dir, default)) = &slider.file_dir else { continue };
+            slider.files = data_files(&script.data_dirs, dir);
+            slider.choices =
+                slider.files.iter().map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
+            slider.default = slider.choices.iter().position(|c| c == default).unwrap_or(0) as f64;
+            slider.max = slider.files.len().saturating_sub(1) as f64;
         }
         Ok(script)
     }
@@ -333,6 +362,15 @@ impl JsfxEffect {
             midi_ran: false,
         };
         fx.ext_noinit = fx.machine.vars.slot("ext_noinit");
+        fx.machine.data_dirs = fx.script.data_dirs.clone();
+        fx.machine.file_sliders = fx
+            .script
+            .sliders
+            .iter()
+            .zip(&fx.slider_vars)
+            .filter(|(s, _)| s.file_dir.is_some())
+            .map(|(s, &slot)| (slot, s.files.clone()))
+            .collect();
         fx.initialise();
         // Effects often set `pdc_delay` in `@block`; one block up front makes their latency
         // known before the first is rendered, as REAPER has it.
@@ -563,7 +601,13 @@ impl Effect for JsfxEffect {
         let mut fields = vec!["-".to_owned(); 64];
         for (s, v) in self.script.sliders.iter().zip(&self.values) {
             if let Some(f) = s.index.checked_sub(1).and_then(|i| fields.get_mut(i)) {
-                *f = scythe_core::rpp::fmt_num(*v);
+                // REAPER stores a file slider as the chosen file's name.
+                *f = match s.file_dir {
+                    Some(_) => scythe_core::rpp::quote_always(
+                        s.choices.get(v.round().max(0.0) as usize).map_or("none", String::as_str),
+                    ),
+                    None => scythe_core::rpp::fmt_num(*v),
+                };
             }
         }
         Some(vec![scythe_core::rpp::Node::Line(fields.join(" "))])
@@ -571,15 +615,37 @@ impl Effect for JsfxEffect {
 }
 
 /// Slider values stored in a `<JS` slot, by slider number (`sliderN` is at `N - 1`), `-` for
-/// unset ones; returned in the script's slider order.
+/// unset ones; returned in the script's slider order. File sliders hold a file name, which
+/// REAPER reads as the first file when it is not in the folder.
 pub fn parse_values(line: &str, sliders: &[Slider]) -> Vec<Option<f64>> {
-    let stored: Vec<Option<f64>> = line.split_whitespace().map(|t| t.parse().ok()).collect();
-    sliders.iter().map(|s| s.index.checked_sub(1).and_then(|i| stored.get(i).copied().flatten())).collect()
+    let stored = scythe_core::rpp::tokenize(line);
+    sliders
+        .iter()
+        .map(|s| {
+            let token = stored.get(s.index.checked_sub(1)?)?;
+            match s.file_dir {
+                Some(_) if token == "-" => None,
+                Some(_) => Some(s.choices.iter().position(|c| c == token).unwrap_or(0) as f64),
+                None => token.parse().ok(),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_sliders_store_file_names() {
+        let mut s = parse_slider(1, "/amp_models:none:Model").unwrap();
+        assert_eq!(s.file_dir, Some(("amp_models".to_owned(), "none".to_owned())));
+        s.choices = vec!["a.wav".to_owned(), "b c.wav".to_owned()];
+        let gain = parse_slider(2, "0<-12,12,1>Gain").unwrap();
+        let sliders = [s, gain];
+        assert_eq!(parse_values("\"b c.wav\" -3", &sliders), [Some(1.0), Some(-3.0)]);
+        assert_eq!(parse_values("5 -", &sliders), [Some(0.0), None], "a number is no file name");
+    }
 
     #[test]
     fn parses_slider_declarations() {

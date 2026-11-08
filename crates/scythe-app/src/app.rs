@@ -140,6 +140,8 @@ pub struct ScytheApp {
     pub last_script: Option<PathBuf>,
     /// What the last script printed (`ShowConsoleMsg`) or its error, until closed.
     pub script_console: Option<String>,
+    /// A script that deferred work, run once per frame, and its file name.
+    running_script: Option<(crate::script::RunningScript, String)>,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
     autosaved_at: Instant,
@@ -232,6 +234,7 @@ impl ScytheApp {
             midi_out_names: None,
             last_script: None,
             script_console: None,
+            running_script: None,
             no_input: false,
             autosaved_at: Instant::now(),
             midi_cache: HashMap::new(),
@@ -1563,40 +1566,105 @@ impl ScytheApp {
         self.run_script(&path);
     }
 
-    /// Runs a Lua ReaScript on the project; its changes become one undo step.
+    /// Runs a Lua ReaScript on the project; its changes become one undo step. A script that
+    /// defers work keeps running until it stops deferring or is stopped.
     pub fn run_script(&mut self, path: &Path) {
+        self.stop_script();
         self.last_script = Some(path.to_owned());
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => return self.notify(format!("Could not read {}: {e}", path.display())),
         };
-        let ctx = crate::script::ScriptContext {
-            selected_track: self.sel.track,
-            selected_items: self.selected_items(),
-            cursor: self.project.cursor,
-            playing: self.is_playing(),
-        };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        match crate::script::run(&source, &name, &self.project, ctx) {
-            Ok(out) => {
-                if let Some(project) = out.project {
-                    let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
-                    self.edit(&label, |p| *p = project);
+        match crate::script::run(&source, &name, &self.project, self.script_context()) {
+            Ok((out, running)) => {
+                self.apply_script(&name, out);
+                match running {
+                    Some(script) => {
+                        self.notify(format!("{name} is running"));
+                        self.running_script = Some((script, name));
+                    }
+                    None => self.notify(format!("Ran {name}")),
                 }
-                if let Some(t) = out.cursor {
-                    self.set_cursor(t);
-                }
-                match out.play {
-                    Some(true) if !self.is_playing() => self.toggle_play(),
-                    Some(false) => self.stop(),
-                    _ => {}
-                }
-                self.script_console = (!out.console.is_empty()).then_some(out.console);
-                self.notify(format!("Ran {name}"));
             }
             Err(e) => {
                 self.script_console = Some(e);
                 self.notify(format!("{name} failed"));
+            }
+        }
+    }
+
+    /// Runs what the running script deferred to this frame.
+    pub fn tick_script(&mut self) {
+        let Some((mut script, name)) = self.running_script.take() else { return };
+        let ctx = self.script_context();
+        match script.tick(&self.project, ctx) {
+            Ok(out) => {
+                self.apply_script(&name, out);
+                if script.is_running() {
+                    self.running_script = Some((script, name));
+                } else {
+                    self.finish_script(script, name);
+                }
+            }
+            Err(e) => {
+                self.script_console = Some(e);
+                self.notify(format!("{name} failed"));
+            }
+        }
+    }
+
+    /// Ends the running script, if any.
+    pub fn stop_script(&mut self) {
+        if let Some((script, name)) = self.running_script.take() {
+            self.finish_script(script, name);
+        }
+    }
+
+    pub fn script_running(&self) -> bool {
+        self.running_script.is_some()
+    }
+
+    fn finish_script(&mut self, script: crate::script::RunningScript, name: String) {
+        match script.stop(&self.project, self.script_context()) {
+            Ok(out) => {
+                self.apply_script(&name, out);
+                self.notify(format!("{name} ended"));
+            }
+            Err(e) => {
+                self.script_console = Some(e);
+                self.notify(format!("{name} failed"));
+            }
+        }
+    }
+
+    fn script_context(&self) -> crate::script::ScriptContext {
+        crate::script::ScriptContext {
+            selected_track: self.sel.track,
+            selected_items: self.selected_items(),
+            cursor: self.project.cursor,
+            playing: self.is_playing(),
+            play_position: self.position(),
+        }
+    }
+
+    fn apply_script(&mut self, name: &str, out: crate::script::ScriptOutcome) {
+        if let Some(project) = out.project {
+            let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
+            self.edit(&label, |p| *p = project);
+        }
+        if let Some(t) = out.cursor {
+            self.set_cursor(t);
+        }
+        match out.play {
+            Some(true) if !self.is_playing() => self.toggle_play(),
+            Some(false) => self.stop(),
+            _ => {}
+        }
+        if !out.console.is_empty() {
+            match &mut self.script_console {
+                Some(c) => c.push_str(&out.console),
+                None => self.script_console = Some(out.console),
             }
         }
     }

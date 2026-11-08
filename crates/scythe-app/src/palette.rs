@@ -72,6 +72,7 @@ pub enum Action {
     ShowPalette,
     RunScript,
     RunLastScript,
+    StopScript,
     MasterMoreChannels,
     MasterFewerChannels,
 }
@@ -149,6 +150,7 @@ impl Action {
         Action::ShowPalette,
         Action::RunScript,
         Action::RunLastScript,
+        Action::StopScript,
         Action::MasterMoreChannels,
         Action::MasterFewerChannels,
     ];
@@ -222,6 +224,7 @@ impl Action {
             Action::ShowPalette => "Actions: Search actions",
             Action::RunScript => "Script: Run ReaScript (Lua)",
             Action::RunLastScript => "Script: Run last script again",
+            Action::StopScript => "Script: Stop the running script",
             Action::MasterMoreChannels => "Master: More channels",
             Action::MasterFewerChannels => "Master: Fewer channels",
         }
@@ -292,7 +295,7 @@ impl Action {
             Action::TallerTracks => k(Modifiers::NONE, Key::PageUp),
             Action::ShorterTracks => k(Modifiers::NONE, Key::PageDown),
             Action::ShowPalette => k(CMD, Key::K),
-            Action::RunScript | Action::RunLastScript => None,
+            Action::RunScript | Action::RunLastScript | Action::StopScript => None,
             Action::MasterMoreChannels | Action::MasterFewerChannels => None,
         }
     }
@@ -538,6 +541,13 @@ impl Action {
                 Some(path) => app.run_script(&path),
                 None => app.notify("No script run yet"),
             },
+            Action::StopScript => {
+                if app.script_running() {
+                    app.stop_script();
+                } else {
+                    app.notify("No script is running");
+                }
+            }
         }
     }
 }

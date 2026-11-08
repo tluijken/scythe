@@ -21,6 +21,7 @@ impl eframe::App for Shell {
         self.app.update_meters();
         self.app.tick_editors();
         self.app.tick_automation();
+        self.app.tick_script();
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
         // Meters and the clock need a steady frame rate even when nothing is playing.

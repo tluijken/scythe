@@ -309,8 +309,9 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.muted = flag(&t, 1);
                         track.solo = flag(&t, 2);
                     }
-                    // REAPER packs the device and channel as `device * 32 + channel`, -1 for none.
-                    "MIDIHWOUT" => {
+                    // REAPER writes `MIDIOUT device*32+channel`, -1 for none; earlier scythe
+                    // versions wrote the same code as `MIDIHWOUT`.
+                    "MIDIOUT" | "MIDIHWOUT" => {
                         let v = num(&t, 1, -1.0) as i64;
                         track.midi_out = (v >= 0).then_some(((v >> 5) as u8, (v & 31) as u8));
                         track.extra.push(node.clone());
@@ -859,11 +860,10 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 }
                 wrote_envs.push(kind);
             }
-            Node::Line(l) if line_key(l) == "MIDIHWOUT" => {
-                let mut toks = tokenize(l);
-                toks.resize(toks.len().max(2), "0".into());
-                toks[1] = midi_out_code(t.midi_out).to_string();
-                c.line(toks);
+            Node::Line(l) if matches!(line_key(l), "MIDIOUT" | "MIDIHWOUT") => {
+                if !wrote_midi_out {
+                    c.line(["MIDIOUT".to_owned(), midi_out_code(t.midi_out).to_string()]);
+                }
                 wrote_midi_out = true;
             }
             Node::Line(l) if line_key(l) == "AUTOMODE" => {
@@ -903,7 +903,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         c.line(["NCHAN".to_owned(), t.channels.to_string()]);
     }
     if !wrote_midi_out && t.midi_out.is_some() {
-        c.line(["MIDIHWOUT".to_owned(), midi_out_code(t.midi_out).to_string(), "0".to_owned()]);
+        c.line(["MIDIOUT".to_owned(), midi_out_code(t.midi_out).to_string()]);
     }
     if !wrote_auto && t.auto_mode != AutoMode::TrimRead {
         c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
@@ -1271,6 +1271,17 @@ mod tests {
         assert!(p2.tracks[0].fx[1].enabled);
         assert!(!p2.tracks[0].armed);
         assert_eq!(p2.tracks[0].items[0].position, 70.0);
+    }
+
+    #[test]
+    fn midi_output_uses_reapers_midiout_line() {
+        // As REAPER 7.73 saves I_MIDIHWOUT 37 (device 1, channel 5).
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    MIDIOUT 37\n  >\n  <TRACK\n    MIDIOUT -1\n  >\n>\n";
+        let mut p = project_from_rpp(text).unwrap();
+        assert_eq!((p.tracks[0].midi_out, p.tracks[1].midi_out), (Some((1, 5)), None));
+        p.tracks[1].midi_out = Some((0, 16));
+        let out = project_to_rpp(&p);
+        assert!(out.contains("MIDIOUT 37\n") && out.contains("MIDIOUT 16\n") && !out.contains("MIDIHWOUT"), "{out}");
     }
 
     #[test]

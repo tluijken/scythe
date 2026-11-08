@@ -429,7 +429,7 @@ pub struct Track {
     pub pan_law: f64,
     /// Automation mode (`AUTOMODE`): what moving a control does while playing.
     pub auto_mode: AutoMode,
-    /// Hardware MIDI output (`MIDIHWOUT`): device index and channel (0 keeps each message's
+    /// Hardware MIDI output (`MIDIOUT`): device index and channel (0 keeps each message's
     /// own channel, 1-16 forces one).
     pub midi_out: Option<(u8, u8)>,
     /// Audio channels (`NCHAN`, even, 2-128).

@@ -1,6 +1,7 @@
 //! ReaScript in Lua 5.4: a subset of REAPER's `reaper.*` API over a copy of the project, so
 //! simple REAPER scripts run unchanged. The script's changes come back as one project to apply
-//! as a single undo step.
+//! as a single undo step. A script that calls `reaper.defer` keeps running: the app calls its
+//! deferred functions once per frame, each over a fresh copy of the project.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,6 +25,8 @@ pub struct ScriptContext {
     pub selected_items: Vec<ItemId>,
     pub cursor: f64,
     pub playing: bool,
+    /// The playhead while playing, else the cursor.
+    pub play_position: f64,
 }
 
 #[derive(Debug, Default)]
@@ -41,6 +44,8 @@ struct State {
     ctx: ScriptContext,
     out: ScriptOutcome,
     changed: bool,
+    deferred: Vec<mlua::Function>,
+    at_exit: Vec<mlua::Function>,
 }
 
 type Shared = Rc<RefCell<State>>;
@@ -53,22 +58,101 @@ fn all_items(p: &Project) -> Vec<ItemId> {
     p.tracks.iter().flat_map(|t| t.items.iter().map(|i| i.id)).collect()
 }
 
-/// Runs `source` and returns what it did. Errors carry Lua's message (with the line).
-pub fn run(source: &str, name: &str, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
-    let state: Shared =
-        Rc::new(RefCell::new(State { project: project.clone(), ctx, out: ScriptOutcome::default(), changed: false }));
+/// Runs `source` and returns what it did, and the script itself when it deferred work to
+/// later frames. Errors carry Lua's message (with the line).
+pub fn run(
+    source: &str,
+    name: &str,
+    project: &Project,
+    ctx: ScriptContext,
+) -> Result<(ScriptOutcome, Option<RunningScript>), String> {
+    let state: Shared = Rc::new(RefCell::new(State {
+        project: project.clone(),
+        ctx,
+        out: ScriptOutcome::default(),
+        changed: false,
+        deferred: Vec::new(),
+        at_exit: Vec::new(),
+    }));
     let lua = Lua::new();
     register(&lua, &state).map_err(|e| e.to_string())?;
     let result = lua.load(source).set_name(name).exec();
-    drop(lua);
-    let state = Rc::try_unwrap(state).map_err(|_| "script state still in use".to_owned())?.into_inner();
-    let mut out = state.out;
-    if state.changed {
-        out.project = Some(state.project);
+    let mut script = RunningScript { _lua: lua, state };
+    if let Err(e) = result {
+        return Err(format!("{}{e}", script.outcome().console));
     }
-    match result {
-        Ok(()) => Ok(out),
-        Err(e) => Err(format!("{}{e}", out.console)),
+    if script.is_running() {
+        let out = script.outcome();
+        return Ok((out, Some(script)));
+    }
+    let out = script.finish(None)?;
+    Ok((out, None))
+}
+
+/// A script waiting for its deferred functions to run.
+pub struct RunningScript {
+    /// Holds the deferred functions' interpreter alive.
+    _lua: Lua,
+    state: Shared,
+}
+
+impl std::fmt::Debug for RunningScript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunningScript").field("deferred", &self.state.borrow().deferred.len()).finish()
+    }
+}
+
+impl RunningScript {
+    pub fn is_running(&self) -> bool {
+        !self.state.borrow().deferred.is_empty()
+    }
+
+    /// Runs the functions deferred in the last frame over `project`.
+    pub fn tick(&mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
+        self.reset(project, ctx);
+        let due = std::mem::take(&mut self.state.borrow_mut().deferred);
+        for f in due {
+            if let Err(e) = f.call::<()>(()) {
+                return Err(format!("{}{e}", self.outcome().console));
+            }
+        }
+        Ok(self.outcome())
+    }
+
+    /// Ends the script, running what it registered with `atexit`.
+    pub fn stop(mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
+        self.state.borrow_mut().deferred.clear();
+        self.finish(Some((project, ctx)))
+    }
+
+    fn finish(&mut self, fresh: Option<(&Project, ScriptContext)>) -> Result<ScriptOutcome, String> {
+        if let Some((project, ctx)) = fresh {
+            self.reset(project, ctx);
+        }
+        let at_exit = std::mem::take(&mut self.state.borrow_mut().at_exit);
+        for f in at_exit {
+            if let Err(e) = f.call::<()>(()) {
+                return Err(format!("{}{e}", self.outcome().console));
+            }
+        }
+        Ok(self.outcome())
+    }
+
+    fn reset(&mut self, project: &Project, ctx: ScriptContext) {
+        let mut s = self.state.borrow_mut();
+        s.project = project.clone();
+        s.ctx = ctx;
+        s.changed = false;
+    }
+
+    /// What the script did since the last outcome was taken.
+    fn outcome(&mut self) -> ScriptOutcome {
+        let mut s = self.state.borrow_mut();
+        let mut out = std::mem::take(&mut s.out);
+        if std::mem::take(&mut s.changed) {
+            out.project = Some(s.project.clone());
+        }
+        out
     }
 }
 
@@ -111,12 +195,21 @@ fn register(lua: &Lua, state: &Shared) -> mlua::Result<()> {
     for noop in ["UpdateArrange", "UpdateTimeline", "TrackList_AdjustWindows", "PreventUIRefresh"] {
         reaper.set(noop, lua.create_function(|_, _: MultiValue| Ok(()))?)?;
     }
-    reaper.set(
-        "defer",
-        lua.create_function(|_, _: Value| -> mlua::Result<()> {
-            Err(mlua::Error::runtime("reaper.defer is not supported: scripts run once"))
-        })?,
-    )?;
+    func!("defer", |s, f: mlua::Function| {
+        s.deferred.push(f);
+        Ok(true)
+    });
+    func!("runloop", |s, f: mlua::Function| {
+        s.deferred.push(f);
+        Ok(true)
+    });
+    func!("atexit", |s, f: mlua::Function| {
+        s.at_exit.push(f);
+        Ok(true)
+    });
+    func!("time_precise", |_s, (): ()| {
+        Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()))
+    });
 
     // Transport and cursor.
     func!("GetCursorPosition", |s, (): ()| Ok(s.out.cursor.unwrap_or(s.ctx.cursor)));
@@ -125,6 +218,10 @@ fn register(lua: &Lua, state: &Shared) -> mlua::Result<()> {
         Ok(())
     });
     func!("GetPlayState", |s, (): ()| Ok(s.out.play.unwrap_or(s.ctx.playing) as i64));
+    func!("GetPlayPosition", |s, (): ()| Ok(s.ctx.play_position));
+    func!("GetPlayPosition2", |s, (): ()| Ok(s.ctx.play_position));
+    func!("GetPlayPositionEx", |s, _p: Value| Ok(s.ctx.play_position));
+    func!("GetPlayPosition2Ex", |s, _p: Value| Ok(s.ctx.play_position));
     func!("OnPlayButton", |s, (): ()| {
         s.out.play = Some(true);
         Ok(())
@@ -379,7 +476,7 @@ mod tests {
             reaper.GetSetMediaTrackInfo_String(reaper.GetTrack(0, 0), "P_NAME", "Click", true)
             reaper.Undo_EndBlock("Tidy up", -1)
         "#;
-        let out = run(script, "test.lua", &project(), ScriptContext::default()).unwrap();
+        let (out, _) = run(script, "test.lua", &project(), ScriptContext::default()).unwrap();
         assert_eq!(out.console, "Guitar\nBass\n");
         assert_eq!(out.undo.as_deref(), Some("Tidy up"));
         let p = out.project.unwrap();
@@ -395,8 +492,33 @@ mod tests {
         let err = run("reaper.ShowConsoleMsg('a')\nnot_a_function()", "x.lua", &project(), ScriptContext::default())
             .unwrap_err();
         assert!(err.contains("x.lua\"]:2") || err.contains("x.lua:2"), "{err}");
-        let out = run("local n = reaper.CountTracks(0)", "y.lua", &project(), ScriptContext::default()).unwrap();
+        let (out, _) = run("local n = reaper.CountTracks(0)", "y.lua", &project(), ScriptContext::default()).unwrap();
         assert!(out.project.is_none());
-        assert!(run("reaper.defer(function() end)", "z.lua", &project(), ScriptContext::default()).is_err());
+    }
+
+    #[test]
+    fn deferred_functions_run_each_tick_until_they_stop() {
+        let script = r#"
+            local n = 0
+            local function step()
+                n = n + 1
+                reaper.ShowConsoleMsg(n .. "@" .. reaper.GetPlayPosition() .. " ")
+                if n < 3 then reaper.defer(step) end
+            end
+            reaper.atexit(function() reaper.SetMediaTrackInfo_Value(reaper.GetTrack(0, 0), "D_VOL", 0.25) end)
+            reaper.defer(step)
+        "#;
+        let (out, running) = run(script, "d.lua", &project(), ScriptContext::default()).unwrap();
+        assert!(out.console.is_empty());
+        let mut running = running.expect("the script deferred work");
+        let mut console = String::new();
+        for t in 1..=3 {
+            let ctx = ScriptContext { play_position: t as f64, ..Default::default() };
+            console += &running.tick(&project(), ctx).unwrap().console;
+        }
+        assert_eq!(console, "1@1.0 2@2.0 3@3.0 ");
+        assert!(!running.is_running());
+        let out = running.stop(&project(), ScriptContext::default()).unwrap();
+        assert_eq!(out.project.unwrap().tracks[0].volume, 0.25, "atexit runs when the script ends");
     }
 }
