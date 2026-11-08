@@ -79,7 +79,8 @@ impl Filter {
         }
         let w0 = std::f64::consts::TAU * cutoff.max(1.0) / sample_rate;
         let (sin, cos) = w0.sin_cos();
-        let alpha = sin / std::f64::consts::SQRT_2;
+        // A Q of 1, as fitted to ReaDelay's impulse responses.
+        let alpha = sin / 2.0;
         let a0 = 1.0 + alpha;
         let b = if high {
             [(1.0 + cos) / 2.0, -(1.0 + cos), (1.0 + cos) / 2.0]
