@@ -51,8 +51,18 @@ fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
         }
         let finish = scythe_engine::bounce::Finish::from_settings(&settings);
         let channels = settings.channels;
-        scythe_engine::bounce::bounce_finished(&project, &pool, range, rate, channels, encoding, &out, finish, |_| {})
-            .map_err(|e| e.to_string())?;
+        scythe_engine::bounce::bounce_finished(
+            &project,
+            &pool,
+            range,
+            rate,
+            channels,
+            encoding.clone(),
+            &out,
+            finish,
+            |_| {},
+        )
+        .map_err(|e| e.to_string())?;
         eprintln!("rendered {:.1}-{:.1} s to {}", range.start, range.end, out.display());
     }
     Ok(())

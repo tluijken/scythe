@@ -1055,7 +1055,7 @@ impl ScytheApp {
                 if let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                last = bounce_finished(&project, &pool, range, rate, channels, encoding, &path, finish, |_| {})
+                last = bounce_finished(&project, &pool, range, rate, channels, encoding.clone(), &path, finish, |_| {})
                     .map(|()| path)
                     .map_err(|e| e.to_string());
                 if last.is_err() {

@@ -307,9 +307,18 @@ Working:
   (transport stream), MOV, MP4, Matroska, FLV and WebM with the codecs REAPER lists for each
   (H.264, H.265, AV1, VP8, VP9, MPEG-1/2, XviD, FLV1, FFV1, Huffyuv, MJPEG, DV; MP3, AAC,
   AC-3, MP2, Vorbis, Opus, 16/24-bit and float PCM, or no stream), the video and audio bitrate,
-  frame size (0 for 1920x1080) and rate. Frames are black where no video item plays; video
-  items (top track first) are scaled into the frame keeping their aspect ratio with black bars,
-  or stretched, and show on every frame they overlap. Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
+  frame size (a side of 0 follows 16:9 from the other, both 0 is 1920x1080: REAPER's sink does
+  not read the project's video size) and rate, MJPEG's quality factor, and the audio and video
+  encoder option strings (`key=value` pairs up to a `;` or `#`: `codec`, `tag`, `q`/`qscale`,
+  `range=jpeg`, and any other encoder option such as `crf`, `preset`, `g` or `b`). Frames are
+  black where no video item plays; video items (top track first) are converted to YV12 and
+  scaled with REAPER's scaler (bilinear from the top-left corner, no half-pixel centring) into
+  the frame keeping their aspect ratio with black bars, or stretched. A clip shows on the frames
+  whose middle it covers, each with the source frame on screen at that middle (B-frame streams
+  timed by their decoding timestamps, as REAPER does). Video items play their own audio,
+  decoded by FFmpeg. Three stock video processor presets are rendered, recognised by their
+  code, as take or track FX: "Track opacity/zoom/pan" (without rotation or a forced size),
+  "Invert colors" and "Brightness/Contrast". Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
   writes them) take their tracks from markers (each at least 4 seconds after the previous track;
   `PERF=`, `WRIT=` and `ISRC=` markers fill in the track's cue entries; optionally only `#`
   markers), from regions (audio outside regions left out) or as one track, after an optional
@@ -367,7 +376,11 @@ compare with scythe's output sample by sample:
 | Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
 | ReaScript API: one Lua script (sends, track colors and selection, markers and regions with colors, time selection, repeat, tempo and time signature markers and the time map, `format_timestr`, `mkvolstr`, fader scaling, a volume envelope's points and `Envelope_Evaluate`, MIDI notes and CCs with selection and mute, PPQ conversions, items, takes and sources, project and global extended state, project title and notes, `Main_OnCommand(40001)`), one EEL2 script (`eval`, `extension_api`, file functions, MIDI with optional arguments left out, `#retval` strings) and one Python script, run in REAPER and in Scythe with their outputs compared | same values (126 lines), but for beat positions REAPER gives as 1e-11 where Scythe gives 0; REAPER 7.73's Python module fails some calls (`RPR_MIDI_InsertNote`, `RPR_GetTakeName` of an unnamed take, `RPR_ValidatePtr`) and gives region names as empty strings, which Scythe does not copy |
 | WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
-| Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames (REAPER's 25 fps decode repeats and skips a few source frames), pixels within 25-28 dB PSNR (another scaler) |
+| Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames showing the same source frames (exact at 30 fps; REAPER's 25 fps render of a 25 fps file at half-frame offsets picks a neighbouring frame now and then), MPEG-4 items scaled within 30-32 dB PSNR (26 and 23 dB with FFmpeg's bilinear scaler) |
+| Video sink settings: frame sizes 0x0 (with a 640x360 project video size), 640x0 and 0x480; H.264 option strings (`crf`, `preset`, `g`, `b`, `range=jpeg`, comments), audio `b`; MJPEG quality 0, 50, 80, 95 and 100 with and without `qscale` | 1920x1080 and 640x360 as REAPER (0x480 crashes REAPER); same x264 settings in the stream (rate control, bitrate, keyframe interval, subme, B-frames) and full range; MJPEG sizes within 2% |
+| Video item scaling of a high-detail test pattern: 1:1, 2.5x and 4x up, 16:9 with bars and stretched, 4x down | 1:1 identical; up 36.8-40.3 dB (14-17 dB with FFmpeg's bilinear scaler), down 23.2 dB (11 dB) |
+| Video items' own audio: PCM in Matroska and MOV at 48 and 44.1 kHz, AAC in MP4, with item position and offset | PCM at the render rate identical; resampled and AAC streams within -30 dB (REAPER's video audio drifts by a fraction of a sample) |
+| Video processors: opacity 0.5 over a lower track, zoom and pan with and without aspect and filtering, invert colours (track and take FX), brightness/contrast | brightness/contrast identical; invert 37-40 dB; opacity 22 dB and zoom/pan 18-21 dB (REAPER blits the lower track's own video by nearest neighbour, and its zoomed rectangle is not matched exactly) |
 | JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
@@ -434,11 +447,18 @@ compares the two files.
 - Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image, DDP and the
   FFmpeg video sink (AIFF, CAF, GIF, LCF; WAV's 8-bit u-law; the WAV sink's BWF and Wave64/RF64
   options). CD image and DDP renders are always 44.1 kHz.
-- Video renders: the sink's encoder option strings, transparency and colour-bits settings are
-  not read, and a frame size of 0 always means 1920x1080 rather than the project's video
-  settings. Video items are scaled with FFmpeg's bilinear scaler, not REAPER's, have no video
-  FX, and their own audio is not rendered; lossy streams are FFmpeg's current encoders rather
-  than the FFmpeg 4.4 REAPER loads. DV audio is not written (FFmpeg has no encoder for it).
+- Video renders: video processors other than the three presets above (text and timecode
+  overlays, item fades, chroma key, transitions, blurs …, and any edited code) are left out
+  with a warning: they are EEL scripts drawing with REAPER's own graphics API. The opacity
+  preset blends over the lower tracks as Scythe composites them rather than re-blitting the
+  next track's video by nearest neighbour, and its zoomed rectangle is a few pixels off
+  REAPER's. Downscaling is the top-left bilinear scaler, which REAPER's 4x reduction follows
+  only loosely; the first frame of a B-frame stream at its very start shows a later frame.
+  Option keys `ffmpeg` does not know fail the render (REAPER ignores them). Video sources with item properties beyond the file
+  (`AUDIO`, `FLIP`, peaks settings) keep their video but not their audio. Lossy streams are
+  FFmpeg's current encoders rather than the FFmpeg 4.4 REAPER loads. DV audio is not written
+  (FFmpeg has no encoder for it). REAPER's FFmpeg sink has no transparency or colour-depth
+  settings to read (those are a video item's own properties).
 
 REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
 the host for REAPER internals.

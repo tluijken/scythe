@@ -175,7 +175,7 @@ impl Container {
 }
 
 /// REAPER's video sink settings (`RENDER_CFG` id `PMFF`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Video {
     pub container: Container,
     pub video: Option<VideoCodec>,
@@ -187,32 +187,49 @@ pub struct Video {
     pub fps: f64,
     /// Scale video items into the frame keeping their aspect ratio, with black bars.
     pub keep_aspect: bool,
+    /// The quality factor (0-100) of codecs that have no bitrate (MJPEG).
+    pub quality: u32,
+    /// FFmpeg encoder options: `key=value` pairs, up to a `;` or `#` comment.
+    pub video_options: String,
+    pub audio_options: String,
 }
 
 impl Video {
     /// The sink stores the container and codecs as list indexes (an index past a list picks
-    /// its first entry), then the bitrates, the frame size (0 for 1920x1080, odd sizes grow
-    /// to even), the frame rate as a float and the aspect flag.
+    /// its first entry), then the bitrates, the frame size, the frame rate as a float, the
+    /// aspect flag, the quality factor and the audio, then the video encoder options as
+    /// NUL-terminated strings. A side of 0 follows 16:9 from the other, both 0 is 1920x1080
+    /// (the project's video size is not consulted), and odd sizes grow to even.
     fn parse(bytes: &[u8]) -> Self {
         let container = Container::from_index(u32_at(bytes, 4).unwrap_or(7));
         fn pick<T: Copy>(list: &[Option<T>], index: Option<u32>) -> Option<T> {
             *list.get(index.unwrap_or(0) as usize).unwrap_or(&list[0])
         }
-        let size = |at, default| match u32_at(bytes, at).unwrap_or(0) {
-            0 => default,
-            n => n.min(16384).next_multiple_of(2),
+        let side = |at| u32_at(bytes, at).map_or(0, |n| (n as i32).clamp(0, 16384) as u32);
+        let (width, height) = match (side(24), side(28)) {
+            (0, 0) => (1920, 1080),
+            (w, 0) => (w, w * 9 / 16),
+            (0, h) => (h * 16 / 9, h),
+            size => size,
         };
         let fps = bytes.get(32..36).map_or(30.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
+        let mut strings = bytes.get(44..).unwrap_or_default().split(|&b| b == 0);
+        let mut text = || strings.next().map(|s| String::from_utf8_lossy(s).into_owned()).unwrap_or_default();
+        let audio_options = text();
+        let video_options = text();
         Self {
             container,
             video: pick(container.video_codecs(), u32_at(bytes, 8)),
             audio: pick(container.audio_codecs(), u32_at(bytes, 16)),
             video_kbps: u32_at(bytes, 12).unwrap_or(2048),
             audio_kbps: u32_at(bytes, 20).unwrap_or(128),
-            width: size(24, 1920),
-            height: size(28, 1080),
+            width: width.next_multiple_of(2),
+            height: height.next_multiple_of(2),
             fps: if fps.is_finite() && fps > 0.0 { fps as f64 } else { 30.0 },
             keep_aspect: u32_at(bytes, 36).unwrap_or(1) != 0,
+            quality: u32_at(bytes, 40).unwrap_or(95),
+            video_options,
+            audio_options,
         }
     }
 }
@@ -428,7 +445,7 @@ impl RenderSettings {
                         if name.trim_matches(|c: char| " -_.".contains(c)).is_empty() { p.name() } else { name }
                     })
                 };
-                let ext = match self.format {
+                let ext = match &self.format {
                     Format::Mp3 { .. } => "mp3",
                     Format::Flac { .. } => "flac",
                     Format::Vorbis { .. } => "ogg",
@@ -661,8 +678,25 @@ mod tests {
                 height: 1080,
                 fps: 30.0,
                 keep_aspect: true,
+                quality: 95,
+                video_options: String::new(),
+                audio_options: String::new(),
             })
         );
+        // MJPEG at quality 20, 640 wide with no height, encoder options "b=96000" for the
+        // audio and "crf=30 g=10" for the video.
+        let Format::Video(v) =
+            format("UE1GRgQAAAAEAAAAAAgAAAIAAACAAAAAgAIAAAAAAAAAAMhBAQAAABQAAABiPTk2MDAwAGNyZj0zMCBnPTEwAA==")
+        else {
+            panic!()
+        };
+        assert_eq!((v.video, v.width, v.height, v.quality), (Some(VideoCodec::Mjpeg), 640, 360, 20));
+        assert_eq!((v.audio_options.as_str(), v.video_options.as_str()), ("b=96000", "crf=30 g=10"));
+        // Only a height: 16:9, 853 wide grown to even.
+        let Format::Video(v) = format("UE1GRgQAAAACAAAAAAgAAAIAAACAAAAAAAAAAOABAAAAAMhBAQAAAF8AAAAAAA==") else {
+            panic!()
+        };
+        assert_eq!((v.width, v.height), (854, 480));
         // Matroska, FFV1 and 16-bit PCM at 320x240, 25 fps; then no video stream.
         let Format::Video(v) = format("UE1GRgQAAAACAAAAAAgAAAIAAACAAAAAQAEAAPAAAAAAAMhBAQAAAF8AAAAAAA==") else {
             panic!()
@@ -678,7 +712,7 @@ mod tests {
         assert_eq!(v.video, None);
         let p = project("UE1GRgYAAAABAAAAAAgAAAEAAACAAAAAQAEAAPAAAAAAAPBBAQAAAF8AAAAAAA==");
         let s = RenderSettings::from_project(&p);
-        let Format::Video(v) = s.format else { panic!() };
+        let Format::Video(v) = &s.format else { panic!() };
         assert_eq!((v.video, v.audio), (Some(VideoCodec::Vp9), Some(AudioCodec::Opus)));
         assert_eq!(s.jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.webm"));
     }

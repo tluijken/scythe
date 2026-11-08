@@ -38,7 +38,7 @@ impl BitDepth {
 /// `flac`, `oggenc`, `opusenc`, `wavpack`, `ffmpeg` for video) that reads an intermediate WAV;
 /// CD images and DDP filesets are laid out from a 16-bit WAV by [`crate::disc`], and 64-bit
 /// and ADPCM WAVs are converted from a float WAV by [`crate::wavcodec`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Encoding {
     Wav(BitDepth),
     Mp3 { kbps: u32 },
@@ -74,12 +74,12 @@ impl Encoding {
             }
             Format::CdImage(cd) => Self::CdImage(cd),
             Format::Ddp => Self::Ddp,
-            Format::Video(v) => Self::Video(v),
+            Format::Video(ref v) => Self::Video(v.clone()),
             Format::Other(_) => Self::Wav(BitDepth::Int24),
         }
     }
 
-    pub fn extension(self) -> &'static str {
+    pub fn extension(&self) -> &'static str {
         match self {
             Self::Wav(_) | Self::Adpcm(_) => "wav",
             Self::Mp3 { .. } => "mp3",
@@ -94,7 +94,7 @@ impl Encoding {
     }
 
     /// The sample rate this encoding is always written at, whatever the project asks for.
-    pub fn sample_rate(self) -> Option<u32> {
+    pub fn sample_rate(&self) -> Option<u32> {
         matches!(self, Self::CdImage(_) | Self::Ddp).then_some(crate::disc::RATE)
     }
 }
@@ -162,7 +162,7 @@ pub fn bounce_finished(
         Encoding::Flac { depth, .. } | Encoding::WavPack { depth, .. } => depth,
         Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
         Encoding::CdImage(_) | Encoding::Ddp => BitDepth::Int16,
-        Encoding::Video(v) => match v.audio {
+        Encoding::Video(ref v) => match v.audio {
             Some(AudioCodec::Pcm16) => BitDepth::Int16,
             Some(AudioCodec::Pcm24) => BitDepth::Int24,
             _ => BitDepth::Float32,
@@ -205,7 +205,7 @@ pub fn bounce_finished(
             render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, finish, progress)
                 .and_then(|()| Ok(crate::wavcodec::write_adpcm(&wav, channels == 1, path, mode)?))
         }
-        Encoding::Video(v) => {
+        Encoding::Video(ref v) => {
             let audio = match v.audio {
                 Some(_) => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
                     .map(|()| Some(wav.as_path())),
@@ -213,7 +213,7 @@ pub fn bounce_finished(
             };
             let clips = crate::video::video_clips(project, range);
             audio.and_then(|audio| {
-                crate::video::write_video(&v, &clips, range.length(), audio, path).map_err(BounceError::Encoder)
+                crate::video::write_video(v, &clips, range.length(), audio, path).map_err(BounceError::Encoder)
             })
         }
         _ => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
@@ -763,7 +763,7 @@ mod tests {
         let range = TimeRange::new(0.0, 1.0);
         let cd = Encoding::CdImage(CdImage { tracks: CdTracks::Markers, lead_in_ms: 0, hash_markers_only: false });
         for (encoding, out, files, channels) in [
-            (cd, "out.cue", &["out.cue", "out.bin"][..], 1),
+            (cd.clone(), "out.cue", &["out.cue", "out.bin"][..], 1),
             (cd, "out.cue", &["out.cue", "out.bin"], 4),
             (Encoding::Ddp, "out.DAT", &["OUT.DAT"], 1),
         ] {

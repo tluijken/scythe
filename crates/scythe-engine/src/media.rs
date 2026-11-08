@@ -42,7 +42,36 @@ impl AudioData {
 
 /// Decodes a file the way a REAPER media item reads it.
 pub fn decode_file(path: &Path) -> Result<AudioData, MediaError> {
+    if crate::video::is_video_file(path) {
+        return decode_with_ffmpeg(path).or_else(|_| decode(path, false));
+    }
     decode(path, false)
+}
+
+/// The first audio stream of a video file, decoded by the `ffmpeg` command-line tool. REAPER
+/// reads video files with FFmpeg, which applies their edit lists (an AAC encoder's priming
+/// samples left out); Symphonia does not.
+fn decode_with_ffmpeg(path: &Path) -> Result<AudioData, MediaError> {
+    let decode_err = |message: String| MediaError::Decode { path: path.to_owned(), message };
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let wav = std::env::temp_dir().join(format!("scythe-video-audio-{}-{n}.wav", std::process::id()));
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y", "-i"])
+        .arg(path)
+        .args(["-map", "0:a:0", "-vn", "-c:a", "pcm_f32le", "-f", "wav"])
+        .arg(&wav)
+        .output()
+        .map_err(|e| decode_err(format!("ffmpeg: {e}")));
+    let decoded = output.and_then(|o| {
+        if o.status.success() {
+            decode(&wav, false)
+        } else {
+            Err(decode_err(String::from_utf8_lossy(&o.stderr).trim().to_owned()))
+        }
+    });
+    let _ = std::fs::remove_file(&wav);
+    decoded
 }
 
 /// Decodes a file the way ReaSamplOmatic5000 loads a sample: MP3 encoder delay and padding
