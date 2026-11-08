@@ -46,7 +46,7 @@ fn main() {
         let settings = RenderSettings::from_project(&project);
         let rate = settings.sample_rate.or(project.sample_rate).unwrap_or(48_000);
         let Ok(jobs) = settings.jobs(&project, 0) else { continue };
-        let pool = MediaPool::default();
+        let pool = MediaPool::with_resample(settings.resample);
         for t in &project.tracks {
             for take in t.items.iter().flat_map(|i| &i.takes) {
                 if let Some(f) = take.source.file() {

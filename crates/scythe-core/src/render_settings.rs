@@ -1,5 +1,5 @@
 //! A project's own render settings (`RENDER_FILE`, `RENDER_PATTERN`, `RENDER_FMT`,
-//! `RENDER_RANGE`, `<RENDER_CFG`), turned into concrete render jobs.
+//! `RENDER_RANGE`, `RENDER_RESAMPLE`, `<RENDER_CFG`), turned into concrete render jobs.
 
 use std::path::{Path, PathBuf};
 
@@ -61,6 +61,51 @@ pub struct CdImage {
     pub hash_markers_only: bool,
 }
 
+/// How media at another sample rate is converted for a render (`RENDER_RESAMPLE <mode>`, in
+/// the order of REAPER's `Resample_EnumModes`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResampleMode {
+    /// Windowed sinc over `half` input frames each side; `tabled` kernels are read from a table
+    /// of 32 steps per frame with linear interpolation.
+    Sinc {
+        half: u16,
+        tabled: bool,
+    },
+    Linear,
+    Point,
+    /// Linear interpolation with `stages` 2-pole low-pass filters.
+    LinearIir {
+        stages: u8,
+    },
+    /// r8brain free; converted with the 192-point sinc.
+    R8brain,
+}
+
+impl Default for ResampleMode {
+    /// The 192-point sinc, REAPER's render default.
+    fn default() -> Self {
+        Self::Sinc { half: 96, tabled: true }
+    }
+}
+
+impl ResampleMode {
+    pub fn from_reaper(mode: i64) -> Self {
+        match mode {
+            0 => Self::Sinc { half: 32, tabled: true },
+            1 => Self::Linear,
+            2 => Self::Point,
+            4 => Self::Sinc { half: 192, tabled: false },
+            5 => Self::LinearIir { stages: 1 },
+            6 => Self::LinearIir { stages: 2 },
+            7 => Self::Sinc { half: 8, tabled: true },
+            8 => Self::Sinc { half: 256, tabled: false },
+            9 => Self::Sinc { half: 384, tabled: false },
+            10 => Self::R8brain,
+            _ => Self::default(),
+        }
+    }
+}
+
 /// What a normalised render measures (`RENDER_NORMALIZE` bits 1-3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizeSource {
@@ -113,6 +158,7 @@ pub struct RenderSettings {
     /// `RENDER_DITHER` bit 0: dither the master render; bit 1: noise-shape it.
     pub dither: bool,
     pub noise_shape: bool,
+    pub resample: ResampleMode,
 }
 
 impl RenderSettings {
@@ -127,6 +173,7 @@ impl RenderSettings {
             normalize: None,
             dither: false,
             noise_shape: false,
+            resample: ResampleMode::default(),
         };
         for node in &p.extra {
             match node {
@@ -143,6 +190,7 @@ impl RenderSettings {
                         "RENDER_NORMALIZE" => {
                             s.normalize = Normalize::parse(num(1).unwrap_or(0.0) as i64, num(2).unwrap_or(0.0));
                         }
+                        "RENDER_RESAMPLE" => s.resample = ResampleMode::from_reaper(num(1).unwrap_or(3.0) as i64),
                         "RENDER_DITHER" => {
                             let flags = num(1).unwrap_or(0.0) as i64;
                             (s.dither, s.noise_shape) = (flags & 1 != 0, flags & 2 != 0);
@@ -453,5 +501,17 @@ mod tests {
         assert!(s.dither && s.noise_shape);
         assert_eq!(Normalize::parse(1, 0.199526).unwrap().source, NormalizeSource::LufsIntegrated);
         assert_eq!(Normalize::parse(4, 0.5), None);
+    }
+
+    #[test]
+    fn resample_mode() {
+        let read = |text: &str| RenderSettings::from_project(&crate::rpp::project_from_rpp(text).unwrap()).resample;
+        assert_eq!(read("<REAPER_PROJECT 0.1 \"7.73\" 0\n>\n"), ResampleMode::default());
+        assert_eq!(read("<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RESAMPLE 3 0 1\n>\n"), ResampleMode::default());
+        assert_eq!(
+            read("<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RESAMPLE 9 0 1\n>\n"),
+            ResampleMode::Sinc { half: 384, tabled: false }
+        );
+        assert_eq!(read("<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RESAMPLE 1 0 1\n>\n"), ResampleMode::Linear);
     }
 }

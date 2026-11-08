@@ -8,6 +8,7 @@ use scythe_core::history::History;
 use scythe_core::midi::{MidiSource, TimedNote};
 use scythe_core::model::MIN_ITEM_LENGTH;
 use scythe_core::recording::{RecordPass, place_midi_recording, place_recording};
+use scythe_core::render_settings::ResampleMode;
 use scythe_core::rpp::{autosave_path, read_project, resolve_media_path, save_project, write_project};
 use scythe_core::smf::{read_smf, write_smf};
 use scythe_core::{AutoMode, EnvelopeKind, Item, ItemId, Project, Source, Take, TempoMap, TimeRange, TrackId};
@@ -988,8 +989,10 @@ impl ScytheApp {
         let mut encoding = Encoding::Wav(BitDepth::Int24);
         let mut channels = 2;
         let mut finish = Finish::default();
+        let mut resample = ResampleMode::default();
         let jobs: Vec<(Project, PathBuf)> = if kind == RenderKind::ProjectSettings {
             let settings = scythe_core::render_settings::RenderSettings::from_project(&self.project);
+            resample = settings.resample;
             encoding = Encoding::from_format(&settings.format);
             channels = settings.channels;
             finish = Finish::from_settings(&settings);
@@ -1034,10 +1037,14 @@ impl ScytheApp {
         let ctx = self.ctx.clone();
         self.busy = Some("Rendering…".into());
         std::thread::spawn(move || {
-            // CD images and DDP are written at 44.1 kHz; the engine's media may be at another rate.
-            if let (Some(fixed), Some((project, _))) = (encoding.sample_rate().filter(|r| *r != rate), jobs.first()) {
-                rate = fixed;
-                pool = Arc::new(crate::load_media(project, fixed));
+            // The engine's media is at its own rate and converted for playback; CD images and DDP
+            // are written at 44.1 kHz, and another resample mode needs media of its own.
+            let fixed = encoding.sample_rate().filter(|r| *r != rate);
+            if (fixed.is_some() || resample != ResampleMode::default())
+                && let Some((project, _)) = jobs.first()
+            {
+                rate = fixed.unwrap_or(rate);
+                pool = Arc::new(crate::load_media(project, rate, resample));
             }
             let mut last = Ok(PathBuf::new());
             for (i, (project, path)) in jobs.into_iter().enumerate() {

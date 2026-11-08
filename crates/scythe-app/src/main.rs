@@ -42,7 +42,7 @@ fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
     }
     let encoding = scythe_engine::bounce::Encoding::from_format(&settings.format);
     let rate = encoding.sample_rate().or(settings.sample_rate).or(project.sample_rate).unwrap_or(48_000);
-    let pool = load_media(&project, rate);
+    let pool = load_media(&project, rate, settings.resample);
     for (range, out) in jobs {
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -56,9 +56,13 @@ fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn load_media(project: &scythe_core::Project, rate: u32) -> scythe_engine::MediaPool {
+pub(crate) fn load_media(
+    project: &scythe_core::Project,
+    rate: u32,
+    resample: scythe_core::render_settings::ResampleMode,
+) -> scythe_engine::MediaPool {
     use rayon::prelude::*;
-    let pool = scythe_engine::MediaPool::default();
+    let pool = scythe_engine::MediaPool::with_resample(resample);
     let mut files: Vec<std::path::PathBuf> = project
         .tracks
         .iter()
@@ -85,7 +89,7 @@ fn render_headless(
 ) -> Result<(), String> {
     let project = scythe_core::rpp::read_project(project).map_err(|e| e.to_string())?;
     let rate = project.sample_rate.unwrap_or(48_000);
-    let pool = load_media(&project, rate);
+    let pool = load_media(&project, rate, Default::default());
     let range = range.unwrap_or_else(|| scythe_core::TimeRange::new(0.0, project.length()));
     let started = std::time::Instant::now();
     scythe_engine::bounce::bounce_to_wav(

@@ -860,7 +860,7 @@ impl FxRegistry {
                     (false, Some(dir)) => dir.join(path),
                     _ => path,
                 };
-                let nam = NamEffect::new(&path, level("input_level"), level("output_level"))
+                let nam = NamEffect::new(&path, level("input_level"), level("output_level"), self.sample_rate)
                     .map_err(|e| format!("NAM model: {e}"))?;
                 Ok((Box::new(nam), FxStatus::Native("Neural Amp Modeler (built in)")))
             }

@@ -3,11 +3,13 @@
 //! stacked layer arrays of dilated convolutions with a residual stream, a conditioning input
 //! (the dry signal) mixed into every layer and a summed head.
 
+use std::collections::VecDeque;
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::fx::{Effect, ProcessContext};
+use crate::media::StreamResampler;
 
 #[derive(Debug, Deserialize)]
 struct ModelFile {
@@ -353,13 +355,64 @@ pub struct NamEffect {
     model: NamModel,
     input_gain: f32,
     output_gain: f32,
+    /// Conversion to and from the model's rate when the project runs at another.
+    bridge: Option<RateBridge>,
+}
+
+/// Runs the model at its own sample rate inside a project at another, like the plugin does,
+/// with a fixed delay that covers both converters' lookahead.
+struct RateBridge {
+    up: StreamResampler,
+    down: StreamResampler,
+    at_model_rate: Vec<f32>,
+    converted: Vec<f32>,
+    out: VecDeque<f32>,
+    latency: usize,
+}
+
+impl RateBridge {
+    fn new(project_rate: u32, model_rate: u32) -> Self {
+        let up = StreamResampler::new(project_rate, model_rate);
+        let down = StreamResampler::new(model_rate, project_rate);
+        let ahead = up.lookahead() as f64 + down.lookahead() as f64 * project_rate as f64 / model_rate as f64;
+        let latency = ahead.ceil() as usize + 3;
+        let mut bridge =
+            Self { up, down, at_model_rate: Vec::new(), converted: Vec::new(), out: VecDeque::new(), latency };
+        bridge.reset();
+        bridge
+    }
+
+    fn process(&mut self, model: &mut NamModel, buf: &mut [f32]) {
+        self.at_model_rate.clear();
+        self.up.push(buf, &mut self.at_model_rate);
+        model.process(&mut self.at_model_rate);
+        self.converted.clear();
+        self.down.push(&self.at_model_rate, &mut self.converted);
+        self.out.extend(self.converted.iter().copied());
+        for s in buf.iter_mut() {
+            *s = self.out.pop_front().unwrap_or(0.0);
+        }
+    }
+
+    fn reset(&mut self) {
+        self.up.reset();
+        self.down.reset();
+        self.out.clear();
+        self.out.extend(std::iter::repeat_n(0.0, self.latency));
+    }
 }
 
 impl NamEffect {
-    pub fn new(model_path: &Path, input_db: f64, output_db: f64) -> Result<Self, NamError> {
+    pub fn new(model_path: &Path, input_db: f64, output_db: f64, sample_rate: u32) -> Result<Self, NamError> {
         let model = NamModel::load(model_path)?;
+        Ok(Self::with_model(model, input_db, output_db, sample_rate))
+    }
+
+    fn with_model(model: NamModel, input_db: f64, output_db: f64, sample_rate: u32) -> Self {
         let db = |v: f64| 10f64.powf(v / 20.0) as f32;
-        Ok(Self { model, input_gain: db(input_db), output_gain: db(output_db) })
+        let model_rate = model.sample_rate.map(|r| r.round() as u32).filter(|&r| r > 0 && r != sample_rate);
+        let bridge = model_rate.map(|r| RateBridge::new(sample_rate, r));
+        Self { model, input_gain: db(input_db), output_gain: db(output_db), bridge }
     }
 }
 
@@ -367,15 +420,25 @@ impl Effect for NamEffect {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         // The plugin runs mono on the left input and feeds both outputs.
         left.iter_mut().for_each(|s| *s *= self.input_gain);
-        self.model.process(left);
+        match &mut self.bridge {
+            Some(bridge) => bridge.process(&mut self.model, left),
+            None => self.model.process(left),
+        }
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             *l *= self.output_gain;
             *r = *l;
         }
     }
 
+    fn latency(&mut self) -> usize {
+        self.bridge.as_ref().map_or(0, |b| b.latency)
+    }
+
     fn reset(&mut self) {
         self.model.reset();
+        if let Some(bridge) = &mut self.bridge {
+            bridge.reset();
+        }
     }
 }
 
@@ -405,6 +468,45 @@ mod tests {
             let z = (w0 * back + w1 * r(t) + b + m * x[t]).max(0.0);
             let expect = s * (h * z + hb);
             assert!((out[t] - expect).abs() < 1e-6, "t {t}: {} vs {expect}", out[t]);
+        }
+    }
+
+    /// A 48 kHz model that passes its input through, in a 44.1 kHz project: the bridge to the
+    /// model's rate keeps the signal's level and pitch, delayed by the reported latency.
+    #[test]
+    fn model_runs_at_its_own_rate() {
+        let json = br#"{"architecture": "WaveNet", "sample_rate": 48000,
+            "config": {"layers": [{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
+              "kernel_size": 2, "dilations": [1], "activation": "Hardtanh", "gated": false, "head_bias": true}],
+              "head_scale": 1.0},
+            "weights": [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0]}"#;
+        let model = NamModel::from_json(json).unwrap();
+        let rate = 44_100;
+        let mut fx = NamEffect::with_model(model, 0.0, 0.0, rate);
+        let latency = fx.latency();
+        assert!(latency > 0);
+        let sine = |t: usize| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * t as f32 / rate as f32).sin();
+        let ctx = ProcessContext {
+            sample_rate: rate,
+            position: 0,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            aux: None,
+            bpm: 120.0,
+            midi: None,
+            midi_from: 0,
+        };
+        let mut out = Vec::new();
+        for block in 0..86 {
+            let mut left: Vec<f32> = (block * 512..(block + 1) * 512).map(sine).collect();
+            let mut right = vec![0.0; 512];
+            fx.process(&mut left, &mut right, &ctx);
+            out.extend(left);
+        }
+        for (t, &y) in out.iter().enumerate().skip(latency + 200) {
+            assert!((y - sine(t - latency)).abs() < 1e-3, "frame {t}: {y} vs {}", sine(t - latency));
         }
     }
 

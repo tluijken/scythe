@@ -8,7 +8,7 @@ use std::sync::Arc;
 use scythe_core::units::PanLaw;
 
 use crate::fx::{Effect, ProcessContext};
-use crate::media::{AudioData, decode_file, resample};
+use crate::media::{AudioData, decode_gapless, resample};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rs5kSettings {
@@ -100,7 +100,7 @@ impl Rs5kCompat {
             (false, Some(dir)) => dir.join(path),
             _ => path.to_owned(),
         };
-        let audio = decode_file(&path).map_err(|e| format!("sample: {e}"))?;
+        let audio = decode_gapless(&path).map_err(|e| format!("sample: {e}"))?;
         let audio = if audio.sample_rate == sample_rate {
             audio
         } else {
