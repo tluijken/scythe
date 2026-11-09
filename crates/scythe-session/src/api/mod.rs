@@ -11,6 +11,7 @@ pub mod items;
 pub mod markers;
 pub mod midi;
 pub mod mix;
+pub mod modulation;
 pub mod project;
 pub mod sends;
 pub mod setlist;
@@ -49,6 +50,7 @@ pub enum Command {
     Surface(surface::SurfaceCommand),
     Midi(midi::MidiCommand),
     Timing(timing::TimingCommand),
+    Modulation(modulation::ModulationCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -69,7 +71,11 @@ impl<'de> Deserialize<'de> for Command {
             "project" | "snapshot" => serde_json::from_value(value).map(Command::Project),
             "track" => serde_json::from_value(value).map(Command::Track),
             "send" => serde_json::from_value(value).map(Command::Send),
+            "fx" if cmd.starts_with("fx.modulation.") || cmd.starts_with("fx.learn.") => {
+                serde_json::from_value(value).map(Command::Modulation)
+            }
             "fx" => serde_json::from_value(value).map(Command::Fx),
+            "action" => serde_json::from_value(value).map(Command::Modulation),
             "group" => serde_json::from_value(value).map(Command::Group),
             "item" => serde_json::from_value(value).map(Command::Item),
             "marker" => serde_json::from_value(value).map(Command::Marker),
@@ -101,6 +107,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Surface(c) => surface::execute(session, c),
         Command::Midi(c) => midi::execute(session, c),
         Command::Timing(c) => timing::execute(session, c),
+        Command::Modulation(c) => modulation::execute(session, c),
     }
 }
 

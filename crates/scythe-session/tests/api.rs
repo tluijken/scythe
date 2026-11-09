@@ -1232,3 +1232,60 @@ fn stretch_markers_channel_modes_and_play_rate() {
         ErrorKind::Invalid
     );
 }
+
+#[test]
+fn modulation_and_learn_are_stored_beside_the_plugin() {
+    let mut s = session();
+    let t = add_track(&mut s, "Synth");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    let set = ok(
+        &mut s,
+        json!({"cmd": "fx.modulation.set", "track": t, "index": 0, "param": 1, "base": 0.25,
+               "lfo": {"active": true, "shape": "triangle", "hz": 2.0, "strength": 0.3, "direction": 0},
+               "audio": {"active": true, "channel": 2, "attack_ms": 10.0}}),
+    );
+    assert_eq!(set["lfo"]["shape"], "triangle");
+    assert!((set["lfo"]["hz"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    assert_eq!(set["audio"]["channel"], 2);
+    let synced =
+        ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 0, "param": 1, "lfo": {"period_qn": 2.0}}));
+    assert_eq!(synced["lfo"]["tempo_sync"], true);
+    assert!((synced["lfo"]["period_qn"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    let linked = ok(
+        &mut s,
+        json!({"cmd": "fx.modulation.set", "track": t, "index": 1, "param": 0,
+               "link": {"fx": 0, "param": 1, "scale": 0.5, "offset": -0.1}}),
+    );
+    assert_eq!(linked["link"]["fx"], 0);
+    let learned = ok(
+        &mut s,
+        json!({"cmd": "fx.learn.set", "track": t, "index": 0, "param": 1,
+               "midi": {"type": "cc", "number": 7, "channel": 2}, "mode": "relative2", "soft_takeover": true}),
+    );
+    assert_eq!(learned["describe"], "CC 7, ch 2");
+    let list = ok(&mut s, json!({"cmd": "fx.modulation.list", "track": t, "index": 0}));
+    assert_eq!(list[0]["param"], 1);
+    assert_eq!(list[0]["learn"]["mode"], "relative2");
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PROGRAMENV 1 0"), "{text}");
+    assert!(text.contains("PARMLEARN 1 133041 2"), "{text}");
+    assert!(text.contains("PLINK 0.5 0:-1 1 -0.1"), "{text}");
+    let back = scythe_core::rpp::project_from_rpp(&text).unwrap();
+    assert_eq!(scythe_core::rpp::project_to_rpp(&back), text);
+    ok(&mut s, json!({"cmd": "fx.learn.remove", "track": t, "index": 0, "param": 1}));
+    ok(&mut s, json!({"cmd": "fx.modulation.remove", "track": t, "index": 0, "param": 1}));
+    let list = ok(&mut s, json!({"cmd": "fx.modulation.list", "track": t, "index": 0}));
+    assert_eq!(list, json!([]));
+
+    let heard = execute_json(&mut s, json!({"cmd": "action.learn.add", "action": "40364", "heard": true}));
+    assert_eq!(heard.unwrap_err().kind, ErrorKind::Failed);
+    let bound = ok(
+        &mut s,
+        json!({"cmd": "action.learn.add", "action": "_SCYTHE_SETLIST_NEXT", "midi": {"type": "note", "number": 60}}),
+    );
+    assert_eq!(bound["describe"], "Note 60, ch 1");
+    assert_eq!(ok(&mut s, json!({"cmd": "action.learn.list"})).as_array().unwrap().len(), 1);
+    let removed = ok(&mut s, json!({"cmd": "action.learn.remove", "action": "_SCYTHE_SETLIST_NEXT"}));
+    assert_eq!(removed["removed"], 1);
+}

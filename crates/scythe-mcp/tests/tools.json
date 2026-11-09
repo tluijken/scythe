@@ -5703,6 +5703,763 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The modulated and learned parameters of an effect.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.modulation.list`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_modulation_list",
+    "title": "FX modulation.list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes a parameter's modulation; fields left out keep their value. Creates it (with\nthe parameter's current value as baseline) when the parameter has none.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.modulation.set`.",
+    "inputSchema": {
+      "properties": {
+        "audio": {
+          "default": null,
+          "description": "Following the level of the effect's input.",
+          "properties": {
+            "active": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "attack_ms": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "channel": {
+              "default": null,
+              "description": "First input channel it listens to, from 0 (2 for a sidechain on 3/4).",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "curve_x": {
+              "default": null,
+              "description": "Control point of the level curve, 0..1 (0.5, 0.5 is straight).",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "curve_y": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "direction": {
+              "default": null,
+              "description": "1 raises the parameter as the level rises, -1 lowers it, 0 moves it both ways.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_db": {
+              "default": null,
+              "description": "Level that gives 1.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "min_db": {
+              "default": null,
+              "description": "Level that gives 0.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "release_ms": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "stereo": {
+              "default": null,
+              "description": "Listens to `channel` and the next one.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "strength": {
+              "default": null,
+              "description": "Share of the parameter's range it moves, 0..1.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "base": {
+          "default": null,
+          "description": "Value without modulation, in the parameter's own units (a JSFX slider's range,\nelse 0..1).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": null,
+          "description": "Switches the whole modulation off without losing its settings.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lfo": {
+          "default": null,
+          "description": "An LFO's settings; fields left out keep their value.",
+          "properties": {
+            "active": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "direction": {
+              "default": null,
+              "description": "1 sweeps up from the baseline, -1 down, 0 around it.",
+              "format": "int32",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "free": {
+              "default": null,
+              "description": "Phase runs from the start of playback rather than following the project position.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hz": {
+              "default": null,
+              "description": "Rate in cycles per second (0.0039..8) when not tempo synced.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "period_qn": {
+              "default": null,
+              "description": "Quarter notes per cycle (0.25..8) when tempo synced.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "phase": {
+              "default": null,
+              "description": "Start phase, 0..1 of a cycle.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "shape": {
+              "default": null,
+              "description": "`sine`, `square`, `saw_down`, `saw_up`, `triangle` or `random`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "strength": {
+              "default": null,
+              "description": "Share of the parameter's range it sweeps, 0..1.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "tempo_sync": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "link": {
+          "default": null,
+          "description": "Parameter link settings; fields left out keep their value.",
+          "properties": {
+            "active": {
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "fx": {
+              "default": null,
+              "description": "The effect (position in the same chain) whose parameter it follows.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "midi": {
+              "default": null,
+              "description": "Follows a MIDI message on the effect's input instead.",
+              "properties": {
+                "channel": {
+                  "default": 1,
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "number": {
+                  "default": 0,
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "offset": {
+              "default": null,
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "param": {
+              "default": null,
+              "description": "That effect's parameter, from 0.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "scale": {
+              "default": null,
+              "description": "value = baseline + scale * (source + offset), all in 0..1.",
+              "format": "double",
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "param": {
+          "description": "The parameter, from 0 in REAPER's order.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "fx_modulation_set",
+    "title": "FX modulation.set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes a parameter's modulation.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.modulation.remove`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "The parameter, from 0 in REAPER's order.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "fx_modulation_remove",
+    "title": "FX modulation.remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Binds a MIDI message or OSC address to a parameter, replacing its binding. Give\n`midi`, `osc`, or `heard: true` for what `fx.learn.listen` caught.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.learn.set`.",
+    "inputSchema": {
+      "properties": {
+        "focused_fx_only": {
+          "default": false,
+          "description": "Only while the effect's window is in front.",
+          "type": "boolean"
+        },
+        "heard": {
+          "default": false,
+          "description": "Use the message `fx.learn.listen` caught.",
+          "type": "boolean"
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lfo_retrigger": {
+          "default": false,
+          "description": "The message restarts the parameter's LFO instead of setting it.",
+          "type": "boolean"
+        },
+        "midi": {
+          "default": null,
+          "description": "A MIDI message: `cc` with `number`, `note` with `number`, `pitch`, `aftertouch` with\n`number`, `pressure` or `program`, on `channel` 1-16 (0: any, for links only).",
+          "properties": {
+            "channel": {
+              "default": 1,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "number": {
+              "default": 0,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "description": "`absolute` (default), `relative1` (127=-1, 1=+1), `relative2` (63=-1, 65=+1),\n`relative3` (65=-1, 1=+1) or `toggle`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "osc": {
+          "default": null,
+          "description": "An OSC address; its first argument (0..1) sets the parameter.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "param": {
+          "description": "The parameter, from 0 in REAPER's order.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "selected_track_only": {
+          "default": false,
+          "description": "Only while the effect's track is selected.",
+          "type": "boolean"
+        },
+        "soft_takeover": {
+          "default": false,
+          "description": "Ignore an absolute control until it reaches the parameter's value.",
+          "type": "boolean"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "visible_fx_only": {
+          "default": false,
+          "description": "Only while the effect's window is open.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "fx_learn_set",
+    "title": "FX learn.set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes a parameter's MIDI/OSC binding.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.learn.remove`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "The parameter, from 0 in REAPER's order.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "fx_learn_remove",
+    "title": "FX learn.remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Waits for the next MIDI message (from an input enabled for control) or OSC message\n(from a surface that allows learning), as the Learn buttons do; `fx.learn.heard`\ntells what came. `on: false` stops waiting.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.learn.listen`.",
+    "inputSchema": {
+      "properties": {
+        "on": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "fx_learn_listen",
+    "title": "FX learn.listen"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Whether it still listens, and the message it caught.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `fx.learn.heard`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "fx_learn_heard",
+    "title": "FX learn.heard"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The MIDI and OSC controls bound to actions.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `action.learn.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "action_learn_list",
+    "title": "Action learn.list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Binds a control to an action (a REAPER command id such as `40364` or a named command\nsuch as `_SCYTHE_SETLIST_NEXT`; see `surface.action_list`). Give `midi`, `osc` or\n`heard: true`.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `action.learn.add`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "heard": {
+          "default": false,
+          "type": "boolean"
+        },
+        "midi": {
+          "default": null,
+          "description": "A MIDI message: `cc` with `number`, `note` with `number`, `pitch`, `aftertouch` with\n`number`, `pressure` or `program`, on `channel` 1-16 (0: any, for links only).",
+          "properties": {
+            "channel": {
+              "default": 1,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "number": {
+              "default": 0,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "osc": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "action_learn_add",
+    "title": "Action learn.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes bindings: those of `action`, or of the control given as `midi` or `osc`.\n\nParameter modulation (baseline, LFO, audio follower, links) and MIDI/OSC learn for effect\nparameters, and controls bound to actions, as REAPER keeps them (`<PROGRAMENV`,\n`PARMLEARN` in the FX chain; `KEY` lines in reaper-kb.ini). Parameters count in REAPER's\norder from 0 (a JSFX's sliders in order).\n\nControl API command `action.learn.remove`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "midi": {
+          "default": null,
+          "description": "A MIDI message: `cc` with `number`, `note` with `number`, `pitch`, `aftertouch` with\n`number`, `pressure` or `program`, on `channel` 1-16 (0: any, for links only).",
+          "properties": {
+            "channel": {
+              "default": 1,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "number": {
+              "default": 0,
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "osc": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "action_learn_remove",
+    "title": "Action learn.remove"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

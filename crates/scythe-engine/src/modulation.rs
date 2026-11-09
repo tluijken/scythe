@@ -325,12 +325,13 @@ pub fn before_block(
         let coef = |ms: f64| if ms > 0.0 { (-2000.0 / (ms * sr)).exp() } else { 0.0 };
         let (ca, cr) = (coef(a.attack_ms), coef(a.release_ms));
         let ch = usize::try_from(a.channel).ok();
-        let first = ch.and_then(|c| inputs.get(c));
-        let second = ch.filter(|_| a.stereo).and_then(|c| inputs.get(c + 1));
+        let n = inputs.first().map_or(0, |b| b.len());
+        let channel = |c: usize| inputs.get(c).copied().filter(|b| b.len() >= n);
+        let first = ch.and_then(channel);
+        let second = ch.filter(|_| a.stereo).and_then(|c| channel(c + 1));
         let p = state.params.entry(e.index).or_default();
         let mut s = p.follower;
         let mut peak = 0.0f64;
-        let n = inputs.first().map_or(0, |b| b.len());
         for i in 0..n {
             let x = match (first, second) {
                 (Some(l), Some(r)) => (l[i] as f64 + r[i] as f64) / 2.0,
