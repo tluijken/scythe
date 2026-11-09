@@ -184,6 +184,58 @@ fn template(dir: &Path, name: &str, seconds: usize, sidechain: bool) -> String {
     t
 }
 
+/// Notes for the instruments as (start tick, length, key, velocity) at 960 ticks per quarter
+/// and 120 bpm: a single long note, and a grid of chords, extremes of pitch and velocity, short
+/// and overlapping notes.
+type Notes = Vec<(u32, u32, u8, u8)>;
+
+fn note_grids() -> Vec<(&'static str, Notes, Vec<(u32, &'static str)>)> {
+    vec![
+        ("note", vec![(192, 1920, 69, 100)], vec![]),
+        ("bend", vec![(192, 1920, 69, 100)], vec![(960, "e0 00 60"), (1500, "e0 7f 20"), (1800, "e0 00 40")]),
+        (
+            "notes",
+            vec![
+                (192, 1920, 69, 100),
+                (2400, 480, 48, 127),
+                (2400, 480, 60, 64),
+                (3360, 240, 84, 90),
+                (3700, 900, 96, 30),
+                (4800, 960, 36, 110),
+                (5000, 300, 108, 100),
+                (5200, 700, 69, 100),
+                (6000, 1500, 57, 1),
+                (7700, 100, 72, 80),
+            ],
+            vec![],
+        ),
+    ]
+}
+
+/// A five-second project with one MIDI item holding `notes`.
+fn midi_template(dir: &Path, notes: &[(u32, u32, u8, u8)], raw: &[(u32, &str)]) -> String {
+    let mut events: Vec<(u32, String)> = raw.iter().map(|&(t, m)| (t, m.to_owned())).collect();
+    for &(start, len, key, vel) in notes {
+        events.push((start, format!("90 {key:02x} {vel:02x}")));
+        events.push((start + len, format!("80 {key:02x} 00")));
+    }
+    events.sort_by_key(|e| (e.0, e.1.starts_with("90")));
+    let mut body = String::new();
+    let mut at = 0;
+    for (tick, msg) in events {
+        let _ = writeln!(body, "        E {} {msg}", tick - at);
+        at = tick;
+    }
+    let _ = writeln!(body, "        E {} b0 7b 00", 9600 - at);
+    let mut t = template(dir, "imp", 5, false);
+    let item = t.find("    <ITEM").unwrap();
+    t.truncate(item);
+    t += &format!(
+        "    <ITEM\n      POSITION 0\n      LENGTH 5\n      <SOURCE MIDI\n        HASDATA 1 960 QN\n{body}      >\n    >\n  >\n>\n"
+    );
+    t
+}
+
 const RUNNER: &str = r#"local dir = os.getenv("WDIR")
 local log = io.open(dir .. "/run.log", "a")
 local function set_vst_data(tr, b64)
@@ -414,6 +466,33 @@ fn cases() -> Vec<String> {
         add(&format!("verbate_{name}"), "ReaVerbate", "main", spec);
         add(&format!("verbate_imp_{name}"), "ReaVerbate", "imp", spec);
     }
+    // ReaSynth: each parameter on one long note, then on the note grid.
+    for (name, spec) in [
+        ("base", ""),
+        ("attack0", "p0=0 p1=0"),
+        ("attack_long", "p0=0.8"),
+        ("release", "p1=0.03"),
+        ("decay", "p9=0.5 p6=0.01"),
+        ("decay_to_0", "p9=0 p6=0.003"),
+        ("sustain_up", "p9=0.7 p6=0.004"),
+        ("square", "p2=1"),
+        ("square_mix", "p2=0.6"),
+        ("pulse", "p2=1 p10=0.3"),
+        ("saw", "p3=1"),
+        ("saw_mix", "p3=0.4"),
+        ("triangle", "p4=1"),
+        ("extra_sine", "p7=0.6"),
+        ("extra_tuned", "p7=1 p8=0.7"),
+        ("mix", "p2=0.5 p3=0.5 p4=0.5 p7=0.3 p8=0.45"),
+        ("overmix", "p2=0.8 p3=0.9 p4=1"),
+        ("detune", "p11=0.6"),
+        ("volume", "p5=0.9"),
+        ("legacy", "p12=1 p3=1"),
+    ] {
+        add(&format!("synth_{name}"), "ReaSynth", "note", spec);
+        add(&format!("synth_grid_{name}"), "ReaSynth", "notes", spec);
+    }
+    add("synth_bend", "ReaSynth", "bend", "");
     c
 }
 
@@ -468,6 +547,9 @@ fn main() {
         std::fs::write(dir.join(format!("tpl_{name}.RPP")), template(&dir, name, secs, false)).unwrap();
     }
     std::fs::write(dir.join("tpl_sc.RPP"), template(&dir, "main", 5, true)).unwrap();
+    for (name, notes, raw) in note_grids() {
+        std::fs::write(dir.join(format!("tpl_{name}.RPP")), midi_template(&dir, &notes, &raw)).unwrap();
+    }
     std::fs::write(dir.join("run.lua"), RUNNER).unwrap();
 
     let cases: Vec<String> = cases().into_iter().filter(|c| c.contains(&filter)).collect();

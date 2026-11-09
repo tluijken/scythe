@@ -15,6 +15,7 @@ pub enum Builtin {
     Limiter,
     Multiband,
     Verbate,
+    Synth,
 }
 
 /// Default states as REAPER writes them for a freshly added instance.
@@ -26,7 +27,7 @@ const LIMIT_DEFAULT: &str = "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAACAAAAAAAAAAA
 const XCOMP_DEFAULT: &str = "OAAAAAQAAAAAAAAAAABpQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAAAAAAAQI9AAAAAAAAA8D8AAAAAAADwPwAAAAAAAABAAAAAAAAAAAAPAAAAlgAAAAUAAAARAAAAAAAAAACIs0AAAAAAAADwPwAAAAAAAPA/AAAAAAAAAEAAAAAAAAAAAA8AAACWAAAABQAAABEAAAAAAAAAAHDXQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAEAAAABAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAgAAAA==";
 
 impl Builtin {
-    pub const ALL: [Builtin; 8] = [
+    pub const ALL: [Builtin; 9] = [
         Self::Eq,
         Self::Gate,
         Self::Compressor,
@@ -35,6 +36,7 @@ impl Builtin {
         Self::Limiter,
         Self::Multiband,
         Self::Verbate,
+        Self::Synth,
     ];
 
     pub fn label(self) -> &'static str {
@@ -47,6 +49,7 @@ impl Builtin {
             Self::Limiter => "Limiter",
             Self::Multiband => "Multiband compressor",
             Self::Verbate => "Algorithmic reverb",
+            Self::Synth => "Synth",
         }
     }
 
@@ -61,6 +64,7 @@ impl Builtin {
             Self::Limiter => "ReaLimit",
             Self::Multiband => "ReaXcomp",
             Self::Verbate => "ReaVerbate",
+            Self::Synth => "ReaSynth",
         };
         crate::stock::by_name(name).expect("built-ins are stock plugins")
     }
@@ -78,6 +82,7 @@ impl Builtin {
             Self::Limiter => b64.decode(LIMIT_DEFAULT).unwrap(),
             Self::Multiband => b64.decode(XCOMP_DEFAULT).unwrap(),
             Self::Verbate => crate::stock::marked_chunk(&crate::stock::reaverbate::DEFAULTS),
+            Self::Synth => crate::stock::marked_chunk(&crate::stock::reasynth::DEFAULTS),
         }
     }
 

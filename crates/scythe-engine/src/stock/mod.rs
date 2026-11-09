@@ -6,6 +6,7 @@ pub(crate) mod params;
 pub mod reacomp;
 pub mod reagate;
 pub mod realimit;
+pub mod reasynth;
 pub mod reaverbate;
 pub mod reaxcomp;
 
@@ -38,9 +39,10 @@ pub struct StockPlugin {
 }
 
 impl StockPlugin {
-    /// The slot title REAPER writes: `VST: ReaComp (Cockos)`.
+    /// The slot title REAPER writes: `VST: ReaComp (Cockos)`, `VSTi: ReaSynth (Cockos)`.
     pub fn display(&self) -> String {
-        format!("VST: {} (Cockos)", self.name)
+        let kind = if INSTRUMENTS.contains(&self.name) { "VSTi" } else { "VST" };
+        format!("{kind}: {} (Cockos)", self.name)
     }
 
     /// Whether a slot titled `display` (`VST: …`, `VSTi: …`) holds this plugin.
@@ -49,6 +51,9 @@ impl StockPlugin {
         display.starts_with(&title) || display.contains(&format!(" {title}"))
     }
 }
+
+/// Stock plugins REAPER lists as instruments.
+const INSTRUMENTS: &[&str] = &["ReaSamplOmatic5000", "ReaSynth", "ReaSynDr"];
 
 macro_rules! stock {
     ($name:literal, $file:literal, $id:literal, $guid:literal, $status:literal, $create:expr) => {
@@ -148,6 +153,14 @@ pub static PLUGINS: &[StockPlugin] = &[
         "56535472766238726561766572626174",
         "ReaVerbate-compatible reverb",
         |chunk, cx| boxed(reaverbate::Reverb::from_reaverbate(chunk, cx.sample_rate), "ReaVerbate")
+    ),
+    stock!(
+        "ReaSynth",
+        "reasynth.vst.so",
+        1919251321,
+        "5653547265737972656173796E746800",
+        "ReaSynth-compatible synth",
+        |chunk, cx| boxed(reasynth::Synth::from_reasynth(chunk, cx.sample_rate), "ReaSynth")
     ),
 ];
 
