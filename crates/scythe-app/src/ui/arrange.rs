@@ -281,12 +281,13 @@ fn ruler_timeline(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, axis: TimeAxis) 
         }
         if resp.clicked() {
             app.set_cursor(t);
+            crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_RULER_CLK");
         }
     }
     if resp.drag_stopped() {
         app.end_gesture();
     }
-    if resp.double_clicked() {
+    if resp.double_clicked() && !crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_RULER_DBLCLK") {
         app.edit("Clear loop points", |p| p.time_selection = None);
     }
     resp.on_hover_text("Click to move the cursor · drag to set loop points · double-click to clear");
@@ -547,6 +548,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         if head_resp.clicked() {
             app.sel = Selection { track: Some(track.id), item: None };
         }
+        if head_resp.double_clicked() {
+            crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_TCP_DBLCLK");
+        }
 
         // Lane.
         let lane = Rect::from_min_max(pos2(axis.left, row.top()), row.max);
@@ -563,6 +567,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         if lane_resp.clicked() {
             let t = lane_resp.interact_pointer_pos().map(|p| axis.t(p.x));
             clicked_track = Some((track.id, t));
+        }
+        if lane_resp.double_clicked() {
+            crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_TRACK_DBLCLK");
         }
 
         let dim = !audible || (any_solo && !track.solo && !audible);
@@ -614,6 +621,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             let at = app.snap(t.max(0.0), bypass);
             app.set_cursor(at);
         }
+        crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_TRACK_CLK");
     }
 
     // Empty area below the last track: double-click adds a track, dropped files land here too.
@@ -897,14 +905,19 @@ fn draw_item(
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
-    if resp.double_clicked()
+    let assigned = resp.double_clicked() && crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_ITEM_DBLCLK");
+    if resp.clicked() {
+        crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_ITEM_CLK");
+    }
+    if !assigned
+        && resp.double_clicked()
         && item.take().is_some_and(
             |t| matches!(&t.source, scythe_core::Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI")),
         )
     {
         app.view.midi_editor = Some(id);
     }
-    if resp.double_clicked() {
+    if !assigned && resp.double_clicked() {
         app.open_subproject(id);
     }
     let (x, t) = (|t: f64| axis.x(t), |x: f32| axis.t(x));

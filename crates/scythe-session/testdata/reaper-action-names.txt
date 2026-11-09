@@ -1,0 +1,151 @@
+1007	Transport: Play
+1008	Transport: Pause
+1013	Transport: Record
+1016	Transport: Stop
+1068	Transport: Toggle repeat
+40042	Transport: Go to start of project
+40043	Transport: Go to end of project
+40044	Transport: Play/stop
+40073	Transport: Play/pause
+40328	Transport: Play/stop (move edit cursor on stop)
+40632	Go to start of loop
+40364	Options: Toggle metronome
+40620	Toggle external timecode synchronization
+40029	Edit: Undo
+40030	Edit: Redo
+40026	File: Save project
+40022	File: Save project as...
+40023	File: New project
+40025	File: Open project
+40015	File: Render project to disk...
+41824	File: Render project, using the most recent render settings
+41823	File: Add project to render queue, using the most recent render settings
+41207	Render all queued renders
+40859	New project tab
+41929	New project tab, ignore default template
+40860	Close current project tab
+40861	Project tabs: Switch to next project tab
+40862	Project tabs: Switch to previous project tab
+40697	Remove items/tracks/envelope points (depending on focus)
+40698	Edit: Copy items
+40699	Edit: Cut items
+42398	Item: Paste items/tracks
+40018	Insert/import media files...
+40012	Item: Split items at edit or play cursor (select right)
+40757	Item: Split items at edit cursor (no change selection)
+40061	Item: Split items at time selection or razor edit
+40312	Item: Remove selected area of items
+40201	Time selection: Remove contents of time selection (moving later items)
+40200	Time selection: Insert empty space at time selection (moving later items)
+41295	Item: Duplicate items
+41051	Item properties: Toggle take reverse
+40362	Item: Glue items, ignoring time selection
+41588	Item: Glue items, expanding to time selection if any
+42432	Item: Glue items within time selection
+40209	Item: Apply track/take FX to items
+40125	Take: Switch items to next take
+40153	Item: Open in built-in MIDI editor (set default behavior in preferences)
+40175	Item properties: Toggle mute
+41842	Item: Add stretch marker at cursor
+41844	Item: Remove all stretch markers
+40172	Markers: Go to previous marker/project start
+40173	Markers: Go to next marker/project end
+40157	Markers: Insert marker at current position
+40613	Markers: Delete marker near cursor
+42330	Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog
+40001	Track: Insert new track
+6	Track: Toggle mute for selected tracks
+7	Track: Toggle solo for selected tracks
+9	Track: Toggle record arm for selected tracks
+40282	Track: Invert track polarity/phase
+41199	Track: Toggle track solo defeat
+40339	Track: Unmute all tracks
+40340	Track: Unsolo all tracks
+40285	Track: Go to next track
+40286	Track: Go to previous track
+43647	Track: Move tracks up
+43648	Track: Move tracks down
+41223	Track: Freeze to stereo (render pre-fader, save/remove items and online FX)
+41644	Track: Unfreeze tracks (restore previously saved items and FX)
+40392	Track: Save tracks as track template...
+40078	View: Toggle mixer visible
+1157	Options: Toggle snapping
+1012	View: Zoom in horizontal
+1011	View: Zoom out horizontal
+40295	View: Zoom out project
+41325	View: Increase selected track heights
+41326	View: Decrease selected track heights
+40326	View: Show region/marker manager window
+41888	View: Show region render matrix window
+40768	View: Show track grouping matrix window
+40377	View: Show virtual MIDI keyboard
+40619	Show external timecode synchronization settings
+40605	Show action list
+40905	Toolbars: Customize...
+41356	Options: Mouse modifier preferences...
+41651	Toolbar: Open/close main toolbar
+41060	ReaScript: Run ReaScript (EEL2 or Lua)...
+41061	ReaScript: Run last ReaScript (EEL2 or Lua)
+41898	ReaScript: Close all running ReaScripts
+65535	No-op (no action)
+40161	Markers: Go to marker 01
+40162	Markers: Go to marker 02
+40163	Markers: Go to marker 03
+40164	Markers: Go to marker 04
+40165	Markers: Go to marker 05
+40166	Markers: Go to marker 06
+40167	Markers: Go to marker 07
+40168	Markers: Go to marker 08
+40169	Markers: Go to marker 09
+41679	Toolbar: Open/close toolbar 1
+41680	Toolbar: Open/close toolbar 2
+41681	Toolbar: Open/close toolbar 3
+41682	Toolbar: Open/close toolbar 4
+41683	Toolbar: Open/close toolbar 5
+41684	Toolbar: Open/close toolbar 6
+41685	Toolbar: Open/close toolbar 7
+41686	Toolbar: Open/close toolbar 8
+41936	Toolbar: Open/close toolbar 9
+41937	Toolbar: Open/close toolbar 10
+41938	Toolbar: Open/close toolbar 11
+41939	Toolbar: Open/close toolbar 12
+41940	Toolbar: Open/close toolbar 13
+41941	Toolbar: Open/close toolbar 14
+41942	Toolbar: Open/close toolbar 15
+41943	Toolbar: Open/close toolbar 16
+42713	Toolbar: Open/close toolbar 17
+42714	Toolbar: Open/close toolbar 18
+42715	Toolbar: Open/close toolbar 19
+42716	Toolbar: Open/close toolbar 20
+42717	Toolbar: Open/close toolbar 21
+42718	Toolbar: Open/close toolbar 22
+42719	Toolbar: Open/close toolbar 23
+42720	Toolbar: Open/close toolbar 24
+42721	Toolbar: Open/close toolbar 25
+42722	Toolbar: Open/close toolbar 26
+42723	Toolbar: Open/close toolbar 27
+42724	Toolbar: Open/close toolbar 28
+42725	Toolbar: Open/close toolbar 29
+42726	Toolbar: Open/close toolbar 30
+42727	Toolbar: Open/close toolbar 31
+42728	Toolbar: Open/close toolbar 32
+40454	Screenset: Load window set #01
+40455	Screenset: Load window set #02
+40456	Screenset: Load window set #03
+40457	Screenset: Load window set #04
+40458	Screenset: Load window set #05
+40459	Screenset: Load window set #06
+40460	Screenset: Load window set #07
+40461	Screenset: Load window set #08
+40462	Screenset: Load window set #09
+40463	Screenset: Load window set #10
+40474	Screenset: Save window set #01
+40475	Screenset: Save window set #02
+40476	Screenset: Save window set #03
+40477	Screenset: Save window set #04
+40478	Screenset: Save window set #05
+40479	Screenset: Save window set #06
+40480	Screenset: Save window set #07
+40481	Screenset: Save window set #08
+40482	Screenset: Save window set #09
+40483	Screenset: Save window set #10

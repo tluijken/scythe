@@ -1,7 +1,9 @@
 mod app;
+mod commands;
 mod demo;
 mod dialog;
 mod fx_preset;
+mod keys;
 mod live;
 mod nam;
 mod palette;

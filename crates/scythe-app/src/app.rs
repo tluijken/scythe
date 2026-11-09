@@ -74,6 +74,14 @@ pub struct ViewState {
     pub midi_devices_open: bool,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
+    /// The Actions window, while open.
+    pub actions: Option<crate::ui::actions::ActionsWindow>,
+    pub toolbar_editor: Option<crate::ui::toolbars::ToolbarEditor>,
+    pub mouse_editor: bool,
+    /// The main toolbar strip under the header.
+    pub main_toolbar: bool,
+    /// The floating toolbars open, 1 to 32.
+    pub toolbars: std::collections::BTreeSet<u8>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -126,6 +134,8 @@ pub struct ScytheApp {
     seen_loads: u64,
     /// The NAM model library, TONE3000 and the NAM panel.
     pub nam: crate::nam::NamHub,
+    /// Toolbar icons loaded from REAPER's `Data/toolbar_icons`, by file name.
+    pub(crate) toolbar_icons: HashMap<String, Option<egui::TextureHandle>>,
 }
 
 impl Deref for ScytheApp {
@@ -216,6 +226,11 @@ impl ScytheApp {
                 keyboard: Default::default(),
                 midi_devices_open: false,
                 regions: None,
+                actions: None,
+                toolbar_editor: None,
+                mouse_editor: false,
+                main_toolbar: false,
+                toolbars: Default::default(),
             },
             palette: None,
             clipboard: Vec::new(),
@@ -233,7 +248,9 @@ impl ScytheApp {
             gfx_views: Vec::new(),
             seen_loads: 0,
             nam: crate::nam::NamHub::new(),
+            toolbar_icons: HashMap::new(),
         };
+        app.session.host_actions = true;
         app.follow_session();
         app
     }
@@ -264,6 +281,10 @@ impl ScytheApp {
     pub fn poll(&mut self) {
         self.session.poll();
         self.run_marker_commands();
+        for c in self.session.take_host_commands() {
+            self.run_command(&c);
+        }
+        self.refresh_host_toggles();
         self.poll_nam();
         self.follow_session();
     }
@@ -1369,8 +1390,10 @@ impl ScytheApp {
             self.dirty = true;
         }
         self.dirty |= out.dirty;
-        for action in out.commands.into_iter().filter_map(crate::palette::Action::from_reaper_command) {
-            action.run(self);
+        for id in out.commands {
+            if let Some(c) = u32::try_from(id).ok().and_then(|id| self.session.command_for_id(id)) {
+                self.run_command(&c);
+            }
         }
         if !out.console.is_empty() {
             match &mut self.script_console {
@@ -1507,7 +1530,7 @@ pub enum PresetSource {
 }
 
 /// REAPER's resource folder, when REAPER has been run here.
-fn reaper_resource_dir() -> Option<PathBuf> {
+pub(crate) fn reaper_resource_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))

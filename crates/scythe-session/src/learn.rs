@@ -11,6 +11,7 @@
 use std::path::PathBuf;
 
 use schemars::JsonSchema;
+use scythe_core::keymap::{Chord, KeyBinding, Keymap, Line};
 use scythe_core::modulation::{self, LEARN_FOCUSED_FX, LEARN_SELECTED_TRACK, LEARN_VISIBLE_FX, ParamLearn};
 use scythe_core::rpp::{quote, tokenize};
 use scythe_core::{FxSlot, TrackId};
@@ -112,8 +113,6 @@ pub struct LearnState {
     /// The last message heard while listening.
     pub heard: Option<Heard>,
     pub bindings: Vec<ActionBinding>,
-    /// Lines of the shortcut file Scythe does not use, kept as they were.
-    other_lines: Vec<String>,
     /// Effects whose window is open, and the one in front, for bindings that only work then:
     /// (track or `None` for the master, chain position).
     pub open_fx: Vec<(Option<TrackId>, usize)>,
@@ -121,12 +120,28 @@ pub struct LearnState {
 }
 
 impl LearnState {
+    /// Whether a line of the shortcut file is one of these bindings.
+    fn is_binding(line: &Line) -> bool {
+        match line {
+            Line::Key(k) => k.section == 0 && k.chord.is_midi() && k.chord.key < 128,
+            Line::Other(l) => l.split_whitespace().next() == Some(OSC_KEY),
+            _ => false,
+        }
+    }
+
+    /// Takes the `KEY` lines with a MIDI status (section 0) and Scythe's OSC lines out of
+    /// `keymap`.
+    pub fn take_from(&mut self, keymap: &mut Keymap) {
+        let text: String = keymap.lines.iter().filter(|l| Self::is_binding(l)).map(|l| l.to_text() + "\n").collect();
+        keymap.lines.retain(|l| !Self::is_binding(l));
+        self.parse(&text);
+    }
+
     /// Reads `KEY` lines with a MIDI status (section 0) and Scythe's OSC lines.
     pub fn parse(&mut self, text: &str) {
         self.bindings.clear();
-        self.other_lines.clear();
         for line in text.lines() {
-            let t = tokenize(line);
+            let t = tokenize(line.split('#').next().unwrap_or(""));
             let binding = match t.first().map(String::as_str) {
                 Some("KEY") if t.len() >= 5 && t[4] == "0" => match (t[1].parse::<u32>(), t[2].parse::<u32>()) {
                     (Ok(status), Ok(data1)) if (0x80..0xf0).contains(&status) && data1 < 128 => Some(ActionBinding {
@@ -140,23 +155,32 @@ impl LearnState {
                 }
                 _ => None,
             };
-            match binding {
-                Some(b) => self.bindings.push(b),
-                None if !line.trim().is_empty() => self.other_lines.push(line.to_owned()),
-                None => {}
+            if let Some(b) = binding {
+                self.bindings.push(b);
             }
         }
     }
 
-    pub fn write(&self) -> String {
-        let mut out: Vec<String> = self.other_lines.clone();
+    /// Puts the bindings into `keymap` where REAPER keeps them, `name` giving each action's
+    /// name for the comment REAPER writes.
+    pub fn put_into(&self, keymap: &mut Keymap, name: impl Fn(&str) -> Option<String>) {
         for b in &self.bindings {
-            out.push(match &b.trigger {
-                Trigger::Midi { status, data1 } => format!("KEY {status} {data1} {} 0", quote(&b.action)),
-                Trigger::Osc { address } => format!("{OSC_KEY} {} {}", quote(address), quote(&b.action)),
-            });
+            match &b.trigger {
+                Trigger::Midi { status, data1 } => {
+                    let chord = Chord::new(u32::from(*status), u32::from(*data1));
+                    let comment = format!("Main : {} : {}", chord.describe(), name(&b.action).unwrap_or_default());
+                    keymap.insert_key(KeyBinding {
+                        chord,
+                        command: b.action.clone(),
+                        section: 0,
+                        comment: Some(comment),
+                    });
+                }
+                Trigger::Osc { address } => {
+                    keymap.lines.push(Line::Other(format!("{OSC_KEY} {} {}", quote(address), quote(&b.action))));
+                }
+            }
         }
-        out.iter().map(|l| format!("{l}\n")).collect()
     }
 }
 
@@ -169,20 +193,30 @@ fn slots(project: &scythe_core::Project) -> impl Iterator<Item = (Option<TrackId
 }
 
 impl Session {
-    fn kb_path(&self) -> Option<PathBuf> {
+    pub(crate) fn kb_path(&self) -> Option<PathBuf> {
         Some(self.prefs_file.as_ref()?.with_file_name(KB_FILE))
     }
 
-    /// Reads the action bindings from the shortcut file beside the preferences.
+    /// Reads the shortcut file beside the preferences: the MIDI and OSC bindings into
+    /// `learn`, the rest into `keymap`.
     pub(crate) fn load_action_bindings(&mut self) {
         let Some(path) = self.kb_path() else { return };
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        self.learn.parse(&text);
+        let mut keymap = Keymap::parse(&text);
+        self.learn.take_from(&mut keymap);
+        self.keymap = keymap;
     }
 
-    fn save_action_bindings(&mut self) {
+    /// The whole shortcut file as it is saved.
+    pub fn keymap_text(&self) -> String {
+        let mut keymap = self.keymap.clone();
+        self.learn.put_into(&mut keymap, |a| self.action_name(a));
+        keymap.write()
+    }
+
+    pub(crate) fn save_action_bindings(&mut self) {
         let Some(path) = self.kb_path() else { return };
-        if let Err(e) = std::fs::write(&path, self.learn.write()) {
+        if let Err(e) = std::fs::write(&path, self.keymap_text()) {
             self.notify(format!("Cannot save {}: {e}", path.display()));
         }
     }
@@ -336,10 +370,16 @@ mod tests {
         assert_eq!(s.bindings[0].trigger, Trigger::Midi { status: 176, data1: 1 });
         assert_eq!(s.bindings[1].action, "_SCYTHE_SETLIST_NEXT");
         assert_eq!(s.bindings[2].trigger, Trigger::Osc { address: "/foot/1".into() });
+        let mut keymap = Keymap::parse(text);
         let mut again = LearnState::default();
-        again.parse(&s.write());
+        again.take_from(&mut keymap);
         assert_eq!(again.bindings, s.bindings);
-        assert!(s.write().starts_with("SCR 4 0 RS1234 \"Custom: x\" foo.lua\nKEY 1 65 40044 0\n"));
+        assert_eq!(keymap.write(), "SCR 4 0 RS1234 \"Custom: x\" foo.lua\nKEY 1 65 40044 0\n");
+        again.put_into(&mut keymap, |a| (a == "40364").then(|| "Options: Toggle metronome".to_owned()));
+        assert_eq!(
+            keymap.write(),
+            "SCR 4 0 RS1234 \"Custom: x\" foo.lua\nKEY 1 65 40044 0\nKEY 176 1 40364 0\t\t # Main : MIDI Chan 1 CC 1 : Options: Toggle metronome\nKEY 144 60 _SCYTHE_SETLIST_NEXT 0\t\t # Main : MIDI Chan 1 Note 60 : \nSCYTHE_OSC /foot/1 40364\n"
+        );
     }
 
     #[test]

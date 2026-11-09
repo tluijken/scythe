@@ -4,6 +4,7 @@
 //! runs under the egui app, without a screen, and behind the control API.
 
 mod automation;
+mod customize;
 mod files;
 mod health;
 pub mod learn;
@@ -110,6 +111,18 @@ pub struct Session {
     pub selected_track: Option<TrackId>,
     /// MIDI and OSC learn: listening, and the action shortcuts.
     pub learn: learn::LearnState,
+    /// `reaper-kb.ini` but for the MIDI and OSC shortcuts `learn` keeps: keyboard shortcuts,
+    /// custom actions, scripts registered as actions.
+    pub keymap: scythe_core::keymap::Keymap,
+    /// Customised toolbars (`reaper-menu.ini`).
+    pub menus: scythe_core::menus::MenuFile,
+    /// Mouse modifiers (`reaper-mouse.ini`).
+    pub mouse: scythe_core::mousemap::MouseMap,
+    /// A window runs the actions the session cannot (set by the desktop app).
+    pub host_actions: bool,
+    host_commands: Vec<String>,
+    /// Toggle states only the window knows (snap, mixer shown, open toolbars), by command.
+    pub host_toggles: HashMap<String, bool>,
     /// Every project tab; the active one's slot is empty, its project being `project`.
     parked_tabs: Vec<Option<tabs::ParkedTab>>,
     active_tab: usize,
@@ -157,6 +170,12 @@ impl Session {
             surface_status: Vec::new(),
             selected_track: None,
             learn: Default::default(),
+            keymap: Default::default(),
+            menus: Default::default(),
+            mouse: Default::default(),
+            host_actions: false,
+            host_commands: Vec::new(),
+            host_toggles: HashMap::new(),
             parked_tabs: vec![None],
             active_tab: 0,
         };
@@ -338,6 +357,7 @@ impl Session {
         }
         self.prefs_file = Some(path);
         self.load_action_bindings();
+        self.load_customizations();
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
         if let Some(file) = self.monitor_fx_file()
             && let Ok(text) = std::fs::read_to_string(&file)

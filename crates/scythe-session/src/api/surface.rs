@@ -300,10 +300,10 @@ pub fn execute(session: &mut Session, command: SurfaceCommand) -> Result<Value, 
             "outputs": scythe_engine::midi_io::names_by_number(&scythe_engine::midi_io::current_devices().outputs),
         })),
         SurfaceCommand::ActionList => {
-            let commands =
-                actions::COMMANDS.iter().map(|(id, name)| serde_json::json!({ "id": id.to_string(), "name": name }));
-            let named = actions::NAMED.iter().map(|(id, name)| serde_json::json!({ "id": id, "name": name }));
-            Ok(Value::Array(commands.chain(named).collect()))
+            let all = actions::list(session)
+                .into_iter()
+                .map(|a| serde_json::json!({ "id": a.command, "name": a.name, "runs": a.runs }));
+            Ok(Value::Array(all.collect()))
         }
         SurfaceCommand::RunAction { action } => {
             actions::run(session, &action)?;

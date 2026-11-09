@@ -120,8 +120,12 @@ fn stage_view(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], list
 
     let cy = inner.center().y;
     let mut x = inner.right() - buttons_w;
-    let ctx = ui.ctx().clone();
-    let kbd = |a| shortcut_text(&ctx, a);
+    let texts: Vec<(Action, String)> =
+        [Action::SetlistPrevious, Action::Stop, Action::SetlistPlay, Action::SetlistNext]
+            .into_iter()
+            .map(|a| (a, shortcut_text(app, a)))
+            .collect();
+    let kbd = |a: Action| texts.iter().find(|(x, _)| *x == a).map(|(_, s)| s.clone()).unwrap_or_default();
     let prev_tip = format!("Previous song ({})", kbd(Action::SetlistPrevious));
     if icon_button(
         ui,

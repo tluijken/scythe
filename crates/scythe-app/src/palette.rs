@@ -109,6 +109,15 @@ pub enum Action {
     ShowVirtualKeyboard,
     MidiDevices,
     ToggleTimecodeSync,
+    ShowActionList,
+    CustomizeToolbars,
+    MouseModifiers,
+    ToggleMainToolbar,
+    /// Floating toolbar 1 to 32.
+    Toolbar(u8),
+    /// Window set 1 to 10.
+    LoadScreenset(u8),
+    SaveScreenset(u8),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -223,177 +232,162 @@ impl Action {
         Action::ToggleTimecodeSync,
     ];
 
-    pub fn label(self) -> &'static str {
+    /// Every action, the toolbars and screensets included.
+    pub fn all() -> Vec<Action> {
+        let mut out = Self::ALL.to_vec();
+        out.extend([
+            Action::ShowActionList,
+            Action::CustomizeToolbars,
+            Action::MouseModifiers,
+            Action::ToggleMainToolbar,
+        ]);
+        out.extend((1..=scythe_core::menus::FLOATING_TOOLBARS as u8).map(Action::Toolbar));
+        out.extend((1..=scythe_session::actions::SCREENSETS as u8).map(Action::LoadScreenset));
+        out.extend((1..=scythe_session::actions::SCREENSETS as u8).map(Action::SaveScreenset));
+        out
+    }
+
+    /// The action's name in the action list.
+    pub fn label(self) -> String {
+        let command = self.command();
+        scythe_session::actions::builtin()
+            .iter()
+            .find(|a| a.command == command)
+            .map(|a| a.name.clone())
+            .unwrap_or(command)
+    }
+
+    /// The command that runs it: REAPER's command id where REAPER has the action, else a
+    /// Scythe named command.
+    pub fn command(self) -> String {
+        let id = |n: u32| n.to_string();
+        let named = |n: &str| n.to_owned();
         match self {
-            Action::PlayPause => "Transport: Play/pause",
-            Action::Stop => "Transport: Stop",
-            Action::GoToStart => "Transport: Go to start of project",
-            Action::ToggleRepeat => "Transport: Toggle repeat",
-            Action::ToggleMetronome => "Options: Toggle metronome",
-            Action::Record => "Transport: Record",
-            Action::ToggleAutoPunch => "Record mode: Toggle time selection auto-punch",
-            Action::ToggleArm => "Track: Toggle record arm for selected track",
-            Action::AddTrack => "Track: Insert new track",
-            Action::SaveFxChain => "FX: Save track FX chain",
-            Action::LoadFxChain => "FX: Add FX chain to track",
-            Action::SaveTrackTemplate => "Track: Save track as track template",
-            Action::InsertTrackTemplate => "Track: Insert track from template",
-            Action::ImportMedia => "Insert media files…",
-            Action::DeleteSelection => "Edit: Delete selected item or track",
-            Action::SplitItem => "Item: Split at cursor",
-            Action::SplitAtSelection => "Item: Split items at time selection",
-            Action::RemoveSelectionContents => "Time selection: Remove contents",
-            Action::RippleCutSelection => "Time selection: Remove contents and move later items",
-            Action::InsertSpace => "Time selection: Insert empty space",
-            Action::CopyItem => "Edit: Copy item",
-            Action::CutItem => "Edit: Cut item",
-            Action::PasteItem => "Edit: Paste at cursor",
-            Action::DuplicateItem => "Item: Duplicate",
-            Action::ReverseItem => "Item: Reverse",
-            Action::GlueItems => "Item: Glue items",
-            Action::ApplyTrackFx => "Item: Apply track FX to items as new take",
-            Action::FreezeTrack => "Track: Freeze to stereo (render pre-fader, save/remove items and all FX)",
-            Action::UnfreezeTrack => "Track: Unfreeze tracks (restore previously saved items and FX)",
-            Action::NextTake => "Take: Switch items to next take",
-            Action::OpenMidiEditor => "Item: Open in MIDI editor",
-            Action::ExportMidi => "Item: Export MIDI item to file",
-            Action::ToggleItemMute => "Item: Toggle mute",
-            Action::AddStretchMarker => "Item: Add stretch marker at cursor",
-            Action::RemoveStretchMarkers => "Item: Remove all stretch markers",
-            Action::PreviousMarker => "Markers: Go to previous marker or region",
-            Action::NextMarker => "Markers: Go to next marker or region",
-            Action::DeleteMarker => "Markers: Delete marker nearest the cursor",
-            Action::InsertMarker => "Markers: Insert marker at cursor",
-            Action::InsertTempoMarker => "Tempo: Insert tempo marker at cursor",
-            Action::RemoveTempoMarker => "Tempo: Remove tempo marker nearest the cursor",
-            Action::ToggleMuteTrack => "Track: Toggle mute for selected track",
-            Action::ToggleSoloTrack => "Track: Toggle solo for selected track",
-            Action::TogglePolarity => "Track: Invert polarity of selected track",
-            Action::ToggleSoloDefeat => "Track: Toggle solo defeat for selected track",
-            Action::TrackGrouping => "Track: Show track grouping matrix",
-            Action::PreviousTrack => "Track: Select previous track",
-            Action::NextTrack => "Track: Select next track",
-            Action::MoveTrackUp => "Track: Move selected track up",
-            Action::MoveTrackDown => "Track: Move selected track down",
-            Action::IndentTrack => "Track: Move into the folder above",
-            Action::OutdentTrack => "Track: Move out of its folder",
-            Action::Undo => "Edit: Undo",
-            Action::Redo => "Edit: Redo",
-            Action::NewProject => "File: New project",
-            Action::OpenProject => "File: Open project…",
-            Action::SaveProject => "File: Save project",
-            Action::SaveProjectAs => "File: Save project as…",
-            Action::RenderToWav => "File: Render project to WAV…",
-            Action::RenderSelection => "File: Render time selection to WAV…",
-            Action::RenderStems => "File: Render stems (one WAV per track)…",
-            Action::RenderProjectSettings => "File: Render with the project's render settings",
-            Action::QueueRender => "File: Add project to render queue",
-            Action::RegionManager => "View: Show region/marker manager window",
-            Action::RegionRenderMatrix => "View: Show region render matrix window",
-            Action::NewTab => "New project tab",
-            Action::OpenInNewTab => "File: Open project in new tab…",
-            Action::CloseTab => "Close current project tab",
-            Action::NextTab => "Project tabs: Switch to next project tab",
-            Action::PreviousTab => "Project tabs: Switch to previous project tab",
-            Action::RunRenderQueue => "File: Render all queued renders",
-            Action::LoadDemo => "File: Open demo song",
-            Action::ToggleMixer => "View: Toggle mixer",
-            Action::ToggleSnap => "Options: Toggle snap to grid",
-            Action::CycleGrid => "Options: Next grid size",
-            Action::ZoomIn => "View: Zoom in horizontally",
-            Action::ZoomOut => "View: Zoom out horizontally",
-            Action::ZoomToProject => "View: Zoom to project",
-            Action::TallerTracks => "View: Increase track height",
-            Action::ShorterTracks => "View: Decrease track height",
-            Action::ShowPalette => "Actions: Search actions",
-            Action::RunScript => "Script: Run ReaScript (Lua, EEL2 or Python)",
-            Action::RunLastScript => "Script: Run last script again",
-            Action::StopScript => "Script: Stop the running script",
-            Action::MasterMoreChannels => "Master: More channels",
-            Action::MasterFewerChannels => "Master: Fewer channels",
-            Action::NamPanel => "NAM: Open the Neural Amp Modeler panel of the selected track",
-            Action::NamPrevious => "NAM: Previous model",
-            Action::NamNext => "NAM: Next model",
-            Action::NamSnapshotA => "NAM: Switch to snapshot A",
-            Action::NamSnapshotB => "NAM: Switch to snapshot B",
-            Action::NamSnapshotC => "NAM: Switch to snapshot C",
-            Action::NamSnapshotD => "NAM: Switch to snapshot D",
-            Action::ShowMonitorMixes => "View: Toggle monitor mixes (in-ear)",
-            Action::NewMonitorMix => "Monitor: New monitor mix for a musician…",
-            Action::CreateCueBus => "SWS: Create cue buss from track selection…",
-            Action::ToggleSetlist => "View: Toggle setlist",
-            Action::SetlistPlay => "Setlist: Play current song",
-            Action::SetlistNext => "Setlist: Next song",
-            Action::SetlistPrevious => "Setlist: Previous song",
-            Action::ToggleMarkerActions => "Options: Toggle marker actions (run !markers during playback)",
-            Action::ShowVirtualKeyboard => "View: Show virtual MIDI keyboard",
-            Action::MidiDevices => "View: MIDI devices and external timecode synchronization",
-            Action::ToggleTimecodeSync => "Transport: Toggle external timecode synchronization",
+            Action::PlayPause => id(40073),
+            Action::Stop => id(1016),
+            Action::GoToStart => id(40042),
+            Action::ToggleRepeat => id(1068),
+            Action::ToggleMetronome => id(40364),
+            Action::Record => id(1013),
+            Action::ToggleAutoPunch => named("_SCYTHE_TOGGLE_AUTO_PUNCH"),
+            Action::ToggleArm => id(9),
+            Action::AddTrack => id(40001),
+            Action::SaveFxChain => named("_SCYTHE_SAVE_FX_CHAIN"),
+            Action::LoadFxChain => named("_SCYTHE_LOAD_FX_CHAIN"),
+            Action::SaveTrackTemplate => id(40392),
+            Action::InsertTrackTemplate => named("_SCYTHE_INSERT_TRACK_TEMPLATE"),
+            Action::ImportMedia => id(40018),
+            Action::DeleteSelection => id(40697),
+            Action::SplitItem => id(40012),
+            Action::SplitAtSelection => id(40061),
+            Action::RemoveSelectionContents => id(40312),
+            Action::RippleCutSelection => id(40201),
+            Action::InsertSpace => id(40200),
+            Action::CopyItem => id(40698),
+            Action::CutItem => id(40699),
+            Action::PasteItem => id(42398),
+            Action::DuplicateItem => id(41295),
+            Action::ReverseItem => id(41051),
+            Action::GlueItems => id(40362),
+            Action::ApplyTrackFx => id(40209),
+            Action::FreezeTrack => id(41223),
+            Action::UnfreezeTrack => id(41644),
+            Action::NextTake => id(40125),
+            Action::OpenMidiEditor => id(40153),
+            Action::ExportMidi => named("_SCYTHE_EXPORT_MIDI_ITEM"),
+            Action::ToggleItemMute => id(40175),
+            Action::AddStretchMarker => id(41842),
+            Action::RemoveStretchMarkers => id(41844),
+            Action::PreviousMarker => id(40172),
+            Action::NextMarker => id(40173),
+            Action::DeleteMarker => id(40613),
+            Action::InsertMarker => id(40157),
+            Action::InsertTempoMarker => id(42330),
+            Action::RemoveTempoMarker => named("_SCYTHE_REMOVE_TEMPO_MARKER"),
+            Action::ToggleMuteTrack => id(6),
+            Action::ToggleSoloTrack => id(7),
+            Action::TogglePolarity => id(40282),
+            Action::ToggleSoloDefeat => id(41199),
+            Action::TrackGrouping => id(40768),
+            Action::PreviousTrack => id(40286),
+            Action::NextTrack => id(40285),
+            Action::MoveTrackUp => id(43647),
+            Action::MoveTrackDown => id(43648),
+            Action::IndentTrack => named("_SCYTHE_INDENT_TRACK"),
+            Action::OutdentTrack => named("_SCYTHE_OUTDENT_TRACK"),
+            Action::Undo => id(40029),
+            Action::Redo => id(40030),
+            Action::NewProject => id(40023),
+            Action::OpenProject => id(40025),
+            Action::SaveProject => id(40026),
+            Action::SaveProjectAs => id(40022),
+            Action::RenderToWav => id(40015),
+            Action::RenderSelection => named("_SCYTHE_RENDER_TIME_SELECTION"),
+            Action::RenderStems => named("_SCYTHE_RENDER_STEMS"),
+            Action::RenderProjectSettings => id(41824),
+            Action::QueueRender => id(41823),
+            Action::RegionManager => id(40326),
+            Action::RegionRenderMatrix => id(41888),
+            Action::NewTab => id(40859),
+            Action::OpenInNewTab => named("_SCYTHE_OPEN_IN_NEW_TAB"),
+            Action::CloseTab => id(40860),
+            Action::NextTab => id(40861),
+            Action::PreviousTab => id(40862),
+            Action::RunRenderQueue => id(41207),
+            Action::LoadDemo => named("_SCYTHE_LOAD_DEMO"),
+            Action::ToggleMixer => id(40078),
+            Action::ToggleSnap => id(1157),
+            Action::CycleGrid => named("_SCYTHE_NEXT_GRID"),
+            Action::ZoomIn => id(1012),
+            Action::ZoomOut => id(1011),
+            Action::ZoomToProject => id(40295),
+            Action::TallerTracks => id(41325),
+            Action::ShorterTracks => id(41326),
+            Action::ShowPalette => named("_SCYTHE_SEARCH_ACTIONS"),
+            Action::RunScript => id(41060),
+            Action::RunLastScript => id(41061),
+            Action::StopScript => id(41898),
+            Action::MasterMoreChannels => named("_SCYTHE_MASTER_MORE_CHANNELS"),
+            Action::MasterFewerChannels => named("_SCYTHE_MASTER_FEWER_CHANNELS"),
+            Action::NamPanel => named("_SCYTHE_NAM_PANEL"),
+            Action::NamPrevious => named("_SCYTHE_NAM_PREVIOUS"),
+            Action::NamNext => named("_SCYTHE_NAM_NEXT"),
+            Action::NamSnapshotA => named("_SCYTHE_NAM_SNAPSHOT_A"),
+            Action::NamSnapshotB => named("_SCYTHE_NAM_SNAPSHOT_B"),
+            Action::NamSnapshotC => named("_SCYTHE_NAM_SNAPSHOT_C"),
+            Action::NamSnapshotD => named("_SCYTHE_NAM_SNAPSHOT_D"),
+            Action::ShowMonitorMixes => named("_SCYTHE_TOGGLE_MONITOR_MIXES"),
+            Action::NewMonitorMix => named("_SCYTHE_NEW_MONITOR_MIX"),
+            Action::CreateCueBus => named("_SCYTHE_CREATE_CUE_BUS"),
+            Action::ToggleSetlist => named("_SCYTHE_TOGGLE_SETLIST"),
+            Action::SetlistPlay => named("_SCYTHE_SETLIST_PLAY"),
+            Action::SetlistNext => named("_SCYTHE_SETLIST_NEXT"),
+            Action::SetlistPrevious => named("_SCYTHE_SETLIST_PREVIOUS"),
+            Action::ToggleMarkerActions => named("_SCYTHE_TOGGLE_MARKER_ACTIONS"),
+            Action::ShowVirtualKeyboard => id(40377),
+            Action::MidiDevices => id(40619),
+            Action::ToggleTimecodeSync => id(40620),
+            Action::ShowActionList => id(40605),
+            Action::CustomizeToolbars => id(40905),
+            Action::MouseModifiers => id(41356),
+            Action::ToggleMainToolbar => id(scythe_core::menus::OPEN_MAIN_TOOLBAR),
+            Action::Toolbar(n) => id(scythe_core::menus::open_toolbar_command(n as usize).unwrap_or_default()),
+            Action::LoadScreenset(n) => id(scythe_session::actions::LOAD_SCREENSET + n as u32 - 1),
+            Action::SaveScreenset(n) => id(scythe_session::actions::SAVE_SCREENSET + n as u32 - 1),
         }
     }
 
-    /// The action REAPER runs for command `id` (`Main_OnCommand`), where Scythe has one.
-    pub fn from_reaper_command(id: i64) -> Option<Self> {
-        Some(match id {
-            6 => Action::ToggleMuteTrack,
-            7 => Action::ToggleSoloTrack,
-            1011 => Action::ZoomOut,
-            1012 => Action::ZoomIn,
-            1013 => Action::Record,
-            1157 => Action::ToggleSnap,
-            40015 => Action::RenderToWav,
-            40018 => Action::ImportMedia,
-            40022 => Action::SaveProjectAs,
-            40023 => Action::NewProject,
-            40025 => Action::OpenProject,
-            40026 => Action::SaveProject,
-            40029 => Action::Undo,
-            40030 => Action::Redo,
-            40001 => Action::AddTrack,
-            40012 | 40757 => Action::SplitItem,
-            40061 => Action::SplitAtSelection,
-            40078 => Action::ToggleMixer,
-            40377 => Action::ShowVirtualKeyboard,
-            40619 => Action::MidiDevices,
-            40620 => Action::ToggleTimecodeSync,
-            40125 => Action::NextTake,
-            40153 => Action::OpenMidiEditor,
-            40172 => Action::PreviousMarker,
-            40157 => Action::InsertMarker,
-            40173 => Action::NextMarker,
-            40200 => Action::InsertSpace,
-            40201 => Action::RippleCutSelection,
-            40209 => Action::ApplyTrackFx,
-            41223 => Action::FreezeTrack,
-            41644 => Action::UnfreezeTrack,
-            40285 => Action::NextTrack,
-            40286 => Action::PreviousTrack,
-            40295 => Action::ZoomToProject,
-            40312 => Action::RemoveSelectionContents,
-            40362 | 41588 | 42432 => Action::GlueItems,
-            40364 => Action::ToggleMetronome,
-            40613 => Action::DeleteMarker,
-            40698 => Action::CopyItem,
-            40699 => Action::CutItem,
-            41051 => Action::ReverseItem,
-            41295 => Action::DuplicateItem,
-            41325 => Action::TallerTracks,
-            41326 => Action::ShorterTracks,
-            40326 => Action::RegionManager,
-            40859 | 41929 => Action::NewTab,
-            40860 => Action::CloseTab,
-            40861 => Action::NextTab,
-            40862 => Action::PreviousTab,
-            41207 => Action::RunRenderQueue,
-            41888 => Action::RegionRenderMatrix,
-            41823 => Action::QueueRender,
-            41824 => Action::RenderProjectSettings,
-            42330 => Action::InsertTempoMarker,
-            42398 => Action::PasteItem,
-            43647 => Action::MoveTrackUp,
-            43648 => Action::MoveTrackDown,
-            _ => return None,
-        })
+    /// The action a command runs, where the window has it: REAPER's alternatives for the same
+    /// action (40757 splits like 40012) included.
+    pub fn from_command(command: &str) -> Option<Self> {
+        let c = scythe_session::actions::normalize(command);
+        let alias = match c.as_str() {
+            "40757" => Some(Action::SplitItem),
+            "41588" | "42432" => Some(Action::GlueItems),
+            "41929" => Some(Action::NewTab),
+            _ => None,
+        };
+        alias.or_else(|| Self::all().into_iter().find(|a| a.command().eq_ignore_ascii_case(&c)))
     }
 
     pub fn shortcut(self) -> Option<KeyboardShortcut> {
@@ -486,6 +480,13 @@ impl Action {
             Action::ToggleMarkerActions => None,
             Action::ShowVirtualKeyboard => k(Modifiers::ALT, Key::B),
             Action::MidiDevices | Action::ToggleTimecodeSync => None,
+            Action::ShowActionList
+            | Action::CustomizeToolbars
+            | Action::MouseModifiers
+            | Action::ToggleMainToolbar
+            | Action::Toolbar(_)
+            | Action::LoadScreenset(_)
+            | Action::SaveScreenset(_) => None,
         }
     }
 
@@ -826,6 +827,17 @@ impl Action {
                 app.notify(if on { "Marker actions on" } else { "Marker actions off" });
             }
             Action::RunScript => app.run_script_dialog(),
+            Action::ShowActionList => app.view.actions = Some(crate::ui::actions::ActionsWindow::default()),
+            Action::CustomizeToolbars => app.view.toolbar_editor = Some(crate::ui::toolbars::ToolbarEditor::default()),
+            Action::MouseModifiers => app.view.mouse_editor = !app.view.mouse_editor,
+            Action::ToggleMainToolbar => app.view.main_toolbar = !app.view.main_toolbar,
+            Action::Toolbar(n) => {
+                if !app.view.toolbars.remove(&n) {
+                    app.view.toolbars.insert(n);
+                }
+            }
+            Action::LoadScreenset(n) => app.load_screenset(n),
+            Action::SaveScreenset(n) => app.save_screenset(n),
             Action::RunLastScript => match app.last_script.clone() {
                 Some(path) => app.run_script(&path),
                 None => app.notify("No script run yet"),
@@ -841,11 +853,13 @@ impl Action {
     }
 }
 
-pub fn shortcut_text(ctx: &egui::Context, action: Action) -> String {
-    action.shortcut().map(|s| ctx.format_shortcut(&s)).unwrap_or_default()
+/// The keys that run `action`, as REAPER writes them.
+pub fn shortcut_text(app: &ScytheApp, action: Action) -> String {
+    crate::keys::keys_text(app, &action.command())
 }
 
-/// Dispatches keyboard shortcuts unless a text field or a graphics window takes the keys.
+/// Dispatches keyboard shortcuts unless a text field or a graphics window takes the keys: the
+/// shortcut file's bindings first, then Scythe's defaults.
 pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
     if ctx.egui_wants_keyboard_input() || app.palette.is_some() || crate::ui::gfx_view::takes_keys(app) {
         return;
@@ -862,23 +876,40 @@ pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
     if let Some(action) = clipboard {
         action.run(app);
     }
-    // Longer modifier combinations first so Ctrl+Shift+S does not also trigger Ctrl+S.
-    let mut actions: Vec<Action> = Action::ALL.to_vec();
-    actions.sort_by_key(|a| {
-        std::cmp::Reverse(a.shortcut().map_or(0, |s| {
-            s.modifiers.shift as u8 + s.modifiers.alt as u8 + s.modifiers.command as u8 + s.modifiers.ctrl as u8
-        }))
+    let presses: Vec<(usize, Option<String>)> = ctx.input(|i| {
+        i.events
+            .iter()
+            .enumerate()
+            .filter_map(|(n, e)| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    let chord = crate::keys::chord(*key, *modifiers)?;
+                    Some((n, crate::keys::command_for(app, chord)))
+                }
+                _ => None,
+            })
+            .collect()
     });
-    for action in actions {
-        if matches!(action, Action::CopyItem | Action::CutItem | Action::PasteItem) {
+    let mut taken = Vec::new();
+    let mut commands = Vec::new();
+    for (n, command) in presses {
+        let Some(command) = command else { continue };
+        if matches!(Action::from_command(&command), Some(Action::CopyItem | Action::CutItem | Action::PasteItem)) {
             continue;
         }
-        if let Some(sc) = action.shortcut()
-            && action.shortcut_active(app.view.setlist)
-            && ctx.input_mut(|i| i.consume_shortcut(&sc))
-        {
-            action.run(app);
-        }
+        taken.push(n);
+        commands.push(command);
+    }
+    if !taken.is_empty() {
+        ctx.input_mut(|i| {
+            let mut n = 0;
+            i.events.retain(|_| {
+                n += 1;
+                !taken.contains(&(n - 1))
+            });
+        });
+    }
+    for c in commands {
+        app.run_command(&c);
     }
 }
 
@@ -893,12 +924,23 @@ fn matches(label: &str, query: &str) -> bool {
     query.to_lowercase().split_whitespace().all(|w| label.contains(w))
 }
 
-/// The ⌘K action search overlay.
+/// The ⌘K action search overlay: every action of the main section, custom actions and
+/// scripts included.
 pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
+    let Some(query) = app.palette.as_ref().map(|s| s.query.clone()) else { return };
+    let results: Vec<(String, String, String)> = app
+        .session
+        .action_list()
+        .into_iter()
+        .filter(|a| a.section == scythe_core::keymap::SECTION_MAIN && matches(&a.name, &query))
+        .map(|a| {
+            let keys = crate::keys::keys_text(app, &a.command);
+            (a.command, a.name, keys)
+        })
+        .collect();
     let Some(state) = app.palette.as_mut() else { return };
     let ctx = ui.ctx().clone();
     let screen = ui.max_rect();
-    let results: Vec<Action> = Action::ALL.iter().copied().filter(|a| matches(a.label(), &state.query)).collect();
     state.selected = state.selected.min(results.len().saturating_sub(1));
 
     let (up, down, enter, escape) = ctx.input_mut(|i| {
@@ -947,7 +989,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
 
     let mut run = None;
     let first = state.selected.saturating_sub(visible.saturating_sub(1));
-    for (row, &action) in results.iter().enumerate().skip(first).take(visible) {
+    for (row, (command, name, keys)) in results.iter().enumerate().skip(first).take(visible) {
         let r = Rect::from_min_size(
             egui::pos2(rect.left() + 8.0, input_rect.bottom() + 8.0 + (row - first) as f32 * row_h),
             vec2(width - 16.0, row_h - 4.0),
@@ -956,25 +998,21 @@ pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
         if row == state.selected || resp.hovered() {
             painter.rect_filled(r, CornerRadius::same(12), theme::RAISED);
         }
-        painter.text(
-            r.left_center() + vec2(14.0, 0.0),
-            Align2::LEFT_CENTER,
-            action.label(),
-            theme::regular(13.0),
-            theme::TEXT,
-        );
-        let sc = shortcut_text(&ctx, action);
-        if !sc.is_empty() {
+        let keys_w =
+            if keys.is_empty() { 0.0 } else { crate::ui::widgets::text_width(ui, keys, theme::mono(11.0)) + 20.0 };
+        let label = crate::ui::widgets::truncate(ui, name, &theme::regular(13.0), r.width() - 28.0 - keys_w);
+        painter.text(r.left_center() + vec2(14.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(13.0), theme::TEXT);
+        if !keys.is_empty() {
             painter.text(
                 r.right_center() - vec2(14.0, 0.0),
                 Align2::RIGHT_CENTER,
-                sc,
+                keys,
                 theme::mono(11.0),
                 theme::TEXT_DIM,
             );
         }
         if resp.clicked() {
-            run = Some(action);
+            run = Some(command.clone());
         }
     }
     if results.is_empty() {
@@ -987,14 +1025,14 @@ pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
         );
     }
     if enter {
-        run = results.get(state.selected).copied();
+        run = results.get(state.selected).map(|r| r.0.clone());
     }
     if escape || (backdrop.clicked() && !backdrop.interact_pointer_pos().is_some_and(|p| rect.contains(p))) {
         app.palette = None;
     }
-    if let Some(action) = run {
+    if let Some(command) = run {
         app.palette = None;
-        action.run(app);
+        app.run_command(&command);
     }
 }
 
@@ -1019,9 +1057,23 @@ mod tests {
     }
 
     #[test]
+    fn every_action_is_in_the_registry_and_back() {
+        for a in Action::all() {
+            let c = a.command();
+            assert!(scythe_session::actions::builtin().iter().any(|b| b.command == c), "{a:?} ({c}) not registered");
+            assert_eq!(Action::from_command(&c), Some(a), "{c}");
+        }
+        for b in scythe_session::actions::builtin() {
+            if b.runs == scythe_session::actions::Runs::Window {
+                assert!(Action::from_command(&b.command).is_some(), "{} ({}) has no window action", b.name, b.command);
+            }
+        }
+    }
+
+    #[test]
     fn every_shortcut_is_unique() {
         let mut seen = std::collections::HashSet::new();
-        for a in Action::ALL {
+        for a in Action::all() {
             if let Some(s) = a.shortcut() {
                 assert!(seen.insert(format!("{s:?}")), "duplicate shortcut for {a:?}");
             }

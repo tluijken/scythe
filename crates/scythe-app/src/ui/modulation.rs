@@ -442,7 +442,7 @@ pub struct ShortcutDraft {
 
 pub fn shortcuts(app: &mut ScytheApp, ui: &mut Ui, draft: &mut ShortcutDraft) {
     ui.label(RichText::new("MIDI/OSC shortcuts to actions").strong());
-    let names = action_names();
+    let names = action_names(&app.session);
     let label = |a: &str| names.iter().find(|(id, _)| id == a).map_or(a.to_owned(), |(_, n)| n.clone());
     let mut remove = None;
     for (i, b) in app.learn.bindings.iter().enumerate() {
@@ -493,10 +493,6 @@ pub fn shortcuts(app: &mut ScytheApp, ui: &mut Ui, draft: &mut ShortcutDraft) {
     }
 }
 
-fn action_names() -> Vec<(String, String)> {
-    scythe_session::actions::NAMED
-        .iter()
-        .map(|(id, name)| ((*id).to_owned(), (*name).to_owned()))
-        .chain(scythe_session::actions::COMMANDS.iter().map(|(id, name)| (id.to_string(), (*name).to_owned())))
-        .collect()
+fn action_names(session: &scythe_session::Session) -> Vec<(String, String)> {
+    scythe_session::actions::list(session).into_iter().map(|a| (a.command, a.name)).collect()
 }

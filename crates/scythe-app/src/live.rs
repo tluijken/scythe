@@ -39,9 +39,9 @@ impl ScytheApp {
     /// Runs the actions of marker commands the session has none for.
     pub fn run_marker_commands(&mut self) {
         for id in self.session.take_marker_commands() {
-            match Action::from_reaper_command(i64::from(id)) {
+            match Action::from_command(&id.to_string()) {
                 Some(action) => action.run(self),
-                None => self.notify(format!("Marker action {id} is not available in Scythe")),
+                None => self.run_command(&id.to_string()),
             }
         }
     }

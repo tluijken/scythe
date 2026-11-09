@@ -1,3 +1,4 @@
+pub mod actions;
 mod arrange;
 mod comp;
 pub mod gfx_view;
@@ -14,6 +15,7 @@ pub mod regions;
 mod setlist;
 mod stretch_markers;
 pub mod surfaces;
+pub mod toolbars;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
@@ -42,6 +44,11 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     top_bar(app, ui, header);
 
     let mut top = header.bottom() + GAP;
+    if app.view.main_toolbar {
+        let strip = Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), toolbars::STRIP_H));
+        toolbars::main_strip(app, ui, strip);
+        top = strip.bottom() + GAP;
+    }
     if app.tab_count() > 1 {
         let strip = Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), TABS_H));
         project_tabs(app, ui, strip);
@@ -143,6 +150,10 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     monitor::wizards(app, ui);
     groups::show(app, ui);
     regions::show(app, ui);
+    toolbars::floating(app, ui);
+    toolbars::editor(app, ui);
+    toolbars::mouse_editor(app, ui);
+    actions::show(app, ui);
     palette::show(app, ui);
 }
 
@@ -309,7 +320,7 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             theme::regular(13.0),
             TEXT_DIM,
         );
-        let kbd = palette::shortcut_text(ui.ctx(), Action::ShowPalette);
+        let kbd = palette::shortcut_text(app, Action::ShowPalette);
         let kw = widgets::text_width(ui, &kbd, theme::mono(11.0)) + 16.0;
         label_pill(
             ui,
@@ -405,7 +416,7 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         app.view.monitor_page = false;
         app.view.setlist = false;
     }
-    let tip = format!("Setlist ({})", palette::shortcut_text(ui.ctx(), Action::ToggleSetlist));
+    let tip = format!("Setlist ({})", palette::shortcut_text(app, Action::ToggleSetlist));
     if rail_button(ui, next(44.0), Icon::Setlist, setlist, ACCENT, &tip).clicked() {
         app.view.setlist = !setlist;
         app.view.monitor_page = false;

@@ -58,6 +58,22 @@ impl History {
         self.redo.last().map(|(l, _)| l.as_str())
     }
 
+    /// How many undo steps there are.
+    pub fn depth(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Folds the undo steps recorded since the depth was `since` into one named `label`, as a
+    /// custom action with "consolidate undo" leaves them. Answers whether there was any.
+    pub fn consolidate(&mut self, since: usize, label: &str) -> bool {
+        if self.undo.len() <= since {
+            return false;
+        }
+        let before = self.undo.drain(since..).next().map(|(_, p)| p).expect("non-empty");
+        self.undo.push((label.to_owned(), before));
+        true
+    }
+
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
@@ -89,6 +105,24 @@ mod tests {
         h.undo(&mut p);
         h.record("b", p.clone());
         assert!(h.redo_label().is_none());
+    }
+
+    #[test]
+    fn consolidate_folds_steps() {
+        let mut h = History::default();
+        let mut p = Project::default();
+        h.record("first", p.clone());
+        let mark = h.depth();
+        h.record("a", p.clone());
+        p.add_track("a");
+        h.record("b", p.clone());
+        p.add_track("b");
+        assert!(h.consolidate(mark, "Custom: two"));
+        assert!(!h.consolidate(h.depth(), "none"));
+        assert_eq!(h.undo_label(), Some("Custom: two"));
+        assert_eq!(h.undo(&mut p).as_deref(), Some("Custom: two"));
+        assert!(p.tracks.is_empty());
+        assert_eq!(h.undo_label(), Some("first"));
     }
 
     #[test]

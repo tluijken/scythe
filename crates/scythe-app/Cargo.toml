@@ -28,3 +28,4 @@ getrandom.workspace = true
 hound.workspace = true
 rayon.workspace = true
 x11rb.workspace = true
+image.workspace = true

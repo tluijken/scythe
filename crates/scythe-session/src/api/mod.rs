@@ -4,6 +4,7 @@
 //! own module with its own command enum; adding a domain means a module, a [`Command`]
 //! variant and a line in each of [`Command`]'s two `match`es.
 
+pub mod customize;
 pub mod events;
 pub mod fx;
 pub mod groups;
@@ -55,6 +56,7 @@ pub enum Command {
     Modulation(modulation::ModulationCommand),
     Render(render::RenderCommand),
     Recording(recording::RecordingCommand),
+    Customize(customize::CustomizeCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -85,7 +87,8 @@ impl<'de> Deserialize<'de> for Command {
                 serde_json::from_value(value).map(Command::Modulation)
             }
             "fx" => serde_json::from_value(value).map(Command::Fx),
-            "action" => serde_json::from_value(value).map(Command::Modulation),
+            "action" if cmd.starts_with("action.learn.") => serde_json::from_value(value).map(Command::Modulation),
+            "action" | "toolbar" | "mouse" => serde_json::from_value(value).map(Command::Customize),
             "group" => serde_json::from_value(value).map(Command::Group),
             "item" => serde_json::from_value(value).map(Command::Item),
             "marker" => serde_json::from_value(value).map(Command::Marker),
@@ -122,6 +125,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Modulation(c) => modulation::execute(session, c),
         Command::Render(c) => render::execute(session, c),
         Command::Recording(c) => recording::execute(session, c),
+        Command::Customize(c) => customize::execute(session, c),
     }
 }
 
