@@ -14,6 +14,7 @@ pub mod project;
 pub mod sends;
 pub mod setlist;
 pub mod snapshot;
+pub mod surface;
 pub mod tempo;
 pub mod tracks;
 pub mod transport;
@@ -43,6 +44,7 @@ pub enum Command {
     Mix(mix::MixCommand),
     Setlist(setlist::SetlistCommand),
     Tempo(tempo::TempoCommand),
+    Surface(surface::SurfaceCommand),
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -64,6 +66,7 @@ impl<'de> Deserialize<'de> for Command {
             "mix" => serde_json::from_value(value).map(Command::Mix),
             "setlist" => serde_json::from_value(value).map(Command::Setlist),
             "tempo" => serde_json::from_value(value).map(Command::Tempo),
+            "surface" => serde_json::from_value(value).map(Command::Surface),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -84,6 +87,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Mix(c) => mix::execute(session, c),
         Command::Setlist(c) => setlist::execute(session, c),
         Command::Tempo(c) => tempo::execute(session, c),
+        Command::Surface(c) => surface::execute(session, c),
     }
 }
 

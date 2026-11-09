@@ -19,6 +19,8 @@ struct Shell {
     app: app::ScytheApp,
     /// The control API, when `--control` serves it; dropped (and stopped) with the window.
     control: Option<(scythe_server::ControlServer, scythe_session::control::ControlPump)>,
+    /// The control surfaces in the preferences (OSC devices, Mackie Control, HUI).
+    surfaces: scythe_surface::SurfaceHost,
     /// ReaScripts from the command line, run once the window has drawn: a dialog they open
     /// blocks the window until answered.
     scripts: Vec<PathBuf>,
@@ -37,6 +39,7 @@ impl eframe::App for Shell {
         self.app.tick_editors();
         self.app.tick_automation();
         self.app.tick_script();
+        self.surfaces.pump(&mut self.app.session);
         if let Some((_, pump)) = &mut self.control {
             pump.pump(&mut self.app.session);
             self.app.follow_session();
@@ -286,7 +289,9 @@ fn main() -> eframe::Result {
                     }
                 }
             });
-            Ok(Box::new(Shell { app, control, scripts }))
+            let wake = cc.egui_ctx.clone();
+            let surfaces = scythe_surface::SurfaceHost::new(std::sync::Arc::new(move || wake.request_repaint()));
+            Ok(Box::new(Shell { app, control, surfaces, scripts }))
         }),
     )
 }

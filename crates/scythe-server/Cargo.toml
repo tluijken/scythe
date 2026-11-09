@@ -13,6 +13,7 @@ scythe-core.workspace = true
 scythe-engine.workspace = true
 scythe-session.workspace = true
 scythe-mcp.workspace = true
+scythe-surface.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true

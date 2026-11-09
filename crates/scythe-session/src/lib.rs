@@ -11,6 +11,7 @@ mod media;
 mod transport;
 
 pub mod access;
+pub mod actions;
 pub mod api;
 pub mod control;
 
@@ -26,6 +27,7 @@ use scythe_core::{Project, TrackId};
 use scythe_engine::Engine;
 use scythe_engine::midi_io::midi_input_channel;
 
+pub use api::surface::SurfaceStatus;
 pub use automation::AutoTarget;
 use automation::AutoWrite;
 pub use live::LiveState;
@@ -96,6 +98,8 @@ pub struct Session {
     notices: Vec<String>,
     /// Label and time of the last edit that later edits of the same control fold into.
     merge: Option<(String, Instant)>,
+    /// How the control surfaces in the preferences are doing, as the surface host last saw it.
+    pub surface_status: Vec<SurfaceStatus>,
 }
 
 impl Session {
@@ -136,6 +140,7 @@ impl Session {
             select: None,
             notices: Vec::new(),
             merge: None,
+            surface_status: Vec::new(),
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));
@@ -165,6 +170,11 @@ impl Session {
     /// What the session placed and a view should select: imported, recorded or glued items.
     pub fn take_selection(&mut self) -> Option<Selection> {
         self.select.take()
+    }
+
+    /// Asks the views to select `track`, as a control surface's select button does.
+    pub fn select_track(&mut self, track: TrackId) {
+        self.select = Some(Selection { track: Some(track), item: None });
     }
 
     /// Messages since the last call, oldest first.

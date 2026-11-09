@@ -17,6 +17,7 @@ pub mod rpp;
 pub mod setlist;
 pub mod smf;
 pub mod solo;
+pub mod surface;
 pub mod tempo;
 pub mod units;
 

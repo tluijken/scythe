@@ -12,6 +12,7 @@ scythe-core.workspace = true
 scythe-engine.workspace = true
 scythe-session.workspace = true
 scythe-server.workspace = true
+scythe-surface.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 base64.workspace = true

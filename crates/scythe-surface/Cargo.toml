@@ -1,0 +1,15 @@
+[package]
+name = "scythe-surface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+scythe-core.workspace = true
+scythe-session.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+midir.workspace = true
+
+[dev-dependencies]
+scythe-engine.workspace = true

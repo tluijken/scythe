@@ -3734,6 +3734,7 @@ dependencies = [
  "scythe-engine",
  "scythe-server",
  "scythe-session",
+ "scythe-surface",
  "serde",
  "serde_json",
  "sha2",
@@ -3806,6 +3807,7 @@ dependencies = [
  "scythe-engine",
  "scythe-mcp",
  "scythe-session",
+ "scythe-surface",
  "serde",
  "serde_json",
  "tokio",
@@ -3820,6 +3822,18 @@ dependencies = [
  "schemars",
  "scythe-core",
  "scythe-engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "scythe-surface"
+version = "0.1.0"
+dependencies = [
+ "midir",
+ "scythe-core",
+ "scythe-engine",
+ "scythe-session",
  "serde",
  "serde_json",
 ]

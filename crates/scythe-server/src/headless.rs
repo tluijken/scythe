@@ -114,12 +114,14 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     eprintln!("running; stop with Ctrl+C or SIGTERM");
 
+    let mut surfaces = scythe_surface::SurfaceHost::new(Arc::new(|| {}));
     let mut xruns = XrunLog::default();
     while !STOP.load(Ordering::SeqCst) {
         session.poll();
         xruns.check(&session);
         session.update_meters();
         session.tick_automation();
+        surfaces.pump(&mut session);
         match &mut control {
             Some((_, pump)) => pump.wait(&mut session, Duration::from_millis(10)),
             None => std::thread::sleep(Duration::from_millis(10)),
