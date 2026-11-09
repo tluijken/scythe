@@ -24,6 +24,7 @@ pub mod normalized;
 pub mod pcmfile;
 mod r8brain;
 pub mod reaeq;
+pub mod realtime;
 pub mod reaverb;
 pub mod record;
 pub mod render;

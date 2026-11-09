@@ -371,9 +371,13 @@ fn toast(app: &mut ScytheApp, ui: &mut Ui, screen: Rect) {
 }
 
 /// The metronome's settings, as in REAPER's metronome and pre-roll dialog: on or off, count-in,
-/// level, and the device output it plays to (a drummer's in-ears instead of the PA).
+/// pre-roll, level, and the device output it plays to (a drummer's in-ears instead of the PA).
+/// Pre-roll, count-in at the bar line and the default output are preferences, as in REAPER.
 fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
-    use scythe_core::metronome::{COUNT_IN_PLAY, COUNT_IN_RECORD};
+    use scythe_core::metronome::Metronome;
+    use scythe_core::metronome::{
+        COUNT_IN_AT_MEASURE, COUNT_IN_PLAY, COUNT_IN_RECORD, PREROLL_MID_MEASURE, PREROLL_PLAY, PREROLL_RECORD,
+    };
     use scythe_core::units::{db_to_gain, gain_to_db};
     let m = app.project.metronome.clone();
     let mut on = m.enabled();
@@ -396,6 +400,31 @@ fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
             app.change_metronome(|m| m.count_in_measures = measures);
         }
     });
+    let prefs = app.prefs.clone();
+    let mut at_bar = prefs.preroll & COUNT_IN_AT_MEASURE != 0;
+    if ui.checkbox(&mut at_bar, "Start count-in at start of measure").changed() {
+        app.change_preferences(|p| p.preroll ^= COUNT_IN_AT_MEASURE);
+    }
+    ui.separator();
+    for (bit, label) in [(PREROLL_PLAY, "Pre-roll before playback"), (PREROLL_RECORD, "Pre-roll before recording")] {
+        let mut on = prefs.preroll & bit != 0;
+        if ui.checkbox(&mut on, label).changed() {
+            app.change_preferences(|p| p.preroll ^= bit);
+        }
+    }
+    let mut preroll_at_bar = prefs.preroll & PREROLL_MID_MEASURE == 0;
+    if ui.checkbox(&mut preroll_at_bar, "Start pre-roll at start of measure").changed() {
+        app.change_preferences(|p| p.preroll ^= PREROLL_MID_MEASURE);
+    }
+    ui.horizontal(|ui| {
+        ui.label("Pre-roll length");
+        let mut measures = prefs.preroll_measures;
+        let field = egui::DragValue::new(&mut measures).range(0.25..=16.0).speed(0.05).suffix(" bars");
+        if ui.add(field).changed() {
+            app.change_preferences(|p| p.preroll_measures = measures);
+        }
+    });
+    ui.separator();
     ui.horizontal(|ui| {
         ui.label("Level");
         let mut db = gain_to_db(m.volume).max(-60.0);
@@ -405,7 +434,9 @@ fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
     });
     ui.separator();
     let current = m.device_outputs().first().copied();
-    if ui.radio(current.is_none(), "Play with the master").clicked() {
+    let default = Metronome::default().outputs_or(prefs.metronome_default_output).first().copied();
+    let default_name = default.map_or("the master".to_owned(), |(first, _)| format!("Out {}/{}", first + 1, first + 2));
+    if ui.radio(current.is_none(), format!("Default output ({default_name})")).clicked() {
         app.change_metronome(|m| m.outputs.clear());
         ui.close();
     }
@@ -414,6 +445,19 @@ fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
             let label = format!("Out {}/{}", first + 1, first + 2);
             if ui.radio(current == Some((first, false)), label).clicked() {
                 app.change_metronome(|m| m.outputs = vec![first as i64]);
+                ui.close();
+            }
+        }
+    });
+    ui.menu_button("Default output (all projects)", |ui| {
+        if ui.radio(default.is_none(), "The master").clicked() {
+            app.change_preferences(|p| p.metronome_default_output = -1);
+            ui.close();
+        }
+        for first in (0..16).step_by(2) {
+            let label = format!("Out {}/{}", first + 1, first + 2);
+            if ui.radio(default == Some((first, false)), label).clicked() {
+                app.change_preferences(|p| p.metronome_default_output = first as i64);
                 ui.close();
             }
         }

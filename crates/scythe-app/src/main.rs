@@ -234,6 +234,7 @@ fn main() -> eframe::Result {
         }
     }
 
+    scythe_engine::realtime::enable();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Scythe")
@@ -252,6 +253,7 @@ fn main() -> eframe::Result {
             }
             let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default(), null_audio);
             app.no_input = no_input;
+            app.load_preferences(scythe_session::preferences_path());
             app.view.setlist = setlist;
             match open {
                 Some(path) => app.open_path(&path),

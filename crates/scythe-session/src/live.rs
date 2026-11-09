@@ -71,7 +71,7 @@ impl Session {
                 }
                 self.project.cursor = at;
                 let count_in = self.current_setlist().is_some_and(|l| l.count_in);
-                self.start_playback(at, count_in || self.project.metronome.counts_in(false));
+                self.start_playback(at, false, count_in);
                 self.live.driving = true;
             }
             None => {}
@@ -143,7 +143,7 @@ impl Session {
             return;
         }
         self.project.cursor = song.start;
-        self.start_playback(song.start, self.project.metronome.counts_in(false));
+        self.start_playback(song.start, false, false);
         self.live.driving = false;
     }
 

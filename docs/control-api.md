@@ -105,8 +105,9 @@ Every transport command answers with the transport state (see `transport` events
 | `transport.seek` | `position` | move the edit cursor, and the playhead while playing |
 | `transport.loop` | `enabled?`, `start?`, `end?` | repeat on/off and/or the range it repeats (both ends) |
 | `transport.metronome` | `enabled?`, `volume` or `db` (its level at its outputs; REAPER's default 0.25) | on or off, and its level; saved with the project, not an undo step |
-| `transport.metronome_output` | `output` (device output from 0, or `null` for the master's outputs), `mono?` | where the metronome plays: point it at a drummer's in-ear output and the audience hears no click |
-| `transport.count_in` | `playback?`, `record?`, `measures?` (above 0, up to 16) | count in before playback and/or recording |
+| `transport.metronome_output` | `output` (device output from 0, or `null`), `mono?`, `default?` | where the metronome plays: point it at a drummer's in-ear output and the audience hears no click. With `default` it sets the preference for projects that name no output (`null`: the master) |
+| `transport.count_in` | `playback?`, `record?`, `measures?` (above 0, up to 16), `measure_start?` | count in before playback and/or recording; `measure_start` (a preference) counts in from the bar line before the start |
+| `transport.preroll` | `playback?`, `record?`, `measures?` (above 0, up to 16), `measure_start?` | pre-roll before playback and/or recording (preferences) |
 | `transport.health` | | the health state (below), not the transport state |
 | `transport.state` | | |
 
@@ -115,22 +116,39 @@ A transport state:
 ```json
 {"playing": true, "recording": false, "position": 120.0, "bar_beat": "61.1.00", "cursor": 120.0,
  "loop_enabled": false, "loop_range": null, "metronome": false, "metronome_volume": 0.25,
- "metronome_outputs": [{"output": 4, "mono": false}],
- "count_in": {"playback": true, "record": false, "measures": 1.0, "position": -1.25, "beat": 2, "beats": 4}}
+ "metronome_outputs": [{"output": 4, "mono": false}], "metronome_default_output": null,
+ "count_in": {"playback": true, "record": false, "measures": 1.0, "measure_start": false,
+              "position": -1.25, "beat": 2, "beats": 4},
+ "preroll": {"playback": false, "record": false, "measures": 2.0, "measure_start": true}}
 ```
 
-**Count-in.** With `playback` (or `record`) on, starting playback (or recording) first plays
-`measures` bars of metronome at the tempo and time signature where it starts, while the playhead
-waits at the start: `playing` is true, `position` stays put and `count_in.position` counts up
-from minus the count-in's length (in seconds) to 0, with `beat` of `beats` clicking. It clicks
-even with the metronome off; input monitoring and effects run on meanwhile, items wait. A
-setlist with `count_in` (see `setlist.count_in`) counts in every song it plays. The settings
-are REAPER's: `<METRONOME flags measures` in the project, flags 8 and 16 being "Count-in before
-playback" and "before recording".
+**Count-in.** With `playback` (or `record`) on and the metronome on, starting playback (or
+recording) first plays `measures` bars of metronome at the tempo and time signature where it
+starts, while the playhead waits at the start: `playing` is true, `position` stays put and
+`count_in.position` counts up from minus the count-in's length (in seconds) to 0, with `beat`
+of `beats` clicking. The clicks fall on the project's beats carried back from the start, so a
+song starting on beat 3 counts in with the accents where its bar lines are; with
+`measure_start` the count-in starts on the bar line before (or counts in to the next bar line
+when the start is within a tenth of a bar of it). As in REAPER, a disabled metronome means no
+count-in at all; input monitoring and effects run on meanwhile, items wait. A setlist with
+`count_in` (see `setlist.count_in`) counts in every song it plays, clicking even with the
+metronome off. The settings are REAPER's: `<METRONOME flags measures` in the project, flags 8
+and 16 being "Count-in before playback" and "before recording".
+
+**Pre-roll.** With `preroll.playback` (or `record`) on, playback starts `measures` bars before
+the position asked for, on the bar line unless `measure_start` is off; a recording keeps only
+what comes after the start. A count-in comes before the pre-roll. Before the project start the
+playhead waits as during a count-in (`count_in.position` counts the wait, clicking only if the
+metronome runs during playback or recording).
+
+**Preferences.** Pre-roll, `count_in.measure_start` and `metronome_default_output` are what
+REAPER keeps in reaper.ini rather than the project (`preroll`, `prerollmeas`,
+`metronome_defout`); Scythe keeps them under the same keys in
+`$XDG_CONFIG_HOME/scythe/preferences.ini`. Changing them does not mark the project changed.
 
 **Where the click goes.** `metronome_outputs` are REAPER's metronome hardware outputs
 (`METRONOMEOUT` lines after the `<METRONOME` chunk, coded like a hardware output's `I_DSTCHAN`);
-empty, the click plays with the master. A monitor mix can also take the click as a source of
+empty, the click plays to `metronome_default_output`, and with the master when that is `null`. A monitor mix can also take the click as a source of
 its own (`mix.click`), so each musician sets their own click level; that is Scythe's own
 (REAPER ignores it).
 
@@ -139,7 +157,8 @@ A health state, also sent as the `health` event:
 ```json
 {"device": "Scarlett 18i20 USB", "sample_rate": 48000, "block_size": 128, "buffer_ms": 2.67,
  "output_latency_ms": 5.33, "cpu": 14.2, "cpu_peak": 31.0, "xruns": 0, "overloads": 0,
- "status": "running", "reason": null, "reconnects": 0}
+ "status": "running", "reason": null, "reconnects": 0,
+ "realtime": {"policy": "SCHED_RR", "priority": 20, "via": "rtkit", "reason": null}}
 ```
 
 `cpu` is the time spent rendering over the time the buffer lasts, in percent (at 100 the audio
@@ -149,7 +168,10 @@ device reported, `overloads` the callbacks that took longer than their audio. `s
 (unplugged); `reason` says which. The session then plays on silently, so the transport,
 setlist and clients carry on, and looks for the device every five seconds; when it is back
 (`reconnects` goes up) playback continues through it and the inputs open again. Both changes
-also come as `notice` events.
+also come as `notice` events. `realtime` says how the thread rendering the audio is scheduled
+once it has run: `via` is `direct` (`SCHED_FIFO` within the user's rtprio limit), `rtkit`
+(RealtimeKit granted it over D-Bus), `host` (the audio system's thread already was real-time)
+or `none`, with `reason` saying why.
 
 ### Project
 

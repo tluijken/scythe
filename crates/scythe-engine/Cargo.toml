@@ -30,6 +30,7 @@ flate2.workspace = true
 midir.workspace = true
 ab_glyph.workspace = true
 image.workspace = true
+zbus.workspace = true
 
 [dev-dependencies]
 x11rb.workspace = true

@@ -48,6 +48,7 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "tim
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 toml = "0.8.23"
 tokio-tungstenite = "0.29.0"
+zbus = { version = "5.19.0", default-features = false, features = ["async-io", "blocking-api"] }
 
 [profile.dev.package."*"]
 opt-level = 2

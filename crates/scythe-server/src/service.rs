@@ -235,6 +235,15 @@ pub fn status_text(hello: &Value, health: &Value, transport: &Value, setlist: &V
         health["overloads"],
         health["reconnects"]
     );
+    let rt = &health["realtime"];
+    out += &match (rt["policy"].as_str(), rt["priority"].as_i64().unwrap_or(0)) {
+        (Some(policy), p) if p > 0 => format!("scheduling: {policy} {p} ({})\n", rt["via"].as_str().unwrap_or("?")),
+        (Some(_), _) => format!(
+            "scheduling: no real-time priority{}\n",
+            rt["reason"].as_str().map(|r| format!(" ({r})")).unwrap_or_default()
+        ),
+        (None, _) => "scheduling: not known yet\n".into(),
+    };
     out
 }
 
@@ -308,7 +317,8 @@ mod tests {
             &json!({"ok": true, "protocol": 1, "clients": 2}),
             &json!({"device": "Scarlett", "sample_rate": 48000, "block_size": 128, "buffer_ms": 2.67,
                     "output_latency_ms": 5.1, "cpu": 12.5, "cpu_peak": 30.0, "xruns": 3, "overloads": 0,
-                    "status": "running", "reason": null, "reconnects": 1}),
+                    "status": "running", "reason": null, "reconnects": 1,
+                    "realtime": {"policy": "SCHED_FIFO", "priority": 20, "via": "rtkit", "reason": null}}),
             &json!({"playing": true, "recording": false, "bar_beat": "12.3.00"}),
             &json!({"name": "Gig", "current": {"name": "Opener"}}),
         );
@@ -319,7 +329,15 @@ mod tests {
              setlist: Gig, song Opener\n\
              audio: Scarlett @ 48000 Hz, 128 frames (2.67 ms), output latency 5.1 ms\n\
              status: running\n\
-             cpu: 12.5% (peak 30%), xruns 3, overloads 0, reconnects 1\n"
+             cpu: 12.5% (peak 30%), xruns 3, overloads 0, reconnects 1\n\
+             scheduling: SCHED_FIFO 20 (rtkit)\n"
         );
+        let plain = status_text(
+            &json!({}),
+            &json!({"realtime": {"policy": "SCHED_OTHER", "priority": 0, "via": "none", "reason": "rtprio limit is 0"}}),
+            &json!({}),
+            &json!({}),
+        );
+        assert!(plain.ends_with("scheduling: no real-time priority (rtprio limit is 0)\n"), "{plain}");
     }
 }

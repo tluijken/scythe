@@ -848,8 +848,14 @@ fn count_in_and_metronome_settings() {
     let st = ok(&mut s, json!({"cmd": "transport.metronome_output", "output": null}));
     assert_eq!(st["metronome_outputs"], json!([]));
 
-    // At 120 bpm one 4/4 bar is two seconds; the playhead waits at the cursor meanwhile.
+    // As in REAPER, a disabled metronome does not count in.
     ok(&mut s, json!({"cmd": "transport.seek", "position": 3.0}));
+    let st = ok(&mut s, json!({"cmd": "transport.play"}));
+    assert_eq!((st["playing"].clone(), st["count_in"]["position"].clone()), (json!(true), Value::Null));
+    ok(&mut s, json!({"cmd": "transport.stop"}));
+
+    // At 120 bpm one 4/4 bar is two seconds; the playhead waits at the cursor meanwhile.
+    ok(&mut s, json!({"cmd": "transport.metronome", "enabled": true}));
     let st = ok(&mut s, json!({"cmd": "transport.play"}));
     assert_eq!(st["playing"], true);
     let position = st["count_in"]["position"].as_f64().unwrap();
@@ -863,6 +869,53 @@ fn count_in_and_metronome_settings() {
     let st = ok(&mut s, json!({"cmd": "transport.stop"}));
     assert_eq!(st["count_in"]["position"], Value::Null);
     assert!(s.dirty, "the settings are saved with the project");
+}
+
+#[test]
+fn preroll_and_count_in_preferences() {
+    let mut s = session();
+    let dir = std::env::temp_dir().join(format!("scythe-prefs-{}", std::process::id()));
+    let file = dir.join("preferences.ini");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(&file, "[REAPER]\nother=1\n").unwrap();
+    s.load_preferences(file.clone());
+    let st = ok(&mut s, json!({"cmd": "transport.state"}));
+    assert_eq!(st["preroll"], json!({"playback": false, "record": false, "measures": 2.0, "measure_start": true}));
+    assert_eq!(st["metronome_default_output"], Value::Null);
+
+    let st = ok(&mut s, json!({"cmd": "transport.preroll", "playback": true, "measures": 1}));
+    assert_eq!(st["preroll"], json!({"playback": true, "record": false, "measures": 1.0, "measure_start": true}));
+    let st = ok(&mut s, json!({"cmd": "transport.count_in", "measure_start": true}));
+    assert_eq!(st["count_in"]["measure_start"], true);
+    let st = ok(&mut s, json!({"cmd": "transport.metronome_output", "output": 2, "default": true}));
+    assert_eq!(st["metronome_default_output"], json!({"output": 2, "mono": false}));
+    assert_eq!(st["metronome_outputs"], json!([]), "the project's own stays empty");
+    assert!(!s.dirty, "preferences are not part of the project");
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(saved, "[REAPER]\nother=1\npreroll=9\nprerollmeas=1.00000000000000\nmetronome_defout=2\n");
+    let bad = execute_json(&mut s, json!({"cmd": "transport.preroll", "measures": 17}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+
+    // Bar 3 beat 3 at 120 bpm pre-rolls from the bar line a bar back: bar 2, 2.0 s.
+    ok(&mut s, json!({"cmd": "transport.seek", "position": 5.0}));
+    let st = ok(&mut s, json!({"cmd": "transport.play"}));
+    assert_eq!(st["playing"], true);
+    assert!((2.0..2.2).contains(&st["position"].as_f64().unwrap()), "{}", st["position"]);
+    ok(&mut s, json!({"cmd": "transport.stop"}));
+    assert_eq!(ok(&mut s, json!({"cmd": "transport.state"}))["position"], 5.0, "stop returns to the cursor");
+
+    // From the project start the pre-roll waits a bar before the playhead moves.
+    ok(&mut s, json!({"cmd": "transport.seek", "position": 0.0}));
+    let st = ok(&mut s, json!({"cmd": "transport.play"}));
+    let lead = st["count_in"]["position"].as_f64().unwrap();
+    assert!((-2.0..=-1.8).contains(&lead), "{lead}");
+    assert_eq!(st["position"], 0.0);
+    ok(&mut s, json!({"cmd": "transport.stop"}));
+
+    let mut reloaded = session();
+    reloaded.load_preferences(file);
+    assert_eq!(reloaded.prefs, s.prefs);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

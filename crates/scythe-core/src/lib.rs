@@ -9,6 +9,7 @@ pub mod metronome;
 pub mod midi;
 pub mod model;
 pub mod monitor;
+pub mod prefs;
 pub mod recording;
 pub mod render_settings;
 pub mod rpp;

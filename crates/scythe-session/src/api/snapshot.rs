@@ -1,5 +1,6 @@
 //! The project as clients see it: plain JSON-friendly copies of what the model holds.
 
+use scythe_core::metronome::{PREROLL_MID_MEASURE, PREROLL_PLAY, PREROLL_RECORD};
 use scythe_core::units::gain_to_db;
 use scythe_core::{Color, HwOut, Item, Marker, Project, SendMode, Track};
 use scythe_engine::fx::FxStatus;
@@ -55,6 +56,25 @@ pub struct TransportState {
     pub metronome_outputs: Vec<ClickOutput>,
     #[serde(default)]
     pub count_in: CountInState,
+    /// Where the metronome plays when a project names no output (a preference); `None` is
+    /// with the master.
+    #[serde(default)]
+    pub metronome_default_output: Option<ClickOutput>,
+    #[serde(default)]
+    pub preroll: PrerollState,
+}
+
+/// The pre-roll preferences.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PrerollState {
+    /// Pre-roll before playback.
+    pub playback: bool,
+    /// Pre-roll before recording.
+    pub record: bool,
+    /// Length in measures.
+    pub measures: f64,
+    /// Starts on a bar line.
+    pub measure_start: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -73,7 +93,11 @@ pub struct CountInState {
     pub record: bool,
     /// Count-in length in measures.
     pub measures: f64,
-    /// While counting in: seconds until playback starts, negative (-2.0 is two seconds before).
+    /// Counts in from the bar line before the start (a preference).
+    #[serde(default)]
+    pub measure_start: bool,
+    /// While counting in (or pre-rolling before the project start): seconds until the playhead
+    /// moves, negative (-2.0 is two seconds before).
     pub position: Option<f64>,
     /// While counting in: the beat clicking, from 1.
     pub beat: Option<u32>,
@@ -278,6 +302,16 @@ pub fn transport(session: &Session) -> TransportState {
             .map(|(first, mono)| ClickOutput { output: first as u32, mono })
             .collect(),
         count_in: count_in(session),
+        metronome_default_output: scythe_core::metronome::Metronome::default()
+            .outputs_or(session.prefs.metronome_default_output)
+            .first()
+            .map(|&(first, mono)| ClickOutput { output: first as u32, mono }),
+        preroll: PrerollState {
+            playback: session.prefs.preroll & PREROLL_PLAY != 0,
+            record: session.prefs.preroll & PREROLL_RECORD != 0,
+            measures: session.prefs.preroll_measures,
+            measure_start: session.prefs.preroll & PREROLL_MID_MEASURE == 0,
+        },
     }
 }
 
@@ -288,6 +322,7 @@ pub fn count_in(session: &Session) -> CountInState {
         playback: m.has(scythe_core::metronome::COUNT_IN_PLAY),
         record: m.has(scythe_core::metronome::COUNT_IN_RECORD),
         measures: m.count_in_measures,
+        measure_start: session.prefs.count_in_at_measure(),
         position: running.map(|(at, _, _)| at),
         beat: running.map(|(_, beat, _)| beat),
         beats: running.map(|(_, _, beats)| beats),

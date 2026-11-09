@@ -135,22 +135,52 @@ impl ClickSounds {
     }
 }
 
-/// A count-in as the audio thread plays it: `beats` clicks `beat` frames apart, the first of
-/// each bar accented.
+/// A count-in as the audio thread plays it, in frames: see [`scythe_core::metronome::CountIn`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CountInClicks {
+    /// Frames until the playhead moves.
+    pub frames: i64,
     pub beat: f64,
-    pub beats: u32,
+    /// Frames into it of the first click.
+    pub first: f64,
+    /// Which beat of its bar the first click is, from 0.
+    pub first_in_bar: u32,
     pub beats_per_bar: u32,
+    /// Clicks sound only before this frame.
+    pub audible: i64,
 }
 
 impl CountInClicks {
-    pub fn frames(&self) -> i64 {
-        self.click_at(self.beats)
+    pub fn from_seconds(c: &scythe_core::metronome::CountIn, sample_rate: u32) -> Self {
+        let sr = sample_rate as f64;
+        Self {
+            frames: (c.length * sr).round() as i64,
+            beat: c.beat * sr,
+            first: c.first * sr,
+            first_in_bar: c.first_in_bar,
+            beats_per_bar: c.beats_per_bar.max(1),
+            audible: (c.audible * sr).round() as i64,
+        }
     }
 
-    fn click_at(&self, beat: u32) -> i64 {
-        (beat as f64 * self.beat).round() as i64
+    /// How many clicks fall inside it.
+    pub fn beats(&self) -> u32 {
+        if self.beat <= 0.0 {
+            return 0;
+        }
+        let mut n = ((self.frames as f64 - self.first) / self.beat).ceil().max(0.0) as u32;
+        while n > 0 && self.click_at(n - 1) >= self.frames {
+            n -= 1;
+        }
+        n
+    }
+
+    pub fn click_at(&self, beat: u32) -> i64 {
+        (self.first + beat as f64 * self.beat).round() as i64
+    }
+
+    fn accented(&self, beat: u32) -> bool {
+        (self.first_in_bar + beat).is_multiple_of(self.beats_per_bar)
     }
 }
 
@@ -178,14 +208,15 @@ pub struct MetronomeRouting {
 }
 
 impl MetronomeRouting {
-    pub fn from_project(project: &Project) -> Self {
+    /// `default_output` is the preferences' `metronome_defout`, for a project naming none.
+    pub fn from_project(project: &Project, default_output: i64) -> Self {
         let m = &project.metronome;
         Self {
             on_play: m.clicks(false),
             on_record: m.clicks(true),
             // REAPER's default click volume (0.25) plays at the level clicks have always had here.
             gain: (m.volume * 2.0) as f32,
-            outputs: m.device_outputs(),
+            outputs: m.outputs_or(default_output),
         }
     }
 
@@ -699,6 +730,19 @@ impl RenderGraph {
         fx: &mut FxRegistry,
         sample_rate: u32,
     ) -> Self {
+        Self::build_with_click(project, pool, meters, fx, sample_rate, -1)
+    }
+
+    /// [`RenderGraph::build`], with the metronome playing to `click_output` (a `METRONOMEOUT`
+    /// value, -1 for the master) when the project names no output.
+    pub fn build_with_click(
+        project: &Project,
+        pool: &MediaPool,
+        meters: &mut MeterRegistry,
+        fx: &mut FxRegistry,
+        sample_rate: u32,
+        click_output: i64,
+    ) -> Self {
         let sr = sample_rate as f64;
         let index: HashMap<TrackId, usize> = project.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let timeline = Arc::new(project.tempo.timeline());
@@ -907,7 +951,7 @@ impl RenderGraph {
             Some(outs) => outs.iter().map(RenderSend::end).max().unwrap_or(0),
             None => master_channels,
         };
-        let metronome = MetronomeRouting::from_project(project);
+        let metronome = MetronomeRouting::from_project(project, click_output);
         let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
@@ -1641,11 +1685,13 @@ impl RenderGraph {
             Clicks::Off => {}
             Clicks::Beats => self.beat_clicks(start, start..start + n as i64, f),
             Clicks::CountIn { clicks, at } => {
-                let end = at + n as i64;
-                for k in 0..clicks.beats {
-                    let sound =
-                        if k % clicks.beats_per_bar.max(1) == 0 { &self.clicks.accent } else { &self.clicks.beat };
+                let end = (at + n as i64).min(clicks.audible);
+                for k in 0..clicks.beats() {
                     let pos = clicks.click_at(k);
+                    if pos >= end {
+                        break;
+                    }
+                    let sound = if clicks.accented(k) { &self.clicks.accent } else { &self.clicks.beat };
                     for frame in pos.max(at)..(pos + sound.len() as i64).min(end) {
                         f((frame - at) as usize, sound[(frame - pos) as usize]);
                     }

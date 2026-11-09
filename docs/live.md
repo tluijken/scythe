@@ -48,6 +48,16 @@ nothing else is needed.
 
 ### Real-time audio
 
+The thread that renders the audio (the device callback, or the silent clock without a device)
+asks for real-time scheduling when it starts: `SCHED_FIFO` priority 70 when the user's rtprio
+limit allows it (capped at the limit), otherwise the `SCHED_RR` priority RealtimeKit (`rtkit-daemon`, which
+desktop distributions and PipeWire setups run) grants over the system D-Bus, usually priority
+20. Without either the session plays on at normal priority and says so once in its log.
+`--status` (and the `health` event's `realtime`) shows what it got, e.g.
+`scheduling: SCHED_RR 20 (rtkit)`. Through RealtimeKit the process gets a CPU-time limit
+(`RLIMIT_RTTIME`, 200 ms by default): a block that renders that long without a break ends the
+process, which the service then restarts.
+
 The unit asks for real-time priority (`LimitRTPRIO`, at most 95) and unlimited locked memory
 (`LimitMEMLOCK`) only as far as the user's hard limits allow when it is written, because a user
 unit asking for more than that does not start at all. To raise them, put the user in the
@@ -69,17 +79,27 @@ The metronome's settings are REAPER's and live in the project (right-click the m
 button, or `transport.metronome`, `transport.metronome_output` and `transport.count_in`):
 
 - **Count-in** before playback and/or recording, in measures, at the tempo and time signature
-  where playback starts. The playhead waits at the start while it clicks; the transport event
-  counts `count_in.position` up to 0 with the beat number, which the setlist page shows.
+  where playback starts, as long as the metronome is on (as in REAPER: with it off there is no
+  count-in). The playhead waits at the start while it clicks, on the song's own beats carried
+  back from there; the transport event counts `count_in.position` up to 0 with the beat
+  number, which the setlist page shows. "Start count-in at start of measure" counts in from
+  the bar line before a song that starts mid-bar.
+- **Pre-roll** before playback and/or recording starts that many measures earlier (on a bar
+  line by default); a recording keeps only what comes after the start. Pre-roll, "start
+  count-in at start of measure" and the default metronome output are preferences, as in
+  REAPER's reaper.ini, kept in `$XDG_CONFIG_HOME/scythe/preferences.ini` (`transport.preroll`,
+  `transport.count_in` with `measure_start`, `transport.metronome_output` with `default`).
 - **Per setlist**, "Count-in" makes every song start after the count-in, whatever the project
-  setting, so the drummer does not have to count the band in.
+  setting and even with the metronome off, so the drummer does not have to count the band in.
 - **Where the click goes.** By default the metronome plays with the master, which is the PA.
   Point it at the drummer's in-ear output instead (metronome output, REAPER's
   `METRONOMEOUT`), and/or give monitor mixes a click of their own: the click fader on the
   `/monitor` page or `mix.click` puts the metronome and every count-in into that mix, before
   its limiter, at that musician's level. Set the metronome's own level to -inf (or point it at
   an unused output) and only the mixes with a click hear it.
-- Turning the metronome off silences the click during songs; count-ins still click.
+- Turning the metronome off silences the click during songs and drops the project's count-in;
+  a setlist's count-in still clicks. For a click during count-ins only, leave the metronome on
+  and turn off "run during playback" in the project (REAPER's metronome settings).
 
 ## When things go wrong
 

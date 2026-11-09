@@ -55,17 +55,23 @@ pub enum TransportCommand {
     },
     /// Where the metronome plays: device output `output` (from 0; a pair unless `mono`), or
     /// with the master when `null`. Pointed at a drummer's in-ear output, the click reaches
-    /// only them. REAPER's metronome hardware output (`METRONOMEOUT`).
+    /// only them. REAPER's metronome hardware output (`METRONOMEOUT`), saved with the project;
+    /// with `default` the preference for projects that name none (`metronome_defout`).
     #[serde(rename = "transport.metronome_output")]
     MetronomeOutput {
-        /// First device output, from 0; `null` plays it with the master.
+        /// First device output, from 0; `null` plays it with the master (or, for the project,
+        /// to the default output).
         output: Option<u32>,
         /// Play to that one output instead of the pair starting there.
         #[serde(default)]
         mono: bool,
+        /// Set the default output, a preference, instead of the project's.
+        #[serde(default)]
+        default: bool,
     },
     /// Count-in: whether playback and/or recording start after `measures` measures of
-    /// metronome at the tempo where they start. The count-in clicks even with the metronome off.
+    /// metronome at the tempo where they start. As in REAPER, there is no count-in while the
+    /// metronome is off (a setlist's count-in clicks regardless).
     #[serde(rename = "transport.count_in")]
     CountIn {
         /// Count in before playback (REAPER's "Count-in before playback").
@@ -77,6 +83,27 @@ pub enum TransportCommand {
         /// Length in measures, up to 16.
         #[serde(default)]
         measures: Option<f64>,
+        /// "Start count-in at start of measure": count in from the bar line before the start,
+        /// a preference rather than a project setting.
+        #[serde(default)]
+        measure_start: Option<bool>,
+    },
+    /// Pre-roll (preferences, as in REAPER): playback and/or recording start `measures`
+    /// measures before the position asked for; a recording keeps only what comes after it.
+    #[serde(rename = "transport.preroll")]
+    Preroll {
+        /// Pre-roll before playback.
+        #[serde(default)]
+        playback: Option<bool>,
+        /// Pre-roll before recording.
+        #[serde(default)]
+        record: Option<bool>,
+        /// Length in measures, up to 16.
+        #[serde(default)]
+        measures: Option<f64>,
+        /// "Start pre-roll at start of measure" (on by default).
+        #[serde(default)]
+        measure_start: Option<bool>,
     },
     /// The audio device and how it holds up: xruns, DSP load, latency, a lost device.
     #[serde(rename = "transport.health")]
@@ -134,19 +161,22 @@ pub fn execute(session: &mut Session, command: TransportCommand) -> Result<Value
                 }
             });
         }
-        TransportCommand::MetronomeOutput { output, mono } => {
-            let outputs = match output {
+        TransportCommand::MetronomeOutput { output, mono, default } => {
+            let encoded = match output {
                 Some(n) if n >= 512 => return Err(ApiError::invalid("output runs from 0 to 511")),
-                Some(n) => vec![n as i64 | if mono { HwOut::MONO } else { 0 }],
-                None => Vec::new(),
+                Some(n) => Some(n as i64 | if mono { HwOut::MONO } else { 0 }),
+                None => None,
             };
-            session.change_metronome(|m| m.outputs = outputs);
+            if default {
+                session.change_preferences(|p| p.metronome_default_output = encoded.unwrap_or(-1));
+            } else {
+                session.change_metronome(|m| m.outputs = encoded.into_iter().collect());
+            }
         }
-        TransportCommand::CountIn { playback, record, measures } => {
-            if let Some(n) = measures
-                && !(n > 0.0 && n <= metronome::MAX_COUNT_IN)
-            {
-                return Err(ApiError::invalid("measures runs from just above 0 to 16"));
+        TransportCommand::CountIn { playback, record, measures, measure_start } => {
+            measures_in_range(measures)?;
+            if let Some(on) = measure_start {
+                session.change_preferences(|p| set_bit(&mut p.preroll, metronome::COUNT_IN_AT_MEASURE, on));
             }
             session.change_metronome(|m| {
                 if let Some(on) = playback {
@@ -160,10 +190,44 @@ pub fn execute(session: &mut Session, command: TransportCommand) -> Result<Value
                 }
             });
         }
+        TransportCommand::Preroll { playback, record, measures, measure_start } => {
+            measures_in_range(measures)?;
+            session.change_preferences(|p| {
+                if let Some(on) = playback {
+                    set_bit(&mut p.preroll, metronome::PREROLL_PLAY, on);
+                }
+                if let Some(on) = record {
+                    set_bit(&mut p.preroll, metronome::PREROLL_RECORD, on);
+                }
+                if let Some(on) = measure_start {
+                    set_bit(&mut p.preroll, metronome::PREROLL_MID_MEASURE, !on);
+                }
+                if let Some(n) = measures {
+                    p.preroll_measures = n;
+                }
+            });
+        }
         TransportCommand::Health => return Ok(json(health(session))),
         TransportCommand::State => {}
     }
     Ok(json(snapshot::transport(session)))
+}
+
+fn measures_in_range(measures: Option<f64>) -> Result<(), ApiError> {
+    match measures {
+        Some(n) if !(n > 0.0 && n <= metronome::MAX_COUNT_IN) => {
+            Err(ApiError::invalid("measures runs from just above 0 to 16"))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn set_bit(flags: &mut u32, bit: u32, on: bool) {
+    if on {
+        *flags |= bit;
+    } else {
+        *flags &= !bit;
+    }
 }
 
 /// The audio device and how it is doing: the `transport.health` answer and the `health` event.
@@ -191,6 +255,23 @@ pub struct HealthInfo {
     pub reason: Option<String>,
     /// Times the device came back after going away.
     pub reconnects: u64,
+    /// How the audio thread is scheduled, once it has run.
+    #[serde(default)]
+    pub realtime: Option<RealtimeInfo>,
+}
+
+/// The audio thread's scheduling.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RealtimeInfo {
+    /// `SCHED_FIFO`, `SCHED_RR` or `SCHED_OTHER`.
+    pub policy: String,
+    /// Real-time priority, 0 when it has none.
+    pub priority: i32,
+    /// `direct` (the user's rtprio limit), `rtkit` (RealtimeKit), `host` (the audio system's
+    /// thread already was real-time) or `none`.
+    pub via: String,
+    /// Why it has no real-time priority.
+    pub reason: Option<String>,
 }
 
 pub fn health(session: &Session) -> HealthInfo {
@@ -209,5 +290,11 @@ pub fn health(session: &Session) -> HealthInfo {
         status: if h.silent { "silent" } else { "running" }.into(),
         reason: h.reason,
         reconnects: h.reconnects,
+        realtime: h.realtime.map(|r| RealtimeInfo {
+            policy: r.policy.into(),
+            priority: r.priority,
+            via: r.via.into(),
+            reason: r.reason,
+        }),
     }
 }

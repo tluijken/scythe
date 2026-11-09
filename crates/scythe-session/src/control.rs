@@ -159,8 +159,8 @@ impl ControlPump {
         }
         let health = transport::health(session);
         let news = self.health.as_ref().is_none_or(|last| {
-            (&last.status, last.xruns, last.overloads, last.reconnects)
-                != (&health.status, health.xruns, health.overloads, health.reconnects)
+            (&last.status, last.xruns, last.overloads, last.reconnects, &last.realtime)
+                != (&health.status, health.xruns, health.overloads, health.reconnects, &health.realtime)
         });
         let since = now.duration_since(self.health_at);
         if (news && since >= EVENT_INTERVAL) || since >= HEALTH_INTERVAL {

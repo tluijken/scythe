@@ -74,6 +74,7 @@ pub fn run(options: Options) -> Result<(), String> {
         return Ok(());
     }
     install_signal_handlers();
+    scythe_engine::realtime::enable();
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
     let engine = if options.null_audio {
         Engine::start_offline(pool, options.devices.sample_rate.unwrap_or(48_000))
@@ -90,6 +91,7 @@ pub fn run(options: Options) -> Result<(), String> {
     let mut session = Session::new(engine);
     session.log_notices = true;
     session.no_input = options.devices.no_input;
+    session.load_preferences(scythe_session::preferences_path());
     if let Some(path) = &options.project {
         session.open_path(path)?;
     }

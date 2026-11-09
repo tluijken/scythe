@@ -21,6 +21,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use scythe_core::history::History;
+use scythe_core::prefs::Preferences;
 use scythe_core::{Project, TrackId};
 use scythe_engine::Engine;
 use scythe_engine::midi_io::midi_input_channel;
@@ -57,6 +58,11 @@ pub struct Session {
     pub auto_punch: bool,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
+    /// What REAPER keeps in reaper.ini: pre-roll, count-in at the bar line, the default
+    /// metronome output.
+    pub prefs: Preferences,
+    /// Where [`Session::change_preferences`] saves them; tests leave it unset.
+    prefs_file: Option<PathBuf>,
     pub dirty: bool,
     pub saved_at: Option<Instant>,
     pub busy: Option<String>,
@@ -103,6 +109,8 @@ impl Session {
             live: LiveState::default(),
             auto_punch: false,
             no_input: false,
+            prefs: Preferences::default(),
+            prefs_file: None,
             dirty: false,
             saved_at: None,
             busy: None,
@@ -291,6 +299,41 @@ impl Session {
         }
     }
 
+    /// Reads the preferences from `path` (defaults when it does not exist yet) and saves later
+    /// changes there.
+    pub fn load_preferences(&mut self, path: PathBuf) {
+        match std::fs::read_to_string(&path) {
+            Ok(text) => self.prefs = Preferences::parse(&text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => self.notify(format!("Cannot read {}: {e}", path.display())),
+        }
+        self.prefs_file = Some(path);
+        self.engine.set_default_click_output(self.prefs.metronome_default_output);
+        self.sync();
+    }
+
+    /// Changes the preferences and saves them, keeping whatever else their file holds.
+    pub fn change_preferences(&mut self, f: impl FnOnce(&mut Preferences)) {
+        let before = self.prefs.clone();
+        f(&mut self.prefs);
+        if self.prefs == before {
+            return;
+        }
+        if self.prefs.metronome_default_output != before.metronome_default_output {
+            self.engine.set_default_click_output(self.prefs.metronome_default_output);
+            self.sync();
+        }
+        let Some(path) = self.prefs_file.clone() else { return };
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let written = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&path, self.prefs.write_into(&text)));
+        if let Err(e) = written {
+            self.notify(format!("Cannot save preferences to {}: {e}", path.display()));
+        }
+    }
+
     /// Hands the project to the engine and opens or closes the live inputs and outputs it
     /// needs.
     pub fn sync(&mut self) {
@@ -381,6 +424,16 @@ impl Session {
             }
         }
     }
+}
+
+/// `$XDG_CONFIG_HOME/scythe/preferences.ini`: the preferences REAPER keeps in reaper.ini.
+pub fn preferences_path() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("scythe")
+        .join("preferences.ini")
 }
 
 /// Where Scythe keeps its own files: the demo song, recordings of unsaved projects, presets.

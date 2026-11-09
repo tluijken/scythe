@@ -201,16 +201,21 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Where the metronome plays: device output `output` (from 0; a pair unless `mono`), or\nwith the master when `null`. Pointed at a drummer's in-ear output, the click reaches\nonly them. REAPER's metronome hardware output (`METRONOMEOUT`).\n\nControl API command `transport.metronome_output`.",
+    "description": "Where the metronome plays: device output `output` (from 0; a pair unless `mono`), or\nwith the master when `null`. Pointed at a drummer's in-ear output, the click reaches\nonly them. REAPER's metronome hardware output (`METRONOMEOUT`), saved with the project;\nwith `default` the preference for projects that name none (`metronome_defout`).\n\nControl API command `transport.metronome_output`.",
     "inputSchema": {
       "properties": {
+        "default": {
+          "default": false,
+          "description": "Set the default output, a preference, instead of the project's.",
+          "type": "boolean"
+        },
         "mono": {
           "default": false,
           "description": "Play to that one output instead of the pair starting there.",
           "type": "boolean"
         },
         "output": {
-          "description": "First device output, from 0; `null` plays it with the master.",
+          "description": "First device output, from 0; `null` plays it with the master (or, for the project,\nto the default output).",
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -231,9 +236,17 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Count-in: whether playback and/or recording start after `measures` measures of\nmetronome at the tempo where they start. The count-in clicks even with the metronome off.\n\nControl API command `transport.count_in`.",
+    "description": "Count-in: whether playback and/or recording start after `measures` measures of\nmetronome at the tempo where they start. As in REAPER, there is no count-in while the\nmetronome is off (a setlist's count-in clicks regardless).\n\nControl API command `transport.count_in`.",
     "inputSchema": {
       "properties": {
+        "measure_start": {
+          "default": null,
+          "description": "\"Start count-in at start of measure\": count in from the bar line before the start,\na preference rather than a project setting.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "measures": {
           "default": null,
           "description": "Length in measures, up to 16.",
@@ -264,6 +277,55 @@
     },
     "name": "transport_count_in",
     "title": "Transport count in"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Pre-roll (preferences, as in REAPER): playback and/or recording start `measures`\nmeasures before the position asked for; a recording keeps only what comes after it.\n\nControl API command `transport.preroll`.",
+    "inputSchema": {
+      "properties": {
+        "measure_start": {
+          "default": null,
+          "description": "\"Start pre-roll at start of measure\" (on by default).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "measures": {
+          "default": null,
+          "description": "Length in measures, up to 16.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "playback": {
+          "default": null,
+          "description": "Pre-roll before playback.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "record": {
+          "default": null,
+          "description": "Pre-roll before recording.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "transport_preroll",
+    "title": "Transport preroll"
   },
   {
     "annotations": {

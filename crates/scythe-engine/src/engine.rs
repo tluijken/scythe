@@ -43,9 +43,12 @@ pub struct Transport {
     sample_rate: u32,
     /// Frames of count-in left before the playhead moves; the others describe its clicks.
     count_in_left: AtomicI64,
+    count_in_frames: AtomicI64,
     count_in_beat: AtomicU64,
-    count_in_beats: AtomicU32,
+    count_in_first: AtomicU64,
+    count_in_first_in_bar: AtomicU32,
     count_in_bar: AtomicU32,
+    count_in_audible: AtomicI64,
     /// Recording is on, for the metronome's "run during recording".
     recording: AtomicBool,
     /// Buffer underruns and overruns the device reported.
@@ -78,9 +81,12 @@ impl Transport {
             cues: ArcSwap::from_pointee(CueList::default()),
             sample_rate,
             count_in_left: AtomicI64::new(0),
+            count_in_frames: AtomicI64::new(0),
             count_in_beat: AtomicU64::new(0),
-            count_in_beats: AtomicU32::new(0),
-            count_in_bar: AtomicU32::new(0),
+            count_in_first: AtomicU64::new(0),
+            count_in_first_in_bar: AtomicU32::new(0),
+            count_in_bar: AtomicU32::new(1),
+            count_in_audible: AtomicI64::new(0),
             recording: AtomicBool::new(false),
             xruns: AtomicU64::new(0),
             overloads: AtomicU64::new(0),
@@ -117,11 +123,32 @@ impl Transport {
         if !self.is_playing() || left <= 0 {
             return None;
         }
-        let beat = f64::from_bits(self.count_in_beat.load(Ordering::Relaxed));
-        let beats = self.count_in_beats.load(Ordering::Relaxed);
-        let total = (beat * beats as f64).round() as i64;
-        let current = if beat > 0.0 { ((total - left) as f64 / beat).floor() as u32 + 1 } else { 1 };
-        Some((-(left as f64) / self.sample_rate as f64, current.min(beats), beats))
+        let clicks = self.count_in_clicks();
+        let beats = clicks.beats();
+        let elapsed = clicks.frames - left;
+        let current = (0..beats).take_while(|&k| clicks.click_at(k) <= elapsed).count() as u32;
+        Some((-(left as f64) / self.sample_rate as f64, current.max(1).min(beats), beats))
+    }
+
+    fn start_count_in(&self, c: CountInClicks) {
+        self.count_in_frames.store(c.frames, Ordering::Relaxed);
+        self.count_in_beat.store(c.beat.to_bits(), Ordering::Relaxed);
+        self.count_in_first.store(c.first.to_bits(), Ordering::Relaxed);
+        self.count_in_first_in_bar.store(c.first_in_bar, Ordering::Relaxed);
+        self.count_in_bar.store(c.beats_per_bar, Ordering::Relaxed);
+        self.count_in_audible.store(c.audible, Ordering::Relaxed);
+        self.count_in_left.store(c.frames, Ordering::Release);
+    }
+
+    fn count_in_clicks(&self) -> CountInClicks {
+        CountInClicks {
+            frames: self.count_in_frames.load(Ordering::Relaxed),
+            beat: f64::from_bits(self.count_in_beat.load(Ordering::Relaxed)),
+            first: f64::from_bits(self.count_in_first.load(Ordering::Relaxed)),
+            first_in_bar: self.count_in_first_in_bar.load(Ordering::Relaxed),
+            beats_per_bar: self.count_in_bar.load(Ordering::Relaxed).max(1),
+            audible: self.count_in_audible.load(Ordering::Relaxed),
+        }
     }
 
     /// Takes up to `frames` of a running count-in: its clicks, how far into it the block starts
@@ -137,12 +164,8 @@ impl Transport {
         let len = (left as usize).min(frames);
         // Stop and play clear the count-in from the main thread meanwhile; theirs wins.
         self.count_in_left.compare_exchange(left, left - len as i64, Ordering::AcqRel, Ordering::Relaxed).ok()?;
-        let clicks = CountInClicks {
-            beat: f64::from_bits(self.count_in_beat.load(Ordering::Relaxed)),
-            beats: self.count_in_beats.load(Ordering::Relaxed),
-            beats_per_bar: self.count_in_bar.load(Ordering::Relaxed),
-        };
-        Some((clicks, clicks.frames() - left, len))
+        let clicks = self.count_in_clicks();
+        Some((clicks, clicks.frames - left, len))
     }
 
     /// Advances the playhead over one block, honouring seeks, the loop range and marker
@@ -519,6 +542,7 @@ impl Output {
         let thread = std::thread::Builder::new()
             .name("scythe-null-audio".into())
             .spawn(move || {
+                crate::realtime::request();
                 let mut next = Instant::now();
                 while !stop_t.load(Ordering::Relaxed) {
                     if let Ok(mut proc) = proc.lock() {
@@ -626,6 +650,8 @@ pub struct Health {
     pub reason: Option<String>,
     /// Times the device came back after being lost or missing.
     pub reconnects: u64,
+    /// How the thread rendering the audio is scheduled, once it has run.
+    pub realtime: Option<crate::realtime::Realtime>,
 }
 
 /// A change in the audio device, from [`Engine::maintain`].
@@ -674,6 +700,8 @@ pub struct Engine {
     device_channels: usize,
     /// The callback count last seen and when it changed.
     callbacks_seen: (u64, Instant),
+    /// Where the metronome plays when the project names no output (`metronome_defout`).
+    click_output: i64,
 }
 
 impl Engine {
@@ -806,6 +834,7 @@ impl Engine {
             silent: matches!(self.output, Output::Null { .. }),
             reason: self.info.fallback_reason.clone(),
             reconnects: self.reconnects,
+            realtime: crate::realtime::status(),
         }
     }
 
@@ -851,6 +880,7 @@ impl Engine {
             reconnects: 0,
             device_channels: 2,
             callbacks_seen: (0, Instant::now()),
+            click_output: -1,
         }
     }
 
@@ -895,12 +925,20 @@ impl Engine {
         &self.meters
     }
 
+    /// Where the metronome plays when a project names no output (a `METRONOMEOUT` value, -1
+    /// for the master); takes effect at the next [`Engine::sync`].
+    pub fn set_default_click_output(&mut self, output: i64) {
+        self.click_output = output;
+    }
+
     /// Rebuilds the render graph from `project` and hands it to the audio thread.
     pub fn sync(&mut self, project: &Project) {
         self.meters.retain(project);
         self.fx.retain(project);
         self.fx.project_dir = project.path.as_deref().and_then(std::path::Path::parent).map(Into::into);
-        let graph = RenderGraph::build(project, &self.pool, &mut self.meters, &mut self.fx, self.info.sample_rate);
+        let rate = self.info.sample_rate;
+        let graph =
+            RenderGraph::build_with_click(project, &self.pool, &mut self.meters, &mut self.fx, rate, self.click_output);
         self.device_channels = graph.device_channels;
         if let Output::Device(out) = &mut self.output {
             out.match_master(graph.device_channels, &self.transport);
@@ -1058,14 +1096,8 @@ impl Engine {
 
     /// Plays after `count_in`: the playhead waits where it is while the count-in clicks.
     pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) {
-        let t = &self.transport;
-        let beat = count_in.beat * self.info.sample_rate as f64;
-        t.count_in_beat.store(beat.to_bits(), Ordering::Relaxed);
-        t.count_in_beats.store(count_in.beats, Ordering::Relaxed);
-        t.count_in_bar.store(count_in.beats_per_bar, Ordering::Relaxed);
-        let frames = CountInClicks { beat, beats: count_in.beats, beats_per_bar: count_in.beats_per_bar }.frames();
-        t.count_in_left.store(frames, Ordering::Release);
-        t.playing.store(true, Ordering::Relaxed);
+        self.transport.start_count_in(CountInClicks::from_seconds(count_in, self.info.sample_rate));
+        self.transport.playing.store(true, Ordering::Relaxed);
     }
 
     pub fn stop(&self) {
@@ -1166,10 +1198,15 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
     let errors = transport.clone();
+    let mut asked_realtime = false;
     device
         .build_output_stream::<T, _, _>(
             *config,
             move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+                if !asked_realtime {
+                    crate::realtime::request();
+                    asked_realtime = true;
+                }
                 let t = info.timestamp();
                 let latency = t.playback.duration_since(t.callback);
                 transport.output_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
@@ -1483,11 +1520,14 @@ mod tests {
         let mut proc = processor(&p, &pool, &transport);
         // One 4/4 bar at 120 bpm: four beats of 4000 frames, playback from 2 s (frame 16000).
         transport.position.store(16_000, Ordering::Relaxed);
-        let beat = 4000.0;
-        transport.count_in_beat.store(f64::to_bits(beat), Ordering::Relaxed);
-        transport.count_in_beats.store(4, Ordering::Relaxed);
-        transport.count_in_bar.store(4, Ordering::Relaxed);
-        transport.count_in_left.store(16_000, Ordering::Release);
+        transport.start_count_in(CountInClicks {
+            frames: 16_000,
+            beat: 4000.0,
+            first: 0.0,
+            first_in_bar: 0,
+            beats_per_bar: 4,
+            audible: 16_000,
+        });
         transport.playing.store(true, Ordering::Relaxed);
         assert_eq!(transport.count_in(), Some((-2.0, 1, 4)));
 
@@ -1510,11 +1550,61 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_in_clicks_on_the_grid_and_only_while_audible() {
+        let (p, pool, dir) = ones_project(2.0);
+        let transport = Arc::new(Transport::new(8000));
+        let mut proc = processor(&p, &pool, &transport);
+        transport.position.store(16_000, Ordering::Relaxed);
+        // 9000 frames before the playhead moves; clicks a quarter beat in, on beat 4 of a bar,
+        // and silent after frame 4000 (a pre-roll before the project start, metronome off).
+        transport.start_count_in(CountInClicks {
+            frames: 9000,
+            beat: 4000.0,
+            first: 1000.0,
+            first_in_bar: 3,
+            beats_per_bar: 4,
+            audible: 4000,
+        });
+        transport.playing.store(true, Ordering::Relaxed);
+        assert_eq!(transport.count_in(), Some((-9000.0 / 8000.0, 1, 2)));
+        let out = run(&mut proc, 10_000);
+        assert!(out[..1000].iter().all(|&s| s == 0.0));
+        assert!(out[1000..1240].iter().any(|&s| s != 0.0), "the first click");
+        assert!(out[1300..9000].iter().all(|&s| s == 0.0), "the second click is past the audible part");
+        assert!(out[9000..].iter().all(|&s| (s - 1.0).abs() < 1e-6), "the song starts on frame 9000");
+        assert_eq!(transport.position.load(Ordering::Relaxed), 17_000);
+
+        let mut accent = |first_in_bar| {
+            transport.position.store(16_000, Ordering::Relaxed);
+            transport.start_count_in(CountInClicks {
+                frames: 4000,
+                beat: 4000.0,
+                first: 0.0,
+                first_in_bar,
+                beats_per_bar: 4,
+                audible: 4000,
+            });
+            let out = run(&mut proc, 4000);
+            out[..240].iter().fold(0f32, |m, s| m.max(s.abs()))
+        };
+        let (first, fourth) = (accent(0), accent(3));
+        assert!(first > fourth, "the bar's first beat is accented");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn stopping_ends_the_count_in() {
         let (p, pool, dir) = ones_project(0.0);
         let mut e = Engine::start_offline(Arc::new(pool), 8000);
         e.sync(&p);
-        let count_in = scythe_core::metronome::CountIn { beats: 8, beat: 0.5, beats_per_bar: 4 };
+        let count_in = scythe_core::metronome::CountIn {
+            length: 4.0,
+            beat: 0.5,
+            first: 0.0,
+            first_in_bar: 0,
+            beats_per_bar: 4,
+            audible: 4.0,
+        };
         e.play_counting_in(&count_in);
         let (at, beat, beats) = e.transport().count_in().unwrap();
         assert!((-4.0..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");

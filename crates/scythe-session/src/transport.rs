@@ -19,8 +19,10 @@ pub struct ActiveRecording {
     pub(crate) midi_tracks: Vec<(TrackId, Option<u8>)>,
     /// MIDI received so far, with the project frame it arrived at.
     pub(crate) midi: Vec<(i64, LiveMidi)>,
-    /// Seconds of count-in recorded before the playhead started moving.
-    pub(crate) count_in: f64,
+    /// Seconds recorded before the playhead reached the start: count-in and pre-roll.
+    pub(crate) lead_in: f64,
+    /// Where a pre-roll started the playhead, before the start.
+    pub(crate) preroll_from: Option<f64>,
 }
 
 impl Session {
@@ -104,10 +106,14 @@ impl Session {
             looped: selection.filter(|_| self.project.loop_enabled),
             punch: selection.filter(|_| self.auto_punch),
         };
-        let count_in = match self.counting_in() {
-            Some((before, _, _)) => -before,
-            None if playing => 0.0,
-            None => self.start_playback(start, self.project.metronome.counts_in(true)),
+        let (lead_in, preroll_from) = match self.counting_in() {
+            Some((before, _, _)) => (-before, None),
+            None if playing => (0.0, None),
+            None => {
+                let lead_in = self.start_playback(start, true, false);
+                let from = self.engine.transport().position_seconds();
+                (lead_in, (from < start).then_some(from))
+            }
         };
         self.engine.set_recording(true);
         let from = session.as_ref().map(|s| s.device.clone());
@@ -124,7 +130,8 @@ impl Session {
             audio_tracks: audio_armed.iter().map(|t| t.id).collect(),
             midi_tracks: midi_armed.iter().map(|t| (t.id, midi_input_channel(t.rec_input).flatten())).collect(),
             midi: Vec::new(),
-            count_in,
+            lead_in,
+            preroll_from,
         });
     }
 
@@ -133,6 +140,15 @@ impl Session {
         self.engine.stop();
         self.engine.set_recording(false);
         rec.midi.extend(self.engine.take_recorded_midi());
+        if let Some(from) = rec.preroll_from {
+            // What was played along to the pre-roll is not part of the take, as in REAPER.
+            let (sr, start) = (self.engine.sample_rate() as f64, rec.pass.start);
+            let looped = rec.pass.looped.filter(|r| r.start < start);
+            rec.midi.retain(|(frame, _)| {
+                let t = *frame as f64 / sr;
+                !(from - 1e-9..start).contains(&t) || looped.is_some_and(|r| t >= r.start)
+            });
+        }
         let sr = self.engine.sample_rate() as f64;
         let timeline = self.project.tempo.timeline();
         let mut items: Vec<(TrackId, Item)> = Vec::new();
@@ -158,7 +174,7 @@ impl Session {
                     // reached the file `input_latency` after that.
                     let output_latency = self.engine.transport().output_latency();
                     for take in &takes {
-                        let offset = take.input_latency + output_latency + rec.count_in;
+                        let offset = take.input_latency + output_latency + rec.lead_in;
                         let len = take.frames as f64 / take.sample_rate as f64;
                         if let Some(item) = place_recording(take.path.clone(), len, offset, rec.pass) {
                             items.push((take.track, item));
@@ -201,21 +217,21 @@ impl Session {
             self.project.cursor = self.engine.transport().position_seconds();
             self.engine.stop();
         } else {
-            self.start_playback(self.project.cursor, self.project.metronome.counts_in(false));
+            self.start_playback(self.project.cursor, false, false);
         }
     }
 
-    /// Plays from `at`, after the project's count-in when `count_in`; answers the count-in's
-    /// length in seconds.
-    pub fn start_playback(&mut self, at: f64, count_in: bool) -> f64 {
-        self.engine.seek(at);
-        if !count_in {
-            self.engine.play();
-            return 0.0;
+    /// Plays (or starts the transport for recording) from `at` as REAPER does: pre-roll as the
+    /// preferences ask, then the project's count-in, or a count-in in any case with
+    /// `force_count_in`. Answers the seconds until the playhead reaches `at`.
+    pub fn start_playback(&mut self, at: f64, recording: bool, force_count_in: bool) -> f64 {
+        let start = self.project.metronome.start(&self.prefs, &self.project.tempo, at, recording, force_count_in);
+        self.engine.seek(start.from);
+        match &start.count_in {
+            Some(count_in) => self.engine.play_counting_in(count_in),
+            None => self.engine.play(),
         }
-        let count_in = self.project.metronome.count_in_at(&self.project.tempo, at);
-        self.engine.play_counting_in(&count_in);
-        count_in.seconds()
+        start.until(at)
     }
 
     /// While counting in: how far before the start playback is (negative seconds), and the
