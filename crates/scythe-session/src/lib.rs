@@ -8,6 +8,8 @@ mod files;
 mod media;
 mod transport;
 
+pub mod api;
+pub mod control;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -22,8 +24,8 @@ use scythe_engine::midi_io::midi_input_channel;
 
 pub use automation::AutoTarget;
 use automation::AutoWrite;
-pub use media::{LoaderMsg, RenderedItems};
 use media::StretchKey;
+pub use media::{LoaderMsg, RenderedItems};
 pub use scythe_core::ItemId;
 pub use transport::ActiveRecording;
 
