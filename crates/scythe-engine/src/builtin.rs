@@ -33,19 +33,16 @@ impl Builtin {
         }
     }
 
-    /// Display name, file and VST id under which REAPER knows the equivalent effect.
-    fn identity(self) -> (&'static str, &'static str, u32, &'static str) {
-        match self {
-            Self::Eq => ("VST: ReaEQ (Cockos)", "reaeq.vst.so", 1919247729, "56535472656571726561657100000000"),
-            Self::Gate => ("VST: ReaGate (Cockos)", "reagate.vst.so", 1919248244, "56535472656774726561676174650000"),
-            Self::Compressor => {
-                ("VST: ReaComp (Cockos)", "reacomp.vst.so", 1919247213, "5653547265636D726561636F6D700000")
-            }
-            Self::Delay => {
-                ("VST: ReaDelay (Cockos)", "readelay.vst.so", 1919247468, "5653547265646C72656164656C617900")
-            }
-            Self::Reverb => ("VST: ReaVerb (Cockos)", "reaverb.vst.so", 1919252066, "56535472657662726561766572620000"),
-        }
+    /// The stock plugin REAPER knows the equivalent effect as.
+    pub fn stock(self) -> &'static crate::stock::StockPlugin {
+        let name = match self {
+            Self::Eq => "ReaEQ",
+            Self::Gate => "ReaGate",
+            Self::Compressor => "ReaComp",
+            Self::Delay => "ReaDelay",
+            Self::Reverb => "ReaVerb",
+        };
+        crate::stock::by_name(name).expect("built-ins are stock plugins")
     }
 
     pub fn default_state(self) -> Vec<u8> {
@@ -68,13 +65,15 @@ impl Builtin {
 
     /// An FX slot holding `state` in REAPER's VST chunk layout.
     pub fn slot_with(self, state: &[u8]) -> FxSlot {
-        let (display, file, id, guid) = self.identity();
-        let mut chunk = Chunk::new("VST", &[display, file, "0", "", &format!("{id}<{guid}>"), ""]);
-        for line in vst_lines(id, state) {
+        let stock = self.stock();
+        let display = stock.display();
+        let id = format!("{}<{}>", stock.vst_id, stock.guid);
+        let mut chunk = Chunk::new("VST", &[&display, stock.file, "0", "", &id, ""]);
+        for line in vst_lines(stock.vst_id, state) {
             chunk.line([line]);
         }
         FxSlot {
-            name: display.to_owned(),
+            name: display,
             enabled: true,
             raw: vec![
                 Node::Line("BYPASS 0 0 0".into()),

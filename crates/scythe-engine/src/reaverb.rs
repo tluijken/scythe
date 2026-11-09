@@ -82,7 +82,7 @@ impl ReaVerbCompat {
 
 impl Effect for ReaVerbCompat {
     fn params(&mut self) -> Vec<crate::clap_host::ParamInfo> {
-        use crate::dynamics::param;
+        use crate::stock::param;
         vec![param(0, "Wet (dB)", -60.0, 6.0, -12.0, false), param(1, "Dry (dB)", -60.0, 6.0, 0.0, false)]
     }
 
@@ -92,7 +92,7 @@ impl Effect for ReaVerbCompat {
             1 => self.settings.dry,
             _ => return None,
         };
-        Some(crate::dynamics::db_value(g as f64))
+        Some(crate::stock::db_value(g as f64))
     }
 
     fn set_param(&mut self, id: u32, value: f64) {

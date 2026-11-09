@@ -9,13 +9,8 @@ use scythe_core::rpp::{Chunk, Node, line_key, tokenize};
 use scythe_core::{FxSlot, Project, TrackId};
 
 use crate::clap_host::{ClapDescriptor, ClapLibrary, ClapPlugin, ParamInfo};
-use crate::delay::{Limiter, ReaDelayCompat, ReaDelaySettings};
-use crate::dynamics::{Compressor, Gate};
 use crate::midi_io::LiveMidi;
 use crate::nam::{NamControl, NamEffect, NamModel, NamVoice};
-use crate::reaeq::ReaEqCompat;
-use crate::reaverb::{ReaVerbCompat, ReaVerbSettings};
-use crate::sampler::{Rs5kCompat, Rs5kSettings};
 use crate::synth::NoteList;
 use crate::vst2::{ReaperVstState, Vst2Plugin};
 
@@ -896,49 +891,13 @@ impl FxRegistry {
                     }
                     return Ok((Box::new(Vst3Effect::new(plugin)), FxStatus::Hosted(info.path.clone())));
                 }
-                if display.contains("ReaEQ (Cockos)") {
-                    let state = state.ok_or("unreadable ReaEQ state")?;
-                    let eq =
-                        ReaEqCompat::from_chunk(&state.chunk, self.sample_rate).ok_or("unreadable ReaEQ settings")?;
-                    return Ok((Box::new(eq), FxStatus::Native("ReaEQ-compatible EQ")));
-                }
-                if display.contains("ReaSamplOmatic5000 (Cockos)") {
-                    let state = state.ok_or("unreadable ReaSamplOmatic5000 state")?;
-                    let settings = Rs5kSettings::parse(&state.chunk).ok_or("unreadable ReaSamplOmatic5000 settings")?;
-                    let sampler = Rs5kCompat::new(settings, self.sample_rate, self.project_dir.as_deref())?;
-                    return Ok((Box::new(sampler), FxStatus::Native("ReaSamplOmatic5000-compatible sampler")));
-                }
-                if display.contains("ReaDelay (Cockos)") {
-                    let state = state.ok_or("unreadable ReaDelay state")?;
-                    let settings = ReaDelaySettings::parse(&state.chunk).ok_or("unreadable ReaDelay settings")?;
-                    let mut delay = ReaDelayCompat::new(settings, self.sample_rate);
-                    delay.chunk = state.chunk.clone();
-                    return Ok((Box::new(delay), FxStatus::Native("ReaDelay-compatible delay")));
-                }
-                if display.contains("ReaLimit (Cockos)") {
-                    let state = state.ok_or("unreadable ReaLimit state")?;
-                    let limiter =
-                        Limiter::from_realimit(&state.chunk, self.sample_rate).ok_or("unreadable ReaLimit settings")?;
-                    return Ok((Box::new(limiter), FxStatus::Native("ReaLimit-compatible limiter")));
-                }
-                if display.contains("ReaGate (Cockos)") {
-                    let state = state.ok_or("unreadable ReaGate state")?;
-                    let gate =
-                        Gate::from_reagate(&state.chunk, self.sample_rate).ok_or("unreadable ReaGate settings")?;
-                    return Ok((Box::new(gate), FxStatus::Native("ReaGate-compatible gate")));
-                }
-                if display.contains("ReaComp (Cockos)") {
-                    let state = state.ok_or("unreadable ReaComp state")?;
-                    let comp = Compressor::from_reacomp(&state.chunk, self.sample_rate)
-                        .ok_or("unreadable ReaComp settings")?;
-                    return Ok((Box::new(comp), FxStatus::Native("ReaComp-compatible compressor")));
-                }
-                if display.contains("ReaVerb (Cockos)") {
-                    let state = state.ok_or("unreadable ReaVerb state")?;
-                    let settings = ReaVerbSettings::parse(&state.chunk).ok_or("unreadable ReaVerb settings")?;
-                    let mut verb = ReaVerbCompat::new(settings, self.sample_rate, self.project_dir.as_deref())?;
-                    verb.chunk = state.chunk.clone();
-                    return Ok((Box::new(verb), FxStatus::Native("ReaVerb-compatible convolution")));
+                if let Some(stock) = crate::stock::find(&display) {
+                    let state = state.ok_or_else(|| format!("unreadable {} state", stock.name))?;
+                    let cx = crate::stock::StockContext {
+                        sample_rate: self.sample_rate,
+                        project_dir: self.project_dir.as_deref(),
+                    };
+                    return Ok(((stock.create)(&state.chunk, &cx)?, FxStatus::Native(stock.status)));
                 }
                 let file = args.get(1).cloned().unwrap_or_default();
                 let path = self.find_vst(&file).ok_or_else(|| format!("{file} not found in the VST paths"))?;
