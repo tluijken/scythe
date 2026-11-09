@@ -522,3 +522,280 @@ fn tempo_changes_and_bars_follow() {
     assert_eq!(ok(&mut s, json!({"cmd": "project.undo"}))["label"], "Change tempo");
     assert_eq!(s.project.tempo.bpm_at(0.0), 120.0);
 }
+
+#[test]
+fn tempo_markers_are_listed_added_edited_and_deleted() {
+    let mut s = session();
+    let map = ok(&mut s, json!({"cmd": "tempo.list"}));
+    assert_eq!((map["bpm"].as_f64(), map["markers"].as_array().map(Vec::len)), (Some(120.0), Some(0)));
+
+    let map = ok(&mut s, json!({"cmd": "tempo.add", "time": 4.0, "bpm": 90.0}));
+    let markers = map["markers"].as_array().unwrap();
+    assert_eq!(markers.len(), 2, "a marker at the start keeps the base tempo: {map}");
+    assert_eq!((markers[0]["time"].as_f64(), markers[0]["bpm"].as_f64()), (Some(0.0), Some(120.0)));
+    assert_eq!((markers[1]["bpm"].as_f64(), markers[1]["bar_beat"].as_str()), (Some(90.0), Some("3.1.00")));
+
+    // A time signature starts a bar: 5 s at 90 bpm lands mid-bar and moves to the next line.
+    let map = ok(&mut s, json!({"cmd": "tempo.add", "time": 5.0, "time_signature": [7, 8]}));
+    let seven = &map["markers"][2];
+    assert_eq!(seven["time_signature"], json!([7, 8]));
+    assert_eq!(seven["bar_beat"].as_str().map(|b| b.ends_with(".1.00")), Some(true));
+    assert!(seven["time"].as_f64().unwrap() > 5.0);
+    assert_eq!(seven["bpm"].as_f64(), Some(90.0));
+
+    let undo_before = s.history.undo_label().map(str::to_owned);
+    for bpm in [100.0, 110.0, 128.0] {
+        ok(&mut s, json!({"cmd": "tempo.edit", "index": 1, "bpm": bpm, "time": 4.0}));
+    }
+    assert_eq!(s.project.tempo.points[1].bpm, 128.0);
+    assert_eq!(ok(&mut s, json!({"cmd": "project.undo"}))["label"], "Edit tempo marker");
+    assert_eq!(s.project.tempo.points[1].bpm, 90.0, "a dragged marker is one undo step");
+    assert_eq!(s.history.undo_label().map(str::to_owned), undo_before);
+
+    let map = ok(&mut s, json!({"cmd": "tempo.edit", "index": 2, "time_signature": null}));
+    assert_eq!(map["markers"][2]["time_signature"], Value::Null);
+    let map = ok(&mut s, json!({"cmd": "tempo.edit", "index": 0, "bpm": 140.0, "time_signature": [3, 4]}));
+    assert_eq!((map["bpm"].as_f64(), map["time_signature"].clone()), (Some(140.0), json!([3, 4])));
+    assert_eq!(ok(&mut s, json!({"cmd": "snapshot"}))["tempo"].as_array().map(Vec::len), Some(3));
+
+    let map = ok(&mut s, json!({"cmd": "tempo.delete", "index": 2}));
+    assert_eq!(map["markers"].as_array().map(Vec::len), Some(2));
+    for bad in [
+        json!({"cmd": "tempo.delete", "index": 9}),
+        json!({"cmd": "tempo.edit", "index": 1, "bpm": 5.0}),
+        json!({"cmd": "tempo.add", "time": 1.0, "time_signature": [4, 3]}),
+        json!({"cmd": "tempo.add", "time": 4.0}),
+    ] {
+        assert!(execute_json(&mut s, bad.clone()).is_err(), "{bad}");
+    }
+}
+
+/// A 16-bit mono WAV of `samples`.
+fn write_wav(path: &std::path::Path, rate: u32, samples: &[f32]) {
+    let data: Vec<u8> = samples.iter().flat_map(|s| ((s * 32767.0) as i16).to_le_bytes()).collect();
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out.extend_from_slice(&data);
+    std::fs::write(path, out).unwrap();
+}
+
+#[test]
+fn item_peaks_follow_the_audio() {
+    let dir = std::env::temp_dir().join(format!("scythe-peaks-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("half.wav");
+    // One second of silence, then one second at half scale.
+    let samples: Vec<f32> = (0..96_000).map(|i| if i < 48_000 { 0.0 } else { 0.5 }).collect();
+    write_wav(&wav, 48_000, &samples);
+    let mut s = session();
+    s.import_files(vec![wav], None, 0.0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while s.project.tracks.first().is_none_or(|t| t.items.is_empty()) && std::time::Instant::now() < deadline {
+        s.poll();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let item = s.project.tracks[0].items[0].id.0;
+    let peaks = ok(&mut s, json!({"cmd": "item.peaks", "item": item, "width": 8}));
+    assert_eq!(peaks["state"], "ready");
+    let max: Vec<f64> = peaks["max"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(max.len(), 8);
+    assert!(max[..3].iter().all(|m| *m < 0.01), "{max:?}");
+    assert!(max[4..].iter().all(|m| (m - 0.5).abs() < 0.01), "{max:?}");
+    let part = ok(&mut s, json!({"cmd": "item.peaks", "item": item, "from": 1.0, "to": 1.5, "width": 2}));
+    assert_eq!((part["from"].as_f64(), part["to"].as_f64()), (Some(1.0), Some(1.5)));
+    assert!(part["max"].as_array().unwrap().iter().all(|v| (v.as_f64().unwrap() - 0.5).abs() < 0.01));
+
+    ok(&mut s, json!({"cmd": "item.volume", "item": item, "volume": 0.5}));
+    let quieter = ok(&mut s, json!({"cmd": "item.peaks", "item": item, "width": 4}));
+    assert!((quieter["max"][3].as_f64().unwrap() - 0.25).abs() < 0.01);
+    for bad in [
+        json!({"cmd": "item.peaks", "item": item, "width": 0}),
+        json!({"cmd": "item.peaks", "item": 999_999, "width": 8}),
+    ] {
+        assert!(execute_json(&mut s, bad.clone()).is_err(), "{bad}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+mod scopes {
+    use scythe_session::access::{self, Scope};
+
+    use super::*;
+
+    fn band() -> Session {
+        let mut s = session();
+        add_track(&mut s, "Kick");
+        add_track(&mut s, "Vox");
+        ok(&mut s, json!({"cmd": "mix.create", "musician": "Drummer", "own": ["Kick"]}));
+        ok(&mut s, json!({"cmd": "mix.create", "musician": "Singer", "own": ["Vox"]}));
+        live_set(&mut s);
+        ok(&mut s, json!({"cmd": "setlist.create", "name": "Gig", "songs": [0, 1, 2]}));
+        s
+    }
+
+    fn run(s: &mut Session, scope: &Scope, command: Value) -> Result<Value, scythe_session::api::ApiError> {
+        access::run(s, scope, serde_json::from_value(command).unwrap())
+    }
+
+    fn forbidden(s: &mut Session, scope: &Scope, command: Value) {
+        let err = run(s, scope, command.clone()).expect_err(&command.to_string());
+        assert_eq!(err.kind, ErrorKind::Forbidden, "{command}: {err}");
+    }
+
+    #[test]
+    fn a_musician_reaches_only_their_own_mix() {
+        let mut s = band();
+        let drummer = Scope::Musician { musician: "drummer".into() };
+        let mixes = run(&mut s, &drummer, json!({"cmd": "mix.list"})).unwrap();
+        assert_eq!(mixes.as_array().map(Vec::len), Some(1));
+        assert_eq!(mixes[0]["musician"], "Drummer");
+        let own = mixes[0]["id"].as_u64().unwrap();
+        let singer = s.project.monitor_mixes().into_iter().find(|m| m.musician == "Singer").unwrap().track.0;
+
+        for allowed in [
+            json!({"cmd": "mix.get", "mix": own}),
+            json!({"cmd": "mix.level", "mix": own, "source": "Vox", "db": -3.0}),
+            json!({"cmd": "mix.pan", "mix": "MON Drummer", "source": "Vox", "pan": 0.5}),
+            json!({"cmd": "mix.mute", "mix": own, "source": "Vox", "muted": true}),
+            json!({"cmd": "mix.more_me", "mix": own, "db": 6.0}),
+            json!({"cmd": "mix.volume", "mix": own, "db": -2.0}),
+            json!({"cmd": "transport.state"}),
+            json!({"cmd": "setlist.status"}),
+        ] {
+            run(&mut s, &drummer, allowed.clone()).unwrap_or_else(|e| panic!("{allowed}: {e}"));
+        }
+        let snap = run(&mut s, &drummer, json!({"cmd": "snapshot"})).unwrap();
+        assert!(snap.get("tracks").is_none() && snap.get("path").is_none(), "{snap}");
+        assert_eq!(snap["access"], json!({"role": "musician", "musician": "drummer"}));
+
+        for refused in [
+            json!({"cmd": "mix.level", "mix": singer, "source": "Vox", "db": 6.0}),
+            json!({"cmd": "mix.get", "mix": "MON Singer"}),
+            json!({"cmd": "mix.output", "mix": own, "output": 4}),
+            json!({"cmd": "mix.limiter", "mix": own, "on": false}),
+            json!({"cmd": "mix.add_source", "mix": own, "source": "Kick"}),
+            json!({"cmd": "mix.delete", "mix": own}),
+            json!({"cmd": "mix.create", "musician": "Me"}),
+            json!({"cmd": "track.volume", "track": "Vox", "db": -6.0}),
+            json!({"cmd": "transport.play"}),
+            json!({"cmd": "setlist.next"}),
+            json!({"cmd": "project.save", "path": "/tmp/x.RPP"}),
+            json!({"cmd": "project.open", "path": "/etc/passwd"}),
+            json!({"cmd": "item.list"}),
+            json!({"cmd": "tempo.list"}),
+        ] {
+            forbidden(&mut s, &drummer, refused);
+        }
+        let singer_mix = s.project.monitor_mix(scythe_core::TrackId(singer)).unwrap();
+        assert_eq!(singer_mix.more_me, 0.0);
+
+        let nobody = Scope::Musician { musician: "Keys".into() };
+        assert_eq!(run(&mut s, &nobody, json!({"cmd": "mix.list"})).unwrap(), json!([]));
+        let err = run(&mut s, &nobody, json!({"cmd": "mix.get", "mix": own})).unwrap_err();
+        assert_eq!(err.kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn the_stage_plays_the_setlist_without_editing_it() {
+        let mut s = band();
+        for allowed in [
+            json!({"cmd": "setlist.list"}),
+            json!({"cmd": "setlist.songs"}),
+            json!({"cmd": "setlist.get"}),
+            json!({"cmd": "setlist.status"}),
+            json!({"cmd": "setlist.export"}),
+            json!({"cmd": "setlist.select", "setlist": 0}),
+            json!({"cmd": "setlist.cue", "entry": 1}),
+            json!({"cmd": "setlist.next"}),
+            json!({"cmd": "setlist.previous"}),
+            json!({"cmd": "setlist.auto_advance", "enabled": true}),
+            json!({"cmd": "setlist.play"}),
+            json!({"cmd": "setlist.stop"}),
+            json!({"cmd": "transport.play"}),
+            json!({"cmd": "transport.stop"}),
+            json!({"cmd": "transport.state"}),
+        ] {
+            run(&mut s, &Scope::Stage, allowed.clone()).unwrap_or_else(|e| panic!("{allowed}: {e}"));
+        }
+        for refused in [
+            json!({"cmd": "setlist.create", "name": "New"}),
+            json!({"cmd": "setlist.rename", "name": "Renamed"}),
+            json!({"cmd": "setlist.duplicate"}),
+            json!({"cmd": "setlist.delete"}),
+            json!({"cmd": "setlist.set", "songs": [0]}),
+            json!({"cmd": "setlist.move", "from": 0, "to": 1}),
+            json!({"cmd": "setlist.import", "text": "Set\nOpener"}),
+            json!({"cmd": "setlist.marker_actions", "enabled": false}),
+            json!({"cmd": "transport.record"}),
+            json!({"cmd": "transport.seek", "position": 3.0}),
+            json!({"cmd": "mix.list"}),
+            json!({"cmd": "track.add"}),
+            json!({"cmd": "marker.add"}),
+            json!({"cmd": "project.undo"}),
+            json!({"cmd": "project.new"}),
+            json!({"cmd": "item.peaks", "item": 1, "width": 10}),
+        ] {
+            forbidden(&mut s, &Scope::Stage, refused);
+        }
+        assert!(!s.project.ext_state_section("SCYTHE_SETLISTS").is_empty());
+        let snap = run(&mut s, &Scope::Stage, json!({"cmd": "snapshot"})).unwrap();
+        assert_eq!(snap["access"]["role"], "stage");
+        assert!(snap.get("tracks").is_none());
+    }
+
+    #[test]
+    fn events_are_narrowed_to_the_scope() {
+        let mut s = band();
+        let events: Arc<Mutex<Vec<Event>>> = Arc::default();
+        let seen = events.clone();
+        let (_handle, mut pump) =
+            control::channel(Arc::new(|| {}), Arc::new(move |e: &Event| seen.lock().unwrap().push(e.clone())));
+        pump.wait(&mut s, Duration::from_millis(100));
+        let events = events.lock().unwrap();
+        let meters = events.iter().find(|e| matches!(e, Event::Meters(_))).unwrap();
+        let Event::Meters(all) = meters else { unreachable!() };
+        assert_eq!(all.mixes.len(), 2);
+
+        let drummer = Scope::Musician { musician: "Drummer".into() };
+        let Some(Event::Meters(mine)) = drummer.event(meters) else { panic!("a musician hears their meters") };
+        assert_eq!(mine.mixes.len(), 1);
+        assert_eq!(mine.mixes[0].musician.as_deref(), Some("Drummer"));
+        assert!(mine.tracks.is_empty());
+        assert!(drummer.event(&Event::ProjectChanged { revision: 3 }).is_some());
+        assert!(drummer.event(&Event::Notice { message: "Saved /home/band/set.RPP".into() }).is_none());
+        let transport = events.iter().find(|e| matches!(e, Event::Transport(_))).unwrap();
+        assert!(drummer.event(transport).is_none());
+
+        assert!(Scope::Stage.event(meters).is_none());
+        assert!(Scope::Stage.event(transport).is_some());
+        let setlist = events.iter().find(|e| matches!(e, Event::Setlist(_))).unwrap();
+        assert!(Scope::Stage.event(setlist).is_some());
+        assert!(drummer.event(setlist).is_none());
+        assert!(Scope::Admin.event(&Event::Notice { message: "x".into() }).is_some());
+    }
+
+    #[test]
+    fn the_pump_checks_the_scope_of_each_command() {
+        let mut s = band();
+        let (handle, mut pump) = control::channel(Arc::new(|| {}), Arc::new(|_: &Event| {}));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let command = |v: Value| serde_json::from_value(v).unwrap();
+        let out = tx.clone();
+        handle.send_as(Scope::Stage, command(json!({"cmd": "track.add"})), move |a| out.send(a).unwrap());
+        handle.send(command(json!({"cmd": "track.add", "name": "Admin"})), move |a| tx.send(a).unwrap());
+        pump.pump(&mut s);
+        assert_eq!(rx.recv().unwrap().unwrap_err().kind, ErrorKind::Forbidden);
+        assert_eq!(rx.recv().unwrap().unwrap()["name"], "Admin");
+    }
+}

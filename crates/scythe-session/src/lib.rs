@@ -9,6 +9,7 @@ mod live;
 mod media;
 mod transport;
 
+pub mod access;
 pub mod api;
 pub mod control;
 

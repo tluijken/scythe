@@ -1977,6 +1977,54 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "The item's waveform for drawing: `width` columns from item time `from` to `to`, each\nthe lowest and highest sample (channels summed, item and take gain applied).\n\nControl API command `item.peaks`.",
+    "inputSchema": {
+      "properties": {
+        "from": {
+          "default": null,
+          "description": "Seconds from the item's start; 0 when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "default": null,
+          "description": "Seconds from the item's start; its length when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "width": {
+          "description": "Columns, 1 to 8192.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "width"
+      ],
+      "type": "object"
+    },
+    "name": "item_peaks",
+    "title": "Item peaks"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "All markers and regions, by position.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.list`.",
     "inputSchema": {
       "properties": {},
@@ -3614,6 +3662,177 @@
     },
     "name": "setlist_status",
     "title": "Setlist status"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every tempo and time signature marker, with the tempo and time signature at the start.\n\nMarkers are numbered from 0 in time order, as `tempo.list` gives them. Setting a time\nsignature moves the marker to the next bar line, as in REAPER.\n\nControl API command `tempo.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "tempo_list",
+    "title": "Tempo list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a marker at `time` and answers with the tempo map.\n\nMarkers are numbered from 0 in time order, as `tempo.list` gives them. Setting a time\nsignature moves the marker to the next bar line, as in REAPER.\n\nControl API command `tempo.add`.",
+    "inputSchema": {
+      "properties": {
+        "bpm": {
+          "default": null,
+          "description": "Beats per minute, 20 to 400; the tempo in effect there when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "linear": {
+          "default": false,
+          "description": "Ramp linearly to the next marker's tempo instead of jumping.",
+          "type": "boolean"
+        },
+        "time": {
+          "description": "Seconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "time_signature": {
+          "default": null,
+          "description": "`[beats per bar, beat unit]`, such as `[7, 8]`; no change of time signature when\nleft out.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "time"
+      ],
+      "type": "object"
+    },
+    "name": "tempo_add",
+    "title": "Tempo add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes what is given and answers with the tempo map. Repeated changes of one marker\nwithin a second are one undo step, so a dragged marker is undone in one go.\n\nMarkers are numbered from 0 in time order, as `tempo.list` gives them. Setting a time\nsignature moves the marker to the next bar line, as in REAPER.\n\nControl API command `tempo.edit`.",
+    "inputSchema": {
+      "properties": {
+        "bpm": {
+          "default": null,
+          "description": "Beats per minute, 20 to 400.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "The marker's number from `tempo.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "linear": {
+          "default": null,
+          "description": "Ramp linearly to the next marker's tempo instead of jumping.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "time": {
+          "default": null,
+          "description": "Seconds.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "time_signature": {
+          "default": null,
+          "description": "`[beats per bar, beat unit]`, or `null` to keep the time signature that runs on.",
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "tempo_edit",
+    "title": "Tempo edit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the marker and answers with the tempo map.\n\nMarkers are numbered from 0 in time order, as `tempo.list` gives them. Setting a time\nsignature moves the marker to the next bar line, as in REAPER.\n\nControl API command `tempo.delete`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "The marker's number from `tempo.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "tempo_delete",
+    "title": "Tempo delete"
   },
   {
     "annotations": {

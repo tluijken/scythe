@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::access::{self, Scope};
 use crate::api::events::{Meters, TrackMeter};
 use crate::api::setlist::{self, SetlistStatus};
 use crate::api::snapshot::{self, TransportState};
-use crate::api::{self, ApiError, Command, Event};
+use crate::api::{ApiError, Command, Event};
 use crate::{Session, Waker};
 
 /// How often transport and meter events go out at most: about 20 a second.
@@ -24,6 +25,7 @@ pub type Reply = Box<dyn FnOnce(Result<Value, ApiError>) + Send>;
 pub type EventSink = Arc<dyn Fn(&Event) + Send + Sync>;
 
 struct Request {
+    scope: Scope,
     command: Command,
     reply: Reply,
 }
@@ -36,10 +38,20 @@ pub struct ControlHandle {
 }
 
 impl ControlHandle {
-    /// Queues `command`; `reply` is called with its answer on the session's thread. Returns
-    /// false when the session is gone.
+    /// Queues `command` with full access; `reply` is called with its answer on the session's
+    /// thread. Returns false when the session is gone.
     pub fn send(&self, command: Command, reply: impl FnOnce(Result<Value, ApiError>) + Send + 'static) -> bool {
-        let sent = self.tx.send(Request { command, reply: Box::new(reply) }).is_ok();
+        self.send_as(Scope::Admin, command, reply)
+    }
+
+    /// [`Self::send`] for a client limited to `scope`, which the session checks before running it.
+    pub fn send_as(
+        &self,
+        scope: Scope,
+        command: Command,
+        reply: impl FnOnce(Result<Value, ApiError>) + Send + 'static,
+    ) -> bool {
+        let sent = self.tx.send(Request { scope, command, reply: Box::new(reply) }).is_ok();
         if sent {
             (self.wake)();
         }
@@ -86,7 +98,7 @@ impl ControlPump {
     }
 
     fn run(session: &mut Session, request: Request) {
-        let answer = api::execute(session, request.command);
+        let answer = access::run(session, &request.scope, request.command);
         (request.reply)(answer);
     }
 
@@ -115,13 +127,19 @@ impl ControlPump {
         }
         if now.duration_since(self.meters_at) >= EVENT_INTERVAL {
             self.meters_at = now;
-            let meter = |t: &scythe_core::Track| TrackMeter {
-                id: t.id.0,
-                peak: session.levels.get(&t.id).copied().unwrap_or_default(),
-            };
-            let tracks: Vec<TrackMeter> = session.project.tracks.iter().map(meter).collect();
-            let mixes =
-                session.project.tracks.iter().filter(|t| session.project.is_monitor_mix(t.id)).map(meter).collect();
+            let peak = |id: scythe_core::TrackId| session.levels.get(&id).copied().unwrap_or_default();
+            let tracks: Vec<TrackMeter> = session
+                .project
+                .tracks
+                .iter()
+                .map(|t| TrackMeter { id: t.id.0, peak: peak(t.id), musician: None })
+                .collect();
+            let mixes = session
+                .project
+                .monitor_mixes()
+                .into_iter()
+                .map(|m| TrackMeter { id: m.track.0, peak: peak(m.track), musician: Some(m.musician) })
+                .collect();
             (self.sink)(&Event::Meters(Meters { master: session.master_level, tracks, mixes }));
         }
     }

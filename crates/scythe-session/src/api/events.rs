@@ -34,4 +34,7 @@ pub struct Meters {
 pub struct TrackMeter {
     pub id: u64,
     pub peak: (f32, f32),
+    /// For a monitor mix in `mixes`: whose mix it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub musician: Option<String>,
 }

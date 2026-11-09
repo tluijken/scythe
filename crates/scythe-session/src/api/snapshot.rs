@@ -29,6 +29,9 @@ pub struct ProjectSnapshot {
     pub markers: Vec<MarkerInfo>,
     /// The monitor mixes (`mix.list`).
     pub mixes: Vec<super::mix::MixInfo>,
+    /// The tempo and time signature markers (`tempo.list`).
+    #[serde(default)]
+    pub tempo: Vec<super::tempo::TempoMarker>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,6 +215,7 @@ pub fn snapshot(session: &Session) -> ProjectSnapshot {
         tracks: p.tracks.iter().enumerate().map(|(i, t)| track(session, t, Some(i), levels[i])).collect(),
         markers: p.markers.iter().map(marker).collect(),
         mixes: super::mix::list(p),
+        tempo: super::tempo::markers(p),
     }
 }
 

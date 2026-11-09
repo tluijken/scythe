@@ -13,6 +13,7 @@ pub mod project;
 pub mod sends;
 pub mod setlist;
 pub mod snapshot;
+pub mod tempo;
 pub mod tracks;
 pub mod transport;
 
@@ -39,6 +40,7 @@ pub enum Command {
     Marker(markers::MarkerCommand),
     Mix(mix::MixCommand),
     Setlist(setlist::SetlistCommand),
+    Tempo(tempo::TempoCommand),
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -58,6 +60,7 @@ impl<'de> Deserialize<'de> for Command {
             "marker" => serde_json::from_value(value).map(Command::Marker),
             "mix" => serde_json::from_value(value).map(Command::Mix),
             "setlist" => serde_json::from_value(value).map(Command::Setlist),
+            "tempo" => serde_json::from_value(value).map(Command::Tempo),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -76,6 +79,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Marker(c) => markers::execute(session, c),
         Command::Mix(c) => mix::execute(session, c),
         Command::Setlist(c) => setlist::execute(session, c),
+        Command::Tempo(c) => tempo::execute(session, c),
     }
 }
 
@@ -94,6 +98,8 @@ pub enum ErrorKind {
     NotFound,
     /// It was understood but could not be done (a file did not open, nothing to undo).
     Failed,
+    /// The token in use may not run this command (a musician's or the stage's link).
+    Forbidden,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -113,6 +119,10 @@ impl ApiError {
 
     pub fn failed(message: impl Into<String>) -> Self {
         Self { kind: ErrorKind::Failed, message: message.into() }
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self { kind: ErrorKind::Forbidden, message: message.into() }
     }
 }
 
