@@ -1,8 +1,10 @@
-//! WAV encodings hound does not write: 64-bit float and REAPER's ADPCM modes (IMA ADPCM and
-//! its 2-bit cADPCM), converted from a rendered 32-bit float WAV.
+//! REAPER's ADPCM WAV modes (IMA ADPCM and its 2-bit cADPCM), coded from a rendered 32-bit
+//! float WAV.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
+
+use crate::pcmfile::{Container, Extras, PcmWriter, Sample};
 
 /// IMA ADPCM step sizes.
 const STEPS: [i32; 89] = [
@@ -52,68 +54,27 @@ fn read_float_wav(path: &Path, mono: bool) -> io::Result<(u16, u32, Vec<f64>)> {
     Ok((spec.channels, spec.sample_rate, samples))
 }
 
-/// Writes a RIFF WAVE file from its `fmt ` body, optional `fact` frame count and data.
-fn write_riff(out: &Path, fmt: &[u8], fact: Option<u32>, data: &[u8]) -> io::Result<()> {
-    let mut body = Vec::with_capacity(data.len() + 64);
-    body.extend_from_slice(b"WAVEfmt ");
-    body.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
-    body.extend_from_slice(fmt);
-    if let Some(frames) = fact {
-        body.extend_from_slice(b"fact");
-        body.extend_from_slice(&4u32.to_le_bytes());
-        body.extend_from_slice(&frames.to_le_bytes());
-    }
-    body.extend_from_slice(b"data");
-    body.extend_from_slice(&(data.len() as u32).to_le_bytes());
-    body.extend_from_slice(data);
-    if data.len() % 2 == 1 {
-        body.push(0);
-    }
-    let mut file = io::BufWriter::new(std::fs::File::create(out)?);
-    file.write_all(b"RIFF")?;
-    file.write_all(&(body.len() as u32).to_le_bytes())?;
-    file.write_all(&body)?;
-    file.flush()
-}
-
-fn fmt_chunk(tag: u16, channels: u16, rate: u32, byte_rate: u32, align: u16, bits: u16, extra: &[u8]) -> Vec<u8> {
-    let mut fmt = Vec::with_capacity(20);
-    fmt.extend_from_slice(&tag.to_le_bytes());
-    fmt.extend_from_slice(&channels.to_le_bytes());
-    fmt.extend_from_slice(&rate.to_le_bytes());
-    fmt.extend_from_slice(&byte_rate.to_le_bytes());
-    fmt.extend_from_slice(&align.to_le_bytes());
-    fmt.extend_from_slice(&bits.to_le_bytes());
-    fmt.extend_from_slice(&(extra.len() as u16).to_le_bytes());
-    fmt.extend_from_slice(extra);
-    fmt
-}
-
-/// Rewrites a float WAV as 64-bit float samples, mixed down to mono when asked.
-pub fn write_f64(src: &Path, mono: bool, out: &Path) -> io::Result<()> {
-    let (channels, rate, samples) = read_float_wav(src, mono)?;
-    let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let align = channels * 8;
-    let fmt = fmt_chunk(3, channels, rate, rate * align as u32, align, 64, &[]);
-    write_riff(out, &fmt, None, &data)
-}
-
 /// Rewrites a float WAV in one of REAPER's ADPCM modes, mixed down to mono when asked.
-pub fn write_adpcm(src: &Path, mono: bool, out: &Path, mode: Adpcm) -> io::Result<()> {
+pub fn write_adpcm(
+    src: &Path,
+    mono: bool,
+    out: &Path,
+    mode: Adpcm,
+    container: Container,
+    extras: Extras,
+) -> io::Result<()> {
     let (channels, rate, samples) = read_float_wav(src, mono)?;
     let pcm: Vec<i16> = samples.iter().map(|&s| crate::bounce::quantize(s, 16) as i16).collect();
     let (align, frames_per_block, data) = encode_adpcm(&pcm, channels as usize, mode);
-    let byte_rate = rate * mode.bits() as u32 * channels as u32 / 8;
-    let fmt = fmt_chunk(
-        mode.tag(),
-        channels,
-        rate,
-        byte_rate,
-        align as u16,
-        mode.bits() as u16,
-        &(frames_per_block as u16).to_le_bytes(),
-    );
-    write_riff(out, &fmt, Some((pcm.len() / channels.max(1) as usize) as u32), &data)
+    let sample = Sample::Adpcm {
+        tag: mode.tag(),
+        bits: mode.bits() as u16,
+        align: align as u16,
+        frames_per_block: frames_per_block as u16,
+    };
+    let mut w = PcmWriter::create(out, container, sample, channels, rate, extras)?;
+    w.raw(&data, (pcm.len() / channels.max(1) as usize) as u64)?;
+    w.finalize()
 }
 
 /// Encodes interleaved 16-bit samples as REAPER does: blocks of 1024 bytes per channel, each

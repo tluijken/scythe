@@ -63,7 +63,7 @@ fn main() {
             let ours_path = reaper_out.with_extension("scythe.wav");
             // Dither is noise and cannot null; normalisation is compared.
             let finish = Finish { dither: false, noise_shape: false, ..Finish::from_settings(&settings) };
-            let wav = Encoding::Wav(BitDepth::Float32);
+            let wav = Encoding::wav(BitDepth::Float32);
             bounce_finished(&project, &pool, range, rate, 2, wav, &ours_path, finish, |_| {}).unwrap();
             let ours = read(&ours_path).unwrap();
             let (diff, at) = ours

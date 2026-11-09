@@ -3502,6 +3502,7 @@ dependencies = [
  "base64",
  "clap-sys",
  "cpal",
+ "flate2",
  "hound",
  "image",
  "libc",

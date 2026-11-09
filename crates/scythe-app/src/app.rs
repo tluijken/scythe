@@ -997,7 +997,7 @@ impl ScytheApp {
         }
         let name = self.project.name();
         let mut ranges: Vec<TimeRange> = Vec::new();
-        let mut encoding = Encoding::Wav(BitDepth::Int24);
+        let mut encoding = Encoding::wav(BitDepth::Int24);
         let mut channels = 2;
         let mut finish = Finish::default();
         // Every render converts with the project's render mode; playback has its own.

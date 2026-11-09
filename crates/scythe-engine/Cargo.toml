@@ -26,6 +26,7 @@ base64.workspace = true
 cpal.workspace = true
 symphonia.workspace = true
 hound.workspace = true
+flate2.workspace = true
 midir.workspace = true
 ab_glyph.workspace = true
 image.workspace = true

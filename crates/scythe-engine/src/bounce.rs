@@ -1,46 +1,69 @@
 use std::path::Path;
 
-use scythe_core::render_settings::{AudioCodec, CdImage, Format, Normalize, NormalizeSource, RenderSettings, Video};
+use scythe_core::render_settings::{
+    Animation, AudioCodec, CdImage, Format, LargeWav, MarkerExport, Normalize, NormalizeSource, RenderSettings, Video,
+    WavOptions,
+};
 use scythe_core::{Project, TimeRange};
 
 use crate::fx::FxRegistry;
 use crate::loudness::LoudnessScan;
 use crate::media::MediaPool;
+use crate::pcmfile::{Container, Embed, Extras, PcmWriter, Sample};
 use crate::render::{MeterRegistry, RenderGraph, RenderScratch};
 pub use crate::wavcodec::Adpcm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BitDepth {
-    /// Unsigned 8-bit.
+    /// 8-bit: unsigned in WAV and CAF, signed in AIFF.
     Uint8,
     Int16,
     Int24,
     Int32,
     Float32,
     Float64,
+    /// 8-bit G.711 u-law.
+    ULaw,
 }
 
 impl BitDepth {
-    /// REAPER's WAV bit depths: 32 is float, 33 is 32-bit integer, 64 is double.
+    /// REAPER's WAV bit depths: 32 is float, 33 is 32-bit integer, 64 is double, 14 u-law;
+    /// others up to 16 are 16-bit and the rest 24-bit.
     pub fn from_bits(bits: u16) -> Self {
         match bits {
             8 => Self::Uint8,
+            14 => Self::ULaw,
             ..=16 => Self::Int16,
+            32 => Self::Float32,
             33 => Self::Int32,
             64 => Self::Float64,
-            32.. => Self::Float32,
             _ => Self::Int24,
+        }
+    }
+
+    fn sample(self) -> Sample {
+        match self {
+            Self::Uint8 => Sample::Int(8),
+            Self::Int16 => Sample::Int(16),
+            Self::Int24 => Sample::Int(24),
+            Self::Int32 => Sample::Int(32),
+            Self::Float32 => Sample::Float32,
+            Self::Float64 => Sample::Float64,
+            Self::ULaw => Sample::ULaw,
         }
     }
 }
 
-/// How a render is written. Everything but WAV goes through a command-line encoder (`lame`,
-/// `flac`, `oggenc`, `opusenc`, `wavpack`, `ffmpeg` for video) that reads an intermediate WAV;
-/// CD images and DDP filesets are laid out from a 16-bit WAV by [`crate::disc`], and 64-bit
-/// and ADPCM WAVs are converted from a float WAV by [`crate::wavcodec`].
+/// How a render is written. WAV, AIFF and CAF are written here ([`crate::pcmfile`]); the rest
+/// goes through a command-line encoder (`lame`, `flac`, `oggenc`, `opusenc`, `wavpack`,
+/// `ffmpeg` for video) that reads an intermediate WAV. CD images and DDP filesets are laid out
+/// from a 16-bit WAV by [`crate::disc`], ADPCM WAVs are coded from a float WAV by
+/// [`crate::wavcodec`], and GIF and LCF animations drawn by [`crate::animation`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Encoding {
-    Wav(BitDepth),
+    Wav(BitDepth, WavOptions),
+    Aiff { depth: BitDepth, tempo: bool },
+    Caf { depth: BitDepth, markers: MarkerExport, tempo: bool },
     Mp3 { kbps: u32 },
     Flac { depth: BitDepth, level: u32 },
     Vorbis { vbr: bool, quality: f32, kbps: u32 },
@@ -48,18 +71,43 @@ pub enum Encoding {
     WavPack { depth: BitDepth, mode: u32 },
     CdImage(CdImage),
     Ddp,
-    Adpcm(Adpcm),
+    Adpcm(Adpcm, WavOptions),
     Video(Video),
+    Gif(Animation),
+    Lcf(Animation),
 }
 
 impl Encoding {
+    /// WAV with REAPER's default options.
+    pub fn wav(depth: BitDepth) -> Self {
+        Self::Wav(depth, WavOptions::default())
+    }
+
     /// The encoding for a project's render format; sinks without an encoder here become
     /// 24-bit WAV.
     pub fn from_format(format: &Format) -> Self {
         match *format {
-            Format::Wav { bits: 4 } => Self::Adpcm(Adpcm::Ima),
-            Format::Wav { bits: 2 } => Self::Adpcm(Adpcm::Cockos),
-            Format::Wav { bits } => Self::Wav(BitDepth::from_bits(bits)),
+            Format::Wav { bits: 4, options } => Self::Adpcm(Adpcm::Ima, options),
+            Format::Wav { bits: 2, options } => Self::Adpcm(Adpcm::Cockos, options),
+            Format::Wav { bits, options } => Self::Wav(BitDepth::from_bits(bits), options),
+            Format::Aiff { bits, tempo } => {
+                let depth = match bits {
+                    8 => BitDepth::Uint8,
+                    16 => BitDepth::Int16,
+                    32 => BitDepth::Int32,
+                    _ => BitDepth::Int24,
+                };
+                Self::Aiff { depth, tempo }
+            }
+            Format::Caf { bits, markers, tempo } => {
+                let depth = match BitDepth::from_bits(bits) {
+                    BitDepth::ULaw => BitDepth::Int16,
+                    d => d,
+                };
+                Self::Caf { depth, markers, tempo }
+            }
+            Format::Gif(a) => Self::Gif(a),
+            Format::Lcf(a) => Self::Lcf(a),
             Format::Mp3 { kbps } => Self::Mp3 { kbps },
             Format::Flac { bits, level } => Self::Flac { depth: BitDepth::from_bits(bits.clamp(16, 24)), level },
             Format::Vorbis { vbr, quality, kbps } => Self::Vorbis { vbr, quality, kbps },
@@ -75,13 +123,17 @@ impl Encoding {
             Format::CdImage(cd) => Self::CdImage(cd),
             Format::Ddp => Self::Ddp,
             Format::Video(ref v) => Self::Video(v.clone()),
-            Format::Other(_) => Self::Wav(BitDepth::Int24),
+            Format::Other(_) => Self::wav(BitDepth::Int24),
         }
     }
 
     pub fn extension(&self) -> &'static str {
         match self {
-            Self::Wav(_) | Self::Adpcm(_) => "wav",
+            Self::Wav(..) | Self::Adpcm(..) => "wav",
+            Self::Aiff { .. } => "aif",
+            Self::Caf { .. } => "caf",
+            Self::Gif(_) => "gif",
+            Self::Lcf(_) => "lcf",
             Self::Mp3 { .. } => "mp3",
             Self::Flac { .. } => "flac",
             Self::Vorbis { .. } => "ogg",
@@ -122,7 +174,7 @@ pub fn bounce_to_wav(
     path: &Path,
     progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
-    render_wav(project, pool, range, sample_rate, 2, depth, path, Finish::default(), progress)
+    bounce(project, pool, range, sample_rate, 2, Encoding::wav(depth), path, progress)
 }
 
 /// Renders `range` with `channels` (1 or 2) in `encoding`. A mono render is the average of
@@ -141,6 +193,40 @@ pub fn bounce(
     bounce_finished(project, pool, range, sample_rate, channels, encoding, path, Finish::default(), progress)
 }
 
+/// The container and chunks of a file, plain for intermediate files.
+struct FileSpec {
+    container: Container,
+    extras: Extras,
+}
+
+impl FileSpec {
+    fn plain() -> Self {
+        Self { container: Container::Wav(LargeWav::Wav), extras: Extras::default() }
+    }
+}
+
+/// What the project gives a render's file besides samples.
+fn embed<'a>(
+    project: &'a Project,
+    metadata: &'a [(String, String)],
+    range: TimeRange,
+    rate: u32,
+    markers: MarkerExport,
+) -> Embed<'a> {
+    let timeline = project.tempo.timeline();
+    let (date, time) = crate::pcmfile::local_date_time();
+    Embed {
+        project: project.path.as_deref(),
+        metadata,
+        start_frame: (range.start * rate as f64).round().max(0.0) as u64,
+        bpm: project.tempo.bpm_at(range.start),
+        beats: timeline.qn_at(range.end) - timeline.qn_at(range.start),
+        cues: crate::pcmfile::collect_cues(&project.markers, markers, range, rate),
+        date,
+        time,
+    }
+}
+
 /// Like [`bounce`], normalising and dithering as `finish` says.
 #[allow(clippy::too_many_arguments)]
 pub fn bounce_finished(
@@ -154,19 +240,50 @@ pub fn bounce_finished(
     finish: Finish,
     progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
+    let metadata = RenderSettings::from_project(project).metadata;
+    let file = match encoding {
+        Encoding::Wav(depth, options) => Some((
+            depth,
+            FileSpec {
+                container: Container::Wav(options.large),
+                extras: crate::pcmfile::wav_extras(
+                    &options,
+                    &embed(project, &metadata, range, sample_rate, options.markers),
+                ),
+            },
+        )),
+        Encoding::Aiff { depth, tempo } => Some((
+            depth,
+            FileSpec {
+                container: Container::Aiff,
+                extras: crate::pcmfile::aiff_extras(
+                    tempo,
+                    &embed(project, &metadata, range, sample_rate, MarkerExport::default()),
+                ),
+            },
+        )),
+        Encoding::Caf { depth, markers, tempo } => Some((
+            depth,
+            FileSpec {
+                container: Container::Caf,
+                extras: crate::pcmfile::caf_extras(tempo, &embed(project, &metadata, range, sample_rate, markers)),
+            },
+        )),
+        _ => None,
+    };
+    if let Some((depth, file)) = file {
+        return render_wav(project, pool, range, sample_rate, channels, depth, path, &file, finish, progress);
+    }
     let depth = match encoding {
-        Encoding::Wav(BitDepth::Float64) | Encoding::Adpcm(_) => BitDepth::Float32,
-        Encoding::Wav(depth) => {
-            return render_wav(project, pool, range, sample_rate, channels, depth, path, finish, progress);
-        }
         Encoding::Flac { depth, .. } | Encoding::WavPack { depth, .. } => depth,
-        Encoding::Mp3 { .. } | Encoding::Vorbis { .. } | Encoding::Opus { .. } => BitDepth::Int24,
         Encoding::CdImage(_) | Encoding::Ddp => BitDepth::Int16,
         Encoding::Video(ref v) => match v.audio {
             Some(AudioCodec::Pcm16) => BitDepth::Int16,
             Some(AudioCodec::Pcm24) => BitDepth::Int24,
             _ => BitDepth::Float32,
         },
+        Encoding::Adpcm(..) => BitDepth::Float32,
+        _ => BitDepth::Int24,
     };
     if matches!(encoding, Encoding::CdImage(_) | Encoding::Ddp) && channels != 2 {
         // REAPER creates the files, then its sink refuses anything but stereo and leaves them empty.
@@ -191,24 +308,28 @@ pub fn bounce_finished(
         )));
     }
     let wav = path.with_extension("scythe-render.wav");
+    let plain = FileSpec::plain();
     let encoded = match encoding {
-        Encoding::CdImage(cd) => render_wav(project, pool, range, sample_rate, 2, depth, &wav, finish, progress)
-            .and_then(|()| Ok(crate::disc::write_cd_image(&project.markers, range, &wav, &cd, path)?)),
-        Encoding::Ddp => render_wav(project, pool, range, sample_rate, 2, depth, &wav, finish, progress)
+        Encoding::CdImage(cd) => {
+            render_wav(project, pool, range, sample_rate, 2, depth, &wav, &plain, finish, progress)
+                .and_then(|()| Ok(crate::disc::write_cd_image(&project.markers, range, &wav, &cd, path)?))
+        }
+        Encoding::Ddp => render_wav(project, pool, range, sample_rate, 2, depth, &wav, &plain, finish, progress)
             .and_then(|()| Ok(crate::disc::write_ddp(&project.markers, &wav, path)?)),
         // A mono render keeps both channels here, to be mixed down in double precision.
-        Encoding::Wav(_) => {
-            render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, finish, progress)
-                .and_then(|()| Ok(crate::wavcodec::write_f64(&wav, channels == 1, path)?))
-        }
-        Encoding::Adpcm(mode) => {
-            render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, finish, progress)
-                .and_then(|()| Ok(crate::wavcodec::write_adpcm(&wav, channels == 1, path, mode)?))
+        Encoding::Adpcm(mode, options) => {
+            let extras =
+                crate::pcmfile::wav_extras(&options, &embed(project, &metadata, range, sample_rate, options.markers));
+            let container = Container::Wav(options.large);
+            render_wav(project, pool, range, sample_rate, channels.max(2), depth, &wav, &plain, finish, progress)
+                .and_then(|()| Ok(crate::wavcodec::write_adpcm(&wav, channels == 1, path, mode, container, extras)?))
         }
         Encoding::Video(ref v) => {
             let audio = match v.audio {
-                Some(_) => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
-                    .map(|()| Some(wav.as_path())),
+                Some(_) => {
+                    render_wav(project, pool, range, sample_rate, channels, depth, &wav, &plain, finish, progress)
+                        .map(|()| Some(wav.as_path()))
+                }
                 None => Ok(None),
             };
             let clips = crate::video::video_clips(project, range);
@@ -216,7 +337,12 @@ pub fn bounce_finished(
                 crate::video::write_video(v, &clips, range.length(), audio, path).map_err(BounceError::Encoder)
             })
         }
-        _ => render_wav(project, pool, range, sample_rate, channels, depth, &wav, finish, progress)
+        Encoding::Gif(a) | Encoding::Lcf(a) => {
+            let clips = crate::video::video_clips(project, range);
+            let lcf = matches!(encoding, Encoding::Lcf(_));
+            crate::animation::write(&a, lcf, &clips, range.length(), path).map_err(BounceError::Encoder)
+        }
+        _ => render_wav(project, pool, range, sample_rate, channels, depth, &wav, &plain, finish, progress)
             .and_then(|()| encode(encoding, channels, &wav, path)),
     };
     let _ = std::fs::remove_file(&wav);
@@ -225,7 +351,15 @@ pub fn bounce_finished(
 
 fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(), BounceError> {
     let mut cmd = match encoding {
-        Encoding::Wav(_) | Encoding::CdImage(_) | Encoding::Ddp | Encoding::Adpcm(_) | Encoding::Video(_) => {
+        Encoding::Wav(..)
+        | Encoding::Aiff { .. }
+        | Encoding::Caf { .. }
+        | Encoding::CdImage(_)
+        | Encoding::Ddp
+        | Encoding::Adpcm(..)
+        | Encoding::Video(_)
+        | Encoding::Gif(_)
+        | Encoding::Lcf(_) => {
             unreachable!("written without a command-line audio encoder")
         }
         Encoding::Mp3 { kbps } => {
@@ -372,7 +506,7 @@ impl Dither {
 
 /// Writes rendered blocks with a gain, mixing down to mono when asked.
 struct SampleWriter {
-    writer: hound::WavWriter<std::io::BufWriter<std::fs::File>>,
+    writer: PcmWriter,
     depth: BitDepth,
     channels: u16,
     gain: f32,
@@ -386,19 +520,14 @@ impl SampleWriter {
         channels: u16,
         depth: BitDepth,
         finish: Finish,
+        file: &FileSpec,
     ) -> Result<Self, BounceError> {
-        let (bits, format) = match depth {
-            BitDepth::Uint8 => (8, hound::SampleFormat::Int),
-            BitDepth::Int16 => (16, hound::SampleFormat::Int),
-            BitDepth::Int24 => (24, hound::SampleFormat::Int),
-            BitDepth::Int32 => (32, hound::SampleFormat::Int),
-            BitDepth::Float32 | BitDepth::Float64 => (32, hound::SampleFormat::Float),
-        };
         let channels = channels.clamp(1, 64);
-        let spec = hound::WavSpec { channels, sample_rate, bits_per_sample: bits, sample_format: format };
         let dither = (finish.dither && matches!(depth, BitDepth::Uint8 | BitDepth::Int16 | BitDepth::Int24))
             .then_some(Dither { rng: 0x9e37_79b9_7f4a_7c15, shape: finish.noise_shape, error: [0.0; 64] });
-        Ok(Self { writer: hound::WavWriter::create(path, spec)?, depth, channels, gain: 1.0, dither })
+        let writer =
+            PcmWriter::create(path, file.container, depth.sample(), channels, sample_rate, file.extras.clone())?;
+        Ok(Self { writer, depth, channels, gain: 1.0, dither })
     }
 
     /// Writes a block: the master's first pair, and `extra` channels for renders with more.
@@ -419,14 +548,14 @@ impl SampleWriter {
             let samples = if self.channels == 1 { &mono[..] } else { &frame[..self.channels as usize] };
             for (c, &s) in samples.iter().enumerate() {
                 match (self.depth, &mut self.dither) {
-                    (BitDepth::Float32 | BitDepth::Float64, _) => self.writer.write_sample(s as f32)?,
-                    (BitDepth::Uint8, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 8) as i8)?,
-                    (BitDepth::Uint8, None) => self.writer.write_sample(quantize(s, 8) as i8)?,
-                    (BitDepth::Int16, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 16) as i16)?,
-                    (BitDepth::Int24, Some(d)) => self.writer.write_sample(d.quantize(s as f32, c, 24))?,
-                    (BitDepth::Int16, None) => self.writer.write_sample(quantize(s, 16) as i16)?,
-                    (BitDepth::Int24, None) => self.writer.write_sample(quantize(s, 24))?,
-                    (BitDepth::Int32, _) => self.writer.write_sample(quantize(s, 32))?,
+                    (BitDepth::Float32 | BitDepth::Float64 | BitDepth::ULaw, _) => self.writer.float(s)?,
+                    (BitDepth::Uint8, Some(d)) => self.writer.int(d.quantize(s as f32, c, 8))?,
+                    (BitDepth::Uint8, None) => self.writer.int(quantize(s, 8))?,
+                    (BitDepth::Int16, Some(d)) => self.writer.int(d.quantize(s as f32, c, 16))?,
+                    (BitDepth::Int24, Some(d)) => self.writer.int(d.quantize(s as f32, c, 24))?,
+                    (BitDepth::Int16, None) => self.writer.int(quantize(s, 16))?,
+                    (BitDepth::Int24, None) => self.writer.int(quantize(s, 24))?,
+                    (BitDepth::Int32, _) => self.writer.int(quantize(s, 32))?,
                 }
             }
         }
@@ -510,11 +639,12 @@ fn render_wav(
     channels: u16,
     depth: BitDepth,
     path: &Path,
+    file: &FileSpec,
     finish: Finish,
     progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
     let Some(normalize) = finish.normalize else {
-        let mut out = SampleWriter::create(path, sample_rate, channels, depth, finish)?;
+        let mut out = SampleWriter::create(path, sample_rate, channels, depth, finish, file)?;
         render_mix(project, pool, range, sample_rate, |l, r, extra| out.write(l, r, extra), progress)?;
         return Ok(out.writer.finalize()?);
     };
@@ -525,7 +655,8 @@ fn render_wav(
     let kept = channels.max(2);
     let mut measure = Measure::new(sample_rate);
     let first = (|| {
-        let mut tmp = SampleWriter::create(&raw, sample_rate, kept, BitDepth::Float32, Finish::default())?;
+        let mut tmp =
+            SampleWriter::create(&raw, sample_rate, kept, BitDepth::Float32, Finish::default(), &FileSpec::plain())?;
         render_mix(
             project,
             pool,
@@ -540,7 +671,7 @@ fn render_wav(
         Ok::<(), BounceError>(tmp.writer.finalize()?)
     })();
     let second = first.and_then(|()| {
-        let mut out = SampleWriter::create(path, sample_rate, channels, depth, finish)?;
+        let mut out = SampleWriter::create(path, sample_rate, channels, depth, finish, file)?;
         out.gain = measure.gain(normalize);
         let mut reader = hound::WavReader::open(&raw)?;
         let mut samples = reader.samples::<f32>();
@@ -647,7 +778,7 @@ mod tests {
         let pool = MediaPool::default();
         pool.load(&src, 8000).unwrap();
         let out = dir.join("out.wav");
-        let encoding = Encoding::Wav(BitDepth::Float32);
+        let encoding = Encoding::wav(BitDepth::Float32);
         bounce(&p, &pool, TimeRange::new(0.0, 0.1), 8000, 1, encoding, &out, |_| {}).unwrap();
         let data = decode_file(&out).unwrap();
         assert_eq!(data.channels.len(), 1);
@@ -683,7 +814,7 @@ mod tests {
             p.track_mut(t).unwrap().items.push(Item::new(0.0, 1.0, take));
             pool.prepare_project(&p);
             let out = dir.join("out.wav");
-            bounce(&p, &pool, TimeRange::new(0.0, 1.0), 8000, 1, Encoding::Wav(BitDepth::Float32), &out, |_| {})
+            bounce(&p, &pool, TimeRange::new(0.0, 1.0), 8000, 1, Encoding::wav(BitDepth::Float32), &out, |_| {})
                 .unwrap();
             let x = &decode_file(&out).unwrap().channels[0];
             x[2000..6000].windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count() * 2
@@ -699,7 +830,7 @@ mod tests {
     fn dither_adds_noise_of_an_lsb() {
         let path = std::env::temp_dir().join(format!("scythe-dither-{}.wav", std::process::id()));
         let finish = Finish { dither: true, ..Finish::default() };
-        let mut w = SampleWriter::create(&path, 8000, 1, BitDepth::Int16, finish).unwrap();
+        let mut w = SampleWriter::create(&path, 8000, 1, BitDepth::Int16, finish, &FileSpec::plain()).unwrap();
         let level = 1000.25 / 32767.0;
         w.write(&[level; 4000], &[level; 4000], &[]).unwrap();
         w.writer.finalize().unwrap();
@@ -741,7 +872,7 @@ mod tests {
         let pool = MediaPool::default();
         pool.load(&src, 8000).unwrap();
         let out = dir.join("out.wav");
-        let wav = Encoding::Wav(BitDepth::Float32);
+        let wav = Encoding::wav(BitDepth::Float32);
         bounce(&p, &pool, TimeRange::new(0.0, 1.0), 8000, 4, wav, &out, |_| {}).unwrap();
         let data = decode_file(&out).unwrap();
         assert_eq!(data.channels.len(), 4);

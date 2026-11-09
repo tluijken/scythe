@@ -326,11 +326,32 @@ Working:
   packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
   complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and
   mono renders mix both channels down (in double precision) as REAPER does. WAV is written as
-  8-bit unsigned, 16, 24 or 32-bit integer, 32 or 64-bit float, 4-bit IMA ADPCM or REAPER's
-  2-bit cADPCM. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
-  writes them; ADPCM follows REAPER's coder (codes rounded down after taking half a step off,
-  the prediction wrapping at 16 bits, 1024-byte blocks per channel, the last block filled up by
-  coding silence). REAPER's video sink (FFmpeg) goes through `ffmpeg`: AVI, MPEG-1, MPEG-2
+  8-bit unsigned, 16, 24 or 32-bit integer, 32 or 64-bit float, 8-bit u-law, 4-bit IMA ADPCM or
+  REAPER's 2-bit cADPCM. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
+  writes them; u-law is G.711 of the sample in 16-bit units plus 2, rounded down (negative
+  values one's complemented), as REAPER codes it; ADPCM follows REAPER's coder (codes rounded
+  down after taking half a step off, the prediction wrapping at 16 bits, 1024-byte blocks per
+  channel, the last block filled up by coding silence). WAV files carry the chunks REAPER's WAV
+  sink writes, in its order: the Broadcast Wave `bext` (REAPER as originator over the start of
+  the description, the local date and time, the render's start as time reference, optionally
+  `RPP:<project file>` as description), the room for a larger header (`junk`), an ACID chunk
+  with the project tempo, and project markers and regions (all, markers or regions only,
+  optionally only those named `#…`; markers from the start to before the end, regions wholly
+  inside) as `cue `, `smpl` loops and `LIST`/`adtl` labels. Wave64 and RF64/BW64 are written
+  when forced, or when a WAV left room for them outgrows 4 GB (the header is rewritten in place;
+  RF64 adds its `r64m` marker chunk, Wave64 its own UTF-16 `cue ` chunk). With "embed metadata"
+  (`RENDER_STEMS` flag 512) the project's `<RENDER_METADATA` fills `bext` and an `iXML` copy
+  (`BWF:`), `iXML` (`IXML:`), XMP as `_PMX` (`XMP:`), `axml` (`AXML:ISRC`), `cart` (`CART:`),
+  an ID3v2.4 `id3 ` chunk (`ID3:` text frames, `COMM`, `TXXX`) and `LIST`/`INFO` (`INFO:`).
+  AIFF is written with 8, 16, 24 or 32-bit samples, a beat count (`basc`) when the render is a
+  whole number of beats, and `NAME`/`AUTH`/`ANNO`/`(c) ` (`IFF:`), XMP (`APPL`) and ID3 chunks;
+  CAF with 8 (unsigned, as REAPER writes it), 16, 24 or 32-bit integer or 32/64-bit float
+  samples, markers and regions as `mark`, `regn` and `strg`, and the tempo and `CAFINFO:` tags
+  in `info` chunks. REAPER's GIF and LCF sinks write the video frames (black where no video item
+  plays) at their size and highest frame rate: GIF with giflib's LZW coder, a frame (its changed
+  rectangle, its own colour table) only when the picture changes, delays added up in
+  milliseconds; LCF (LICEcap) in groups of 20 frames of BGR565 pixels in 128x16 blocks, each
+  block stored once per run of equal frames and deflated at zlib level 9. REAPER's video sink (FFmpeg) goes through `ffmpeg`: AVI, MPEG-1, MPEG-2
   (transport stream), MOV, MP4, Matroska, FLV and WebM with the codecs REAPER lists for each
   (H.264, H.265, AV1, VP8, VP9, MPEG-1/2, XviD, FLV1, FFV1, Huffyuv, MJPEG, DV; MP3, AAC,
   AC-3, MP2, Vorbis, Opus, 16/24-bit and float PCM, or no stream), the video and audio bitrate,
@@ -356,7 +377,7 @@ Working:
   the Red Book rules (2 s before the first track, 4 s minimum tracks) move indexes as REAPER
   moves them. As in REAPER, a CD image or DDP render of other than two channels fails with
   "Unable to create output file …, sample rate or channel count may not be compatible" and
-  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks (AIFF, CAF, GIF, LCF …) are written as WAV. The
+  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks are written as WAV. The
   project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
   target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 8-, 16- and 24-bit) apply.
 
@@ -403,6 +424,9 @@ compare with scythe's output sample by sample:
 | Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
 | ReaScript API: one Lua script (sends, track colors and selection, markers and regions with colors, time selection, repeat, tempo and time signature markers and the time map, `format_timestr`, `mkvolstr`, fader scaling, a volume envelope's points and `Envelope_Evaluate`, MIDI notes and CCs with selection and mute, PPQ conversions, items, takes and sources, project and global extended state, project title and notes, `Main_OnCommand(40001)`), one EEL2 script (`eval`, `extension_api`, file functions, MIDI with optional arguments left out, `#retval` strings) and one Python script, run in REAPER and in Scythe with their outputs compared | same values (126 lines), but for beat positions REAPER gives as 1e-11 where Scythe gives 0; REAPER 7.73's Python module fails some calls (`RPR_MIDI_InsertNote`, `RPR_GetTakeName` of an unnamed take, `RPR_ValidatePtr`) and gives region names as empty strings, which Scythe does not copy |
 | WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
+| WAV, AIFF and CAF files of a ramp and a sine with markers and regions (forced project rate): every WAV bit depth code (u-law, the 16- and 24-bit fallbacks), each flag of the WAV sink (no `bext`, forced WAV, project file, markers/regions/`#` modes, ACID) and each large-file mode (Wave64, RF64, BW64, forced and automatic) with ADPCM, float and u-law, 1-8 channels, markers on the render's edges, at fractional positions and with UTF-8 names in custom ranges; AIFF and CAF bit depths, tempo and marker flags; render metadata in all three (BWF, iXML, XMP, axml, cart, ID3, INFO, IFF, CAFINFO, with and without `BWF:` tags); GIF and LCF of black frames at 640x360/30 fps and 320x240/25 fps, with transparency | byte-identical files apart from `bext`'s render date and time (326 files) |
+| WAV over 4 GB (16 channels, 64-bit float, 710 s) left room for RF64 and for Wave64, with markers | same RF64 and Wave64 headers and tail chunks, byte for byte apart from the date |
+| GIF and LCF of a video item changing colour | same frames, delays, rectangles and block runs; colours a few levels off (FFmpeg's decoder) |
 | Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames showing the same source frames (exact at 30 fps; REAPER's 25 fps render of a 25 fps file at half-frame offsets picks a neighbouring frame now and then), MPEG-4 items scaled within 30-32 dB PSNR (26 and 23 dB with FFmpeg's bilinear scaler) |
 | Video sink settings: frame sizes 0x0 (with a 640x360 project video size), 640x0 and 0x480; H.264 option strings (`crf`, `preset`, `g`, `b`, `range=jpeg`, comments), audio `b`; MJPEG quality 0, 50, 80, 95 and 100 with and without `qscale` | 1920x1080 and 640x360 as REAPER (0x480 crashes REAPER); same x264 settings in the stream (rate control, bitrate, keyframe interval, subme, B-frames) and full range; MJPEG sizes within 2% |
 | Video item scaling of a high-detail test pattern: 1:1, 2.5x and 4x up, 16:9 with bars and stretched, 4x down | 1:1 identical; up 36.8-40.3 dB (14-17 dB with FFmpeg's bilinear scaler), down 23.2 dB (11 dB) |
@@ -467,9 +491,15 @@ compares the two files.
   resampled copy is read between frames with linear interpolation.
 - MPEG-2/2.5 intensity stereo is untested against REAPER (LAME cannot encode it). A VBRI
   header frame is assumed to play as silence like a Xing/Info frame.
-- Render formats beyond WAV, MP3, FLAC, Ogg Vorbis, Opus, WavPack, CD image, DDP and the
-  FFmpeg video sink (AIFF, CAF, GIF, LCF; WAV's 8-bit u-law; the WAV sink's BWF and Wave64/RF64
-  options). CD image and DDP renders are always 44.1 kHz.
+- CD image and DDP renders are always 44.1 kHz. Render metadata covers the tags listed above;
+  others (ID3 pictures and non-text frames, `IXML:USER:…`, `CART:` timers, ASWG, the XMP keys
+  beyond `dc/title`, `dc/description` and `dc/rights` as text elements) are left out, and
+  which wins when both `BWF:Description` and the project-file option are set is a guess. A
+  forced Wave64 render with the tempo option leaves out the ACID chunk (REAPER writes a
+  malformed one there). GIF frames of video items get exact colour tables only up to 256
+  colours (more are mapped to the nearest of the first 256, not REAPER's palette), and their
+  colours come from FFmpeg's decoder, a few levels off REAPER's; GIF transparency is only
+  matched for a single-colour frame.
 - Video renders: video processors other than the three presets above (text and timecode
   overlays, item fades, chroma key, transitions, blurs …, and any edited code) are left out
   with a warning: they are EEL scripts drawing with REAPER's own graphics API. The opacity

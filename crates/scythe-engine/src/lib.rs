@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod bounce;
 pub mod builtin;
 pub mod clap_host;
@@ -18,6 +19,7 @@ pub mod meter;
 pub mod midi_io;
 pub mod nam;
 pub mod normalized;
+pub mod pcmfile;
 mod r8brain;
 pub mod reaeq;
 pub mod reaverb;

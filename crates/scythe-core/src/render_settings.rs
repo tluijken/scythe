@@ -19,8 +19,17 @@ pub enum Bounds {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Format {
     /// WAV with this many bits: 8 is unsigned, 32 is float, 33 is 32-bit integer, 64 is double;
-    /// 4 is IMA ADPCM and 2 REAPER's 2-bit cADPCM.
-    Wav { bits: u16 },
+    /// 4 is IMA ADPCM, 2 REAPER's 2-bit cADPCM and 14 8-bit u-law.
+    Wav { bits: u16, options: WavOptions },
+    /// AIFF with 8, 16, 24 or 32-bit integer samples; `tempo` adds the beat count when the
+    /// render is a whole number of beats.
+    Aiff { bits: u16, tempo: bool },
+    /// Core Audio Format, with WAV's PCM and float depths.
+    Caf { bits: u16, markers: MarkerExport, tempo: bool },
+    /// Animated GIF of the video.
+    Gif(Animation),
+    /// LICEcap's LCF animation of the video.
+    Lcf(Animation),
     /// MP3 at a constant bitrate.
     Mp3 { kbps: u32 },
     /// FLAC with this many bits per sample and compression level 0-8.
@@ -41,6 +50,114 @@ pub enum Format {
     Video(Video),
     /// Another sink, by its four-character id as REAPER prints it (`l3pm` is MP3).
     Other(String),
+}
+
+/// Which project markers and regions a WAV or CAF render embeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MarkerExport {
+    pub markers: bool,
+    pub regions: bool,
+    /// Only those whose names start with `#` (the `#` is kept).
+    pub hash_only: bool,
+}
+
+impl MarkerExport {
+    /// The sinks' flag byte: 8 embeds, 0x40 limits it to markers and 0x80 to regions (both
+    /// together mean both), 0x10 to names starting with `#`.
+    fn from_flags(flags: u8) -> Self {
+        let on = flags & 8 != 0;
+        let (markers_only, regions_only) = (flags & 0x40 != 0, flags & 0x80 != 0);
+        Self {
+            markers: on && (markers_only || !regions_only),
+            regions: on && (regions_only || !markers_only),
+            hash_only: flags & 0x10 != 0,
+        }
+    }
+
+    pub fn any(self) -> bool {
+        self.markers || self.regions
+    }
+}
+
+/// What a WAV render becomes when it outgrows 4 GB, or is always written as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LargeWav {
+    /// WAV, with room in the header to turn into Wave64 (or RF64, or BW64).
+    AutoWave64,
+    AutoRf64,
+    AutoBw64,
+    /// WAV without that room.
+    Wav,
+    Wave64,
+    Rf64,
+    Bw64,
+}
+
+/// The WAV sink's options (`RENDER_CFG` id `evaw`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WavOptions {
+    /// Write a Broadcast Wave `bext` chunk.
+    pub bext: bool,
+    /// Put the project file in the `bext` description (`RPP:<path>`).
+    pub project_in_description: bool,
+    pub markers: MarkerExport,
+    /// An ACID chunk with the project tempo.
+    pub tempo: bool,
+    pub large: LargeWav,
+}
+
+impl Default for WavOptions {
+    /// REAPER 7.73's defaults: `bext`, room for RF64.
+    fn default() -> Self {
+        Self::from_bytes(0, 1)
+    }
+}
+
+impl WavOptions {
+    /// The two bytes after the bit depth. The first: 1 leaves `bext` out, 2 forces WAV (over
+    /// any forced form), 4 names the project, 0x20 writes the tempo, and the marker flags. The
+    /// second: 0 Wave64, 1 RF64, 2 and 3 the same forced, 4 makes RF64 BW64.
+    pub fn from_bytes(flags: u8, large: u8) -> Self {
+        let large = match (flags & 2 != 0, large & 3, large & 4 != 0) {
+            (true, ..) => LargeWav::Wav,
+            (_, 0, _) => LargeWav::AutoWave64,
+            (_, 1, false) => LargeWav::AutoRf64,
+            (_, 1, true) => LargeWav::AutoBw64,
+            (_, 2, _) => LargeWav::Wave64,
+            (_, _, false) => LargeWav::Rf64,
+            (_, _, true) => LargeWav::Bw64,
+        };
+        Self {
+            bext: flags & 1 == 0,
+            project_in_description: flags & 4 != 0,
+            markers: MarkerExport::from_flags(flags),
+            tempo: flags & 0x20 != 0,
+            large,
+        }
+    }
+}
+
+/// REAPER's GIF and LCF sinks: frame size and the highest frame rate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Animation {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// GIF: keep a transparent colour.
+    pub transparent: bool,
+}
+
+impl Animation {
+    fn parse(bytes: &[u8]) -> Self {
+        let size = |at, default| u32_at(bytes, at).filter(|n| *n > 0).unwrap_or(default);
+        let fps = bytes.get(12..16).map_or(30.0, |b| f32::from_le_bytes(b.try_into().unwrap()));
+        Self {
+            width: size(4, 640),
+            height: size(8, 360),
+            fps: if fps.is_finite() && fps > 0.0 { fps as f64 } else { 30.0 },
+            transparent: bytes.get(17).is_some_and(|b| *b != 0),
+        }
+    }
 }
 
 /// How REAPER's CD image sink splits the render into tracks.
@@ -336,6 +453,9 @@ pub struct RenderSettings {
     pub dither: bool,
     pub noise_shape: bool,
     pub resample: ResampleMode,
+    /// `<RENDER_METADATA` tags (`BWF:Description`, `IXML:PROJECT` …) in REAPER's order, when
+    /// the render embeds them (`RENDER_STEMS` flag 512); empty otherwise.
+    pub metadata: Vec<(String, String)>,
 }
 
 impl RenderSettings {
@@ -346,12 +466,14 @@ impl RenderSettings {
             channels: 2,
             sample_rate: None,
             bounds: Bounds::Project,
-            format: Format::Wav { bits: 24 },
+            format: Format::Wav { bits: 24, options: WavOptions::default() },
             normalize: None,
             dither: false,
             noise_shape: false,
             resample: ResampleMode::default(),
+            metadata: Vec::new(),
         };
+        let mut embed_metadata = false;
         for node in &p.extra {
             match node {
                 Node::Line(l) => {
@@ -364,6 +486,7 @@ impl RenderSettings {
                             s.channels = num(2).map_or(2, |c| c as u16).clamp(1, 64);
                             s.sample_rate = num(3).filter(|r| *r > 0.0).map(|r| r as u32);
                         }
+                        "RENDER_STEMS" => embed_metadata = num(1).is_some_and(|f| f as i64 & 512 != 0),
                         "RENDER_NORMALIZE" => {
                             s.normalize = Normalize::parse(num(1).unwrap_or(0.0) as i64, num(2).unwrap_or(0.0));
                         }
@@ -392,8 +515,24 @@ impl RenderSettings {
                         s.format = fmt;
                     }
                 }
+                Node::Chunk(c) if c.name() == "RENDER_METADATA" => {
+                    s.metadata = c
+                        .children
+                        .iter()
+                        .filter_map(|n| match n {
+                            Node::Line(l) => {
+                                let t = tokenize(l);
+                                (t.len() >= 3 && t[0] == "TAG").then(|| (t[1].clone(), t[2].clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                }
                 Node::Chunk(_) => {}
             }
+        }
+        if !embed_metadata {
+            s.metadata.clear();
         }
         s
     }
@@ -454,7 +593,11 @@ impl RenderSettings {
                     Format::CdImage(_) => "cue",
                     Format::Ddp => "DAT",
                     Format::Video(v) => v.container.extension(),
-                    _ => "wav",
+                    Format::Aiff { .. } => "aif",
+                    Format::Caf { .. } => "caf",
+                    Format::Gif(_) => "gif",
+                    Format::Lcf(_) => "lcf",
+                    Format::Wav { .. } | Format::Other(_) => "wav",
                 };
                 if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
                     return (range, path);
@@ -476,7 +619,25 @@ fn decode_cfg<'a>(lines: impl Iterator<Item = &'a str>) -> Option<Format> {
     let bytes = decode_base64(&text)?;
     let id = String::from_utf8_lossy(bytes.get(..4)?).into_owned();
     Some(match id.as_str() {
-        "evaw" => Format::Wav { bits: bytes.get(4).map_or(24, |b| *b as u16) },
+        "evaw" => Format::Wav {
+            bits: bytes.get(4).map_or(24, |b| *b as u16),
+            options: WavOptions::from_bytes(bytes.get(5).copied().unwrap_or(0), bytes.get(6).copied().unwrap_or(1)),
+        },
+        // AIFF and CAF: the bit depth, then the flags of the WAV sink's first flag byte.
+        "ffia" => Format::Aiff {
+            bits: bytes.get(4).map_or(24, |b| *b as u16),
+            tempo: bytes.get(5).is_some_and(|f| f & 0x20 != 0),
+        },
+        "ffac" => {
+            let flags = bytes.get(5).copied().unwrap_or(0);
+            Format::Caf {
+                bits: bytes.get(4).map_or(24, |b| *b as u16),
+                markers: MarkerExport::from_flags(flags),
+                tempo: flags & 0x20 != 0,
+            }
+        }
+        " FIG" => Format::Gif(Animation::parse(&bytes)),
+        " FCL" => Format::Lcf(Animation::parse(&bytes)),
         "l3pm" => Format::Mp3 {
             kbps: bytes.get(4..8).map_or(320, |b| u32::from_le_bytes(b.try_into().unwrap())).clamp(8, 320),
         },
@@ -595,7 +756,7 @@ mod tests {
         let s = RenderSettings::from_project(&p);
         assert_eq!(
             (s.channels, s.sample_rate, s.bounds.clone(), s.format.clone()),
-            (2, Some(44100), Bounds::Regions, Format::Wav { bits: 24 })
+            (2, Some(44100), Bounds::Regions, Format::Wav { bits: 24, options: WavOptions::default() })
         );
         let jobs = s.jobs(&p, 0).unwrap();
         assert_eq!(jobs.len(), 2);
@@ -636,11 +797,11 @@ mod tests {
         assert_eq!(format("U2dnTwAAAEMACgAAAAAAAAA="), Format::Opus { kbps: 128.0, mode: 0, complexity: 10 });
         assert_eq!(format("a3B2dwAAAAABAAAAAAAAAAAAAAA="), Format::WavPack { bits: 24, float: false, mode: 0 });
         // 32-bit integer WAV, as REAPER 7.73 stores it.
-        assert_eq!(format("ZXZhdyEAAQ=="), Format::Wav { bits: 33 });
+        assert_eq!(format("ZXZhdyEAAQ=="), Format::Wav { bits: 33, options: WavOptions::default() });
         // 8-bit, 64-bit float and IMA ADPCM.
-        assert_eq!(format("ZXZhdwgAAQ=="), Format::Wav { bits: 8 });
-        assert_eq!(format("ZXZhd0AAAQ=="), Format::Wav { bits: 64 });
-        assert_eq!(format("ZXZhdwQAAQ=="), Format::Wav { bits: 4 });
+        assert_eq!(format("ZXZhdwgAAQ=="), Format::Wav { bits: 8, options: WavOptions::default() });
+        assert_eq!(format("ZXZhd0AAAQ=="), Format::Wav { bits: 64, options: WavOptions::default() });
+        assert_eq!(format("ZXZhdwQAAQ=="), Format::Wav { bits: 4, options: WavOptions::default() });
     }
 
     #[test]
