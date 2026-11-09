@@ -4425,6 +4425,450 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The surfaces with their settings and whether each is running.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "surface_list",
+    "title": "Surface list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a surface at the end of the list.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.add`.",
+    "inputSchema": {
+      "properties": {
+        "surface": {
+          "description": "A surface's settings.",
+          "oneOf": [
+            {
+              "description": "An OSC device (a tablet app, a footswitch box) using a `.ReaperOSC` pattern file.",
+              "properties": {
+                "device_ip": {
+                  "default": "127.0.0.1",
+                  "description": "Where feedback goes: the device's address.",
+                  "type": "string"
+                },
+                "device_port": {
+                  "description": "The device's UDP port.",
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "learn": {
+                  "default": false,
+                  "description": "Let the device's messages be bound to actions and FX parameters (learn).",
+                  "type": "boolean"
+                },
+                "local_port": {
+                  "description": "The UDP port Scythe listens on.",
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_packet": {
+                  "default": null,
+                  "description": "Largest feedback packet in bytes (default 1024).",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "default": "",
+                  "description": "A name to tell devices apart.",
+                  "type": "string"
+                },
+                "pattern": {
+                  "default": "",
+                  "description": "A pattern file name in Scythe's or REAPER's OSC folder, or a path; empty for the\ndefault patterns.",
+                  "type": "string"
+                },
+                "receive": {
+                  "default": true,
+                  "description": "Take messages from the device (default on).",
+                  "type": "boolean"
+                },
+                "send": {
+                  "default": true,
+                  "description": "Send feedback to the device (default on).",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "osc",
+                  "type": "string"
+                },
+                "wait_ms": {
+                  "default": null,
+                  "description": "Milliseconds between feedback packets (default 10).",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "local_port",
+                "device_port"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A MIDI surface.",
+              "properties": {
+                "flags": {
+                  "default": 0,
+                  "description": "REAPER's option bits, kept as given.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "input": {
+                  "description": "MIDI input device number from `surface.devices`; -1 for none.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "description": "`mcu`, `mcu_extender`, `hui`, `faderport` or `faderport2`.",
+                  "enum": [
+                    "mcu",
+                    "mcu_extender",
+                    "hui",
+                    "faderport",
+                    "faderport2"
+                  ],
+                  "type": "string"
+                },
+                "offset": {
+                  "default": 0,
+                  "description": "Tracks the first strip is moved on by: 8 for an extender to the right of an MCU.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "output": {
+                  "description": "MIDI output device number from `surface.devices`; -1 for none.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "size": {
+                  "default": 0,
+                  "description": "REAPER's size tweak, kept as given.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "midi",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "kind",
+                "input",
+                "output"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `csurf_<i>=` line from REAPER's reaper.ini, as written there (`MCU 0 0 2 3 0`).",
+              "properties": {
+                "line": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "line",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "line"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "surface"
+      ],
+      "type": "object"
+    },
+    "name": "surface_add",
+    "title": "Surface add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Replaces the settings of surface `index`.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.set`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in `surface.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "surface": {
+          "description": "A surface's settings.",
+          "oneOf": [
+            {
+              "description": "An OSC device (a tablet app, a footswitch box) using a `.ReaperOSC` pattern file.",
+              "properties": {
+                "device_ip": {
+                  "default": "127.0.0.1",
+                  "description": "Where feedback goes: the device's address.",
+                  "type": "string"
+                },
+                "device_port": {
+                  "description": "The device's UDP port.",
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "learn": {
+                  "default": false,
+                  "description": "Let the device's messages be bound to actions and FX parameters (learn).",
+                  "type": "boolean"
+                },
+                "local_port": {
+                  "description": "The UDP port Scythe listens on.",
+                  "format": "uint16",
+                  "maximum": 65535,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_packet": {
+                  "default": null,
+                  "description": "Largest feedback packet in bytes (default 1024).",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "default": "",
+                  "description": "A name to tell devices apart.",
+                  "type": "string"
+                },
+                "pattern": {
+                  "default": "",
+                  "description": "A pattern file name in Scythe's or REAPER's OSC folder, or a path; empty for the\ndefault patterns.",
+                  "type": "string"
+                },
+                "receive": {
+                  "default": true,
+                  "description": "Take messages from the device (default on).",
+                  "type": "boolean"
+                },
+                "send": {
+                  "default": true,
+                  "description": "Send feedback to the device (default on).",
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "osc",
+                  "type": "string"
+                },
+                "wait_ms": {
+                  "default": null,
+                  "description": "Milliseconds between feedback packets (default 10).",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "local_port",
+                "device_port"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A MIDI surface.",
+              "properties": {
+                "flags": {
+                  "default": 0,
+                  "description": "REAPER's option bits, kept as given.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "input": {
+                  "description": "MIDI input device number from `surface.devices`; -1 for none.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "kind": {
+                  "description": "`mcu`, `mcu_extender`, `hui`, `faderport` or `faderport2`.",
+                  "enum": [
+                    "mcu",
+                    "mcu_extender",
+                    "hui",
+                    "faderport",
+                    "faderport2"
+                  ],
+                  "type": "string"
+                },
+                "offset": {
+                  "default": 0,
+                  "description": "Tracks the first strip is moved on by: 8 for an extender to the right of an MCU.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "output": {
+                  "description": "MIDI output device number from `surface.devices`; -1 for none.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "size": {
+                  "default": 0,
+                  "description": "REAPER's size tweak, kept as given.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "midi",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "kind",
+                "input",
+                "output"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `csurf_<i>=` line from REAPER's reaper.ini, as written there (`MCU 0 0 2 3 0`).",
+              "properties": {
+                "line": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "line",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "line"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      },
+      "required": [
+        "index",
+        "surface"
+      ],
+      "type": "object"
+    },
+    "name": "surface_set",
+    "title": "Surface set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes surface `index`.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.remove`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in `surface.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "surface_remove",
+    "title": "Surface remove"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The MIDI devices a surface can use, numbered as `input` and `output` take them.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.devices`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "surface_devices",
+    "title": "Surface devices"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The actions surfaces, OSC `/action` messages and footswitches can run.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.action_list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "surface_action_list",
+    "title": "Surface action list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs an action as a surface button would: a REAPER command id such as `40364`\n(metronome) or a named command such as `_SCYTHE_SETLIST_NEXT`.\n\nControl surfaces (OSC devices, Mackie Control and extenders, HUI), kept in the preferences\nas REAPER keeps them in reaper.ini (`csurf_<i>` lines). Changes apply at once.\n\nControl API command `surface.run_action`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "description": "A command id or name from `surface.actions`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "surface_run_action",
+    "title": "Surface run action"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

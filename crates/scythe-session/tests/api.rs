@@ -1029,3 +1029,45 @@ fn polarity_pan_modes_and_solo_through_the_api() {
     let bad = execute_json(&mut s, json!({"cmd": "track.width", "track": t, "width": 2.0}));
     assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
 }
+
+#[test]
+fn control_surfaces_are_kept_as_reaper_ini_lines() {
+    let dir = std::env::temp_dir().join(format!("scythe-surface-api-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let prefs = dir.join("preferences.ini");
+    std::fs::write(&prefs, "[REAPER]\ncsurf_cnt=1\ncsurf_0=BCF2000 0 1\nother=1\n").unwrap();
+    let mut s = session();
+    s.load_preferences(prefs.clone());
+    let osc =
+        json!({"type": "osc", "name": "Tablet", "local_port": 8000, "device_ip": "10.0.0.5", "device_port": 9000});
+    let list = ok(&mut s, json!({"cmd": "surface.add", "surface": osc}));
+    assert_eq!(list[1]["line"], "OSC \"Tablet\" 3 8000 \"10.0.0.5\" 9000 1024 10 \"\"");
+    let mcu = json!({"type": "midi", "kind": "mcu", "input": 2, "output": 3});
+    ok(&mut s, json!({"cmd": "surface.add", "surface": mcu}));
+    let xt = json!({"type": "line", "line": "MCUEX 8 0 4 5 0"});
+    let list = ok(&mut s, json!({"cmd": "surface.set", "index": 0, "surface": xt}));
+    assert_eq!(
+        list[0]["surface"],
+        json!({"type": "midi", "kind": "mcu_extender", "input": 4, "output": 5, "offset": 8, "size": 0, "flags": 0})
+    );
+    let text = std::fs::read_to_string(&prefs).unwrap();
+    assert!(text.contains("other=1"), "{text}");
+    for line in [
+        "csurf_0=MCUEX 8 0 4 5 0",
+        "csurf_1=OSC \"Tablet\" 3 8000 \"10.0.0.5\" 9000 1024 10 \"\"",
+        "csurf_2=MCU 0 0 2 3 0",
+        "csurf_cnt=3",
+    ] {
+        assert!(text.lines().any(|l| l == line), "{line} in\n{text}");
+    }
+    ok(&mut s, json!({"cmd": "surface.remove", "index": 0}));
+    assert_eq!(s.prefs.surfaces.len(), 2);
+    let err = execute_json(&mut s, json!({"cmd": "surface.remove", "index": 5})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    let actions = ok(&mut s, json!({"cmd": "surface.action_list"}));
+    assert!(actions.as_array().unwrap().iter().any(|a| a["id"] == "_SCYTHE_SETLIST_NEXT"));
+    ok(&mut s, json!({"cmd": "surface.run_action", "action": "40364"}));
+    assert!(s.metronome());
+    let err = execute_json(&mut s, json!({"cmd": "surface.run_action", "action": "99999"})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+}

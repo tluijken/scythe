@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
+use scythe_core::AutoMode;
 use scythe_core::surface::{MidiKind, MidiSurface};
-use scythe_core::{AutoMode, TrackId};
 use scythe_session::Session;
 use serde_json::json;
 
@@ -79,8 +79,6 @@ pub struct Mcu {
     touched: [bool; 9],
     /// The time display shows minutes and seconds instead of bars and beats.
     smpte: bool,
-    /// The track the surface selected: automation buttons and LEDs follow it.
-    selected: Option<TrackId>,
     /// Rewind or fast forward held.
     shuttle: Option<f64>,
     sent: HashMap<Key, Vec<u8>>,
@@ -88,16 +86,7 @@ pub struct Mcu {
 
 impl Mcu {
     pub fn new(extender: bool, offset: usize) -> Self {
-        Self {
-            extender,
-            offset,
-            flip: false,
-            touched: [false; 9],
-            smpte: false,
-            selected: None,
-            shuttle: None,
-            sent: HashMap::new(),
-        }
+        Self { extender, offset, flip: false, touched: [false; 9], smpte: false, shuttle: None, sent: HashMap::new() }
     }
 
     fn model(&self) -> u8 {
@@ -218,7 +207,6 @@ impl Mcu {
             }
             SELECT..=0x1f => {
                 if let Some(id) = strip(note - SELECT).and_then(|t| t.id) {
-                    self.selected = Some(id);
                     session.select_track(id);
                 }
             }
@@ -244,7 +232,7 @@ impl Mcu {
                 let _ = exec(session, json!({ "cmd": "marker.goto", "marker": note - F1 + 1, "region": false }));
             }
             READ..=LATCH => {
-                if let Some(id) = self.selected.filter(|id| session.project.track(*id).is_some()) {
+                if let Some(id) = session.selected_track.filter(|id| session.project.track(*id).is_some()) {
                     let mode = match note {
                         READ => AutoMode::Read,
                         WRITE => AutoMode::Write,
@@ -331,7 +319,7 @@ impl Mcu {
             put(&mut sent, Key::Led(REC + i), vec![0x90, REC + i, on(t.is_some_and(|t| t.armed))]);
             put(&mut sent, Key::Led(SOLO + i), vec![0x90, SOLO + i, on(t.is_some_and(|t| t.solo))]);
             put(&mut sent, Key::Led(MUTE + i), vec![0x90, MUTE + i, on(t.is_some_and(|t| t.muted))]);
-            let selected = t.is_some_and(|t| t.id == self.selected);
+            let selected = t.is_some_and(|t| t.id.is_some() && t.id == view.selected);
             put(&mut sent, Key::Led(SELECT + i), vec![0x90, SELECT + i, on(selected)]);
             let mut text = vec![0x12, i * 7];
             text.extend(scribble(t.map_or("", |t| t.name.as_str())));
@@ -344,7 +332,7 @@ impl Mcu {
                 put(&mut sent, Key::Fader(8), pitch_bend(8, view::gain_to_fader(view.master.volume)));
             }
             let on = |b: bool| if b { 0x7f } else { 0x00 };
-            let mode = self.selected.and_then(|id| view.tracks.iter().find(|t| t.id == Some(id))).map(|t| t.auto_mode);
+            let mode = view.selected.and_then(|id| view.tracks.iter().find(|t| t.id == Some(id))).map(|t| t.auto_mode);
             let lit = match mode {
                 Some(AutoMode::Read) => Some(READ),
                 Some(AutoMode::Write) => Some(WRITE),
@@ -377,10 +365,6 @@ impl Mcu {
         }
         self.sent = sent;
         out
-    }
-
-    pub fn selected(&self) -> Option<TrackId> {
-        self.selected
     }
 
     /// The ten time display digits, rightmost first (CC 64 is the rightmost): bars, beats and

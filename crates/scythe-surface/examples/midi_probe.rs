@@ -1,6 +1,7 @@
 //! A scripted MIDI device on ALSA virtual ports, for comparing what Scythe and REAPER send to a
 //! control surface: `midi_probe <name> <script> <log> <seconds>`. The script has one message
 //! per line, `<seconds> <hex bytes>`; everything received is logged as `<seconds> <hex bytes>`.
+//! `midi_probe --list` prints the MIDI devices as surfaces number them.
 
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -11,6 +12,15 @@ use midir::{MidiInput, MidiOutput};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--list") {
+        for (i, n) in scythe_surface::midi::input_names().iter().enumerate() {
+            println!("in {i} {n}");
+        }
+        for (i, n) in scythe_surface::midi::output_names().iter().enumerate() {
+            println!("out {i} {n}");
+        }
+        return;
+    }
     let [_, name, script, log, seconds] = &args[..] else {
         eprintln!("usage: midi_probe <name> <script> <log> <seconds>");
         std::process::exit(2);

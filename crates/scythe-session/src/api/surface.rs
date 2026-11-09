@@ -1,5 +1,5 @@
 use schemars::JsonSchema;
-use scythe_core::surface::{MidiKind, MidiSurface, OSC_ALLOW_ACTIONS, OSC_RECEIVE, OSC_SEND, OscSurface, Surface};
+use scythe_core::surface::{MidiKind, MidiSurface, OSC_LEARN, OSC_RECEIVE, OSC_SEND, OscSurface, Surface};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -34,8 +34,8 @@ pub enum SurfaceCommand {
     #[serde(rename = "surface.devices")]
     Devices,
     /// The actions surfaces, OSC `/action` messages and footswitches can run.
-    #[serde(rename = "surface.actions")]
-    Actions,
+    #[serde(rename = "surface.action_list")]
+    ActionList,
     /// Runs an action as a surface button would: a REAPER command id such as `40364`
     /// (metronome) or a named command such as `_SCYTHE_SETLIST_NEXT`.
     #[serde(rename = "surface.run_action")]
@@ -67,9 +67,9 @@ pub enum SurfaceSpec {
         /// Send feedback to the device (default on).
         #[serde(default = "yes")]
         send: bool,
-        /// Let `/action` messages run actions (default on).
-        #[serde(default = "yes")]
-        allow_actions: bool,
+        /// Let the device's messages be bound to actions and FX parameters (learn).
+        #[serde(default)]
+        learn: bool,
         /// A pattern file name in Scythe's or REAPER's OSC folder, or a path; empty for the
         /// default patterns.
         #[serde(default)]
@@ -155,15 +155,13 @@ impl SurfaceSpec {
                 device_port,
                 receive,
                 send,
-                allow_actions,
+                learn,
                 pattern,
                 max_packet,
                 wait_ms,
             } => {
                 let defaults = OscSurface::default();
-                let flags = (*receive as i64 * OSC_RECEIVE)
-                    | (*send as i64 * OSC_SEND)
-                    | (*allow_actions as i64 * OSC_ALLOW_ACTIONS);
+                let flags = (*receive as i64 * OSC_RECEIVE) | (*send as i64 * OSC_SEND) | (*learn as i64 * OSC_LEARN);
                 Surface::Osc(OscSurface {
                     name: name.clone(),
                     flags,
@@ -201,7 +199,7 @@ impl SurfaceSpec {
                 device_port: o.device_port,
                 receive: o.flags & OSC_RECEIVE != 0,
                 send: o.flags & OSC_SEND != 0,
-                allow_actions: o.flags & OSC_ALLOW_ACTIONS != 0,
+                learn: o.flags & OSC_LEARN != 0,
                 pattern: o.pattern.clone(),
                 max_packet: Some(o.max_packet),
                 wait_ms: Some(o.wait_ms),
@@ -301,7 +299,7 @@ pub fn execute(session: &mut Session, command: SurfaceCommand) -> Result<Value, 
             "inputs": scythe_engine::midi_io::input_names(),
             "outputs": scythe_engine::midi_io::output_names(),
         })),
-        SurfaceCommand::Actions => {
+        SurfaceCommand::ActionList => {
             let commands =
                 actions::COMMANDS.iter().map(|(id, name)| serde_json::json!({ "id": id.to_string(), "name": name }));
             let named = actions::NAMED.iter().map(|(id, name)| serde_json::json!({ "id": id, "name": name }));

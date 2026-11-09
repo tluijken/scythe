@@ -11,10 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use scythe_core::surface::{OSC_ALLOW_ACTIONS, OSC_RECEIVE, OSC_SEND, OscSurface as OscConfig};
+use scythe_core::surface::{OSC_RECEIVE, OSC_SEND, OscSurface as OscConfig};
 use scythe_core::tempo::format_time;
 use scythe_session::Session;
 use serde_json::json;
+
+use scythe_core::TrackId;
 
 use crate::view::{self, TrackView, View};
 use crate::{Waker, exec, run_action};
@@ -223,12 +225,8 @@ impl OscSurface {
                 let _ = exec(session, json!({ "cmd": cmd, "track": track_ref(t), field: value }));
             }
             "TRACK_SELECT" => {
-                let Some(n) = track(self) else { return };
-                if on && view.track(n).is_some() {
-                    self.state.selected = n;
-                    if let Some(id) = view.track(n).and_then(|t| t.id) {
-                        session.select_track(id);
-                    }
+                if let Some(id) = track(self).and_then(|n| view.track(n)).and_then(|t| t.id).filter(|_| on) {
+                    session.select_track(id);
                 }
             }
             "TRACK_NAME" => {
@@ -304,7 +302,7 @@ impl OscSurface {
             "TEMPO" => {
                 let bpm = match pattern.flag {
                     Flag::Float => num,
-                    Flag::Normalized => num.map(|v| 20.0 + v.clamp(0.0, 1.0) * 320.0),
+                    Flag::Normalized => num.map(|v| 40.0 + v.clamp(0.0, 1.0) * 256.0),
                     _ => None,
                 };
                 if let Some(bpm) = bpm.filter(|b| (20.0..=400.0).contains(b)) {
@@ -312,9 +310,6 @@ impl OscSurface {
                 }
             }
             "ACTION" => {
-                if self.config.flags & OSC_ALLOW_ACTIONS == 0 {
-                    return;
-                }
                 let id = match pattern.flag {
                     Flag::Int => num.map(|v| (v as i64).to_string()),
                     Flag::Str => arg.and_then(Arg::as_str).map(str::to_owned),
@@ -412,7 +407,7 @@ impl OscSurface {
             "TEMPO",
             &[],
             Value::Number {
-                normalized: ((view.tempo - 20.0) / 320.0).clamp(0.0, 1.0),
+                normalized: ((view.tempo - 40.0) / 256.0).clamp(0.0, 1.0),
                 raw: view.tempo,
                 text: trim_number(view.tempo),
             },
@@ -454,12 +449,17 @@ impl OscSurface {
             let n = self.state.track_bank + k;
             put("DEVICE_TRACK_SELECT", &[k], Value::Switch(self.state.selected == n));
         }
+        let counts = (self.patterns.settings.send_count, self.patterns.settings.fx_count);
         let selected = view.track(self.state.selected).cloned().unwrap_or_else(|| empty_track(self.state.selected));
-        track_feedback(&mut put, &[], &selected, self.state.selected, self.patterns.settings.send_count);
+        track_feedback(&mut put, &[], &selected, view.selected, counts);
+        let fx = selected.fx.first();
+        put("FX_NAME", &[], Value::Text(fx.map(|f| f.name.clone()).unwrap_or_default()));
+        put("FX_NUMBER", &[], Value::Text(fx.map(|_| "1".to_owned()).unwrap_or_default()));
+        put("FX_BYPASS", &[], Value::Switch(fx.is_some_and(|f| !f.enabled)));
         for k in 1..=self.state.track_count {
             let n = self.state.track_bank + k;
             let t = view.track(n).cloned().unwrap_or_else(|| empty_track(n));
-            track_feedback(&mut put, &[k], &t, self.state.selected, self.patterns.settings.send_count);
+            track_feedback(&mut put, &[k], &t, view.selected, counts);
         }
         let s = &view.setlist;
         put("SETLIST_NAME", &[], Value::Text(s.name.clone().unwrap_or_default()));
@@ -539,16 +539,18 @@ fn empty_track(number: usize) -> TrackView {
     }
 }
 
+/// A track's feedback; empty send and FX slots up to the device's counts read as REAPER sends
+/// them (`Send 2`, no FX name).
 fn track_feedback(
     put: &mut impl FnMut(&str, &[usize], Value),
     slot: &[usize],
     t: &TrackView,
-    selected: usize,
-    sends: usize,
+    selected: Option<TrackId>,
+    (sends, fx_count): (usize, usize),
 ) {
     put("TRACK_NAME", slot, Value::Text(t.name.clone()));
     put("TRACK_NUMBER", slot, Value::Text(t.number.to_string()));
-    put("TRACK_SELECT", slot, Value::Switch(t.number == selected));
+    put("TRACK_SELECT", slot, Value::Switch(t.id.is_some() && t.id == selected));
     put("TRACK_VOLUME", slot, Value::level(t.volume));
     put("TRACK_PAN", slot, Value::pan(t.pan));
     put("TRACK_MUTE", slot, Value::Switch(t.muted));
@@ -561,7 +563,7 @@ fn track_feedback(
     for s in 1..=sends {
         let send = t.sends.get(s - 1);
         let at: Vec<usize> = slot.iter().copied().chain([s]).collect();
-        put("TRACK_SEND_NAME", &at, Value::Text(send.map(|s| s.name.clone()).unwrap_or_default()));
+        put("TRACK_SEND_NAME", &at, Value::Text(send.map_or_else(|| format!("Send {s}"), |s| s.name.clone())));
         put("TRACK_SEND_VOLUME", &at, Value::level(send.map_or(0.0, |s| s.volume)));
         let pan = send.map_or(0.0, |s| s.pan);
         put(
@@ -570,11 +572,12 @@ fn track_feedback(
             Value::Number { normalized: (pan + 1.0) / 2.0, raw: pan, text: view::send_pan_text(pan) },
         );
     }
-    for (i, fx) in t.fx.iter().enumerate() {
+    for i in 0..fx_count.max(t.fx.len()) {
+        let fx = t.fx.get(i);
         let at: Vec<usize> = slot.iter().copied().chain([i + 1]).collect();
-        put("FX_NAME", &at, Value::Text(fx.name.clone()));
-        put("FX_NUMBER", &at, Value::Text((i + 1).to_string()));
-        put("FX_BYPASS", &at, Value::Switch(!fx.enabled));
+        put("FX_NAME", &at, Value::Text(fx.map(|f| f.name.clone()).unwrap_or_default()));
+        put("FX_NUMBER", &at, Value::Text(fx.map(|_| (i + 1).to_string()).unwrap_or_default()));
+        put("FX_BYPASS", &at, Value::Switch(fx.is_some_and(|f| !f.enabled)));
     }
 }
 

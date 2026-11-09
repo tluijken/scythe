@@ -143,6 +143,7 @@ the UI without rebuilding. Its logic tests run with `node crates/scythe-server/w
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
 | `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |
+| `scythe-surface` | Control surfaces on top of the control API: OSC with REAPER's `.ReaperOSC` pattern files, Mackie Control and extenders, HUI; run by the app and the server from the `csurf_<i>` preferences |
 | `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts; the `scythe-mcp` stdio binary |
 | `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), plugin editor windows, ReaScript, demo generator |
 
@@ -217,6 +218,19 @@ Working:
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
   envelopes stored in projects play back: bypass for every effect, wet/dry for ReaVerb and
   ReaDelay, and ReaDelay's per-tap enable, volume and feedback.
+- **Control surfaces**, set up as REAPER keeps them in reaper.ini (`csurf_cnt`,
+  `csurf_<i>=OSC "name" flags port "ip" port …` and `MCU offset size in out flags`) under
+  Settings or with the control API's `surface.*`, run by the app and by `scythe-server`. OSC
+  follows REAPER's `.ReaperOSC` pattern files (REAPER's own files read cleanly; Scythe's default
+  has REAPER's addresses plus `/setlist/…`): track names, volumes (REAPER's fader curve, its dB
+  and pan texts), pans, mute, solo, arm, monitor, selection, sends, meters, transport, repeat,
+  click, tempo, markers and regions, device banks and track selection, `/action` with REAPER
+  command ids and Scythe's setlist commands, feedback bundled within the packet size. Mackie
+  Control and extenders (shared bank, flip, V-pots, scribble strips, meters, time display,
+  automation mode buttons, touch-sensitive faders feeding automation, F1-F8 to markers, the
+  user switches as footswitches for the setlist) and HUI partly, as REAPER (faders, touch,
+  select/mute/solo/arm, V-pots, four-letter names, meters, transport). See
+  [docs/live.md](docs/live.md#footswitches-tablets-and-control-surfaces).
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
   preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
   write mode are recorded into the volume and pan envelopes.
@@ -645,10 +659,32 @@ compare with scythe's output sample by sample:
 | Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER (41818 and 41819 set `preroll` &1 and &2; a fresh reaper.ini has `preroll=0`, `prerollmeas=2`, `metronome_defout=-1`), saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
+Control surfaces were compared with REAPER 7.73 running the same project with the same
+surface (`crates/scythe-surface/tests`; REAPER on a dummy JACK server for MIDI, its MIDI ports
+bridged to ALSA with a2jmidid and the device played by the `midi_probe` example):
+
+| Area | Result |
+|---|---|
+| reaper.ini surface lines: OSC (flags 1 = listen on the local port, 2 = send feedback, found by which sockets REAPER opened), MCU/MCUEX/HUI/FADERPORT/FADERPORT2 as `offset size input output flags` (the strip offset and devices found by what REAPER showed and opened); lines Scythe writes are read by REAPER (it binds the OSC port) and written back unchanged when it quits | same lines |
+| OSC feedback with a pattern file of Scythe's default patterns: the full first dump and the end state after 19 device messages (volumes as fader positions, dB and text, pans, mute/solo/arm/monitor toggles, rename, `/action`, device track selection and stepping, the selected track's patterns, a marker, repeat, unsolo all, empty bank, send and FX slots) | 561 of 565 addresses end on the same value; the rest: REAPER ignores `/master/volume` from the device (2), moves markers when the tempo changes, and one dB value 7e-4 apart |
+| OSC fader positions and texts: `0.716`, `0.592449`, `0.852774`, `0.002514` for 0, -6, +6 dB and silence; `-11.0dB` (cut, not rounded), `-inf dB`, `25%L`, `C`, `/tempo` normalised as (bpm - 40) / 256 | same values |
+| Fader curve: REAPER's `DB2SLIDER` at every whole dB from -150 to +24 and `SLIDER2DB` at 10, 100, 500 and 999, against the fader-scaled envelope curve Scythe's faders now use | within 1e-9, but REAPER puts 0 dB at exactly 716 (the curve: 716.22), which Scythe follows |
+| Mackie Control input: a fader move, mute, solo, select, two V-pot turns, arm and click buttons, then the tracks read back with `GetMediaTrackInfo_Value` | same state (pan steps of 1/31; the fader within 0.002 dB) |
+| Mackie Control output: scribble strips (six characters and a space), meter mode SysEx, transport and automation LEDs, the time display in beats mode, empty strips (fader 41, ring centred), the extender's SysEx id | same bytes; REAPER sent no fader, ring or LED updates for strips holding tracks under this setup, so those follow the published protocol |
+| HUI: transport LEDs (zone 0x0E: stop, play and record; REAPER never lights stop), the ping every second | same bytes |
+
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.
 
 ### Not there yet
+
+- Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
+  partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the
+  system's ports as Scythe sees them, not REAPER's `reaper-midihw.ini` order, and a surface's
+  input port is also opened for MIDI recording. OSC has no FX parameters, ReaEQ, instrument,
+  play rate, scrub, zoom/scroll, virtual keyboard or "last touched" patterns; meters use 12
+  steps over 60 dB (MCU, HUI) and a position over 60 dB (OSC), not measured against REAPER
+  (which needs playing audio). The `OSC` flags' bit 4 (learn) is kept for action and FX learn.
 
 - Track groups: REAPER remembers where a follower would be past a limit (a pan pushed beyond
   hard right comes back from there; a fader taken to -inf and back returns to where it was);

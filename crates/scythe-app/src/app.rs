@@ -54,6 +54,8 @@ pub struct ViewState {
     pub setlist: bool,
     /// The track grouping matrix window is open, on this group (0-based).
     pub groups: Option<usize>,
+    /// The control surfaces window, while open.
+    pub surfaces: Option<crate::ui::surfaces::SurfacesWindow>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -191,6 +193,7 @@ impl ScytheApp {
                 cue_dialog: None,
                 setlist: false,
                 groups: None,
+                surfaces: None,
             },
             palette: None,
             clipboard: Vec::new(),
@@ -234,6 +237,7 @@ impl ScytheApp {
         if self.sel.item.is_some_and(|i| self.project.find_item(i).is_none()) {
             self.sel.item = None;
         }
+        self.session.selected_track = self.sel.track;
     }
 
     pub fn poll(&mut self) {

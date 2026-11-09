@@ -92,15 +92,15 @@ fn mackie_control_input_reaches_the_state_reaper_reached() {
         m.handle(&mut s, &mut bank, msg);
     }
     let kick = common::track(&s, 0);
-    // REAPER: 0.279976 (-11.06 dB); Scythe's fader curve is interpolated from measured points.
-    assert!((gain_to_db(kick.volume) - gain_to_db(0.279976)).abs() < 0.1, "{}", gain_to_db(kick.volume));
+    // REAPER: 0.279976 (-11.06 dB), the fader at 8192 of 16383.
+    assert!((gain_to_db(kick.volume) - gain_to_db(0.279976)).abs() < 0.002, "{}", gain_to_db(kick.volume));
     assert!(kick.muted);
     let bass = common::track(&s, 1);
     assert!((bass.pan - -0.2823).abs() < 1e-4, "{}", bass.pan);
     assert!(bass.solo && bass.armed && bass.muted);
     let vox = common::track(&s, 2);
     assert!((vox.pan - 0.5968).abs() < 1e-4, "{}", vox.pan);
-    assert_eq!(m.selected(), Some(vox.id));
+    assert_eq!(s.selected_track, Some(vox.id));
     assert!(s.metronome());
     let out = m.feedback(&View::read(&s), bank);
     assert!(has(&out, &[0x90, 0x1a, 0x7f]), "select LED");

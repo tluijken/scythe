@@ -342,6 +342,32 @@ A time signature always starts a bar, so a marker given one moves to the next ba
 | `tempo.edit` | `index`, any of `time`, `bpm`, `time_signature` (`null` removes it), `linear` | the tempo map; changes of one marker within a second are one undo step |
 | `tempo.delete` | `index` | the tempo map |
 
+### Control surfaces
+
+OSC devices, Mackie Control (and extenders) and HUI, kept in the preferences as REAPER keeps
+them in reaper.ini (`csurf_cnt`, `csurf_<i>=<TYPE> <config>`); changes apply at once and the
+running session opens, closes and reopens the devices. Admin only.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `surface.list` | | `[{"index", "line", "description", "surface", "running", "error"?, "port"?}]`; `line` as in reaper.ini, `port` the UDP port an OSC surface listens on |
+| `surface.add` | `surface` | the list |
+| `surface.set` | `index`, `surface` | the list |
+| `surface.remove` | `index` | the list |
+| `surface.devices` | | `{"inputs", "outputs"}`: MIDI port names, numbered as `input` and `output` take them |
+| `surface.action_list` | | `[{"id", "name"}]`: REAPER command ids and Scythe's named commands a surface can run |
+| `surface.run_action` | `action` (`"40364"`, `"_SCYTHE_SETLIST_NEXT"`) | `{}` |
+
+A `surface` is one of:
+
+- `{"type": "osc", "name", "local_port", "device_ip"?, "device_port", "receive"?, "send"?, "learn"?, "pattern"?, "max_packet"?, "wait_ms"?}`:
+  `pattern` names a `.ReaperOSC` file in `$XDG_CONFIG_HOME/scythe/OSC` or REAPER's
+  `~/.config/REAPER/OSC` (or a path); empty for Scythe's default, which has REAPER's addresses.
+- `{"type": "midi", "kind", "input", "output", "offset"?}` with `kind` `mcu`, `mcu_extender`,
+  `hui`, `faderport` or `faderport2` (the FaderPorts are kept but not driven yet); `offset`
+  moves the first strip on by that many tracks (8 for an extender right of an MCU).
+- `{"type": "line", "line": "MCU 0 0 2 3 0"}`: a line copied from REAPER's reaper.ini.
+
 ### Access links
 
 Answered by the server, not the session; all but `access.whoami` need the admin token.

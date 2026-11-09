@@ -118,7 +118,8 @@ fn feedback_matches_what_reaper_sends() {
     assert_eq!(d.float("/play"), 0.0);
     assert_eq!(d.float("/click"), 0.0);
     assert_eq!(d.float("/device/track/select/1"), 0.0);
-    assert_eq!(d.text("/track/1/send/1/name"), "");
+    assert_eq!(d.text("/track/1/send/1/name"), "Send 1");
+    assert_eq!(d.text("/track/1/fx/1/name"), "");
 }
 
 #[test]

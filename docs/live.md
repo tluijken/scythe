@@ -101,6 +101,25 @@ button, or `transport.metronome`, `transport.metronome_output` and `transport.co
   a setlist's count-in still clicks. For a click during count-ins only, leave the metronome on
   and turn off "run during playback" in the project (REAPER's metronome settings).
 
+## Footswitches, tablets and control surfaces
+
+Control surfaces are set up under Settings (the gear on the left rail) or with `surface.*`
+(see the [control API](control-api.md)), and run in the desktop app and in `scythe-server`
+alike. They are stored as REAPER stores them (`csurf_<i>` lines in
+`$XDG_CONFIG_HOME/scythe/preferences.ini`), so the lines can be copied from REAPER's reaper.ini.
+
+- **OSC** (TouchOSC, Open Stage Control, a footswitch box that sends OSC): Scythe listens on the
+  local port and sends feedback to the device's address, following a `.ReaperOSC` pattern
+  file; REAPER's own files work. For the setlist, `/action/str _SCYTHE_SETLIST_NEXT`,
+  `_SCYTHE_SETLIST_PREVIOUS`, `_SCYTHE_SETLIST_PLAY`, `_SCYTHE_SETLIST_STOP` and
+  `_SCYTHE_SETLIST_PLAY_STOP`, or Scythe's patterns `/setlist/next`, `/setlist/play` and
+  friends; `/setlist/song/name` and `/setlist/next/name` tell the device what plays.
+  REAPER command ids run with `/action/<id>` (`/action/1007` plays, `40364` toggles the click).
+- **Mackie Control** (and extenders, and HUI): faders, mute, solo, arm, select, V-pots for pan,
+  names, meters, banks, flip, transport, time display. Its two footswitch jacks (user switches
+  A and B) play or stop the setlist and go to the next song. Faders that are touched write
+  automation in touch, latch and write mode, like the mixer's.
+
 ## When things go wrong
 
 - **The audio interface is unplugged or crashes.** The session keeps running on a silent

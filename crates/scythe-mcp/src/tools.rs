@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
     fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, mix::MixCommand,
-    project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, tempo::TempoCommand, tracks::TrackCommand,
+    project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, tracks::TrackCommand,
     transport::TransportCommand,
 };
 use serde::Deserialize;
@@ -94,6 +94,7 @@ fn domains() -> Vec<Value> {
         schema::<MixCommand>(),
         schema::<SetlistCommand>(),
         schema::<TempoCommand>(),
+        schema::<SurfaceCommand>(),
     ]
 }
 
@@ -207,9 +208,9 @@ fn title(cmd: &str) -> String {
 /// Hints for clients deciding what to confirm with the user, judged by the action's name so
 /// that new domains get sensible ones too.
 fn annotations(cmd: &str) -> Value {
-    const READS: [&str; 14] = [
+    const READS: [&str; 15] = [
         "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
-        "peaks", "health",
+        "peaks", "health", "devices",
     ];
     // Opening or starting a project drops unsaved changes; saving overwrites a file.
     const DESTROYS: [&str; 6] = ["delete", "remove", "clear", "open", "new", "save"];

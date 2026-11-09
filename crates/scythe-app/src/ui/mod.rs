@@ -7,6 +7,7 @@ mod mixer;
 pub mod monitor;
 mod nam;
 mod setlist;
+pub mod surfaces;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
@@ -83,6 +84,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);
+    surfaces::show(app, ui);
     monitor::wizards(app, ui);
     groups::show(app, ui);
     palette::show(app, ui);
@@ -340,9 +342,9 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     }
     let sep = next(1.0);
     ui.painter().rect_filled(Rect::from_center_size(sep.center(), vec2(24.0, 1.0)), CornerRadius::ZERO, RAISED_HI);
-    if rail_button(ui, next(44.0), Icon::Settings, false, ACCENT, "Settings").clicked() {
-        let info = app.engine.info().clone();
-        app.notify(format!("Audio: {} · {} Hz", info.name, info.sample_rate));
+    let settings = app.view.surfaces.is_some();
+    if rail_button(ui, next(44.0), Icon::Settings, settings, ACCENT, "Settings: audio and control surfaces").clicked() {
+        app.view.surfaces = if settings { None } else { Some(surfaces::SurfacesWindow::open()) };
     }
 }
 

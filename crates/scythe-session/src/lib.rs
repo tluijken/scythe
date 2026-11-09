@@ -100,6 +100,8 @@ pub struct Session {
     merge: Option<(String, Instant)>,
     /// How the control surfaces in the preferences are doing, as the surface host last saw it.
     pub surface_status: Vec<SurfaceStatus>,
+    /// The selected track, as the window shows it; control surfaces light it and select it.
+    pub selected_track: Option<TrackId>,
 }
 
 impl Session {
@@ -141,6 +143,7 @@ impl Session {
             notices: Vec::new(),
             merge: None,
             surface_status: Vec::new(),
+            selected_track: None,
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));
@@ -174,6 +177,7 @@ impl Session {
 
     /// Asks the views to select `track`, as a control surface's select button does.
     pub fn select_track(&mut self, track: TrackId) {
+        self.selected_track = Some(track);
         self.select = Some(Selection { track: Some(track), item: None });
     }
 

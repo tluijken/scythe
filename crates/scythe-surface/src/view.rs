@@ -72,6 +72,8 @@ pub struct View {
     pub markers: Vec<MarkerView>,
     pub regions: Vec<MarkerView>,
     pub setlist: SetlistStatus,
+    /// The track selected in Scythe.
+    pub selected: Option<TrackId>,
 }
 
 impl View {
@@ -114,6 +116,7 @@ impl View {
             markers,
             regions,
             setlist: setlist::status(session),
+            selected: session.selected_track,
         }
     }
 
@@ -193,15 +196,18 @@ pub fn fader_to_gain(position: f64) -> f64 {
     if position <= 0.0 { 0.0 } else { db_to_gain(slider_to_db(position.min(1.0) * 1000.0)) }
 }
 
-/// A level as REAPER writes it on surfaces: `0.00dB`, `-6.02dB`, `+6.02dB`, `-inf dB`.
+/// A level as REAPER writes it on surfaces: `0.00dB`, `-6.02dB`, `+6.02dB`, `-11.0dB` (cut,
+/// not rounded), `-inf dB`.
 pub fn db_text(gain: f64) -> String {
     let db = gain_to_db(gain);
     if db <= FLOOR_DB || !db.is_finite() {
         "-inf dB".to_owned()
-    } else if db >= 0.005 {
-        format!("+{db:.2}dB")
+    } else if db.abs() >= 10.0 {
+        let db = (db * 10.0).trunc() / 10.0;
+        format!("{}{db:.1}dB", if db > 0.0 { "+" } else { "" })
     } else {
-        format!("{:.2}dB", if db > -0.005 { 0.0 } else { db })
+        let db = (db * 100.0).trunc() / 100.0;
+        format!("{}{:.2}dB", if db > 0.0 { "+" } else { "" }, if db == 0.0 { 0.0 } else { db })
     }
 }
 
@@ -246,6 +252,8 @@ mod tests {
         assert_eq!(db_text(0.5), "-6.02dB");
         assert_eq!(db_text(2.0), "+6.02dB");
         assert_eq!(db_text(0.0), "-inf dB");
+        assert_eq!(db_text(db_to_gain(-11.059349)), "-11.0dB");
+        assert_eq!(db_text(db_to_gain(-12.0)), "-12.0dB");
         assert!((db_value(0.5) + 6.0206).abs() < 1e-4);
         assert_eq!(db_value(0.0), -150.0);
         assert_eq!(pan_text(0.0), "C");

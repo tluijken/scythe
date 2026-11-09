@@ -11,8 +11,9 @@ use crate::rpp::tokenize;
 pub const OSC_RECEIVE: i64 = 1;
 /// `flags` bit of an OSC surface: send feedback to the device.
 pub const OSC_SEND: i64 = 2;
-/// `flags` bit of an OSC surface: messages may run actions (`/action`) and FX learn.
-pub const OSC_ALLOW_ACTIONS: i64 = 4;
+/// `flags` bit of an OSC surface: its messages may be bound to actions and FX parameters
+/// (learn). REAPER runs `/action` messages either way.
+pub const OSC_LEARN: i64 = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Surface {
@@ -45,7 +46,7 @@ impl Default for OscSurface {
     fn default() -> Self {
         Self {
             name: String::new(),
-            flags: OSC_RECEIVE | OSC_SEND | OSC_ALLOW_ACTIONS,
+            flags: OSC_RECEIVE | OSC_SEND,
             local_port: 8000,
             device_ip: "127.0.0.1".into(),
             device_port: 9000,
