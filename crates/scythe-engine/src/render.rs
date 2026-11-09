@@ -1031,8 +1031,10 @@ impl RenderGraph {
             let bufs = &mut scratch.track_bufs[..tracks];
             let in_level = |i: usize| self.level_of[i] == level;
             if self.level_sizes[level] > 1 {
-                bufs.par_iter_mut().enumerate().filter(|(i, _)| in_level(*i)).for_each(|(i, (l, r))| {
-                    self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                track_threads().install(|| {
+                    bufs.par_iter_mut().enumerate().filter(|(i, _)| in_level(*i)).for_each(|(i, (l, r))| {
+                        self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                    });
                 });
             } else if let Some(i) = (0..tracks).find(|&i| in_level(i)) {
                 let (l, r) = &mut bufs[i];
@@ -1672,6 +1674,18 @@ impl RenderGraph {
             }
         });
     }
+}
+
+/// The threads tracks render on. Not rayon's global pool: whatever else queues work there,
+/// such as converting media while a set loads, would hold up the audio callback behind it.
+fn track_threads() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("scythe-tracks-{i}"))
+            .build()
+            .expect("spawn track render threads")
+    })
 }
 
 fn chain_latency(chain: &[Arc<FxInstance>]) -> Vec<i64> {

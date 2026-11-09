@@ -510,6 +510,7 @@ enum Output {
 
 impl Output {
     const NULL_BLOCK: usize = 512;
+    const NULL_MAX_LAG: Duration = Duration::from_millis(250);
 
     fn null(proc: Arc<Mutex<Processor>>, sample_rate: u32) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
@@ -524,10 +525,13 @@ impl Output {
                         proc.process(Self::NULL_BLOCK);
                     }
                     next += period;
-                    if let Some(wait) = next.checked_duration_since(Instant::now()) {
-                        std::thread::sleep(wait);
-                    } else {
-                        next = Instant::now();
+                    let now = Instant::now();
+                    match next.checked_duration_since(now) {
+                        Some(wait) => std::thread::sleep(wait),
+                        // Late blocks follow at once, so the clock keeps time through a stall;
+                        // a backlog the rendering cannot work off is given up.
+                        None if now.duration_since(next) > Self::NULL_MAX_LAG => next = now,
+                        None => {}
                     }
                 }
             })
@@ -1566,5 +1570,32 @@ mod tests {
         e.stop();
         let pos = e.transport().position_seconds();
         assert!(pos > 0.05 && pos < 0.5, "position {pos}");
+    }
+
+    #[test]
+    fn null_engine_keeps_time_while_rayon_is_busy() {
+        let mut e = Engine::start_null(Arc::default(), 48_000, None);
+        let mut p = Project::default();
+        p.add_track("a");
+        p.add_track("b");
+        e.sync(&p);
+        // Work queued on the global pool, as converting media while a set loads does.
+        let release = Arc::new(AtomicBool::new(false));
+        for _ in 0..rayon::current_num_threads() * 2 {
+            let release = release.clone();
+            rayon::spawn(move || {
+                let until = Instant::now() + Duration::from_secs(5);
+                while !release.load(Ordering::Relaxed) && Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+        }
+        e.play();
+        let started = Instant::now();
+        std::thread::sleep(Duration::from_secs(2));
+        let (played, wall) = (e.transport().position_seconds(), started.elapsed().as_secs_f64());
+        release.store(true, Ordering::Relaxed);
+        e.stop();
+        assert!((played / wall - 1.0).abs() < 0.05, "played {played:.3} s in {wall:.3} s");
     }
 }
