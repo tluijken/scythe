@@ -19,6 +19,7 @@ devbox run test
 ```
 
 Flags: `--demo` (open the demo song), `--play` (start playback on launch), `--render-project`,
+`--render-queue [dir]` (render every project in REAPER's render queue, `QueuedRenders`),
 `--no-input` (never
 open the audio input for monitoring), `--null-audio` (open no audio device and play on a
 silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
@@ -161,7 +162,12 @@ Working:
   them: items keep the encoder delay and padding and play a Xing/Info header frame as a frame of
   silence, the sampler trims them (gapless) and holds them to 16-bit range, and both scale by
   32767/32768; mid/side granules of MPEG-2 and 2.5 streams come out 3 dB low, as REAPER's
-  decoder plays them. Media at another rate, and takes at another play rate without "Keep pitch"
+  decoder plays them. Opus files decode with the pure-Rust `opus-pure` (pre-skip and end trim
+  applied, the header's output gain too, surround in the file's Vorbis channel order, as REAPER
+  plays them) and WavPack through FFmpeg (16/24-bit, float, multichannel, hybrid). Subprojects
+  (`RPP_PROJECT` items) play their proxy, `<file>-PROX`: a 32-bit float WAV of the subproject's
+  master mix at its own rate, rendered when missing and again when the subproject is saved;
+  double-clicking such an item opens it in a new tab. Media at another rate, and takes at another play rate without "Keep pitch"
   (a conversion from the file's rate times the play rate), are converted with REAPER's default
   playback mode, the 64-point sinc, for playback; every render follows the project's
   `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or two IIR
@@ -602,8 +608,19 @@ Working:
   selection or stems from the action palette; headless with
   `scythe-app project.RPP --render=out.wav [--range=START-END]`), or with the project's own
   render settings like REAPER's `-renderproject` (`--render-project` or the palette): bounds
-  project, time selection, custom range or all regions, `RENDER_FILE` and wildcards such as
-  `$project`, `$regionnumber`, `$regionname`, date and time. MP3, FLAC, Ogg Vorbis, Opus and
+  project, time selection, custom range, all or selected regions or selected items, and the
+  render sources of `RENDER_STEMS`: the master, stems of the selected tracks (a track's own
+  output, without its folders or the master) with or without the master, selected tracks via
+  the master, selected items alone through their track or through the master, and the region
+  render matrix (`<REGIONRENDER` rows, edited in the region/marker manager window).
+  `RENDER_FILE` and wildcards such as `$project`, `$track`, `$tracknumber`, `$item`,
+  `$itemnumber`, `$region`, `$regionnumber` (two digits), `$regionname`, date and time; names
+  that come out the same get REAPER's `-001`, `-002` suffixes. The render queue: "Add project
+  to render queue" writes a copy to REAPER's `QueuedRenders` folder as REAPER does
+  (`qrender_<date>_<time>_<name>.RPP` with `QUEUED_RENDER_OUTFILE` lines), "Render all queued
+  renders" and `--render-queue` render and remove each, and REAPER's own queued copies render
+  in Scythe and the other way round. Project tabs: several open projects, the inactive ones
+  stopped with their undo history, kept in the preferences under REAPER's `projecttab<n>` keys. MP3, FLAC, Ogg Vorbis, Opus and
   WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
   packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
   complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and
@@ -708,6 +725,10 @@ compare with scythe's output sample by sample:
 | JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
 | JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
 | JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
+| Opus items (48 and 44.1 kHz sources, mono, 5.1, an output gain of -6 dB, a looped item showing the end trim) and WavPack items (16 and 24-bit, float, 5.1, hybrid lossy, at 48 and 44.1 kHz projects) | Opus within 4e-7, WavPack identical |
+| Render sources, 20 projects with 51 files from REAPER's `-renderproject`: stems (`RENDER_STEMS` 1, 3; 2 renders nothing), selected tracks via master (128) with a folder, selected items alone (32, and bounds 4 with 0 or 1) and via the master (64) with an overlapping unselected item, region matrix (8) with the master on one region, stems with region bounds, selected regions (5), and the wildcards `$track`, `$tracknumber` (master `00`), `$item`, `$itemnumber`, `$regionnumber` and colliding names | same file names, every file within 1e-5 |
+| Render queue: REAPER's queued copies of a stems + master and a regions project rendered by Scythe's `--render-queue` | same files within 4e-9, queue emptied |
+| Subprojects at 48 and 44.1 kHz in a 48 kHz parent (offset, trimmed): parent renders with REAPER's proxy and with the proxy Scythe renders; the proxies themselves | within 1e-5; proxies within 8e-9 at REAPER's rate |
 | WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
 | CD images and DDP filesets of a test signal: tracks from markers (the 4-second rule, `#`-only, lead-ins of 250, 256 and 333 ms, the first track named by the marker at the start, `PERF=`/`WRIT=`/`ISRC=` markers, a later start), from regions (overlapping, cut by the bounds, gaps left out); DDP with `#`/`!`/`@` markers, Red Book index moves, ISRC, UPC/EAN, every CD-TEXT field, genre and language; 32-bit integer WAV and WavPack | byte-identical files (14 images and filesets); 32-bit integer samples identical |
 | CD image and DDP renders of a mono and a 4-channel project | same empty files (`.cue` and `.bin`; `OUT.DAT`) and the same error; 48 kHz projects render at 44.1 kHz as REAPER's do |
@@ -769,6 +790,20 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 compares the two files.
 
 ### Not there yet
+
+- Opus and WavPack items: an item that starts inside an Opus file (`SOFFS`, or playback started
+  past its start) is decoded by REAPER from a fresh decoder 80 ms (3840 samples) before the
+  point, so its first ~200 ms differ from Scythe's continuous decode by up to -42 dB (measured:
+  REAPER starts at the packet holding the target minus 3840); WavPack's `.wvc` correction file,
+  which REAPER applies, is ignored (FFmpeg plays the lossy part), and WavPack needs `ffmpeg` on
+  the path. Render sources: razor-edit bounds and marker bounds (6, 7), multichannel and mono
+  stem options (4, 16), pre-fader stems (8192), "only channels sent to parent", forced channel
+  counts in the region matrix, render tail, second pass and "add rendered items" are read but
+  not acted on; a stem bypasses the master and its folders but keeps the project's solo states.
+  Region selection is not kept, so selected-region bounds render every region (as REAPER's
+  `-renderproject` does). Project tabs: background projects do not play ("Run background
+  projects" is off, REAPER's default), tabs are not restored on start-up, and the media
+  explorer and project bay are not there.
 
 - Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
   partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the

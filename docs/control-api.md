@@ -183,6 +183,10 @@ or `none`, with `reason` saying why.
 | `project.new` | | snapshot |
 | `project.undo`, `project.redo` | | `{"revision", "dirty", "label", "undo", "redo"}`; `failed` when there is nothing to undo or redo |
 | `project.tempo` | `bpm` (20 to 400), `at?` (the edit cursor) | `{"bpm"}`: sets the tempo in effect at `at`, one undo step while it keeps changing |
+| `project.tabs` | | the open tabs: `index`, `name`, `path`, `dirty`, `active` |
+| `project.tab_new` | `path?` (an empty project when left out) | the tabs; the new one is active |
+| `project.tab_switch` | `index` | the tabs; the tab left stops and keeps its unsaved changes |
+| `project.tab_close` | `index?` (the active tab) | the tabs; closing the last one leaves an empty project |
 
 ### Tracks
 
@@ -348,6 +352,22 @@ match wins.
 | `marker.edit` | `marker`, `region?`, `position?`, `end?` (regions only), `name?`, `color?` | the marker |
 | `marker.delete` | `marker`, `region?` | `{}` |
 | `marker.goto` | `marker`, `region?` | the transport state |
+
+### Rendering
+
+Renders use the project's render settings (`RENDER_FILE`, `RENDER_PATTERN`, `RENDER_RANGE`,
+`RENDER_STEMS`, `<RENDER_CFG`); the selected track stands for "selected tracks". All are
+admin-only.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `render.jobs` | | the files a render writes now: `path`, `start`, `end`, `source` (`kind`: `master`, `stem`, `track_via_master`, `item`, `item_via_master`; `track`) |
+| `render.settings` | `source?` (`master`, `master_and_stems`, `stems`, `tracks_via_master`, `items`, `items_via_master`, `matrix`), `bounds?` (`project`, `time_selection`, `regions`, `selected_items`), `pattern?`, `file?` | the jobs, as `render.jobs` |
+| `render.matrix` | `region`, `track` (id, name or `"master"`), `on` | `{}`: ticks the track for the region in the region render matrix |
+| `render.project` | | `{}`; renders in the background, a notice says when it is done |
+| `render.queue` | `dir?` (REAPER's `QueuedRenders`) | `{"queued"}`: the queued copy |
+| `render.queue_list` | `dir?` | the queued projects, oldest first |
+| `render.queue_run` | `dir?` | `{}`; renders every queued project in the background and removes each one that renders |
 
 ### Tempo map
 
