@@ -1524,3 +1524,48 @@ fn fx_parameter_envelopes_are_created_and_edited() {
     ok(&mut s, json!({"cmd": "envelope.remove", "track": t, "envelope": "fx:0:1"}));
     assert!(ok(&mut s, json!({"cmd": "envelope.list", "track": t})).as_array().unwrap().is_empty());
 }
+
+#[test]
+fn automation_writes_fx_parameters_sends_and_latch_preview() {
+    use scythe_session::AutoTarget;
+    let mut s = session();
+    let t = add_track(&mut s, "Keys");
+    let bus = add_track(&mut s, "Bus");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    ok(&mut s, json!({"cmd": "send.add", "track": t, "dest": bus}));
+    let id = scythe_core::TrackId(t);
+    ok(&mut s, json!({"cmd": "envelope.mode", "track": t, "mode": "latch"}));
+    s.start_playback(0.0, false, false);
+    assert!(s.automate(id, AutoTarget::Param { fx: 0, param: 1 }, 0.7));
+    assert!(s.automate(id, AutoTarget::SendVolume(0), 0.5));
+    assert!(s.automate(id, AutoTarget::Mute, 0.0));
+    s.tick_automation();
+    s.stop();
+    s.tick_automation();
+    let fx = ok(&mut s, json!({"cmd": "envelope.get", "track": t, "envelope": "fx:0:1"}));
+    assert_eq!(fx["points"][0]["value"], 0.7);
+    let send = ok(&mut s, json!({"cmd": "envelope.get", "track": t, "envelope": "volume", "send": 0}));
+    assert_eq!(send["points"][0]["value"], 0.5);
+    let mute = ok(&mut s, json!({"cmd": "envelope.get", "track": t, "envelope": "mute"}));
+    assert_eq!(mute["points"][0]["shape"], "square");
+
+    ok(&mut s, json!({"cmd": "envelope.mode", "mode": "latch_preview"}));
+    s.start_playback(0.0, false, false);
+    assert!(s.automate(id, AutoTarget::Width, 0.5));
+    s.tick_automation();
+    s.stop();
+    s.tick_automation();
+    assert!(
+        execute_json(&mut s, json!({"cmd": "envelope.get", "track": t, "envelope": "width"})).unwrap()["points"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    s.set_cursor(1.0);
+    assert_eq!(ok(&mut s, json!({"cmd": "envelope.latch_preview_apply", "span": "to_end"}))["written"], 1);
+    let width = ok(&mut s, json!({"cmd": "envelope.evaluate", "track": t, "envelope": "width", "time": 1.5}));
+    assert_eq!(width["value"], 0.5);
+    let modes = ok(&mut s, json!({"cmd": "envelope.global_override", "mode": "read"}));
+    assert_eq!(modes["mode"], "read");
+    assert_eq!(ok(&mut s, json!({"cmd": "envelope.mode", "track": t}))[0]["effective"], "read");
+}

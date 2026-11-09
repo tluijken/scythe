@@ -7,12 +7,12 @@ use schemars::JsonSchema;
 use scythe_core::automation_item::{AutomationItem, AutomationPool, Lfo, LfoShape, capture};
 use scythe_core::fx_chain::ParamEnvelope;
 use scythe_core::model::GlobalAutomation;
-use scythe_core::{EnvPoint, Envelope, EnvelopeKind, PointShape, Project};
+use scythe_core::{AutoMode, EnvPoint, Envelope, EnvelopeKind, PointShape, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ApiError, Target, TrackRef, done, json, time};
-use crate::Session;
+use crate::{PreviewSpan, Session};
 
 /// Which envelope of a track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -228,6 +228,19 @@ pub enum EnvelopeCommand {
         #[serde(default)]
         name: Option<String>,
     },
+    /// A track's automation mode, or sets it (on every track when `track` is left out):
+    /// `trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`.
+    #[serde(rename = "envelope.mode")]
+    Mode {
+        #[serde(default)]
+        track: Option<TrackRef>,
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    /// Writes the values the last latch preview pass remembered: over the time selection
+    /// (`time_selection`), from the edit cursor on (`to_end`) or up to it (`to_start`).
+    #[serde(rename = "envelope.latch_preview_apply")]
+    LatchPreviewApply { span: String },
     /// The global automation override, or sets it: `none` (every track its own mode),
     /// `trim_read`, `read`, `touch`, `write`, `latch`, `latch_preview` or `bypass`.
     #[serde(rename = "envelope.global_override")]
@@ -340,7 +353,12 @@ fn lfo(spec: &LfoSpec) -> Result<Lfo, ApiError> {
 }
 
 /// The running effect's view of parameter `param`: name, range and current value.
-fn param_info(session: &Session, target: Target, fx: usize, param: usize) -> Result<(String, f64, f64, f64), ApiError> {
+pub(crate) fn param_info(
+    session: &Session,
+    target: Target,
+    fx: usize,
+    param: usize,
+) -> Result<(String, f64, f64, f64), ApiError> {
     let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     let slot = t.fx.get(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
     let (name, _) = super::modulation::param_state(session, target, fx, slot, param);
@@ -795,6 +813,43 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
                 "points": pl.points.iter().map(point_spec).collect::<Vec<_>>(),
                 "items": pooled_copies(&session.project, pool),
             }))
+        }
+        C::Mode { track, mode } => {
+            let mode = mode
+                .map(|m| {
+                    AutoMode::from_name(&m).ok_or_else(|| {
+                        ApiError::invalid("the mode is trim_read, read, touch, write, latch or latch_preview")
+                    })
+                })
+                .transpose()?;
+            let ids = match &track {
+                Some(t) => vec![t.track(&session.project)?],
+                None => session.project.tracks.iter().map(|t| t.id).collect(),
+            };
+            if let Some(m) = mode {
+                session.edit("Automation mode", |p| {
+                    for id in &ids {
+                        if let Some(t) = p.track_mut(*id) {
+                            t.auto_mode = m;
+                        }
+                    }
+                });
+            }
+            let modes: Vec<Value> = ids
+                .iter()
+                .filter_map(|id| session.project.track(*id))
+                .map(|t| serde_json::json!({ "track": t.id.0, "mode": t.auto_mode.name(), "effective": session.project.auto_mode_of(t).name() }))
+                .collect();
+            Ok(json(modes))
+        }
+        C::LatchPreviewApply { span } => {
+            let span = match span.as_str() {
+                "time_selection" => PreviewSpan::TimeSelection,
+                "to_end" => PreviewSpan::CursorToEnd,
+                "to_start" => PreviewSpan::StartToCursor,
+                _ => return Err(ApiError::invalid("the span is time_selection, to_end or to_start")),
+            };
+            Ok(serde_json::json!({ "written": session.apply_latch_preview(span) }))
         }
         C::GlobalOverride { mode } => {
             if let Some(m) = mode {

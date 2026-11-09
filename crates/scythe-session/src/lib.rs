@@ -33,8 +33,8 @@ use scythe_engine::Engine;
 use scythe_engine::midi_io::midi_input_channel;
 
 pub use api::surface::SurfaceStatus;
-pub use automation::AutoTarget;
 use automation::AutoWrite;
+pub use automation::{AutoTarget, PreviewSpan, Remembered};
 pub use live::LiveState;
 use media::{LoadQueue, StretchKey};
 pub use media::{LoaderMsg, RenderedItems};
@@ -98,6 +98,7 @@ pub struct Session {
     meters_at: Instant,
     /// Controls being written as automation during this pass.
     auto_writes: Vec<AutoWrite>,
+    latch_preview: Vec<automation::Remembered>,
     waker: Waker,
     revision: u64,
     loads: u64,
@@ -161,6 +162,7 @@ impl Session {
             gesture: None,
             meters_at: Instant::now(),
             auto_writes: Vec::new(),
+            latch_preview: Vec::new(),
             waker: Arc::new(|| {}),
             revision: 0,
             loads: 0,
