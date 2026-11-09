@@ -602,8 +602,9 @@ fn fx_params(
         return 26.0;
     }
     let mut at = y;
-    for (p, value) in params {
+    for (position, (p, value)) in params.into_iter().enumerate() {
         let r = Rect::from_min_size(pos2(inner.left() + 16.0, at), vec2(inner.width() - 16.0, PARAM_ROW));
+        let param = crate::ui::modulation::reaper_index(&slot, p.id, position);
         let (v, text) = value.unwrap_or((p.default, String::new()));
         let name = widgets::truncate(ui, &p.name, &theme::regular(12.0), r.width() - 130.0);
         let resp = ui.interact(r, Id::unique(("fx-param", track_id, index, p.id)), Sense::click_and_drag());
@@ -619,7 +620,28 @@ fn fx_params(
         let bar = Rect::from_min_size(r.left_bottom() - vec2(0.0, 3.0), vec2(r.width() * frac, 3.0));
         painter.rect_filled(bar, CornerRadius::same(2), ACCENT);
         painter.text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, theme::regular(12.0), TEXT);
-        painter.text(r.right_center() - vec2(10.0, 0.0), Align2::RIGHT_CENTER, text, theme::mono(11.0), TEXT_DIM);
+        painter.text(r.right_center() - vec2(34.0, 0.0), Align2::RIGHT_CENTER, text, theme::mono(11.0), TEXT_DIM);
+        let mod_rect = Rect::from_center_size(r.right_center() - vec2(16.0, 0.0), vec2(20.0, 18.0));
+        let controlled = crate::ui::modulation::has_controls(&slot, param);
+        let mod_btn = widgets::text_pill(
+            ui,
+            mod_rect,
+            "~",
+            theme::mono(11.0),
+            if controlled { ACCENT } else { RAISED_HI },
+            if controlled { BG } else { TEXT_DIM },
+        )
+        .on_hover_text("Modulation, link and MIDI/OSC learn");
+        let open_mod = mod_btn.clicked();
+        resp.context_menu(|ui| {
+            if ui.button("Parameter modulation, link and learn…").clicked() {
+                app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track_id, index, param));
+                ui.close();
+            }
+        });
+        if open_mod {
+            app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track_id, index, param));
+        }
         if resp.dragged() {
             let step = resp.drag_delta().x as f64 / r.width() as f64;
             let nv = if p.log && p.min > 0.0 {

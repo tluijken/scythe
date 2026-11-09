@@ -14,6 +14,7 @@ pub struct SurfacesWindow {
     inputs: Vec<String>,
     outputs: Vec<String>,
     patterns: Vec<String>,
+    shortcut: crate::ui::modulation::ShortcutDraft,
 }
 
 impl SurfacesWindow {
@@ -74,6 +75,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                 });
             }
         }
+        ui.separator();
+        crate::ui::modulation::shortcuts(app, ui, &mut state.shortcut);
+        ui.separator();
         ui.label(
             RichText::new(
                 "OSC actions: /action/<id> runs a REAPER command id; /action/str _SCYTHE_SETLIST_NEXT (or \

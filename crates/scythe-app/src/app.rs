@@ -56,6 +56,8 @@ pub struct ViewState {
     pub groups: Option<usize>,
     /// The control surfaces window, while open.
     pub surfaces: Option<crate::ui::surfaces::SurfacesWindow>,
+    /// The modulation and learn window of one effect parameter, while open.
+    pub modulation: Option<crate::ui::modulation::ModWindow>,
     pub keyboard_open: bool,
     pub keyboard: crate::ui::midi_devices::KeyboardState,
     pub midi_devices_open: bool,
@@ -195,6 +197,7 @@ impl ScytheApp {
                 setlist: false,
                 groups: None,
                 surfaces: None,
+                modulation: None,
                 keyboard_open: false,
                 keyboard: Default::default(),
                 midi_devices_open: false,

@@ -4,6 +4,7 @@ pub mod groups;
 mod inspector;
 pub mod midi_devices;
 pub mod midi_editor;
+pub mod modulation;
 mod mixer;
 pub mod monitor;
 mod nam;
@@ -87,6 +88,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     toast(app, ui, full);
     script_console(app, ui);
     surfaces::show(app, ui);
+    modulation::show(app, ui);
     midi_devices::show(app, ui);
     monitor::wizards(app, ui);
     groups::show(app, ui);
