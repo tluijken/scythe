@@ -99,7 +99,7 @@ fn direction(ui: &mut Ui, id: &str, value: &mut i32) -> bool {
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut w) = app.view.modulation.take() else { return };
     let Some(slot) = app.project.track(w.track).and_then(|t| t.fx.get(w.fx)).cloned() else { return };
-    let (name, _) = param_state(&app.session, Target::Track(w.track), w.fx, &slot, w.param);
+    let (name, value) = param_state(&app.session, Target::Track(w.track), w.fx, &slot, w.param);
     let range = app
         .engine
         .fx()
@@ -113,7 +113,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         .default_width(420.0)
         .show(ui.ctx(), |ui| {
             let md = m::modulation(&slot, w.param);
-            let current = md.clone().unwrap_or_else(|| ParamModulation::new(w.param.to_string(), "", range.0));
+            let current = md.clone().unwrap_or_else(|| ParamModulation::new(w.param.to_string(), "", value));
             let mut next = current.clone();
             let mut enabled = md.as_ref().is_some_and(|m| !m.disabled);
             let mut create = false;

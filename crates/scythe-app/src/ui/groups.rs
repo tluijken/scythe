@@ -162,7 +162,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         .id(Id::unique("group-matrix"))
         .open(&mut open)
         .frame(frame)
-        .default_size(vec2(860.0, 420.0))
+        .default_size(vec2(1010.0, 420.0))
         .resizable(true)
         .show(&ctx, |ui| {
             ui.horizontal(|ui| {

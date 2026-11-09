@@ -7,7 +7,7 @@ use scythe_core::{ChannelMode, EnvelopeKind, FxSlot, HwOut, Send, SendMode, Trac
 use scythe_engine::fx::FxStatus;
 
 use crate::app::{FxTarget, InspectorTab, PresetSource, ScytheApp};
-use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
+use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID, track_color, with_alpha};
 use crate::ui::widgets::{self, Icon, switch, text_pill};
 
 const ROW_H: f32 = 50.0;
@@ -242,6 +242,21 @@ fn installed_plugins(app: &ScytheApp) -> Vec<Installed> {
 
 fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect, y: &mut f32, track_id: TrackId) {
     let track = app.project.track(track_id).unwrap().clone();
+    let frozen = scythe_core::freeze::levels(&track);
+    if frozen > 0 {
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
+        painter.rect_filled(r, CornerRadius::same(10), RAISED);
+        let label = if frozen > 1 { format!("Frozen ({frozen} levels)") } else { "Frozen".to_owned() };
+        painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::semibold(12.0), TEXT);
+        let pill = Rect::from_min_size(pos2(r.right() - 84.0, r.center().y - 11.0), vec2(76.0, 22.0));
+        if text_pill(ui, pill, "Unfreeze", theme::regular(11.0), BG, TEXT_MID)
+            .on_hover_text("Restore the effects and items of the last freeze")
+            .clicked()
+        {
+            app.unfreeze_track(track_id);
+        }
+        *y += 38.0;
+    }
     for (i, fx) in track.fx.iter().enumerate() {
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), ROW_H));
         painter.rect_filled(r, CornerRadius::same(12), RAISED);
@@ -268,16 +283,21 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 |e| e.name.clone(),
             )
         });
-        let status = match app.engine.fx().status(Some(track_id), fx, i) {
-            Some(FxStatus::Native(_)) if nam.is_some() => {
-                format!("NAM · {}", nam_model.as_deref().unwrap_or("no model loaded"))
+        let (head, rest) = match app.engine.fx().status(Some(track_id), fx, i) {
+            _ if fx.is_container() => {
+                let n = fx.container_children().len();
+                ("container".to_owned(), format!("{n} FX"))
             }
-            Some(FxStatus::Native(what)) => format!("{kind} · {what}"),
-            Some(FxStatus::Hosted(_)) => format!("{kind} · hosted"),
-            Some(FxStatus::Unavailable(why)) => format!("{kind} · bypassed: {why}"),
-            None => format!("{kind} · not loaded"),
+            Some(FxStatus::Native(_)) if nam.is_some() => {
+                ("NAM".to_owned(), nam_model.unwrap_or_else(|| "no model loaded".to_owned()))
+            }
+            Some(FxStatus::Native(what)) => (kind.to_string(), what.to_string()),
+            Some(FxStatus::Hosted(_)) => (kind.to_string(), "hosted".to_owned()),
+            Some(FxStatus::Unavailable(why)) => (kind.to_string(), format!("bypassed: {why}")),
+            None => (kind.to_string(), "not loaded".to_owned()),
         };
-        let status = status + &chain_marks(fx);
+        // The chain marks go first: the description after them is long and gets cut.
+        let status = format!("{head}{} · {rest}", chain_marks(fx));
         let detail = widgets::truncate(ui, &status, &theme::regular(11.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y + 9.0),

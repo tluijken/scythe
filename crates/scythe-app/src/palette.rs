@@ -984,8 +984,22 @@ fn matches(label: &str, query: &str) -> bool {
 }
 
 /// The ⌘K action search overlay: every action of the main section, custom actions and
-/// scripts included.
+/// scripts included. It sits above the floating windows.
 pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
+    if app.palette.is_none() {
+        return;
+    }
+    let screen = ui.max_rect();
+    egui::Area::new(egui::Id::unique("action-palette")).order(egui::Order::Foreground).fixed_pos(screen.min).show(
+        ui.ctx(),
+        |ui| {
+            ui.set_min_size(screen.size());
+            overlay(app, ui, screen);
+        },
+    );
+}
+
+fn overlay(app: &mut ScytheApp, ui: &mut egui::Ui, screen: Rect) {
     let Some(query) = app.palette.as_ref().map(|s| s.query.clone()) else { return };
     let results: Vec<(String, String, String)> = app
         .session
@@ -999,7 +1013,6 @@ pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
         .collect();
     let Some(state) = app.palette.as_mut() else { return };
     let ctx = ui.ctx().clone();
-    let screen = ui.max_rect();
     state.selected = state.selected.min(results.len().saturating_sub(1));
 
     let (up, down, enter, escape) = ctx.input_mut(|i| {

@@ -97,6 +97,8 @@ pub struct Session {
     load_queue: Arc<std::sync::Mutex<LoadQueue>>,
     /// The last MIDI input error shown, so it is not repeated on every edit.
     midi_error: Option<String>,
+    monitor_error: Option<String>,
+    midi_out_error: Option<String>,
     autosaved_at: Instant,
     /// The highest DSP load of the last window, and when the window started.
     load_window: (f32, Instant),
@@ -167,6 +169,8 @@ impl Session {
             pending_stretch: HashSet::new(),
             load_queue: Arc::default(),
             midi_error: None,
+            monitor_error: None,
+            midi_out_error: None,
             autosaved_at: Instant::now(),
             load_window: (0.0, Instant::now()),
             toast: None,
@@ -517,22 +521,17 @@ impl Session {
             && (ltc
                 || self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t))
                 || scythe_engine::stock::reainsert::in_project(&self.project));
-        if let Err(e) = self.engine.set_monitoring(monitor) {
+        if let Some(e) = new_error(&mut self.monitor_error, self.engine.set_monitoring(monitor)) {
             self.notify(format!("Input monitoring unavailable: {e}"));
         }
         let outputs = self.midi_outputs_needed();
-        if let Err(e) = self.engine.set_midi_output_devices(&outputs) {
+        if let Some(e) = new_error(&mut self.midi_out_error, self.engine.set_midi_output_devices(&outputs)) {
             self.notify(format!("MIDI output unavailable: {e}"));
         }
         self.engine.set_sync(self.sync_config());
         let inputs = if self.no_input { Vec::new() } else { self.midi_inputs_needed() };
-        match self.engine.set_midi_input_devices(&inputs) {
-            Err(e) if self.midi_error.as_deref() != Some(e.as_str()) => {
-                self.notify(format!("MIDI input unavailable: {e}"));
-                self.midi_error = Some(e);
-            }
-            Err(_) => {}
-            Ok(()) => self.midi_error = None,
+        if let Some(e) = new_error(&mut self.midi_error, self.engine.set_midi_input_devices(&inputs)) {
+            self.notify(format!("MIDI input unavailable: {e}"));
         }
         self.request_media();
     }
@@ -620,4 +619,35 @@ pub fn data_dir() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("scythe")
+}
+
+/// The error of `result` when it differs from the last one kept in `last`, so a failure that
+/// every sync repeats is reported once.
+fn new_error(last: &mut Option<String>, result: Result<(), String>) -> Option<String> {
+    match result {
+        Err(e) if last.as_deref() != Some(e.as_str()) => {
+            *last = Some(e.clone());
+            Some(e)
+        }
+        Err(_) => None,
+        Ok(()) => {
+            *last = None;
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::new_error;
+
+    #[test]
+    fn a_repeated_failure_is_reported_once() {
+        let mut last = None;
+        assert_eq!(new_error(&mut last, Err("off".into())).as_deref(), Some("off"));
+        assert_eq!(new_error(&mut last, Err("off".into())), None);
+        assert_eq!(new_error(&mut last, Err("busy".into())).as_deref(), Some("busy"));
+        assert_eq!(new_error(&mut last, Ok(())), None);
+        assert_eq!(new_error(&mut last, Err("busy".into())).as_deref(), Some("busy"));
+    }
 }
