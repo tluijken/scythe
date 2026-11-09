@@ -131,6 +131,13 @@ impl GfxPointer {
     }
 }
 
+/// Whether a graphics window takes the keys: the mouse is over one (scripts read keys with
+/// `gfx_getchar` while hovered) or one waits on its menu, so they are not shortcuts as well.
+pub fn takes_keys(app: &ScytheApp) -> bool {
+    (app.script_gfx.open && app.script_gfx.pointer.hovered)
+        || app.gfx_views.iter().any(|v| v.pointer.hovered || v.menu.is_some())
+}
+
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     app.gfx_views.retain_mut(|view| {
@@ -267,6 +274,8 @@ fn menu(ui: &Ui, rect: Rect, pending: &GfxMenu) -> Option<u32> {
     let at = rect.min + vec2(pending.menu.x as f32, pending.menu.y as f32) / pending.scale.max(1.0);
     let mut chosen = None;
     let area = egui::Area::new(Id::unique(("jsfx-gfx-menu", rect.min.x as i32, rect.min.y as i32)))
+        // As a menu, so `menu_button` makes submenus that open on hover beside their item.
+        .kind(egui::UiKind::Menu)
         .order(egui::Order::Foreground)
         .fixed_pos(at)
         .show(ui.ctx(), |ui| {

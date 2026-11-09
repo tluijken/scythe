@@ -409,6 +409,12 @@ impl Action {
         }
     }
 
+    /// Whether the shortcut works on the page shown: the setlist's bare N, P and Enter only on
+    /// its own page, so they do not start a song from a dialog or the arrange view.
+    pub fn shortcut_active(self, on_setlist: bool) -> bool {
+        on_setlist || !matches!(self, Action::SetlistPlay | Action::SetlistNext | Action::SetlistPrevious)
+    }
+
     pub fn run(self, app: &mut ScytheApp) {
         match self {
             Action::PlayPause => app.toggle_play(),
@@ -703,9 +709,9 @@ pub fn shortcut_text(ctx: &egui::Context, action: Action) -> String {
     action.shortcut().map(|s| ctx.format_shortcut(&s)).unwrap_or_default()
 }
 
-/// Dispatches keyboard shortcuts unless a text field has focus.
+/// Dispatches keyboard shortcuts unless a text field or a graphics window takes the keys.
 pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
-    if ctx.egui_wants_keyboard_input() || app.palette.is_some() {
+    if ctx.egui_wants_keyboard_input() || app.palette.is_some() || crate::ui::gfx_view::takes_keys(app) {
         return;
     }
     // The windowing layer turns the clipboard shortcuts into events instead of key presses.
@@ -732,6 +738,7 @@ pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
             continue;
         }
         if let Some(sc) = action.shortcut()
+            && action.shortcut_active(app.view.setlist)
             && ctx.input_mut(|i| i.consume_shortcut(&sc))
         {
             action.run(app);
@@ -863,6 +870,16 @@ mod tests {
     fn query_matches_all_words() {
         assert!(matches("Transport: Toggle repeat", "rep tog"));
         assert!(!matches("Transport: Toggle repeat", "mixer"));
+    }
+
+    #[test]
+    fn setlist_keys_only_work_on_the_setlist_page() {
+        for a in [Action::SetlistPlay, Action::SetlistNext, Action::SetlistPrevious] {
+            assert!(!a.shortcut_active(false), "{a:?}");
+            assert!(a.shortcut_active(true), "{a:?}");
+        }
+        assert!(Action::ToggleSetlist.shortcut_active(false));
+        assert!(Action::PlayPause.shortcut_active(false));
     }
 
     #[test]
