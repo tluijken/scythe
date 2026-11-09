@@ -385,6 +385,20 @@ fn reafir_state(points: &[(f32, f32)], fft: u32, mode: u32, gain: f32) -> String
     vst_state(b"rfer", &b)
 }
 
+/// ReaVerb's state: wet and dry gains, then modules as (tag, floats).
+fn reaverb_state(wet: f32, dry: f32, modules: &[(&str, &[f32])]) -> String {
+    let mut b: Vec<u8> =
+        [-9.0f32, wet, dry, 0.0, 1.0, 1.0, 0.5, 1.0, 1.0, 2.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+    for (tag, floats) in modules {
+        let mut name = tag.as_bytes().to_vec();
+        name.resize(8, 0);
+        b.extend(name);
+        b.extend(((floats.len() * 4) as u32).to_le_bytes());
+        b.extend(floats.iter().flat_map(|v| v.to_le_bytes()));
+    }
+    vst_state(b"bver", &b)
+}
+
 /// `name;effect;template;p<index>=<raw value> …` lines for the Lua runner.
 fn cases() -> Vec<String> {
     let mut c = Vec::new();
@@ -583,6 +597,22 @@ fn cases() -> Vec<String> {
         ("both", "p13=1 p14=1 p8=0.1 p4=0.2"),
     ] {
         add(&format!("controlmidi_{name}"), "ReaControlMIDI", "probe", spec);
+    }
+    // ReaVerb's echo generator and reverse modules.
+    let two: &[f32] = &[0.0, 30.0, 20.0, 1.0, 0.5, 0.0, 0.5];
+    let late: &[f32] = &[10.0, 30.0, 20.0, 0.5, 0.5, 0.0, 0.5];
+    for (name, modules) in [
+        ("base", vec![("ECHOGEN", &[10.0, 200.0, 20.0, 1.0, 0.5, 0.0, 0.5][..])]),
+        ("preset", vec![("ECHOGEN", &[20.0, 40.0, 30.0, 0.998, 0.922, 0.0, 0.5][..])]),
+        ("fractions", vec![("ECHOGEN", &[33.3, 120.0, 7.3, 0.8, 0.0, 0.0, 0.5][..])]),
+        ("sum", vec![("ECHOGEN", &[0.0, 100.0, 50.0, 1.0, 1.0, 0.0, 0.5][..]), ("ECHOGEN", late)]),
+        ("reverse", vec![("ECHOGEN", two), ("REVERSE", &[1.0][..])]),
+        ("reverse_half", vec![("ECHOGEN", two), ("ECHOGEN", late), ("REVERSE", &[0.5][..])]),
+        ("dense", vec![("ECHOGEN", &[0.0, 900.0, 1.1, 0.7, 0.01, 0.0, 0.5][..])]),
+    ] {
+        let spec = format!("full={}", reaverb_state(0.25, 1.0, &modules));
+        add(&format!("verbgen_{name}"), "ReaVerb", "main", &spec);
+        add(&format!("verbgen_imp_{name}"), "ReaVerb", "imp", &spec);
     }
     // ReaFIR's EQ mode: straight segments, the two-point Bézier, FFT sizes and output gain.
     let fir = "ReaFir (FFT EQ+Dynamics Processor)";
