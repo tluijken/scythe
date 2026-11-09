@@ -1377,6 +1377,9 @@ fn project_tabs() {
     let tabs = ok(&mut s, json!({"cmd": "project.tab_close", "index": 1}));
     assert_eq!(tabs.as_array().unwrap().len(), 1);
     assert_eq!(ok(&mut s, json!({"cmd": "project.tabs"}))[0]["dirty"], true);
+}
+
+#[test]
 fn record_modes_monitoring_and_lanes() {
     let mut s = session();
     let gtr = add_track(&mut s, "Gtr");
