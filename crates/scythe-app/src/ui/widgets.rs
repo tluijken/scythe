@@ -20,6 +20,9 @@ pub enum Icon {
     Routing,
     Settings,
     Plus,
+    Star,
+    Previous,
+    Next,
 }
 
 /// Maps the 24×24 SVG coordinate space of the mockup's icons into `rect`.
@@ -169,7 +172,106 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
             line(&[(12.0, 5.0), (12.0, 19.0)]);
             line(&[(5.0, 12.0), (19.0, 12.0)]);
         }
+        Icon::Star => {
+            let pts: Vec<(f32, f32)> = (0..10)
+                .map(|k| {
+                    let a = std::f32::consts::PI * (k as f32 / 5.0 - 0.5);
+                    let r = if k % 2 == 0 { 9.5 } else { 4.0 };
+                    (12.0 + r * a.cos(), 12.5 + r * a.sin())
+                })
+                .collect();
+            painter.add(Shape::closed_line(c.pts(&pts), stroke));
+        }
+        Icon::Previous => line(&[(15.0, 5.0), (8.0, 12.0), (15.0, 19.0)]),
+        Icon::Next => line(&[(9.0, 5.0), (16.0, 12.0), (9.0, 19.0)]),
     }
+}
+
+/// A filled star, for favourites that are set.
+pub fn paint_star(ui: &Ui, rect: Rect, color: Color32, filled: bool) {
+    if !filled {
+        paint_icon(ui, rect, Icon::Star, color, 16.0);
+        return;
+    }
+    let c = Canvas::new(rect, 16.0);
+    let pts: Vec<Pos2> = (0..10)
+        .map(|k| {
+            let a = std::f32::consts::PI * (k as f32 / 5.0 - 0.5);
+            let r = if k % 2 == 0 { 9.5 } else { 4.0 };
+            c.p(12.0 + r * a.cos(), 12.5 + r * a.sin())
+        })
+        .collect();
+    // A star is not convex, but all of it is visible from its centre: fill it as a fan.
+    let centre = c.p(12.0, 12.5);
+    let painter = ui.painter();
+    for k in 0..10 {
+        let tri = vec![centre, pts[k], pts[(k + 1) % 10]];
+        painter.add(Shape::convex_polygon(tri, color, Stroke::NONE));
+    }
+}
+
+/// A rotary knob: drag up or down to turn (Shift for fine steps), double-click for `default`.
+/// Returns the new value while it changes.
+#[allow(clippy::too_many_arguments)]
+pub fn knob(
+    ui: &mut Ui,
+    rect: Rect,
+    id: egui::Id,
+    value: f64,
+    range: (f64, f64),
+    default: f64,
+    label: &str,
+    text: &str,
+) -> (Response, Option<f64>) {
+    let resp = ui.interact(rect, id, Sense::click_and_drag());
+    let painter = ui.painter();
+    let dial = Rect::from_center_size(
+        rect.center() - vec2(0.0, 8.0),
+        vec2(rect.width().min(rect.height() - 22.0), rect.width().min(rect.height() - 22.0)),
+    );
+    let r = dial.width() / 2.0 - 3.0;
+    let centre = dial.center();
+    let (start, sweep) = (std::f32::consts::PI * 0.75, std::f32::consts::PI * 1.5);
+    let frac = ((value - range.0) / (range.1 - range.0)).clamp(0.0, 1.0) as f32;
+    let arc = |from: f32, to: f32| -> Vec<Pos2> {
+        let n = 32;
+        (0..=n)
+            .map(|k| {
+                let a = start + sweep * (from + (to - from) * k as f32 / n as f32);
+                centre + vec2(a.cos(), a.sin()) * r
+            })
+            .collect()
+    };
+    painter.circle_filled(centre, r - 4.0, if resp.hovered() || resp.dragged() { RAISED_HI } else { theme::RAISED });
+    painter.add(Shape::line(arc(0.0, 1.0), Stroke::new(3.0, theme::BG)));
+    let zero = ((0.0 - range.0) / (range.1 - range.0)).clamp(0.0, 1.0) as f32;
+    painter.add(Shape::line(arc(zero.min(frac), zero.max(frac)), Stroke::new(3.0, theme::ACCENT)));
+    let a = start + sweep * frac;
+    painter.line_segment(
+        [centre + vec2(a.cos(), a.sin()) * (r - 14.0), centre + vec2(a.cos(), a.sin()) * (r - 5.0)],
+        Stroke::new(2.0, TEXT),
+    );
+    painter.text(
+        pos2(rect.center().x, rect.bottom() - 18.0),
+        Align2::CENTER_CENTER,
+        label,
+        theme::regular(11.0),
+        theme::TEXT_DIM,
+    );
+    painter.text(pos2(rect.center().x, rect.bottom() - 5.0), Align2::CENTER_CENTER, text, theme::mono(11.0), TEXT);
+    let mut changed = None;
+    if resp.dragged() {
+        let fine = ui.input(|i| i.modifiers.shift);
+        let per_point = (range.1 - range.0) / if fine { 1000.0 } else { 200.0 };
+        let v = (value - resp.drag_delta().y as f64 * per_point).clamp(range.0, range.1);
+        if v != value {
+            changed = Some(v);
+        }
+    }
+    if resp.double_clicked() {
+        changed = Some(default);
+    }
+    (resp, changed)
 }
 
 fn hover_tint(ui: &Ui, resp: &Response, bg: Color32) -> Color32 {

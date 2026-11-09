@@ -410,7 +410,7 @@ impl NamInfo {
             .map(|layers| layers.iter().filter_map(|l| l.get("channels")?.as_u64()).collect())
             .unwrap_or_default();
         let size = (file.architecture == "WaveNet")
-            .then(|| match channels.as_slice() {
+            .then_some(match channels.as_slice() {
                 [16, 8] => "standard",
                 [12, 6] => "lite",
                 [8, 4] => "feather",
@@ -478,7 +478,9 @@ impl NamVoice {
 /// to and the input and output levels.
 pub struct NamControl {
     incoming: Mutex<Option<Box<NamVoice>>>,
-    /// Voices the audio thread is done with, dropped here rather than there.
+    /// Voices the audio thread is done with, dropped here rather than there. Boxed so that
+    /// handing one over moves a pointer and frees nothing on the audio thread.
+    #[allow(clippy::vec_box)]
     retired: Mutex<Vec<Box<NamVoice>>>,
     input_db: AtomicU32,
     output_db: AtomicU32,

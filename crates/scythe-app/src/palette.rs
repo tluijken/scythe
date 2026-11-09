@@ -75,6 +75,13 @@ pub enum Action {
     StopScript,
     MasterMoreChannels,
     MasterFewerChannels,
+    NamPanel,
+    NamPrevious,
+    NamNext,
+    NamSnapshotA,
+    NamSnapshotB,
+    NamSnapshotC,
+    NamSnapshotD,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -153,6 +160,13 @@ impl Action {
         Action::StopScript,
         Action::MasterMoreChannels,
         Action::MasterFewerChannels,
+        Action::NamPanel,
+        Action::NamPrevious,
+        Action::NamNext,
+        Action::NamSnapshotA,
+        Action::NamSnapshotB,
+        Action::NamSnapshotC,
+        Action::NamSnapshotD,
     ];
 
     pub fn label(self) -> &'static str {
@@ -227,6 +241,13 @@ impl Action {
             Action::StopScript => "Script: Stop the running script",
             Action::MasterMoreChannels => "Master: More channels",
             Action::MasterFewerChannels => "Master: Fewer channels",
+            Action::NamPanel => "NAM: Open the Neural Amp Modeler panel of the selected track",
+            Action::NamPrevious => "NAM: Previous model",
+            Action::NamNext => "NAM: Next model",
+            Action::NamSnapshotA => "NAM: Switch to snapshot A",
+            Action::NamSnapshotB => "NAM: Switch to snapshot B",
+            Action::NamSnapshotC => "NAM: Switch to snapshot C",
+            Action::NamSnapshotD => "NAM: Switch to snapshot D",
         }
     }
 
@@ -343,6 +364,13 @@ impl Action {
             Action::ShowPalette => k(CMD, Key::K),
             Action::RunScript | Action::RunLastScript | Action::StopScript => None,
             Action::MasterMoreChannels | Action::MasterFewerChannels => None,
+            Action::NamPanel => k(Modifiers::ALT, Key::N),
+            Action::NamPrevious => k(Modifiers::ALT, Key::ArrowLeft),
+            Action::NamNext => k(Modifiers::ALT, Key::ArrowRight),
+            Action::NamSnapshotA => k(Modifiers::ALT, Key::Num1),
+            Action::NamSnapshotB => k(Modifiers::ALT, Key::Num2),
+            Action::NamSnapshotC => k(Modifiers::ALT, Key::Num3),
+            Action::NamSnapshotD => k(Modifiers::ALT, Key::Num4),
         }
     }
 
@@ -570,6 +598,22 @@ impl Action {
             Action::TallerTracks => app.view.row_h = (app.view.row_h * 1.25).min(240.0),
             Action::ShorterTracks => app.view.row_h = (app.view.row_h / 1.25).max(30.0),
             Action::ShowPalette => app.palette = Some(PaletteState::default()),
+            Action::NamPanel => match app.nam_focus() {
+                Some(t) => {
+                    let index = app.nam_index(&t).unwrap_or(0);
+                    app.toggle_nam_panel(t.track, index);
+                }
+                None => match app.sel.track {
+                    Some(track) => app.add_nam_slot(track),
+                    None => app.notify("Select a track first"),
+                },
+            },
+            Action::NamPrevious => app.nam_step(-1),
+            Action::NamNext => app.nam_step(1),
+            Action::NamSnapshotA => app.nam_recall_focused(0),
+            Action::NamSnapshotB => app.nam_recall_focused(1),
+            Action::NamSnapshotC => app.nam_recall_focused(2),
+            Action::NamSnapshotD => app.nam_recall_focused(3),
             Action::MasterMoreChannels | Action::MasterFewerChannels => {
                 const CHANNELS: [u32; 7] = [2, 4, 6, 8, 12, 16, 32];
                 let now = app.project.master.channels;

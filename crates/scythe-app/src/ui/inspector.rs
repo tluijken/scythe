@@ -192,7 +192,8 @@ fn content_height(app: &ScytheApp, track: &scythe_core::Track) -> f32 {
     let tab = match app.view.inspector_tab {
         InspectorTab::Fx => {
             let browser = if app.view.plugin_browser {
-                (scythe_engine::builtin::Builtin::ALL.len() + installed_plugins(app).len().max(1)) as f32 * 36.0 + 8.0
+                (scythe_engine::builtin::Builtin::ALL.len() + 1 + installed_plugins(app).len().max(1)) as f32 * 36.0
+                    + 8.0
             } else {
                 0.0
             };
@@ -240,7 +241,18 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             theme::semibold(13.0),
             if fx.enabled { TEXT } else { TEXT_DIM },
         );
+        let nam = scythe_engine::fx::nam_settings(fx);
+        let nam_model = nam.as_ref().and_then(|s| s.model.as_ref()).map(|m| {
+            let path = std::path::Path::new(m);
+            app.nam.library.entry(path).map_or_else(
+                || path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+                |e| e.name.clone(),
+            )
+        });
         let status = match app.engine.fx().status(Some(track_id), fx, i) {
+            Some(FxStatus::Native(_)) if nam.is_some() => {
+                format!("NAM · {}", nam_model.as_deref().unwrap_or("no model loaded"))
+            }
             Some(FxStatus::Native(what)) => format!("{kind} · {what}"),
             Some(FxStatus::Hosted(_)) => format!("{kind} · hosted"),
             Some(FxStatus::Unavailable(why)) => format!("{kind} · bypassed: {why}"),
@@ -258,7 +270,17 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
         let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
             || app.has_gfx(Some(track_id), i);
-        if hosted {
+        if nam.is_some() {
+            let open = app.nam.panel.is_some() && app.nam.panel == app.nam_target(track_id, i);
+            let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
+            let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
+            if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
+                .on_hover_text("Models, levels, snapshots and the model browser")
+                .clicked()
+            {
+                app.toggle_nam_panel(track_id, i);
+            }
+        } else if hosted {
             let open = app.editor_open(Some(track_id), i);
             let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
             let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
@@ -399,6 +421,28 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             }
             *y += 36.0;
         }
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
+        let resp = ui.allocate_rect(r, Sense::click());
+        painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
+        painter.text(
+            r.left_center() + vec2(12.0, 0.0),
+            Align2::LEFT_CENTER,
+            "Neural Amp Modeler",
+            theme::regular(12.0),
+            TEXT,
+        );
+        painter.text(
+            r.right_center() - vec2(12.0, 0.0),
+            Align2::RIGHT_CENTER,
+            "built in",
+            theme::regular(11.0),
+            TEXT_DIM,
+        );
+        if resp.clicked() {
+            app.add_nam_slot(track_id);
+            app.view.plugin_browser = false;
+        }
+        *y += 36.0;
         let plugins = installed_plugins(app);
         if plugins.is_empty() {
             painter.text(

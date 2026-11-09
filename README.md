@@ -284,7 +284,19 @@ Working:
   slots (the LV2 plugin) run their `.nam` WaveNet models natively, with the stored input and
   output levels (all 310 models in `~/music/Samples/NAM` load; ~11× realtime per instance),
   at the model's own sample rate: like the plugin, a project at another rate is converted to
-  the model's rate and back (192-point sinc, reported as plugin latency). CLAP plugins are
+  the model's rate and back (192-point sinc, reported as plugin latency). The NAM slot's **Edit**
+  opens the NAM panel: the model's name, gear, author, architecture and rate, input and output
+  knobs, previous/next model (Alt+Left/Right), four snapshots per slot to A/B models and levels
+  (click to switch, Shift+click to store, Alt+1…4), and a browser with Library, Recent and
+  TONE3000 tabs. The library indexes folders you add (read only, e.g. `~/music/Samples/NAM`) and
+  models downloaded from TONE3000 (`~/.local/share/scythe/nam`), with search, favourites and
+  tags; impulse responses load into a convolution slot after the NAM slot. Switching models is
+  click-free: the new model is read off the audio thread, warms up beside the old one and the two
+  crossfade over 12 ms. Signing in to TONE3000 (OAuth with PKCE in the system browser, tokens in a
+  0600 file) needs a publishable key you register yourself; see [docs/tone3000.md](docs/tone3000.md).
+  The model path stays in the LV2 plugin's own state, so REAPER keeps opening the slot; snapshots
+  go into the track's `<EXT` extension state, which REAPER keeps. `.nam` files dropped on a track
+  load into its NAM slot (or a new one). CLAP plugins are
   hosted, instruments included (scan `~/.clap`, `/usr/lib/clap`, `$CLAP_PATH`), as are LV2
   plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …; controls and state in REAPER's `<LV2` layout),
   VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)

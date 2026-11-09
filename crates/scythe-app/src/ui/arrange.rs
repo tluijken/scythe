@@ -639,9 +639,22 @@ fn handle_drop(app: &mut ScytheApp, ui: &Ui, rows: Rect, axis: TimeAxis, row_rec
         return;
     }
     let pos = ui.ctx().input(|i| i.pointer.hover_pos()).unwrap_or(rows.center());
+    if app.nam.panel_rect.is_some_and(|r| r.contains(pos)) {
+        return;
+    }
     let track = (0..app.project.tracks.len()).find(|&i| row_rect(i).contains(pos)).map(|i| app.project.tracks[i].id);
+    let (models, media): (Vec<_>, Vec<_>) = dropped.into_iter().partition(|p| crate::nam::is_model_file(p));
+    if !models.is_empty() {
+        match track.or(app.sel.track) {
+            Some(t) => app.drop_nam_files(t, &models),
+            None => app.notify("Drop NAM models on a track"),
+        }
+    }
+    if media.is_empty() {
+        return;
+    }
     let at = if pos.x >= axis.left { app.snap(axis.t(pos.x).max(0.0), false) } else { app.project.cursor };
-    app.import_files(dropped, track, at);
+    app.import_files(media, track, at);
 }
 
 /// Perceptual meter position: -60 dB..0 dB mapped linearly in dB.

@@ -173,6 +173,8 @@ pub struct ScytheApp {
     pub gfx_views: Vec<GfxView>,
     /// Controls being written as automation during this pass.
     auto_writes: Vec<AutoWrite>,
+    /// The NAM model library, TONE3000 and the NAM panel.
+    pub nam: crate::nam::NamHub,
 }
 
 /// A control that automation writing follows.
@@ -283,6 +285,7 @@ impl ScytheApp {
             editors: Vec::new(),
             gfx_views: Vec::new(),
             auto_writes: Vec::new(),
+            nam: crate::nam::NamHub::new(),
             meters_at: Instant::now(),
         };
         if let Some(reason) = app.engine.info().fallback_reason.clone() {
@@ -594,6 +597,7 @@ impl ScytheApp {
 
     pub fn poll(&mut self) {
         self.autosave();
+        self.poll_nam();
         while let Ok(msg) = self.loader_rx.try_recv() {
             match msg {
                 LoaderMsg::Loaded { path, result, place } => {

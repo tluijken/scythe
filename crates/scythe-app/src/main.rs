@@ -2,6 +2,7 @@ mod app;
 mod demo;
 mod dialog;
 mod fx_preset;
+mod nam;
 mod palette;
 mod plugin_window;
 mod script;

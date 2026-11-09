@@ -3,6 +3,7 @@ pub mod gfx_view;
 mod inspector;
 pub mod midi_editor;
 mod mixer;
+mod nam;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
@@ -59,6 +60,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     }
 
     gfx_view::show(app, ui);
+    nam::show(app, ui);
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);
