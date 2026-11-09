@@ -339,8 +339,9 @@ impl Rms {
             return l.abs().max(r.abs());
         }
         let sq = [l * l, r * r];
-        for c in 0..2 {
-            self.sum[c] += sq[c] - self.squares[self.at][c];
+        let old = self.squares[self.at];
+        for ((sum, new), old) in self.sum.iter_mut().zip(sq).zip(old) {
+            *sum += new - old;
         }
         self.squares[self.at] = sq;
         self.at = (self.at + 1) % n;
