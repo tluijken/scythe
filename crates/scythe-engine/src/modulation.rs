@@ -166,6 +166,8 @@ pub fn normalized(fx: &mut dyn Effect, index: usize) -> Option<f64> {
 pub fn apply(fx: &mut dyn Effect, target: &Target, index: usize, value: f64) -> bool {
     match target {
         Target::Bypass => value >= 0.5,
+        // The chain applies wet/dry itself.
+        Target::Wet | Target::Delta => false,
         Target::Named(name) => {
             if !fx.set_normalized(index, value) && !fx.set_named_param(name, value) {
                 let params = fx.params();

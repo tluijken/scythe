@@ -5,7 +5,8 @@ use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
 use scythe_core::{ChannelMode, Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
 
-use crate::fx::{FxInstance, FxRegistry, ParamAutomation, PinMap, ProcessContext, pin_map};
+use crate::chain::{ChainInput, Channels, FxChain, MidiState};
+use crate::fx::{FxOwner, FxRegistry, ProcessContext};
 use crate::media::{AudioData, MediaPool};
 use rayon::prelude::*;
 
@@ -311,14 +312,8 @@ pub struct RenderTrack {
     pub parent: Option<usize>,
     pub main_send: bool,
     pub automation: Option<Arc<Automation>>,
-    pub fx: Vec<Arc<FxInstance>>,
-    /// Parameter envelopes of each effect in `fx`.
-    pub fx_automation: Vec<Vec<ParamAutomation>>,
-    /// Parameter modulation and learned controls of each effect in `fx`.
-    pub fx_mods: Vec<Arc<crate::modulation::FxMods>>,
-    /// Pin maps of the effects that do not simply process channels 1/2.
-    pub fx_pins: Vec<Option<PinMap>>,
-    /// Buffers the pins of such effects are gathered into, one per pin of the widest.
+    pub chain: Arc<FxChain>,
+    /// Buffers the pins of effects with a pin map are gathered into, one per pin of the widest.
     pub pin_bufs: Option<Arc<AuxChannels>>,
     /// MIDI effects pass down the chain within a block.
     pub chain_midi: Arc<ChainMidi>,
@@ -340,8 +335,6 @@ pub struct RenderTrack {
     /// Frames between this track's input and the master output, including plugin latency
     /// downstream. Items are read this far ahead so they come out on time.
     pub read_ahead: i64,
-    /// Latency of each effect in `fx`.
-    pub fx_latency: Vec<i64>,
     /// Delay lines that line this track up with slower paths into each send destination and
     /// into its parent or the master, when any are needed.
     pub send_delays: Vec<Option<Arc<DelayLine>>>,
@@ -601,14 +594,11 @@ pub struct RenderGraph {
     pub master_gain_r: f32,
     pub master_meter: Arc<Meter>,
     pub master_loudness: Option<Arc<Loudness>>,
-    pub master_fx: Vec<Arc<FxInstance>>,
-    /// Latency of each master effect, in frames.
-    pub master_fx_latency: Vec<i64>,
+    pub master_chain: Arc<FxChain>,
     /// Master channels; 3 and up live in `master_aux`.
     pub master_channels: usize,
     pub master_aux: Option<Arc<AuxChannels>>,
     pub master_volume: f32,
-    pub master_fx_pins: Vec<Option<PinMap>>,
     /// An effect's parameter follows one of another effect in its chain: REAPER runs the
     /// whole chain block by block, so renders go 512 frames at a time.
     pub linked_fx: bool,
@@ -689,12 +679,10 @@ impl RenderGraph {
             master_gain_r: 1.0,
             master_meter: Arc::default(),
             master_loudness: None,
-            master_fx: Vec::new(),
-            master_fx_latency: Vec::new(),
+            master_chain: Arc::default(),
             master_channels: 2,
             master_aux: None,
             master_volume: 1.0,
-            master_fx_pins: Vec::new(),
             linked_fx: false,
             master_pin_bufs: None,
             master_hw_outs: None,
@@ -817,11 +805,9 @@ impl RenderGraph {
                         })
                     })
                     .collect::<Vec<_>>();
-                let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx, (t.channels as usize).max(2));
-                let fx_mods = fx.chain_modulation(Some(t.id), &t.fx);
-                // Aligned with `chain`: the enabled slots that have an instance.
-                let fx_pins = effective_pins(&t.fx, &chain, |s, i| fx.instance(Some(t.id), s, i).is_some());
-                let pin_count = pin_buffer_count(&chain, &fx_pins);
+                let chain =
+                    Arc::new(crate::chain::build(fx, &FxOwner::Track(t.id), &t.fx, (t.channels as usize).max(2)));
+                let pin_count = chain.pin_buffers();
                 // MIDI items feed an instrument in the chain or a hardware output instead of the
                 // preview synth.
                 let midi_sends: Vec<(usize, SendMidi, bool)> = t
@@ -832,8 +818,8 @@ impl RenderGraph {
                     .map(|(s, _)| s)
                     .filter_map(|s| Some((*index.get(&s.dest)?, s.midi(), s.mode == SendMode::PreFx)))
                     .collect();
-                let (items, notes) = if chain.iter().any(|f| f.instrument)
-                    || fx_mods.iter().any(|m| m.reads_midi())
+                let (items, notes) = if chain.has_instrument()
+                    || chain.reads_midi()
                     || t.midi_out.is_some()
                     || !midi_sends.is_empty()
                 {
@@ -903,14 +889,11 @@ impl RenderGraph {
                     parent: parents[ti],
                     main_send: t.main_send,
                     automation: fader.automation.map(Arc::new),
-                    fx: chain,
-                    fx_automation,
-                    fx_mods,
+                    chain,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
                     chain_midi: Arc::default(),
                     midi_sends,
                     midi_inbox: None,
-                    fx_pins,
                     notes,
                     monitor: (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0).then(
                         || {
@@ -922,7 +905,6 @@ impl RenderGraph {
                     live_buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(512))),
                     midi_out: t.midi_out,
                     read_ahead: 0,
-                    fx_latency: Vec::new(),
                     send_delays: Vec::new(),
                     main_delay: None,
                     hw_delays: Vec::new(),
@@ -937,13 +919,11 @@ impl RenderGraph {
         for d in midi_dests {
             tracks[d].midi_inbox.get_or_insert_with(Arc::default);
         }
-        let master_fx = fx.chain_with_automation(None, &project.master.fx, (project.master.channels as usize).max(2)).0;
-        let master_fx_latency = chain_latency(&master_fx);
         let master_channels = (project.master.channels as usize).max(2);
-        let master_fx_pins = effective_pins(&project.master.fx, &master_fx, |s, i| fx.instance(None, s, i).is_some());
-        let master_pin_count = pin_buffer_count(&master_fx, &master_fx_pins);
+        let master_chain = Arc::new(crate::chain::build(fx, &FxOwner::Master, &project.master.fx, master_channels));
+        let master_pin_count = master_chain.pin_buffers();
         let order = send_order(&tracks);
-        compensate_latency(&mut tracks, &order, master_fx_latency.iter().sum());
+        compensate_latency(&mut tracks, &order, master_chain.latency);
         let level_of = dependency_levels(&tracks, &order);
         let level_count = level_of.iter().max().map_or(0, |m| m + 1);
         let mut level_sizes = vec![0; level_count];
@@ -979,9 +959,7 @@ impl RenderGraph {
         let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
-        let linked_fx = tracks.iter().any(|t| {
-            t.fx_mods.iter().enumerate().any(|(k, m)| m.entries.iter().any(|e| e.source.is_some_and(|s| s.0 != k)))
-        });
+        let linked_fx = tracks.iter().any(|t| t.chain.links_effects());
         Self {
             master_hw_outs,
             master_taps,
@@ -997,12 +975,10 @@ impl RenderGraph {
             master_gain_r: (mv * mr) as f32,
             master_meter: meters.master.clone(),
             master_loudness: Some(meters.loudness(sample_rate)),
-            master_fx,
-            master_fx_latency,
+            master_chain,
             master_channels,
             master_aux: (master_channels > 2).then(|| Arc::new(AuxChannels::new(master_channels - 2))),
             master_volume: mv as f32,
-            master_fx_pins,
             linked_fx,
             master_pin_bufs: master_pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
             timeline,
@@ -1042,7 +1018,7 @@ impl RenderGraph {
     }
 
     pub fn latency(&self) -> i64 {
-        let master: i64 = self.master_fx_latency.iter().sum();
+        let master: i64 = self.master_chain.latency;
         self.tracks.iter().map(|t| t.read_ahead).max().unwrap_or(0).max(master)
     }
 
@@ -1131,41 +1107,34 @@ impl RenderGraph {
         let sr = self.sample_rate as f64;
         let taps = &self.master_taps;
         taps.fill(taps.pre_fx.as_ref(), out_l, out_r, master_aux.as_deref().map(|a| &a[..]), start, sr);
-        if !self.master_fx.is_empty() {
+        if !self.master_chain.is_empty() {
             // The master's input is the master effects' latency ahead of the output.
-            let mut position = start + self.master_fx_latency.iter().sum::<i64>();
+            let position = start + self.master_chain.latency;
             let mut pin_bufs = self.master_pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
-            for (k, (fx, latency)) in self.master_fx.iter().zip(&self.master_fx_latency).enumerate() {
-                let mut ctx = ProcessContext {
-                    midi: None,
-                    midi_from: 0,
-                    sample_rate: self.sample_rate,
-                    position,
-                    playing: input.play_items,
-                    notes: None,
-                    live: &[],
-                    live_channel: None,
-                    aux: None,
-                    bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
-                };
-                position -= latency;
-                let pins = self.master_fx_pins.get(k).and_then(Option::as_ref);
-                if let (Some(map), Some(bufs)) = (pins, pin_bufs.as_deref_mut()) {
-                    gather_pins(map, bufs, n, out_l, out_r, master_aux.as_deref(), self.master_channels);
-                    if fx.pins.0 > 2 || fx.pins.1 > 2 {
-                        fx.process_pins(bufs, 0..n, &ctx);
-                    } else {
-                        let (main, side) = bufs.split_at_mut(2);
-                        let (a, b) = main.split_at_mut(1);
-                        ctx.aux = (map.inputs.len() >= 4).then(|| (&side[0][..n], &side[1][..n]));
-                        fx.process(&mut a[0][..n], &mut b[0][..n], &ctx);
-                    }
-                    scatter_pins(map, bufs, n, out_l, out_r, master_aux.as_deref_mut(), self.master_channels);
-                } else {
-                    ctx.aux = master_aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n]));
-                    fx.process(out_l, out_r, &ctx);
-                }
-            }
+            let sr = self.sample_rate as f64;
+            let tempo = |f: i64| self.timeline.bpm_at(f as f64 / sr);
+            let chain_input = ChainInput {
+                sample_rate: self.sample_rate,
+                playing: input.play_items,
+                notes: None,
+                live: &[],
+                live_channel: None,
+                tempo: &tempo,
+                timeline: &self.timeline,
+            };
+            let aux: &mut [Vec<f32>] = match master_aux.as_deref_mut() {
+                Some(a) => a,
+                None => &mut [],
+            };
+            let mut ch = Channels { l: out_l, r: out_r, aux, n };
+            let mut midi = MidiState { bufs: None, has: false };
+            self.master_chain.process(
+                &mut ch,
+                &chain_input,
+                position,
+                &mut midi,
+                pin_bufs.as_deref_mut().map(|b| &mut b[..]),
+            );
         }
         taps.fill(taps.post_fx.as_ref(), out_l, out_r, master_aux.as_deref().map(|a| &a[..]), start, sr);
         // The master fader acts on every channel; its pan on the first pair only.
@@ -1398,149 +1367,34 @@ impl RenderGraph {
             held.copy_from(entering);
             chain_has_midi = true;
         }
-        if track.audible && !track.fx.is_empty() {
+        if track.audible && !track.chain.is_empty() {
             let mut pin_bufs = track.pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
-            for (k, ((fx, automation), latency)) in
-                track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency).enumerate()
-            {
-                // An effect with its own pin map works on buffers gathered from its channels.
-                let pins = track.fx_pins.get(k).and_then(Option::as_ref).filter(|_| pin_bufs.is_some());
-                let mut ctx = ProcessContext {
-                    sample_rate: self.sample_rate,
-                    position,
-                    playing: input.play_items,
-                    aux: None,
-                    // While stopped the position stands still; feeding notes would retrigger them.
-                    notes: if input.play_items && track.content { track.notes.as_deref() } else { None },
-                    live,
-                    live_channel,
-                    bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
-                    midi: None,
-                    midi_from: 0,
-                };
-                let (chain_midi, next_midi) = match midi_bufs.as_deref_mut() {
-                    Some([held, next, _]) => (chain_has_midi.then_some(&*held), Some(next)),
-                    None => (None, None),
-                };
-                ctx.midi = chain_midi;
-                let t = position as f64 / self.sample_rate as f64;
-                position -= latency;
-                // REAPER sets enveloped FX parameters once per 512-frame block, from the value at
-                // the block's start.
-                const SLICE: i64 = 512;
-                let slices = |n: usize| {
-                    let mut at = 0;
-                    std::iter::from_fn(move || {
-                        (at < n).then(|| {
-                            let frame = ctx.position + at as i64;
-                            let len = ((SLICE - frame.rem_euclid(SLICE)) as usize).min(n - at);
-                            at += len;
-                            (at - len, len, frame)
-                        })
-                    })
-                };
-                let sr = self.sample_rate as f64;
-                let mods = track.fx_mods.get(k).filter(|m| !m.is_empty());
-                let plain = automation.is_empty() && mods.is_none();
-                let mod_ctx = mods.map(|m| crate::modulation::ModContext {
-                    mods: m,
-                    chain: &track.fx,
-                    own: k,
-                    timeline: &self.timeline,
-                    sample_rate: self.sample_rate,
-                });
-                if let (Some(map), Some(bufs)) = (pins, pin_bufs.as_deref_mut()) {
-                    gather_pins(map, bufs, n, tl, tr, aux.as_deref(), track.channels);
-                    if fx.pins.0 > 2 || fx.pins.1 > 2 {
-                        // Several pins: the effect works on all the gathered buffers at once.
-                        if plain {
-                            fx.process_pins(bufs, 0..n, &ctx);
-                        } else {
-                            for (at, len, frame) in slices(n) {
-                                let slice_ctx = ProcessContext {
-                                    position: frame,
-                                    live: if at == 0 { ctx.live } else { &[] },
-                                    midi_from: at,
-                                    ..ctx
-                                };
-                                fx.process_pins_automated(
-                                    bufs,
-                                    at..at + len,
-                                    &slice_ctx,
-                                    automation,
-                                    t + at as f64 / sr,
-                                    mod_ctx.as_ref(),
-                                );
-                            }
-                        }
-                    } else {
-                        let (main, side) = bufs.split_at_mut(2);
-                        let (a, b) = main.split_at_mut(1);
-                        ctx.aux = (map.inputs.len() >= 4).then(|| (&side[0][..n], &side[1][..n]));
-                        let (pl, pr) = (&mut a[0][..n], &mut b[0][..n]);
-                        if plain {
-                            fx.process(pl, pr, &ctx);
-                        } else {
-                            for (at, len, frame) in slices(n) {
-                                let slice_ctx = ProcessContext {
-                                    position: frame,
-                                    live: if at == 0 { ctx.live } else { &[] },
-                                    aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
-                                    midi_from: at,
-                                    ..ctx
-                                };
-                                fx.process_automated(
-                                    &mut pl[at..at + len],
-                                    &mut pr[at..at + len],
-                                    &slice_ctx,
-                                    automation,
-                                    t + at as f64 / sr,
-                                    mod_ctx.as_ref(),
-                                );
-                            }
-                        }
-                    }
-                    scatter_pins(map, bufs, n, tl, tr, aux.as_deref_mut(), track.channels);
-                } else {
-                    ctx.aux = aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n]));
-                    if plain {
-                        fx.process(tl, tr, &ctx);
-                    } else {
-                        for (at, len, frame) in slices(n) {
-                            let slice_ctx = ProcessContext {
-                                position: frame,
-                                live: if at == 0 { ctx.live } else { &[] },
-                                aux: ctx.aux.map(|(a, b)| (&a[at..at + len], &b[at..at + len])),
-                                midi_from: at,
-                                ..ctx
-                            };
-                            fx.process_automated(
-                                &mut tl[at..at + len],
-                                &mut tr[at..at + len],
-                                &slice_ctx,
-                                automation,
-                                t + at as f64 / sr,
-                                mod_ctx.as_ref(),
-                            );
-                        }
-                    }
-                }
-                if let Some(next) = next_midi {
-                    next.clear();
-                    if fx.take_midi(next) {
-                        if !fx.midi_buses
-                            && let Some(held) = chain_midi
-                        {
-                            next.bused.extend_from_slice(&held.bused);
-                        }
-                        chain_has_midi = true;
-                        if let Some([held, next, _]) = midi_bufs.as_deref_mut() {
-                            std::mem::swap(held, next);
-                        }
-                    }
-                }
-            }
+            let tempo = |f: i64| self.timeline.bpm_at(f as f64 / sr_f);
+            let chain_input = ChainInput {
+                sample_rate: self.sample_rate,
+                playing: input.play_items,
+                // While stopped the position stands still; feeding notes would retrigger them.
+                notes: if input.play_items && track.content { track.notes.as_deref() } else { None },
+                live,
+                live_channel,
+                tempo: &tempo,
+                timeline: &self.timeline,
+            };
+            let aux: &mut [Vec<f32>] = match aux.as_deref_mut() {
+                Some(a) => a,
+                None => &mut [],
+            };
+            let mut ch = Channels { l: &mut *tl, r: &mut *tr, aux, n };
+            let mut midi = MidiState { bufs: midi_bufs.as_deref_mut(), has: chain_has_midi };
+            track.chain.process(
+                &mut ch,
+                &chain_input,
+                position,
+                &mut midi,
+                pin_bufs.as_deref_mut().map(|b| &mut b[..]),
+            );
         }
+        position -= track.chain.latency;
         if routes_midi && let Some([held, _, entering]) = midi_bufs.as_deref() {
             self.route_midi(track, held, entering);
             if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
@@ -1843,7 +1697,7 @@ impl RenderGraph {
             }
         };
         // The track's output is this far ahead of the master: what its effects did not use up.
-        let out_frame = start + track.read_ahead - track.fx_latency.iter().sum::<i64>();
+        let out_frame = start + track.read_ahead - track.chain.latency;
         let sr = self.sample_rate as f64;
         let sends = track.sends.iter().enumerate().map(|(si, s)| (s, Dest::Track(s.dest), si, &track.send_delays));
         // Hardware outputs follow the track's own output: off while it is only heard through a
@@ -1961,17 +1815,10 @@ fn track_threads() -> &'static rayon::ThreadPool {
     })
 }
 
-fn chain_latency(chain: &[Arc<FxInstance>]) -> Vec<i64> {
-    chain.iter().map(|fx| fx.with(|e| e.latency()).unwrap_or(0) as i64).collect()
-}
-
 /// Plugin delay compensation. Working back from the master, each track's `read_ahead` is its
 /// own effects' latency plus the slowest path from its output to the master; faster paths get
 /// a delay line so every path into a destination arrives together.
 fn compensate_latency(tracks: &mut [RenderTrack], order: &[usize], master_latency: i64) {
-    for t in tracks.iter_mut() {
-        t.fx_latency = chain_latency(&t.fx);
-    }
     let mut read_ahead = vec![0i64; tracks.len()];
     for &ti in order.iter().rev() {
         let t = &tracks[ti];
@@ -1988,7 +1835,7 @@ fn compensate_latency(tracks: &mut [RenderTrack], order: &[usize], master_latenc
         t.send_delays = sends.iter().map(|&(d, c)| delay(d, c)).collect();
         t.hw_delays = hw.iter().map(|&(d, c)| delay(d, c)).collect();
         t.main_delay = main.and_then(|d| delay(d, channels));
-        t.read_ahead = out + t.fx_latency.iter().sum::<i64>();
+        t.read_ahead = out + t.chain.latency;
         read_ahead[ti] = t.read_ahead;
     }
 }
@@ -2182,112 +2029,6 @@ fn mix_item_channel(
             None => item.gain_l.max(item.gain_r),
         };
         out[(t - block_start) as usize] += s * g * fade_gain(rel, item.length, &item.fade_in, &item.fade_out);
-    }
-}
-
-/// Pin maps for the effects of `chain` (the enabled `slots` that have an instance): the stored
-/// map, or REAPER's default of pin n on channel n for effects with more than two pins on a
-/// side (fewer pins work on the first pair as they are).
-fn effective_pins(
-    slots: &[scythe_core::FxSlot],
-    chain: &[Arc<FxInstance>],
-    has_instance: impl Fn(&scythe_core::FxSlot, usize) -> bool,
-) -> Vec<Option<PinMap>> {
-    slots
-        .iter()
-        .enumerate()
-        .filter(|(i, s)| s.enabled && has_instance(s, *i))
-        .zip(chain)
-        .map(|((_, s), inst)| {
-            // Pins a saved map leaves out keep their default channel (pin n on channel n).
-            let widen = |masks: &mut Vec<u64>, n: usize| {
-                let from = masks.len();
-                masks.extend((from..n.min(64)).map(|p| 1u64 << p));
-            };
-            pin_map(s)
-                .map(|mut m| {
-                    widen(&mut m.inputs, inst.pins.0);
-                    widen(&mut m.outputs, inst.pins.1);
-                    m
-                })
-                .or_else(|| {
-                    (inst.pins.0 > 2 || inst.pins.1 > 2).then(|| PinMap {
-                        inputs: (0..inst.pins.0.min(64)).map(|p| 1u64 << p).collect(),
-                        outputs: (0..inst.pins.1.min(64)).map(|p| 1u64 << p).collect(),
-                    })
-                })
-        })
-        .collect()
-}
-
-/// Pin buffers the widest mapped effect needs (at least two audio pins and a sidechain pair).
-fn pin_buffer_count(chain: &[Arc<FxInstance>], pins: &[Option<PinMap>]) -> Option<usize> {
-    chain
-        .iter()
-        .zip(pins)
-        .filter_map(|(inst, m)| {
-            Some(inst.pins.0.max(inst.pins.1).max(m.as_ref()?.inputs.len()).max(m.as_ref()?.outputs.len()).max(4))
-        })
-        .max()
-}
-
-/// Fills each pin buffer with the sum of the track channels its input mask selects.
-fn gather_pins(
-    map: &PinMap,
-    bufs: &mut [Vec<f32>],
-    n: usize,
-    tl: &[f32],
-    tr: &[f32],
-    aux: Option<&Vec<Vec<f32>>>,
-    channels: usize,
-) {
-    for (pin, buf) in bufs.iter_mut().enumerate() {
-        buf[..n].fill(0.0);
-        let mask = map.input(pin);
-        for c in (0..channels.min(64)).filter(|c| mask & (1 << c) != 0) {
-            let src: &[f32] = match c {
-                0 => tl,
-                1 => tr,
-                c => match aux.and_then(|a| a.get(c - 2)) {
-                    Some(b) => &b[..n],
-                    None => continue,
-                },
-            };
-            for (d, s) in buf[..n].iter_mut().zip(src) {
-                *d += s;
-            }
-        }
-    }
-}
-
-/// Writes the output pins back: a channel any output pin feeds takes the sum of those pins;
-/// the others pass through.
-fn scatter_pins(
-    map: &PinMap,
-    bufs: &[Vec<f32>],
-    n: usize,
-    tl: &mut [f32],
-    tr: &mut [f32],
-    mut aux: Option<&mut Vec<Vec<f32>>>,
-    channels: usize,
-) {
-    for c in 0..channels.min(64) {
-        let bit = 1u64 << c;
-        let feeding = || (0..bufs.len()).filter(move |&p| map.output(p) & bit != 0);
-        if feeding().next().is_none() {
-            continue;
-        }
-        let dst: &mut [f32] = match c {
-            0 => &mut *tl,
-            1 => &mut *tr,
-            c => match aux.as_deref_mut().and_then(|a| a.get_mut(c - 2)) {
-                Some(b) => &mut b[..n],
-                None => continue,
-            },
-        };
-        for (i, d) in dst[..n].iter_mut().enumerate() {
-            *d = feeding().map(|p| bufs[p][i]).sum();
-        }
     }
 }
 

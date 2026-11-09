@@ -665,32 +665,8 @@ fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
     c
 }
 
-/// Each plugin in an FX chain starts with a `BYPASS` line, followed by the plugin chunk and
-/// per-plugin lines (FXID, automation, …) up to the next `BYPASS`.
 fn parse_fx_chain(c: &Chunk) -> (Vec<FxSlot>, Vec<Node>) {
-    let mut prelude = Vec::new();
-    let mut fx: Vec<FxSlot> = Vec::new();
-    for node in &c.children {
-        if let Node::Line(l) = node
-            && line_key(l) == "BYPASS"
-        {
-            let t = tokenize(l);
-            fx.push(FxSlot { name: String::new(), enabled: !flag(&t, 1), raw: vec![node.clone()] });
-            continue;
-        }
-        match fx.last_mut() {
-            Some(slot) => {
-                if let Node::Chunk(plugin) = node
-                    && slot.name.is_empty()
-                {
-                    slot.name = plugin.args().into_iter().next().unwrap_or_else(|| plugin.name().to_owned());
-                }
-                slot.raw.push(node.clone());
-            }
-            None => prelude.push(node.clone()),
-        }
-    }
-    (fx, prelude)
+    crate::fx_chain::split_chain(&c.children)
 }
 
 const TAKE_KEYS: &[&str] = &["NAME", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "CHANMODE", "GUID", "TAKECOLOR", "SM"];
@@ -1372,18 +1348,7 @@ fn midi_out_code(out: Option<(u8, u8)>) -> i64 {
 fn write_fx_chain(name: &str, t: &Track) -> Chunk {
     let mut c = Chunk::new(name, &[]);
     c.children.extend(t.fx_chain_prelude.iter().cloned());
-    for slot in &t.fx {
-        for (i, node) in slot.raw.iter().enumerate() {
-            match node {
-                Node::Line(l) if i == 0 && line_key(l) == "BYPASS" => {
-                    let mut toks = tokenize(l);
-                    toks[1] = if slot.enabled { "0" } else { "1" }.to_owned();
-                    c.line(toks);
-                }
-                _ => c.children.push(node.clone()),
-            }
-        }
-    }
+    c.children.extend(crate::fx_chain::join_chain(&t.fx));
     c
 }
 

@@ -630,6 +630,10 @@ impl Effect for JsfxEffect {
         self.uses_midi
     }
 
+    fn processes_audio(&self) -> bool {
+        !self.sample.is_empty()
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         for (at, len) in blocks(ctx.position, left.len()) {
             let sub = ProcessContext {

@@ -218,6 +218,13 @@ pub trait Effect: Send {
     fn is_instrument(&self) -> bool {
         false
     }
+
+    /// Whether the effect writes audio at all; a JSFX without `@sample` only handles MIDI,
+    /// and in a parallel group adds nothing to the sum.
+    fn processes_audio(&self) -> bool {
+        true
+    }
+
     /// Clears internal state such as filter memories and delay lines (on seek or stop).
     fn reset(&mut self) {}
 
@@ -303,6 +310,9 @@ pub trait Effect: Send {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Target {
     Bypass,
+    /// The slot's wet/dry share and its delta solo, which the chain applies.
+    Wet,
+    Delta,
     Named(String),
 }
 
@@ -336,7 +346,7 @@ pub struct ParamAutomation {
 }
 
 /// `<PARMENV <index>:<name> <min> <max> <default> "label"` chunks of a slot, with their points.
-fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
+pub(crate) fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
     slot.raw
         .iter()
         .filter_map(|n| match n {
@@ -352,7 +362,12 @@ fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
             };
             let bound = |i: usize, d: f64| args.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(d);
             let range = (bound(1, 0.0), bound(2, 1.0));
-            let target = if name == "bypass" { Target::Bypass } else { Target::Named(name) };
+            let target = match name.as_str() {
+                "bypass" => Target::Bypass,
+                "wet" => Target::Wet,
+                "delta" => Target::Delta,
+                _ => Target::Named(name),
+            };
             let mut envelope = scythe_core::Envelope::new(scythe_core::EnvelopeKind::Volume);
             for node in &c.children {
                 let Node::Line(l) = node else { continue };
@@ -388,6 +403,20 @@ fn envelope_base(automation: &[ParamAutomation], index: usize, t: f64) -> Option
     let v = a.envelope.value_at(t)?;
     let span = a.range.1 - a.range.0;
     Some(if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 })
+}
+
+/// A slot's parameter envelopes, with the parameter each falls back to by position for
+/// effects that do not know the envelope's parameter by name.
+pub(crate) fn slot_automation(slot: &FxSlot, inst: &FxInstance) -> Vec<ParamAutomation> {
+    let mut envs: Vec<ParamAutomation> =
+        parameter_envelopes(slot).into_iter().filter(|a| !matches!(a.target, Target::Wet | Target::Delta)).collect();
+    if envs.iter().any(|a| matches!(a.target, Target::Named(_))) {
+        let params = inst.with(|e| e.params()).unwrap_or_default();
+        for a in &mut envs {
+            a.fallback = params.get(a.index).map(|p| ParamMapping { id: p.id, from: a.range, to: (p.min, p.max) });
+        }
+    }
+    envs
 }
 
 /// How a slot is being played, for the UI.
@@ -436,6 +465,7 @@ fn apply_automation(
         let Some(v) = a.envelope.value_at(at) else { continue };
         match &a.target {
             Target::Bypass => bypassed = v >= 0.5,
+            Target::Wet | Target::Delta => {}
             Target::Named(name) => {
                 let span = a.range.1 - a.range.0;
                 let normalized = if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 };
@@ -456,6 +486,8 @@ pub struct FxInstance {
     /// Modulation state, kept while the instance lives.
     pub(crate) mods: Mutex<ModState>,
     pub instrument: bool,
+    /// Whether it writes audio (`Effect::processes_audio`).
+    pub audio: bool,
     pub midi_buses: bool,
     /// Audio input and output pins.
     pub pins: (usize, usize),
@@ -465,6 +497,7 @@ impl FxInstance {
     pub fn new(fx: Box<dyn Effect>) -> Self {
         Self {
             instrument: fx.is_instrument(),
+            audio: fx.processes_audio(),
             midi_buses: fx.midi_buses(),
             pins: fx.pins(),
             effect: Mutex::new(fx),
@@ -473,7 +506,8 @@ impl FxInstance {
     }
 
     /// Runs the effect with its parameter envelopes applied at time `t` (seconds), and its
-    /// modulation when it has any. A bypass envelope above 0.5 skips the effect.
+    /// modulation when it has any. A bypass envelope above 0.5 skips the effect. Returns
+    /// whether it ran.
     pub fn process_automated(
         &self,
         left: &mut [f32],
@@ -482,8 +516,8 @@ impl FxInstance {
         automation: &[ParamAutomation],
         t: f64,
         mods: Option<&ModContext>,
-    ) {
-        let Ok(mut fx) = self.effect.try_lock() else { return };
+    ) -> bool {
+        let Ok(mut fx) = self.effect.try_lock() else { return false };
         let n = left.len();
         let bypassed = {
             let aux: [&[f32]; 2] = ctx.aux.map_or([&[], &[]], |(a, b)| [a, b]);
@@ -494,6 +528,7 @@ impl FxInstance {
             fx.process(left, right, ctx);
         }
         self.after(fx.as_mut(), ctx, automation, t, n, mods);
+        !bypassed
     }
 
     /// Like `process_automated`, over the effect's pins.
@@ -505,8 +540,8 @@ impl FxInstance {
         automation: &[ParamAutomation],
         t: f64,
         mods: Option<&ModContext>,
-    ) {
-        let Ok(mut fx) = self.effect.try_lock() else { return };
+    ) -> bool {
+        let Ok(mut fx) = self.effect.try_lock() else { return false };
         let n = range.len();
         let bypassed = {
             let inputs: Vec<&[f32]> = bufs.iter().map(|b| &b[range.clone()]).collect();
@@ -516,6 +551,7 @@ impl FxInstance {
             fx.process_pins(bufs, range, ctx);
         }
         self.after(fx.as_mut(), ctx, automation, t, n, mods);
+        !bypassed
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -574,10 +610,10 @@ impl FxInstance {
         self.effect.try_lock().ok().map(|mut e| f(e.as_mut()))
     }
 
-    pub fn process_pins(&self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
-        if let Ok(mut fx) = self.effect.try_lock() {
-            fx.process_pins(bufs, range, ctx);
-        }
+    pub fn process_pins(&self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) -> bool {
+        let Ok(mut fx) = self.effect.try_lock() else { return false };
+        fx.process_pins(bufs, range, ctx);
+        true
     }
 
     pub fn take_midi(&self, out: &mut MidiBlock) -> bool {
@@ -591,11 +627,11 @@ impl FxInstance {
     }
 
     /// Runs the effect unless another thread holds it (state being swapped), in which case
-    /// the block passes through untouched.
-    pub fn process(&self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        if let Ok(mut fx) = self.effect.try_lock() {
-            fx.process(left, right, ctx);
-        }
+    /// the block passes through untouched. Returns whether it ran.
+    pub fn process(&self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) -> bool {
+        let Ok(mut fx) = self.effect.try_lock() else { return false };
+        fx.process(left, right, ctx);
+        true
     }
 }
 
@@ -605,11 +641,26 @@ impl std::fmt::Debug for FxInstance {
     }
 }
 
+/// Whose FX chain an instance belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Owner {
+pub enum FxOwner {
     Track(TrackId),
     Master,
+    /// A track's record input chain (`FXCHAIN_REC`).
+    Input(TrackId),
+    /// A take's chain (`TAKEFX`): the item and the take's index in it.
+    Take(scythe_core::ItemId, usize),
+    /// The monitoring chain after the master, heard on the device only.
+    Monitor,
 }
+
+impl FxOwner {
+    pub fn of(track: Option<TrackId>) -> Self {
+        track.map_or(Self::Master, Self::Track)
+    }
+}
+
+type Owner = FxOwner;
 
 struct Entry {
     state: Vec<Node>,
@@ -669,38 +720,19 @@ impl FxRegistry {
         slots: &[FxSlot],
         channels: usize,
     ) -> (Vec<Arc<FxInstance>>, Vec<Vec<ParamAutomation>>) {
-        let owner = track.map_or(Owner::Master, Owner::Track);
+        let owner = Owner::of(track);
         let mut out = Vec::new();
         let mut automation = Vec::new();
         for (i, slot) in slots.iter().enumerate() {
-            let key = (owner.clone(), slot_key(slot, i));
-            let state = plugin_state(slot);
-            let stale =
-                self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
-            if stale && !self.update_nam(&key, &state) {
-                let (instance, status) = match self.create(slot, channels) {
-                    Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
-                    Err(reason) => (None, FxStatus::Unavailable(reason)),
-                };
-                let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
-                self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam });
+            if slot.offline() || slot.is_container() {
+                continue;
             }
-            if let Some(control) = &self.entries[&key].nam {
-                control.collect();
-            }
+            let inst = self.slot_instance(&owner, slot_key(slot, i), slot, channels);
             if slot.enabled
-                && let Some(inst) = &self.entries[&key].instance
+                && let Some(inst) = inst
             {
-                out.push(inst.clone());
-                let mut envs = parameter_envelopes(slot);
-                if envs.iter().any(|a| matches!(a.target, Target::Named(_))) {
-                    let params = inst.with(|e| e.params()).unwrap_or_default();
-                    for a in &mut envs {
-                        a.fallback =
-                            params.get(a.index).map(|p| ParamMapping { id: p.id, from: a.range, to: (p.min, p.max) });
-                    }
-                }
-                automation.push(envs);
+                automation.push(slot_automation(slot, &inst));
+                out.push(inst);
             }
         }
         (out, automation)
@@ -727,6 +759,39 @@ impl FxRegistry {
             .filter(|(i, _)| positions[*i].is_some())
             .map(|(i, slot)| Arc::new(FxMods::from_slot(slot, i, &positions)))
             .collect()
+    }
+
+    /// The instance for the slot keyed `key` in `owner`'s chain, created or replaced when the
+    /// slot's plugin state changed; `None` when the plugin is unavailable.
+    pub(crate) fn slot_instance(
+        &mut self,
+        owner: &FxOwner,
+        key: String,
+        slot: &FxSlot,
+        channels: usize,
+    ) -> Option<Arc<FxInstance>> {
+        let key = (owner.clone(), key);
+        let state = plugin_state(slot);
+        let stale =
+            self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
+        if stale && !self.update_nam(&key, &state) {
+            let (instance, status) = match self.create(slot, channels) {
+                Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
+                Err(reason) => (None, FxStatus::Unavailable(reason)),
+            };
+            let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
+            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam });
+        }
+        let entry = &self.entries[&key];
+        if let Some(control) = &entry.nam {
+            control.collect();
+        }
+        entry.instance.clone()
+    }
+
+    /// The instance of a slot inside a chain, keyed as `chain::FxChain` keys nested slots.
+    pub fn instance_by_key(&self, owner: &FxOwner, key: &str) -> Option<Arc<FxInstance>> {
+        self.entries.get(&(owner.clone(), key.to_owned())).and_then(|e| e.instance.clone())
     }
 
     pub fn instance(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<FxInstance>> {
@@ -869,11 +934,14 @@ impl FxRegistry {
         self.entries.get(&(owner, slot_key(slot, index))).map(|e| &e.status)
     }
 
-    /// Drops instances of tracks that no longer exist.
+    /// Drops instances of tracks and takes that no longer exist.
     pub fn retain(&mut self, project: &Project) {
+        let items: std::collections::HashMap<scythe_core::ItemId, usize> =
+            project.tracks.iter().flat_map(|t| &t.items).map(|i| (i.id, i.takes.len())).collect();
         self.entries.retain(|(owner, _), _| match owner {
-            Owner::Track(id) => project.track(*id).is_some(),
-            Owner::Master => true,
+            Owner::Track(id) | Owner::Input(id) => project.track(*id).is_some(),
+            Owner::Take(item, take) => items.get(item).is_some_and(|n| take < n),
+            Owner::Master | Owner::Monitor => true,
         });
     }
 
@@ -1197,7 +1265,7 @@ fn vst_search_paths() -> Vec<PathBuf> {
 }
 
 /// FXID when present (stable across moves), otherwise the plugin name and position.
-fn slot_key(slot: &FxSlot, index: usize) -> String {
+pub(crate) fn slot_key(slot: &FxSlot, index: usize) -> String {
     slot.raw
         .iter()
         .find_map(|n| match n {
