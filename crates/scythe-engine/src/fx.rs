@@ -681,6 +681,9 @@ impl FxRegistry {
                         .collect();
                     let mut new_lines = match ReaperVstState::decode(&lines) {
                         Some(old) if old.chunk == state => lines.clone(),
+                        Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
+                            crate::builtin::sidechain_vst_lines(id, &state)
+                        }
                         _ => ReaperVstState::reencode(&lines, &state)
                             .unwrap_or_else(|| crate::builtin::vst_lines(id, &state)),
                     };

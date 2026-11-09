@@ -222,6 +222,30 @@ mod tests {
         assert!((gain - 6.0).abs() < 1e-9 && (time - 250.0).abs() < 1e-3, "{gain} {time}");
     }
 
+    /// A gate saved with the plain header (as Scythe once wrote it) gets REAPER's sidechain
+    /// header when an edit is stored.
+    #[test]
+    fn edited_gates_get_the_sidechain_header() {
+        let mut project = scythe_core::Project::default();
+        let track = project.add_track("t");
+        let mut slot = Builtin::Gate.slot();
+        if let Some(Node::Chunk(c)) = slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(_))) {
+            c.children = vst_lines(1919248244, &Builtin::Gate.default_state()).into_iter().map(Node::Line).collect();
+        }
+        project.track_mut(track).unwrap().fx.push(slot);
+        let mut fx = FxRegistry::new(48000);
+        let chain = fx.chain(Some(track), &project.tracks[0].fx);
+        chain[0].with(|e| e.set_param(0, -30.0));
+        fx.store_states(&mut project);
+        let Some(Node::Chunk(c)) = project.tracks[0].fx[0].raw.iter().find(|n| matches!(n, Node::Chunk(_))) else {
+            panic!()
+        };
+        let lines: Vec<String> =
+            c.children.iter().filter_map(|n| if let Node::Line(l) = n { Some(l.clone()) } else { None }).collect();
+        let state = crate::vst2::ReaperVstState::decode(&lines).unwrap();
+        assert_eq!((state.inputs.len(), state.words[0]), (4, 0));
+    }
+
     #[test]
     fn every_builtin_loads_natively() {
         let mut fx = FxRegistry::new(48000);

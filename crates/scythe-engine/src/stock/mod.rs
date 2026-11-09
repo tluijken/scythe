@@ -147,6 +147,12 @@ pub fn find(display: &str) -> Option<&'static StockPlugin> {
     PLUGINS.iter().find(|p| p.matches(display))
 }
 
+/// Whether a `VST` slot with these arguments holds ReaGate or ReaComp, whose states REAPER
+/// only reads with its sidechain header (see `builtin::sidechain_vst_lines`).
+pub fn takes_sidechain_header(args: &[String]) -> bool {
+    args.first().and_then(|d| find(d)).is_some_and(|p| matches!(p.name, "ReaGate" | "ReaComp"))
+}
+
 /// The stock plugin called `name` (`ReaComp`).
 pub fn by_name(name: &str) -> Option<&'static StockPlugin> {
     PLUGINS.iter().find(|p| p.name == name)

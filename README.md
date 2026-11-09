@@ -802,8 +802,8 @@ compares the two files.
   ReaLimit's true-peak flag (bit 0 of the word after the version) is read but not modelled.
   ReaGate's noise is white noise of the same level and spectrum from Scythe's own generator, so
   it cannot null. Multichannel modes of these plugins (beyond the stereo pair and a sidechain)
-  and gain-reduction metering are not there. ReaGate and ReaComp states written by Scythe
-  before this version carried a header REAPER ignores; they keep it until edited again.
+  and gain-reduction metering are not there. ReaGate and ReaComp states written by earlier
+  Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is
