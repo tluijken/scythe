@@ -45,12 +45,75 @@ pub fn decode_file(path: &Path) -> Result<AudioData, MediaError> {
     if crate::video::is_video_file(path) {
         return decode_with_ffmpeg(path).or_else(|_| decode(path, false));
     }
-    decode(path, false)
+    decode_audio(path, false)
 }
 
-/// The first audio stream of a video file, decoded by the `ffmpeg` command-line tool. REAPER
-/// reads video files with FFmpeg, which applies their edit lists (an AAC encoder's priming
-/// samples left out); Symphonia does not.
+fn decode_audio(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
+    match extension(path).as_deref() {
+        Some("opus") => decode_opus(path),
+        Some("wv") => decode_with_ffmpeg(path),
+        _ => decode(path, gapless).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) }),
+    }
+}
+
+fn extension(path: &Path) -> Option<String> {
+    path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
+}
+
+fn is_ogg_opus(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 64];
+    let n = File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    head[..n].starts_with(b"OggS") && head[..n].windows(8).any(|w| w == b"OpusHead")
+}
+
+/// An Ogg Opus file decoded at 48 kHz the way REAPER plays it: the header's pre-skip and the
+/// last page's end trim are applied, its output gain too, and surround streams keep the Vorbis
+/// channel order of the file.
+fn decode_opus(path: &Path) -> Result<AudioData, MediaError> {
+    use opus_pure::{MAX_PACKET_SAMPLES, OggOpusReader, OpusMSDecoder, Trim};
+    let decode_err = |e: opus_pure::Error| MediaError::Decode { path: path.to_owned(), message: e.to_string() };
+    let file = File::open(path).map_err(|source| MediaError::Open { path: path.to_owned(), source })?;
+    let mut reader = OggOpusReader::new(std::io::BufReader::new(file)).map_err(decode_err)?;
+    let head = reader.head().clone();
+    let nch = usize::from(head.channel_count);
+    let mut trim = Trim::new(&head, 48_000, nch).map_err(decode_err)?;
+    let mut buf = vec![0f32; MAX_PACKET_SAMPLES * nch];
+    let mut channels = vec![Vec::new(); nch];
+    let mut keep = |packet: &opus_pure::OggPacket, decoded: &[f32]| {
+        for frame in trim.keep(packet, decoded).chunks_exact(nch) {
+            for (dst, s) in channels.iter_mut().zip(frame) {
+                dst.push(*s);
+            }
+        }
+    };
+    if head.mapping_family == 0 {
+        let mut decoder = head.decoder(48_000).map_err(decode_err)?;
+        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
+            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
+            keep(&packet, &buf[..n * nch]);
+        }
+    } else {
+        let mut decoder = OpusMSDecoder::new(48_000, nch, head.mapping_family).map_err(decode_err)?;
+        for d in decoder.streams_mut() {
+            d.gain_q8 = i32::from(head.output_gain_q8);
+        }
+        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
+            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
+            keep(&packet, &buf[..n * nch]);
+        }
+    }
+    drop(keep);
+    if channels.first().is_none_or(Vec::is_empty) {
+        return Err(MediaError::Decode { path: path.to_owned(), message: "stream contains no audio".into() });
+    }
+    Ok(AudioData { sample_rate: 48_000, channels })
+}
+
+/// The first audio stream of a video or WavPack file, decoded by the `ffmpeg` command-line tool.
+/// REAPER reads video files with FFmpeg, which applies their edit lists (an AAC encoder's priming
+/// samples left out); Symphonia does not. FFmpeg's WavPack decoder is lossless and matches
+/// REAPER bit for bit, but it ignores a hybrid file's `.wvc` correction file, which REAPER applies.
 fn decode_with_ffmpeg(path: &Path) -> Result<AudioData, MediaError> {
     let decode_err = |message: String| MediaError::Decode { path: path.to_owned(), message };
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -77,7 +140,7 @@ fn decode_with_ffmpeg(path: &Path) -> Result<AudioData, MediaError> {
 /// Decodes a file the way ReaSamplOmatic5000 loads a sample: MP3 encoder delay and padding
 /// (from the LAME header) are trimmed, as in gapless playback.
 pub fn decode_gapless(path: &Path) -> Result<AudioData, MediaError> {
-    decode(path, true)
+    decode_audio(path, true)
 }
 
 fn decode(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
@@ -865,6 +928,38 @@ mod tests {
         assert_eq!(data.frames(), tone.len());
         assert!((data.channels[0][100] - tone[100]).abs() < 1e-6);
         assert!((data.channels[1][100] + tone[100]).abs() < 1e-6);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn decodes_ogg_opus_without_its_pre_skip() {
+        use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead};
+        let dir = std::env::temp_dir().join(format!("scythe-opus-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tone.opus");
+        let tone = sine(48000, 440.0, 0.4);
+        let mut encoder = OpusEncoder::new(48000, 1, Application::Audio).unwrap();
+        let mut head = OpusHead::for_encoder(&encoder, 48000);
+        head.output_gain_q8 = -1536;
+        let pre_skip = usize::from(head.pre_skip);
+        let mut writer = OggOpusWriter::new(std::fs::File::create(&path).unwrap(), head).unwrap();
+        let mut packet = vec![0u8; MAX_PACKET_BYTES];
+        for block in tone.chunks_exact(960) {
+            let n = encoder.encode(block, 960, &mut packet).unwrap();
+            writer.write_packet(&packet[..n]).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let data = decode_file(&path).unwrap();
+        assert_eq!(data.sample_rate, 48000);
+        assert_eq!(data.frames(), tone.len() - pre_skip);
+        let half = 10f32.powf(-6.0 / 20.0);
+        let err = data.channels[0][4800..14400]
+            .iter()
+            .zip(&tone[4800..])
+            .map(|(a, b)| (a - b * half).abs())
+            .fold(0.0, f32::max);
+        assert!(err < 0.05, "{err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

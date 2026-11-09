@@ -32,6 +32,7 @@ realfft = "3.5.1"
 rustfft = "6.4.1"
 cpal = "0.18.2"
 symphonia = { version = "0.6.1", features = ["all"] }
+opus-pure = "0.2.3"
 hound = "3.5.1"
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 midir = "0.11.1"

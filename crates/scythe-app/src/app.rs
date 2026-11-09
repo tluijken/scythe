@@ -400,7 +400,10 @@ impl ScytheApp {
 
     pub fn import_dialog(&mut self) {
         let files = rfd::FileDialog::new()
-            .add_filter("Media", &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a", "caf", "mid", "midi"])
+            .add_filter(
+                "Media",
+                &["wav", "flac", "mp3", "ogg", "opus", "wv", "aif", "aiff", "m4a", "caf", "mid", "midi"],
+            )
             .pick_files();
         if let Some(files) = files {
             let at = self.project.cursor;
