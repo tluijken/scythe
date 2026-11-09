@@ -15,18 +15,20 @@ test("a domain the server does not know is detected once", async () => {
   equal(await offline(), null);
 });
 
-test("mixes read with gain or dB levels and own sources", () => {
-  const mixes = normalizeMixes({
-    mixes: [
-      { mix: 40, name: "Bass", more_me_db: 3, own: [12], sources: [{ track: 12, name: "Bass DI", volume: 0.5, pan: 0, muted: false }, { track: 13, name: "Kick", volume_db: -6, muted: true }] },
-    ],
-  });
+test("mixes read as mix.list answers them", () => {
+  const mixes = normalizeMixes([
+    { id: 40, musician: "Bass", name: "MON Bass", color: "#a6e22e", volume: 1, volume_db: 0, more_me: 3,
+      output: { output: 2, mono: false, label: "Out 3/4" }, limiter: true,
+      sources: [
+        { track: 12, name: "Bass DI", color: null, volume: 1.41, volume_db: 1.5, pan: 0, muted: false, mode: "post_fx", own: true },
+        { track: 13, name: "Kick", color: "#f92672", volume: 0.5, volume_db: -6, pan: -0.5, muted: true, mode: "post_fx", own: false },
+      ] },
+  ]);
   equal(mixes[0].id, 40);
+  equal(mixes[0].name, "Bass");
   equal(mixes[0].moreMeDb, 3);
-  equal(mixes[0].sources[0].own, true);
-  equal(Math.round(mixes[0].sources[0].db * 10) / 10, -6);
-  equal(mixes[0].sources[1].db, -6);
-  equal(mixes[0].sources[1].muted, true);
+  equal(mixes[0].output, "Out 3/4");
+  equal(mixes[0].sources.map((x) => [x.id, x.db, x.pan, x.muted, x.own]), [[12, 1.5, 0, false, true], [13, -6, -0.5, true, false]]);
 });
 
 test("the remembered mix is found by id, else by name", () => {
@@ -37,18 +39,24 @@ test("the remembered mix is found by id, else by name", () => {
   equal(pickMix(mixes, null), null);
 });
 
-test("setlists, status and song progress", () => {
-  const data = normalizeSetlists({
-    setlists: [{ name: "Friday", songs: [{ name: "Intro", start: 10, end: 70, sections: [["Solo", 40]] }, { name: "Outro", start: 80, duration: 100 }] }],
-    active: 0,
-    auto_advance: true,
-  });
-  equal(data.lists[0].songs[0].duration, 60);
-  equal(data.lists[0].songs[0].sections, [{ name: "Solo", position: 40 }]);
-  equal(data.lists[0].songs[1].number, 2);
-  equal(data.autoAdvance, true);
-  const status = normalizeStatus({ setlist: 0, current: { entry: 1 }, next: null, playing: true });
-  equal([status.current, status.next, status.playing], [1, null, true]);
-  equal(songProgress(data.lists[0].songs[0], 25), { elapsed: 15, remaining: 45, fraction: 0.25 });
-  equal(songProgress(data.lists[0].songs[0], 100).remaining, 0);
+test("setlists join their songs, status reads entries", () => {
+  const songs = [
+    { index: 0, number: 3, guid: "{A}", name: "Intro", start: 10, end: 70, duration: 60, ends_at: "stop_marker", sections: [{ name: "Solo", position: 40 }] },
+    { index: 1, number: 5, guid: "{B}", name: "Outro", start: 80, end: 180, duration: 100, ends_at: "project_end", sections: [] },
+  ];
+  const data = normalizeSetlists(
+    { setlists: [{ index: 0, name: "Friday", entries: [{ name: "Outro", guid: "{B}", song: 1, duration: 100 }, { name: "Gone", guid: null, song: null, duration: null }, { name: "Intro", guid: "{A}", song: 0, duration: 60 }], duration: 160 }],
+      current: 0, auto_advance: true, marker_actions: true },
+    songs,
+  );
+  const list = data.lists[0];
+  equal(list.songs.map((x) => [x.name, x.start, x.missing]), [["Outro", 80, false], ["Gone", null, true], ["Intro", 10, false]]);
+  equal(list.songs[2].sections, [{ name: "Solo", position: 40 }]);
+  equal([data.active, data.autoAdvance], [0, true]);
+  const status = normalizeStatus({ setlist: 0, name: "Friday", playing: true, current: { entry: 2, name: "Intro", start: 10, duration: 60 }, next: null,
+    elapsed: 5, remaining: 55, auto_advance: false, marker_actions: true });
+  equal([status.current, status.next, status.playing, status.autoAdvance], [2, null, true, false]);
+  equal(songProgress(list.songs[2], 25), { elapsed: 15, remaining: 45, fraction: 0.25 });
+  equal(songProgress(list.songs[2], 100).remaining, 0);
+  equal(songProgress(list.songs[1], 100).elapsed, null);
 });

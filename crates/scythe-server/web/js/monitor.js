@@ -2,9 +2,7 @@
 // from this page; `?mix=Name&lock=1` pins it so the switcher is gone too.
 
 import { html, useCallback, useEffect, useRef, useState } from "../vendor/preact-htm.js";
-import {
-  MORE_ME_RANGE, detector, isMixEvent, mixCommands, mixPeak, normalizeMix, normalizeMixMeters, normalizeMixes, pickMix,
-} from "./domains.js";
+import { MORE_ME_RANGE, detector, mixCommands, normalizeMix, normalizeMixes, pickMix } from "./domains.js";
 import { dbToGain, formatDbValue, formatPan, gainToDb } from "./format.js";
 import { useStoreValue } from "./store.js";
 import { Fader, Icon, IconButton, Knob, Logo, Meter, OfflineVeil, Pan, StatusPill } from "./ui.js";
@@ -33,12 +31,11 @@ export function Unavailable({ what }) {
     <p class="dim">This Scythe does not offer ${what.toLowerCase()} yet. Update Scythe on the machine running the session.</p></div>`;
 }
 
-// Mixes from the server, kept fresh: fetched on connecting, after project changes and mix
-// events, with local edits shown at once.
+// Mixes from the server, kept fresh: fetched on connecting and after project changes, with
+// local edits shown at once.
 function useMixes(client, store, status) {
   const [mixes, setMixes] = useState(null);
   const [supported, setSupported] = useState(null);
-  const meters = useRef(new Map());
   const detect = useRef(detector(client, mixCommands.list()));
   const load = useCallback(() => {
     client.send(mixCommands.list()).then((r) => setMixes(normalizeMixes(r)), () => {});
@@ -58,16 +55,12 @@ function useMixes(client, store, status) {
       timer = setTimeout(load, 120);
     };
     const offChanged = client.on("event:project_changed", soon);
-    const offEvent = client.on("event", (e) => isMixEvent(e.event) && soon());
-    const offMeters = client.on("event:mix_meters", (e) => (meters.current = normalizeMixMeters(e)));
     return () => {
       clearTimeout(timer);
       offChanged();
-      offEvent();
-      offMeters();
     };
   }, [load]);
-  return { mixes, setMixes, supported, meters, load };
+  return { mixes, setMixes, supported, load };
 }
 
 function MixPicker({ mixes, onPick, current }) {
@@ -110,7 +103,7 @@ function SourceRow({ source, onLevel, onPan, onMute }) {
 
 export function MonitorPage({ client, store }) {
   const status = useStoreValue(store, "status");
-  const { mixes, setMixes, supported, meters, load } = useMixes(client, store, status);
+  const { mixes, setMixes, supported, load } = useMixes(client, store, status);
   const params = new URLSearchParams(location.search);
   const locked = params.get("lock") === "1" && params.has("mix");
   const [chosen, setChosen] = useState(() => (params.has("mix") ? { name: params.get("mix") } : remembered()));
@@ -137,10 +130,9 @@ export function MonitorPage({ client, store }) {
   const patch = (change) => setMixes((list) => list.map((m) => (m.id === mix.id ? change(m) : m)));
   const patchSource = (id, fields) => patch((m) => ({ ...m, sources: m.sources.map((s) => (s.id === id ? { ...s, ...fields } : s)) }));
   const answer = (result) => {
-    if (result && (result.sources || result.mix != null)) {
-      const fresh = normalizeMix(result);
-      if (fresh.id === mix.id && fresh.sources.length) setMixes((list) => list.map((m) => (m.id === mix.id ? fresh : m)));
-    }
+    if (result?.id !== mix.id) return;
+    const fresh = normalizeMix(result);
+    setMixes((list) => list.map((m) => (m.id === mix.id ? fresh : m)));
   };
   const send = (command, key) =>
     store.run(command, { latest: key }).then(answer, () => load());
@@ -153,7 +145,7 @@ export function MonitorPage({ client, store }) {
             <span class="dot" style=${{ background: mix.color || "var(--orange)" }}></span>${mix.name}<${Icon} name="down" size=${18} /></button>`}
       <${StatusPill} status=${status} compact=${true} />
     </header>
-    <${Meter} axis="x" cls="mix-meter" read=${() => mixPeak(store, meters.current, mix.id)} />
+    <${Meter} axis="x" cls="mix-meter" read=${() => store.meters.mixes.get(mix.id) || store.meters.tracks.get(mix.id)} />
     <div class="more-me">
       <${IconButton} icon="minus" title="Less me" cls="round big"
         onClick=${() => {

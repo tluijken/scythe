@@ -10,7 +10,7 @@ export class Store {
     this.snapshot = null;
     this.transport = null;
     this.status = client.status;
-    this.meters = { master: [0, 0], tracks: new Map() };
+    this.meters = { master: [0, 0], tracks: new Map(), mixes: new Map() };
     this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set() };
     this.fetching = false;
     this.wanted = 0;
@@ -24,6 +24,9 @@ export class Store {
       const tracks = new Map();
       for (const t of e.tracks || []) tracks.set(t.id, t.peak);
       this.meters.tracks = tracks;
+      const mixes = new Map();
+      for (const m of e.mixes || []) mixes.set(m.id, m.peak);
+      this.meters.mixes = mixes;
     });
     client.on("event:project_changed", (e) => {
       if (!this.snapshot || e.revision > this.snapshot.revision) this.refresh(e.revision);

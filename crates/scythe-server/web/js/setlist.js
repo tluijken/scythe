@@ -2,7 +2,7 @@
 // previous / play-stop / next, and the set's songs to cue with a tap.
 
 import { html, useCallback, useEffect, useRef, useState } from "../vendor/preact-htm.js";
-import { detector, isSetlistEvent, normalizeSetlists, normalizeStatus, setlistCommands, songProgress } from "./domains.js";
+import { detector, normalizeSetlists, normalizeStatus, setlistCommands, songProgress } from "./domains.js";
 import { formatClock } from "./format.js";
 import { Unavailable } from "./monitor.js";
 import { useStoreValue } from "./store.js";
@@ -14,7 +14,10 @@ function useSetlists(client, status) {
   const [supported, setSupported] = useState(null);
   const detect = useRef(detector(client, setlistCommands.list()));
   const load = useCallback(() => {
-    client.send(setlistCommands.list()).then((r) => setData(normalizeSetlists(r)), () => {});
+    Promise.all([client.send(setlistCommands.list()), client.send(setlistCommands.songs())]).then(
+      ([list, songs]) => setData(normalizeSetlists(list, songs)),
+      () => {},
+    );
     client.send(setlistCommands.status()).then((s) => setState(normalizeStatus(s)), () => {});
   }, [client]);
   useEffect(() => {
@@ -32,11 +35,7 @@ function useSetlists(client, status) {
       timer = setTimeout(load, 150);
     };
     const offChanged = client.on("event:project_changed", soon);
-    const offEvent = client.on("event", (e) => {
-      if (!isSetlistEvent(e.event)) return;
-      if (e.current !== undefined || e.status) setState(normalizeStatus(e.status || e));
-      else soon();
-    });
+    const offEvent = client.on("event:setlist", (e) => setState(normalizeStatus(e)));
     return () => {
       clearTimeout(timer);
       offChanged();
@@ -79,11 +78,7 @@ export function SetlistPage({ client, store }) {
 
   const run = (command, optimistic) => {
     if (optimistic) setState((s) => ({ ...(s || {}), ...optimistic }));
-    store.run(command).then((answer) => {
-      const fresh = normalizeStatus(answer);
-      if (answer && fresh && (answer.current !== undefined || answer.status)) setState(normalizeStatus(answer.status || answer));
-      else load();
-    }, () => load());
+    store.run(command).then((answer) => setState(normalizeStatus(answer)), () => load());
   };
   const autoAdvance = state?.autoAdvance ?? data.autoAdvance;
   return html`<div class="setlist-page">
@@ -103,7 +98,7 @@ export function SetlistPage({ client, store }) {
       <section class="now">
         <div class="label">${playing ? "Now playing" : "Cued"}</div>
         <div class="now-title">
-          ${song ? html`<span class="now-num mono">${song.number}</span><span class="now-name">${song.name}</span>` : html`<span class="now-name dim">Nothing cued</span>`}
+          ${song ? html`<span class="now-num mono">${current + 1}</span><span class="now-name">${song.name}</span>` : html`<span class="now-name dim">Nothing cued</span>`}
         </div>
         <div class="clocks mono">
           <span class="elapsed">${formatClock(progress.elapsed ?? 0)}</span>
@@ -112,7 +107,7 @@ export function SetlistPage({ client, store }) {
         <${Progress} song=${song} fraction=${progress.fraction || 0} />
         <div class="next-up">
           <div class="label">Next up</div>
-          <div class="next-name">${next ? html`<span class="mono dim">${next.number}</span> ${next.name}` : html`<span class="dim">End of the set</span>`}</div>
+          <div class="next-name">${next ? html`<span class="mono dim">${state.next + 1}</span> ${next.name}` : html`<span class="dim">End of the set</span>`}</div>
         </div>
         <div class="big-controls">
           <button class="big-btn" onClick=${() => run(setlistCommands.previous())} aria-label="Previous song"><${Icon} name="previous" size=${44} /></button>
