@@ -217,7 +217,7 @@ record arm, polarity, automation mode and media edits, with reverse flags; a lea
 (through the API, the UI or scripts) carry over to the followers. A VCA lead (`VOLUME_VCA_LEAD`)
 scales its followers' level as they play instead of moving their faders.
 
-| Command | Fields | Answer |
+| `cmd` | Arguments | Answer |
 |---|---|---|
 | `group.list` | | every group in use: `group` (1-64), `name`, `members` (`track`, `name`, `params`) |
 | `group.name` | `group`, `name` (`null` clears it) | the groups |
@@ -343,6 +343,28 @@ A time signature always starts a bar, so a marker given one moves to the next ba
 | `tempo.add` | `time`, `bpm?` (the tempo there), `time_signature?`, `linear?` | the tempo map; a map without markers first gets one at the start |
 | `tempo.edit` | `index`, any of `time`, `bpm`, `time_signature` (`null` removes it), `linear` | the tempo map; changes of one marker within a second are one undo step |
 | `tempo.delete` | `index` | the tempo map |
+
+Tempo edits from any client move what follows the beat, as REAPER does: tempo markers after the
+changed one keep their beat when `tempo_follows_beats` is on, and items, track and send envelope
+points and markers move by their timebase (`project.timebase`, a track's `BEAT`, `item.timebase`):
+`beats` keeps an item's start and end in quarter notes and changes its play rate to fit (or
+spreads its stretch markers), `beats_position` moves only its start, `time` leaves it.
+
+### Item timing
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `item.stretch_markers` | `item` | `[{"index", "position", "source", "slope"}]` of the active take; `position` in seconds from the item start, `source` in seconds into the source |
+| `item.stretch_markers.add` | `item`, `position`, `source?` (where the take plays there) | the markers |
+| `item.stretch_markers.move` | `item`, `index`, `position?` (the audio stretches, the source position stays), `source?` (the marker pins another source position, REAPER's Shift-drag) | the markers; a marker stays between its neighbours |
+| `item.stretch_markers.slope` | `item`, `index`, `slope` (-0.99 to 0.99) | the markers |
+| `item.stretch_markers.delete` | `item`, `index?` (all when left out) | the markers |
+| `item.timebase` | `item`, `timebase?`: `project`, `time`, `beats`, `beats_position` | `{"item", "timebase", "effective"}` |
+| `take.channel_mode` | `item`, `take?` (the active one), `mode?`: `normal`, `reverse_stereo`, `downmix`, `mono`, `stereo`, `channel?` (first channel for mono and stereo, from 1) | `{"item", "take", "code", "label"}` with REAPER's `I_CHANMODE` code |
+| `project.timebase` | `timebase?`: `time`, `beats`, `beats_position`; `tempo_follows_beats?` | `{"timebase", "tempo_follows_beats"}` |
+| `project.playrate` | `rate?` (0.25 to 4), `preserve_pitch?` | `{"rate", "preserve_pitch"}`; playback and renders run at the rate |
+
+These are admin commands.
 
 ### Control surfaces
 

@@ -557,6 +557,19 @@ Working:
   REAPER's take reader feeds them: 512 output frames at a time, 512 more source frames whenever
   the shifter falls short, latency kept. élastique (REAPER's default, proprietary) and REAPER's
   own simple windowed, Rrreeeaaa and ReaReaRea modes use Scythe's phase vocoder. Recordings are shifted by the input and output latency the audio device reports.
+- **Item timing**: take stretch markers (`SM`, with slopes) play in every stretch mode: without
+  "Keep pitch" the source is read with the render's sinc at the position the markers give, the
+  kernel following the local speed; with it (or a pitch change) the item is cut into pieces of
+  near-constant speed run through the take's shifter and joined with short crossfades. Take pitch
+  envelopes (`PITCHENV`) go through the same pieces. Take channel modes (`CHANMODE`: normal,
+  reverse stereo, mono mix, left, right, any single channel or pair). Timebase: the project
+  (`TIMELOCKMODE`), a track or an item (`BEAT`) follow tempo edits by time, beats (position,
+  length and rate; items with stretch markers spread them instead) or beats position only, and
+  tempo markers keep their beat (`TEMPOENVLOCKMODE`); markers and track envelopes move along.
+  The project play rate (`PLAYRATE`, resampled or pitch-kept) speeds up playback and renders.
+  Stretch markers are drawn on items: drag to move one, Shift-drag to slide the source under
+  it, right-click to remove, W adds one at the cursor; the item card has channel mode and
+  timebase menus, and right-clicking the tempo sets the project timebase and play rate.
 - **Files**: lossless `.RPP` load/save, `<name>.RPP-bak` on save, auto-save every 5 minutes
   to `Backups/` (held while a song plays, up to 15 minutes, never while recording; the newest
   50 kept), media import (dialog and drag-and-drop), render to WAV (whole project, time
@@ -641,6 +654,12 @@ compare with scythe's output sample by sample:
 | Resample modes (`RENDER_RESAMPLE` 0–9): impulses up (44.1 → 48 kHz) and down (88.2 → 48 kHz) and white noise up (44.1 → 48 kHz) and down (48 → 44.1 kHz) per mode. Sinc: Blackman-Harris over 8/32/96 input frames each side read from a 32-step table (16/64/192 points), over 192/256/384 computed exactly (384/512/768 points); linear; point (the frame before the read position, so exact hits read the previous frame); linear plus an RBJ low-pass (Q 0.707) at 0.693 (one stage) or 0.792 (two stages) of the lower Nyquist frequency, run at the higher rate | within 5e-6 (35/36 cases); point sampling misses one frame of noise (REAPER reads the exact hit at 147 input frames the other way); r8brain (mode 10) is the next row |
 | r8brain free (`RENDER_RESAMPLE 10`), a Rust implementation of r8brain-free-src 6.x (MIT, Aleksey Vaneev) with its `CDSPResampler` defaults: 2 % transition band, 206.91 dB attenuation, linear phase. Found by sweeping the two settings against impulse renders (TB 1/2/3, 136.45/180.15/206.91 dB: only 2/206.91 nulls). Impulses 44.1 → 48 and 88.2 → 48 kHz, noise for 31 rate pairs from 8 to 192 kHz covering every stage r8brain picks (2x/3x FFT convolution, whole-step and spline fractional interpolation, intermediate interpolation, half-band up- and downsamplers) | within 1e-7 (33/33) |
 | Play rates without "Keep pitch" (0.5, 0.9, 1.5) in resample modes 0, 1, 3, 4 and 10, and from a 44.1 kHz file in a 48 kHz project: REAPER resamples by the play rate with the render's mode, the same conversion as from the file's rate times the play rate (output frame `j` reads the source at `j * rate`) | within 1e-5 (17/18); the 384-point sinc at 0.9 within 3e-5 |
+| Take channel modes (`CHANMODE` 0-9, 64-70, 130-132) on mono, stereo and 4-channel files: normal, reverse, mono mix (the first two channels averaged), single channels (3 and up: channel `code - 2`, both sides) and pairs (67 and up: from channel `code - 66`, silent past the file's channels; a mono file counts as two equal channels) | exact (60/60) |
+| Stretch markers without "Keep pitch", read from ramp and tone renders: positions are take time (item time times the play rate), sources replace `SOFFS`, rate 1 before the first and after the last marker, a slope ramps the rate linearly from `1 - slope` to `1 + slope` times the segment's rate | rate 1: exact away from the markers (within 2e-8), REAPER's own glitches within a few ms after a marker, -32 dB residual overall; in some layouts REAPER's map is half a source frame later (-31 dB); at other play rates REAPER's map sits 30-120 source frames off after the second marker (envelopes still correlate 0.997); slopes: REAPER integrates the ramp in steps and lands short of the next marker (envelopes 0.93-0.97) |
+| Stretch markers with "Keep pitch" and take pitch envelopes, on resampled and pitch-kept takes (SoundTouch) | no null, as for stretched takes: envelopes correlate 0.91-0.94, spectra within 0.3-1.4 dB on average; élastique (the vocoder) 0.3-0.5 |
+| Project play rate 1.5 without "Keep pitch" (render length and content) | exact; with "Keep pitch" as stretched takes |
+| Timebase: Lua `SetTempoTimeSigMarker` halving the first tempo, adding a 90 bpm marker at 1 s and a linear ramp from 120 to 60 bpm, with the project on time, beats and beats position and items on each override, a track override, stretch markers, markers and regions | the same `D_POSITION`, `D_LENGTH`, `D_PLAYRATE`, stretch marker positions, marker and region positions and tempo marker times (tests run the same calls through the API and ReaScript) |
+| RPP round trip of `SM`, `CHANMODE`, `PITCHENV`, item and track `BEAT`, `TIMELOCKMODE`, `TEMPOENVLOCKMODE` and project `PLAYRATE` | lines kept in place and rewritten from the model; REAPER's defaults when missing (beats, beat-locked tempo markers) |
 | SoundTouch and Rubber Band takes (sub-modes 0/1/2/6 and 0/1/2/4/8/16/32/48/144; rates 0.75 and 1.5, +5 semitones) through the system libraries (SoundTouch 2.4.1, Rubber Band 4.0.0), where REAPER ships SoundTouch 1.9.0 and Rubber Band 1.8 (KissFFT, Speex resampler) | no null: same pitch and length, signal envelopes correlate 0.91-0.98 (SoundTouch) and 0.99 (Rubber Band) with REAPER's, 115-333 samples apart; long-term spectra within 0.3-0.8 dB (the phase vocoder standing in for élastique and simple windowed: 1-4.7 dB). SoundTouch 2.x changed the algorithm: no shift of its output comes near REAPER's, while SoundTouch 1.9.0 driven the same way matches REAPER's sample for sample outside each sequence's overlap |
 | MP3 media items at their own rate: LAME-tagged (CBR, VBR, 44.1/48/32 kHz, mono, a 160 kbps LAME 3.92 crash cymbal), untagged, MPEG-2 (22.05/24 kHz mono and plain stereo, a 64 kbps 22.05 kHz joint-stereo file) | within 1e-6 (18/18 cases); REAPER plays the Xing/Info frame as 1152 (MPEG-2: 576) frames of silence, keeps encoder delay and padding, and scales by 32767/32768 |
 | MP3 mid/side stereo in MPEG-2 and 2.5 (LAME `-m j` and `-m f` at 8/11.025/16/22.05/24 kHz, CBR and VBR, a 22.05 kHz file mixing left/right and mid/side frames; `-m s`, `-m d`, mono and MPEG-1 `-m j`/`-m f` as controls). REAPER's decoder plays every mid/side granule of an LSF stream at exactly 1/sqrt(2) of the correct level (MPEG-1 is right): the mid/side factor is applied twice. Scythe lowers those granules' global gain by 2 steps before symphonia decodes them, which is the same scaling ahead of the IMDCT, so transitions between frame modes match too | within 1e-6 (14/14) |
@@ -806,6 +825,10 @@ compares the two files.
   Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
+- The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
+  it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
+  edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null
+  (see the table). Track timebase has no API or UI yet.
 - Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is
   proprietary and REAPER's simple windowed, Rrreeeaaa and ReaReaRea modes are its own, so they
   use Scythe's phase vocoder; SoundTouch and Rubber Band come from the system's libraries, newer
