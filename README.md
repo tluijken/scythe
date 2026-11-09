@@ -238,7 +238,8 @@ Working:
   channels play into channels 3 and up, sends take any channel pair (or one channel) to any
   pair of the destination (`AUXRECV` source and destination channels), folders carry every
   channel to their parent, a track can feed its parent from a channel offset (`MAINSEND`),
-  and ReaGate and ReaComp listen to channels 3/4 when their detector input says so (sidechain).
+  and ReaGate and ReaComp listen to the channels their detector input names (channels 3/4 for a
+  sidechain, stored as REAPER's UI stores it).
   Effects follow their pin maps (VST and VST 3 state headers, `<JS_PINMAP`, LV2's `<IN_PINS`
   and `<OUT_PINS`): input pins sum the channels mapped to them, output pins replace theirs,
   other channels pass through, and input pins 3/4 of a stereo effect are its sidechain (JSFX
@@ -461,8 +462,14 @@ Working:
   modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
   ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
   (the sampler receives the track's MIDI, live input and MIDI an earlier effect sends; musical
-  delay lengths follow the tempo map), as do
-  ReaGate, ReaComp and ReaLimit (lookahead, latency compensated). JSFX run from their own
+  delay lengths follow the tempo map), as do the dynamics: ReaComp (detector input, RMS,
+  detector low/high-pass and filter preview, pre-comp lookahead, soft and legacy knee, auto
+  make-up, auto release, classic attack, wet/dry), ReaGate (detector filters, RMS, hysteresis,
+  hold, pre-open, noise, wet/dry, both invert modes, MIDI note out), ReaLimit (10 ms lookahead,
+  its two-stage release) and ReaXcomp (any number of bands, feedback detector, band gains and
+  bypass, output gain), all latency compensated and modelled on REAPER 7.73 renders
+  (`scythe-engine/src/stock/`, one file per plugin, dispatched from a table of REAPER's VST
+  identities). JSFX run from their own
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
   user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
   bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
@@ -512,9 +519,10 @@ Working:
   run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
   next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
   installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
-  browser (equalizer, gate, compressor, delay, convolution reverb) with editable parameters, and
-  are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate, ReaComp, ReaDelay
-  and ReaVerb. Neural Amp Modeler
+  browser (equalizer, gate, compressor, delay, convolution reverb, limiter, multiband
+  compressor) with editable parameters (the inspector's parameter rows, `fx.params` and
+  `fx.set_param`), and are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate,
+  ReaComp, ReaDelay, ReaVerb, ReaLimit and ReaXcomp. Neural Amp Modeler
   slots (the LV2 plugin) run their `.nam` WaveNet models natively, with the stored input and
   output levels (all 310 models in `~/music/Samples/NAM` load; ~11× realtime per instance),
   at the model's own sample rate: like the plugin, a project at another rate is converted to
@@ -644,8 +652,8 @@ compare with scythe's output sample by sample:
 | JSFX arithmetic with NaN, infinities and subnormals: 394 expressions over 9 probes (assignment checks per operator and function, constant folding, simplifications, comparisons, integer conversions and shifts, `min`/`max`, user function parameters, memory, `loop`/`while` values) | exact |
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
-| Built-in effects written by scythe (EQ, delay, convolution) rendered by REAPER | identical (-130 dB); REAPER reads the stored states as its own ReaEQ/ReaDelay/ReaVerb |
-| ReaGate (threshold, hysteresis, attack, hold, release, pre-open), ReaComp (ratio up to infinite, attack, release, RMS window) and ReaLimit (threshold, ceiling, release), mono and stereo detection | within 1e-3, ReaComp's soft knee (a fit to REAPER's curve) within 2e-3 (19/20 cases) |
+| Built-in effects written by scythe rendered by REAPER (`builtin_ref`): EQ, delay and convolution, then gate, compressor, multiband compressor and limiter with parameters edited through Scythe | the whole chain within 7e-5 (-95 dB); REAPER reads the stored states as its own ReaEQ/ReaGate/ReaComp/ReaDelay/ReaVerb/ReaXcomp/ReaLimit |
+| Dynamics (`stock_ref`, 109 cases on tones, noise, drums, DC steps, level ramps, impulses and bursts, one parameter at a time, set by REAPER through `TrackFX_SetParam` or a state chunk): ReaComp (every parameter: ratio, attack, release, RMS, knee and legacy knee, pre-comp, detector filters and inputs, filter preview, auto make-up, auto release, classic attack, wet/dry), ReaGate (every parameter but noise, which is random: filters, RMS, hysteresis, hold, pre-open, invert modes, wet/dry, sidechain), ReaLimit (threshold, ceiling, release, isolated peaks, bursts, limiting on a limited level), ReaXcomp (crossovers, every band parameter, feedback detector, bands off, output gain); plus ReaGate's MIDI out turned into audio by a JSFX | ReaComp and ReaGate within 1.2e-7 (49 and 22 cases), ReaXcomp within 1.3e-4 (22), ReaLimit within 2.7e-4 (15 of 16; its "inf" release within 1.8e-2), MIDI notes at the same frames |
 | Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
 | Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels; VST, JSFX and LV2), JSFX with more pins (3-band splitter, 8-into-2 mixer, expander with sidechain) | exact (21 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
@@ -788,6 +796,14 @@ compares the two files.
 - EEL2: REAPER reorders constants in a chain of operators (`x * 30 / 255` runs as
   `x * (30 / 255)`, `x + 0.2 - 0.3` as `x + (0.2 - 0.3)`; parentheses keep the order), which
   can change the last bit of a result; Scythe keeps the written order.
+- Dynamics: ReaComp's auto release with a release under 4 ms (REAPER then floors the release
+  near 2.5 ms in a way not modelled) is within 5e-3, ReaLimit's "inf" release within 1.8e-2, and
+  ReaComp's deprecated anti-alias setting (2 and up, no longer in REAPER's UI) is ignored.
+  ReaLimit's true-peak flag (bit 0 of the word after the version) is read but not modelled.
+  ReaGate's noise is white noise of the same level and spectrum from Scythe's own generator, so
+  it cannot null. Multichannel modes of these plugins (beyond the stereo pair and a sidechain)
+  and gain-reduction metering are not there. ReaGate and ReaComp states written by Scythe
+  before this version carried a header REAPER ignores; they keep it until edited again.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
 - Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is
