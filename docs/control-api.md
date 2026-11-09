@@ -31,8 +31,8 @@ own, each limited to a role:
 | Role | Commands | Events |
 |---|---|---|
 | `admin` | all, MCP, `/api/files`, `/api/peaks` | all |
-| `musician` (one musician's mix, found by name) | `mix.list` (their mix alone), `mix.get`, `mix.level`, `mix.pan`, `mix.mute`, `mix.more_me`, `mix.volume` on their own mix; `transport.state`, `setlist.status`, `access.whoami`; `snapshot` answers `{"revision", "name", "transport", "access"}` | `meters` with only their mix in `mixes` (no tracks, no master), `project_changed` |
-| `stage` | `setlist.songs`, `list`, `get`, `export`, `status`, `select`, `cue`, `play`, `stop`, `next`, `previous`, `auto_advance`; `transport.play`, `transport.stop`, `transport.state`; `access.whoami`; the same short `snapshot` | `transport`, `setlist`, `project_changed` |
+| `musician` (one musician's mix, found by name) | `mix.list` (their mix alone), `mix.get`, `mix.level`, `mix.pan`, `mix.mute`, `mix.more_me`, `mix.volume`, `mix.click` on their own mix; `transport.state`, `setlist.status`, `access.whoami`; `snapshot` answers `{"revision", "name", "transport", "access"}` | `meters` with only their mix in `mixes` (no tracks, no master), `project_changed` |
+| `stage` | `setlist.songs`, `list`, `get`, `export`, `status`, `select`, `cue`, `play`, `stop`, `next`, `previous`, `auto_advance`, `count_in`; `transport.play`, `transport.stop`, `transport.state`, `transport.health`; `access.whoami`; the same short `snapshot` | `transport` (with the count-in), `setlist`, `health`, `project_changed` |
 
 Anything else answers `forbidden` (HTTP 403). The check runs on the session's thread for every
 command, from HTTP, the WebSocket or anything else, so a page cannot widen it. Without an admin
@@ -45,7 +45,7 @@ survive restarts and opening another project, and do not travel with a copied .R
 
 | Method | Path | |
 |---|---|---|
-| `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1, "token": true}` (`token`: whether the others need one), no token needed |
+| `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1, "token": true, "clients": 2}` (`token`: whether the others need one; `clients`: WebSockets connected), no token needed |
 | `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}` |
 | `GET` | `/api/snapshot` | the same as the `snapshot` command |
 | `GET` | `/api/peaks?item=…&width=…&from=…&to=…` | the same as `item.peaks` (`from` and `to` optional), for waveforms a browser can cache by address |
@@ -104,8 +104,52 @@ Every transport command answers with the transport state (see `transport` events
 | `transport.record` | | record the armed tracks; `failed` when nothing is armed |
 | `transport.seek` | `position` | move the edit cursor, and the playhead while playing |
 | `transport.loop` | `enabled?`, `start?`, `end?` | repeat on/off and/or the range it repeats (both ends) |
-| `transport.metronome` | `enabled` | |
+| `transport.metronome` | `enabled?`, `volume` or `db` (its level at its outputs; REAPER's default 0.25) | on or off, and its level; saved with the project, not an undo step |
+| `transport.metronome_output` | `output` (device output from 0, or `null` for the master's outputs), `mono?` | where the metronome plays: point it at a drummer's in-ear output and the audience hears no click |
+| `transport.count_in` | `playback?`, `record?`, `measures?` (above 0, up to 16) | count in before playback and/or recording |
+| `transport.health` | | the health state (below), not the transport state |
 | `transport.state` | | |
+
+A transport state:
+
+```json
+{"playing": true, "recording": false, "position": 120.0, "bar_beat": "61.1.00", "cursor": 120.0,
+ "loop_enabled": false, "loop_range": null, "metronome": false, "metronome_volume": 0.25,
+ "metronome_outputs": [{"output": 4, "mono": false}],
+ "count_in": {"playback": true, "record": false, "measures": 1.0, "position": -1.25, "beat": 2, "beats": 4}}
+```
+
+**Count-in.** With `playback` (or `record`) on, starting playback (or recording) first plays
+`measures` bars of metronome at the tempo and time signature where it starts, while the playhead
+waits at the start: `playing` is true, `position` stays put and `count_in.position` counts up
+from minus the count-in's length (in seconds) to 0, with `beat` of `beats` clicking. It clicks
+even with the metronome off; input monitoring and effects run on meanwhile, items wait. A
+setlist with `count_in` (see `setlist.count_in`) counts in every song it plays. The settings
+are REAPER's: `<METRONOME flags measures` in the project, flags 8 and 16 being "Count-in before
+playback" and "before recording".
+
+**Where the click goes.** `metronome_outputs` are REAPER's metronome hardware outputs
+(`METRONOMEOUT` lines after the `<METRONOME` chunk, coded like a hardware output's `I_DSTCHAN`);
+empty, the click plays with the master. A monitor mix can also take the click as a source of
+its own (`mix.click`), so each musician sets their own click level; that is Scythe's own
+(REAPER ignores it).
+
+A health state, also sent as the `health` event:
+
+```json
+{"device": "Scarlett 18i20 USB", "sample_rate": 48000, "block_size": 128, "buffer_ms": 2.67,
+ "output_latency_ms": 5.33, "cpu": 14.2, "cpu_peak": 31.0, "xruns": 0, "overloads": 0,
+ "status": "running", "reason": null, "reconnects": 0}
+```
+
+`cpu` is the time spent rendering over the time the buffer lasts, in percent (at 100 the audio
+drops out); `cpu_peak` the highest over the last seconds. `xruns` counts the underruns the
+device reported, `overloads` the callbacks that took longer than their audio. `status` is
+`silent` when no device plays: none was asked for, it was missing at the start or it went away
+(unplugged); `reason` says which. The session then plays on silently, so the transport,
+setlist and clients carry on, and looks for the device every five seconds; when it is back
+(`reconnects` goes up) playback continues through it and the inputs open again. Both changes
+also come as `notice` events.
 
 ### Project
 
@@ -182,6 +226,7 @@ so REAPER plays the mix the same.
 | `mix.volume` | `mix`, `volume` or `db` | the mix's own level |
 | `mix.output` | `mix`, `output` (from 0, or `null`), `mono?` | the mix |
 | `mix.limiter` | `mix`, `on?` | the mix |
+| `mix.click` | `mix`, `volume` or `db` (0 takes it out) | the mix; the metronome and every count-in as a source of the mix at its own level, before the mix's effects (Scythe only) |
 | `mix.add_source` | `mix`, `source`, `mode?` | the mix |
 | `mix.remove_source` | `mix`, `source` | the mix |
 | `mix.cue_bus` | `sources`, `name?`, `mode?`, `volumes_from_tracks?`, `pans_from_tracks?`, `output?`, `mono?` | the new bus as a track: SWS's "Create cue buss from track selection" |
@@ -191,7 +236,7 @@ A mix:
 ```json
 {"id": 20, "musician": "Drummer", "name": "MON Drummer", "color": "#a6e22e",
  "volume": 1.0, "volume_db": 0.0, "more_me": 6.0,
- "output": {"output": 2, "mono": false, "label": "Out 3/4"}, "limiter": true,
+ "output": {"output": 2, "mono": false, "label": "Out 3/4"}, "limiter": true, "click": 0.5,
  "sources": [{"track": 12, "name": "Kick", "color": "#66d9ef", "volume": 1.41,
               "volume_db": 3.0, "pan": 0.0, "muted": false, "mode": "post_fx", "own": true}]}
 ```
@@ -285,7 +330,7 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 |---|---|---|
 | `setlist.songs` | | `[{"index", "number", "guid", "name", "start", "end", "duration", "ends_at", "sections": [{"name", "position"}]}]`; `ends_at` is `stop_marker`, `next_song` or `project_end` |
 | `setlist.list` | | `{"setlists": [setlist…], "current", "auto_advance", "marker_actions"}` |
-| `setlist.get` | `setlist?` | `{"index", "name", "entries": [{"name", "guid", "song", "duration"}], "duration"}` (`song` is `null` when the project has no such song) |
+| `setlist.get` | `setlist?` | `{"index", "name", "entries": [{"name", "guid", "song", "duration"}], "duration", "count_in"}` (`song` is `null` when the project has no such song) |
 | `setlist.create` | `name?`, `songs?` | the setlist, which becomes the one played |
 | `setlist.rename` | `setlist?`, `name` | the setlist (a name already used gets a number) |
 | `setlist.duplicate` | `setlist?`, `name?` | the copy, placed after it |
@@ -301,7 +346,8 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 | `setlist.next`, `setlist.previous` | | status; cues the song when stopped, plays it when playing |
 | `setlist.auto_advance` | `enabled?` | status; after a song stops at its stop marker the next one is cued (not played) |
 | `setlist.marker_actions` | `enabled?` | status; whether crossing a `!` marker runs its actions |
-| `setlist.status` | | `{"setlist", "name", "playing", "current", "next", "elapsed", "remaining", "auto_advance", "marker_actions"}`; `current` and `next` are `{"entry", "name", "start", "duration"}`, `elapsed` and `remaining` are set while the current song plays |
+| `setlist.count_in` | `setlist?`, `enabled?` | the setlist; whether playing its songs counts in first (the project's count-in length, at the song's tempo), for bands whose drummer does not count |
+| `setlist.status` | | `{"setlist", "name", "playing", "current", "next", "elapsed", "remaining", "auto_advance", "marker_actions", "count_in"}`; `current` and `next` are `{"entry", "name", "start", "duration"}`, `elapsed` and `remaining` are set while the current song plays |
 
 ## The snapshot
 
@@ -312,7 +358,7 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
   "bars": [0.0, 2.0, 4.0, …],
   "undo": "Track volume", "redo": null,
   "transport": {"playing": false, "recording": false, "position": 0.0, "bar_beat": "1.1.00", "cursor": 0.0,
-                "loop_enabled": false, "loop_range": null, "metronome": false},
+                "loop_enabled": false, "loop_range": null, "metronome": false, …},
   "master": { "id": 0, "index": null, …same fields as a track… },
   "tracks": [{
     "id": 12, "index": 0, "guid": "{…}", "name": "Vox", "color": "#66d9ef",
@@ -343,11 +389,12 @@ runs (also across undo) but not across opening the project again; names and GUID
 
 | `event` | Fields | When |
 |---|---|---|
-| `transport` | the transport state | about 20 times a second while playing or recording, and whenever play state, cursor, loop or metronome change |
+| `transport` | the transport state | about 20 times a second while playing or recording, and whenever play state, cursor, loop, metronome or count-in settings change, and each count-in beat |
 | `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]`, `mixes` (the monitor mixes' own meters, same shape plus `musician`) | about 20 times a second; peaks as gain, falling back like the UI's meters |
 | `project_changed` | `revision` | after any change to the project, from any client or the UI; fetch a new snapshot when yours is older |
 | `notice` | `message` | what the UI shows as a toast: saved, could not open, recording started… |
 | `setlist` | the setlist status | when the setlist played, its current or next song, play state or options change (not as the song plays on; use `transport` for that) |
+| `health` | the health state | every second, and at once when xruns are counted or the device goes or comes back |
 
 ## Extending
 

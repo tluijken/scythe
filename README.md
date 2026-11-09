@@ -48,6 +48,15 @@ Ctrl+C or SIGTERM (writing unsaved changes to the project's `Backups` folder). F
 (where access links are kept), `--config FILE`, `--list-devices`. The same settings can live in `$XDG_CONFIG_HOME/scythe/headless.toml`
 (see `crates/scythe-server/src/config.rs`); flags win.
 
+For a rig that has to come up on its own, `scythe-server --install-service [project] [flags]`
+writes a systemd user unit running with those settings (`Restart=on-failure`, real-time
+priority and locked memory as far as the user's limits allow); `loginctl enable-linger`
+starts it at boot without anyone logging in. `scythe-server --status` asks the running session
+for its device, buffer, CPU load, xruns, reconnects and connected clients. A device that is
+unplugged mid-show leaves the session running silently (transport, setlist and clients carry
+on) while it looks for the device every five seconds and picks it up again. See
+[docs/live.md](docs/live.md) for the whole stage setup.
+
 The control API is JSON over HTTP (`POST /api/command`) and a WebSocket (`/api/ws`) that also
 streams transport, meter and project-changed events. It covers transport, project
 open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
@@ -80,8 +89,8 @@ needed on stage, no Node toolchain to build it):
 | Page | For |
 |---|---|
 | `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with waveforms on items (move, split, delete), markers and regions, a tempo lane (drag a tempo or time signature marker, double-tap to edit or add) and the tempo map, track headers, mixer with meters, sends, effects with their parameters, undo and redo, a file browser to open and save projects, monitor mixes (a wizard like the desktop one: musician, sources, own sources, output, limiter; copy, rename, delete, output, limiter, sources), setlists (make, rename, duplicate, delete, add songs, drag to reorder, import and export text, auto-advance) and access links with QR codes |
-| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, the mix's meter; nothing else of the session |
-| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap |
+| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, a click fader, the mix's meter; nothing else of the session |
+| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap, the count-in beats and a count-in switch |
 
 The monitor and setlist pages appear once the server offers monitor mixes (`mix.*`) and
 setlists (`setlist.*`); against an older server they say so instead.
@@ -203,7 +212,11 @@ Working:
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
   cursor, the bpm control edits the tempo in effect at the cursor.
-- **Metronome** (`C`), **recording** of armed tracks (`Ctrl+R`, mono or stereo inputs per the
+- **Metronome** (`C`; right-click the metronome button for count-in, level and output),
+  **count-in** before playback and/or recording (REAPER's metronome settings, saved in the
+  project's `<METRONOME` chunk) with the playhead waiting at the start, the click routed to a
+  chosen device output (REAPER's `METRONOMEOUT`) or into monitor mixes at each musician's own
+  level, **recording** of armed tracks (`Ctrl+R`, mono or stereo inputs per the
   track's REAPER input setting) and **input monitoring**: an armed track with monitoring on
   hears its input through its FX chain, also while stopped (play guitar through a NAM amp and
   a cab IR live). Inspector: `In 1` picks the input, `Mon` toggles monitoring. Recording with
@@ -264,7 +277,8 @@ Working:
   what is next up and big previous/play-stop/next buttons; `Enter` plays the current song from
   its marker, `N`/`P` move to the next/previous song (cueing it when stopped, playing it when
   playing), `Esc` stops. With auto-advance on, a song that stops at its stop marker cues the
-  next one without playing it. It runs in the session, so a headless server plays setlists
+  next one without playing it. With count-in on (per setlist) every song starts after a bar or
+  more of click at its own tempo, so the drummer need not count. It runs in the session, so a headless server plays setlists
   too, and the control API has a `setlist.*` domain (songs, editing, play/cue/next, status
   and a `setlist` event; see `docs/control-api.md`).
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
@@ -457,7 +471,8 @@ Working:
   the shifter falls short, latency kept. élastique (REAPER's default, proprietary) and REAPER's
   own simple windowed, Rrreeeaaa and ReaReaRea modes use Scythe's phase vocoder. Recordings are shifted by the input and output latency the audio device reports.
 - **Files**: lossless `.RPP` load/save, `<name>.RPP-bak` on save, auto-save every 5 minutes
-  to `Backups/`, media import (dialog and drag-and-drop), render to WAV (whole project, time
+  to `Backups/` (held while a song plays, up to 15 minutes, never while recording; the newest
+  50 kept), media import (dialog and drag-and-drop), render to WAV (whole project, time
   selection or stems from the action palette; headless with
   `scythe-app project.RPP --render=out.wav [--range=START-END]`), or with the project's own
   render settings like REAPER's `-renderproject` (`--render-project` or the palette): bounds
@@ -585,6 +600,7 @@ compare with scythe's output sample by sample:
 | FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
 | Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | 22/26 within 1e-3; the 4 others differ by Scythe's reading of volume envelopes written with `ScaleToEnvelopeMode` (also post-fader, so not the taps) |
 | Hardware outputs and monitor mixes written by Scythe (stereo and mono outputs, send modes, levels, pans, mutes, `P_EXT` values with spaces, a SWS-style pre-FX cue bus, a master output to 11/12) read back in REAPER through `GetTrackSendInfo_Value` and `P_EXT` | identical (33 lines) |
+| Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER, saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
@@ -597,7 +613,14 @@ compares the two files.
   SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other
   quirks were measured. Unlike SWS, a marker at the spot playback starts from or wraps to does
   not run, and markers just before a loop end are never skipped. The on/off option is not saved
-  (SWS keeps `MarkerActionsEnabled` in reaper.ini). Setlist songs start without a count-in.
+  (SWS keeps `MarkerActionsEnabled` in reaper.ini).
+- Count-in always ends exactly where playback starts; REAPER's "Start count-in at start of
+  measure" (`preroll` &8 in reaper.ini) and pre-roll (`preroll` &1/&2, `prerollmeas`) are not
+  followed, nor the default metronome output preference (`metronome_defout`). The click is
+  Scythe's own synthesised one at the metronome's primary volume; REAPER's click sounds,
+  patterns and secondary volume are kept in the project but not played. A count-in clicks with
+  the metronome off (REAPER then waits in silence), and counts in a song that starts mid-bar
+  from where it starts.
 
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
