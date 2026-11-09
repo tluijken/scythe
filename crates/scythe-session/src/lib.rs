@@ -482,6 +482,7 @@ impl Session {
     /// needs.
     pub fn sync(&mut self) {
         self.revision += 1;
+        self.project.resolve_automation_items();
         self.engine.sync(&self.project);
         let is_midi = |t: &scythe_core::Track| midi_input_channel(t.rec_input).is_some();
         let wants_midi = self.project.tracks.iter().any(|t| t.midi_out.is_some() || (t.armed && is_midi(t)))

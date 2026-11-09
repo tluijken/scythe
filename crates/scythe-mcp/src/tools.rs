@@ -6,7 +6,8 @@ use std::sync::OnceLock;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
-    customize::CustomizeCommand, fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand,
+    customize::CustomizeCommand, envelope::EnvelopeCommand, fx::FxCommand, groups::GroupCommand, items::ItemCommand,
+    markers::MarkerCommand,
     midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
     recording::RecordingCommand, render::RenderCommand, sends::SendCommand, setlist::SetlistCommand,
     surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
@@ -103,6 +104,7 @@ fn domains() -> Vec<Value> {
         schema::<RenderCommand>(),
         schema::<RecordingCommand>(),
         schema::<CustomizeCommand>(),
+        schema::<EnvelopeCommand>(),
     ]
 }
 
@@ -216,9 +218,9 @@ fn title(cmd: &str) -> String {
 /// Hints for clients deciding what to confirm with the user, judged by the action's name so
 /// that new domains get sensible ones too.
 fn annotations(cmd: &str) -> Value {
-    const READS: [&str; 15] = [
+    const READS: [&str; 16] = [
         "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
-        "peaks", "health", "devices",
+        "peaks", "health", "devices", "evaluate",
     ];
     // Opening or starting a project drops unsaved changes; saving overwrites a file.
     const DESTROYS: [&str; 6] = ["delete", "remove", "clear", "open", "new", "save"];

@@ -561,3 +561,119 @@ PARALLEL 1
         assert_eq!(c.container_params()[0].param, 3);
     }
 }
+
+/// An FX parameter envelope (`<PARMENV <param>[:<ident>] <min> <max> <default> "label"`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamEnvelope {
+    /// The parameter as REAPER spells it: its index, with a name after a colon for some.
+    pub spec: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    pub label: String,
+    /// Points in the parameter's own units; `range` is set to `(min, max)`.
+    pub envelope: crate::Envelope,
+}
+
+impl ParamEnvelope {
+    pub fn new(param: usize, min: f64, max: f64, default: f64, label: &str) -> Self {
+        let mut envelope = crate::Envelope::new(crate::EnvelopeKind::Volume);
+        envelope.range = Some((min, max));
+        Self { spec: param.to_string(), min, max, default, label: label.to_owned(), envelope }
+    }
+
+    /// The parameter's position in the effect's list (`bypass`, `wet` and `delta` have none).
+    pub fn param(&self) -> Option<usize> {
+        self.spec.split(':').next()?.parse().ok()
+    }
+
+    fn parse(c: &Chunk) -> Self {
+        let args = c.args();
+        let n = |i: usize, d: f64| args.get(i).and_then(|v| v.parse().ok()).unwrap_or(d);
+        let mut envelope = crate::rpp::project::parse_envelope(crate::EnvelopeKind::Volume, c);
+        let (min, max) = (n(1, 0.0), n(2, 1.0));
+        envelope.range = Some((min, max));
+        Self {
+            spec: args.first().cloned().unwrap_or_default(),
+            min,
+            max,
+            default: n(3, min),
+            label: args.get(4).cloned().unwrap_or_default(),
+            envelope,
+        }
+    }
+
+    fn write(&self) -> Chunk {
+        let fmt = crate::rpp::fmt_num;
+        let mut env = self.envelope.clone();
+        if let Some(raw) = env.raw.as_mut() {
+            raw.header = join_tokens([
+                "PARMENV".to_owned(),
+                self.spec.clone(),
+                fmt(self.min),
+                fmt(self.max),
+                fmt(self.default),
+                self.label.clone(),
+            ]);
+        }
+        let mut c = crate::rpp::project::write_envelope_named(&env, "PARMENV");
+        if env.raw.is_none() {
+            c.header = join_tokens([
+                "PARMENV".to_owned(),
+                self.spec.clone(),
+                fmt(self.min),
+                fmt(self.max),
+                fmt(self.default),
+                self.label.clone(),
+            ]);
+        }
+        c
+    }
+}
+
+impl FxSlot {
+    /// The slot's parameter envelopes, in the order they are stored.
+    pub fn parameter_envelopes(&self) -> Vec<ParamEnvelope> {
+        self.raw
+            .iter()
+            .filter_map(|n| match n {
+                Node::Chunk(c) if c.name() == "PARMENV" => Some(ParamEnvelope::parse(c)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn parameter_envelope(&self, spec_or_param: &str) -> Option<ParamEnvelope> {
+        self.parameter_envelopes().into_iter().find(|e| same_param(&e.spec, spec_or_param))
+    }
+
+    /// Stores `env` in place of the slot's envelope for the same parameter, or adds it before
+    /// the slot's closing `WAK` line.
+    pub fn set_parameter_envelope(&mut self, env: &ParamEnvelope) {
+        let chunk = Node::Chunk(env.write());
+        let at = self.raw.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "PARMENV" && c.args().first().is_some_and(|s| same_param(s, &env.spec))));
+        match at {
+            Some(i) => self.raw[i] = chunk,
+            None => {
+                let wak = self
+                    .raw
+                    .iter()
+                    .position(|n| matches!(n, Node::Line(l) if line_key(l) == "WAK"))
+                    .unwrap_or(self.raw.len());
+                self.raw.insert(wak, chunk);
+            }
+        }
+    }
+
+    pub fn remove_parameter_envelope(&mut self, spec: &str) -> bool {
+        let before = self.raw.len();
+        self.raw.retain(|n| !matches!(n, Node::Chunk(c) if c.name() == "PARMENV" && c.args().first().is_some_and(|s| same_param(s, spec))));
+        self.raw.len() != before
+    }
+}
+
+/// Whether two `PARMENV` parameter spellings name the same parameter (`3` and `3:_Gain`).
+fn same_param(a: &str, b: &str) -> bool {
+    let head = |s: &str| s.split(':').next().unwrap_or("").to_owned();
+    a == b || (head(a) == head(b) && !head(a).is_empty() && head(a).parse::<usize>().is_ok())
+}

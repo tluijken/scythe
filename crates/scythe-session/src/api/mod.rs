@@ -5,6 +5,7 @@
 //! variant and a line in each of [`Command`]'s two `match`es.
 
 pub mod customize;
+pub mod envelope;
 pub mod events;
 pub mod fx;
 pub mod groups;
@@ -57,6 +58,7 @@ pub enum Command {
     Render(render::RenderCommand),
     Recording(recording::RecordingCommand),
     Customize(customize::CustomizeCommand),
+    Envelope(envelope::EnvelopeCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -95,6 +97,7 @@ impl<'de> Deserialize<'de> for Command {
             "mix" => serde_json::from_value(value).map(Command::Mix),
             "setlist" => serde_json::from_value(value).map(Command::Setlist),
             "tempo" => serde_json::from_value(value).map(Command::Tempo),
+            "envelope" => serde_json::from_value(value).map(Command::Envelope),
             "surface" => serde_json::from_value(value).map(Command::Surface),
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             "render" => serde_json::from_value(value).map(Command::Render),
@@ -126,6 +129,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Render(c) => render::execute(session, c),
         Command::Recording(c) => recording::execute(session, c),
         Command::Customize(c) => customize::execute(session, c),
+        Command::Envelope(c) => envelope::execute(session, c),
     }
 }
 

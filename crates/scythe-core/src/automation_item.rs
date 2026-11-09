@@ -661,8 +661,10 @@ mod tests {
         }
         p.global_automation = None;
         p.tracks[0].envelopes[0].items[0].position = 3.0;
+        p.tracks[0].envelopes[0].points.push(EnvPoint::new(2.0, 0.5));
         let saved = crate::rpp::project_to_rpp(&p);
         assert!(saved.contains("GLOBAL_AUTO -1") && saved.contains("POOLEDENVINST 1 3 2 "), "{saved}");
+        assert!(saved.contains("\n      PT 2 0.5 0\n"), "{saved}");
     }
 
     #[test]

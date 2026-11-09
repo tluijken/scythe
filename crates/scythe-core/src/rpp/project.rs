@@ -654,14 +654,18 @@ fn write_hw_outs(c: &mut Chunk, outs: &[HwOut], key: &str) {
 }
 
 /// `PT <time> <value> <shape> <?> <selected> <?> <bezier tension>`.
-fn parse_envelope(kind: EnvelopeKind, c: &Chunk) -> Envelope {
-    let mut env = Envelope::new(kind);
+pub(crate) fn parse_envelope(kind: EnvelopeKind, c: &Chunk) -> Envelope {
+    let mut env = Envelope { armed: false, ..Envelope::new(kind) };
     for node in &c.children {
         let Node::Line(l) = node else { continue };
         let t = tokenize(l);
         match t[0].as_str() {
             "ACT" => env.active = flag(&t, 1),
-            "VIS" => env.visible = flag(&t, 1),
+            "VIS" => {
+                env.visible = flag(&t, 1);
+                env.in_lane = t.len() < 3 || flag(&t, 2);
+            }
+            "ARM" => env.armed = flag(&t, 1),
             "VOLTYPE" => env.fader_scaled = kind.is_volume() && num(&t, 1, 0.0) as i64 == 1,
             "POOLEDENVINST" => env.items.push(crate::automation_item::AutomationItem::parse(&t)),
             "PT" => env.points.push(EnvPoint {
@@ -684,7 +688,7 @@ fn write_envelope(env: &Envelope) -> Chunk {
 
 /// Writes an envelope under `name` when it has no original chunk (send and take envelopes
 /// share the track kinds but not their chunk names).
-fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
+pub(crate) fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
     let mut c = env.raw.clone().unwrap_or_else(|| {
         let mut c = Chunk::new(name, &[]);
         c.line(["EGUID", &new_guid()]);
@@ -704,10 +708,17 @@ fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
     for node in &mut c.children {
         if let Node::Line(l) = node {
             let key = line_key(l);
-            if key == "ACT" || key == "VIS" {
+            if matches!(key, "ACT" | "VIS" | "ARM") {
                 let mut t = tokenize(l);
                 t.resize(t.len().max(2), "0".into());
-                t[1] = bit(if key == "ACT" { env.active } else { env.visible });
+                t[1] = bit(match key {
+                    "ACT" => env.active,
+                    "VIS" => env.visible,
+                    _ => env.armed,
+                });
+                if key == "VIS" && t.len() >= 3 {
+                    t[2] = bit(env.in_lane);
+                }
                 *l = super::join_tokens(t);
             }
         }
@@ -718,7 +729,7 @@ fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
             set.push((7, fmt_num(t)));
         }
         Node::Line(super::join_tokens(line_from(
-            &LineMemo::from([("PT".to_owned(), p.raw.clone())]),
+            &LineMemo::from_iter((!p.raw.is_empty()).then(|| ("PT".to_owned(), p.raw.clone()))),
             "PT",
             &["PT"],
             &set,

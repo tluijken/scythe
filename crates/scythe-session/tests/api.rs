@@ -1461,3 +1461,66 @@ fn recording_the_output_adds_a_take() {
     assert_eq!(t.items[1].active_take, 1);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn envelopes_take_points_shapes_and_automation_items() {
+    let mut s = session();
+    let t = add_track(&mut s, "Synth");
+    let at = |extra: Value| {
+        let mut v = json!({"track": t, "envelope": "volume"});
+        v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        v
+    };
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "volume", "time": 0.0, "value": 0.6}));
+    let env = ok(
+        &mut s,
+        at(json!({"cmd": "envelope.point_add", "time": 2.0, "value": 1.0, "shape": "bezier", "tension": 0.5})),
+    );
+    assert_eq!(env["points"][1]["shape"], "bezier");
+    ok(&mut s, at(json!({"cmd": "envelope.shape", "shape": "slow_start_end"})));
+    let env = ok(
+        &mut s,
+        at(
+            json!({"cmd": "envelope.item_add", "position": 1.0, "length": 2.0, "lfo": {"shape": "triangle", "cycles": 1}}),
+        ),
+    );
+    let pool = env["items"][0]["pool"].as_i64().unwrap();
+    ok(
+        &mut s,
+        json!({"cmd": "envelope.pool", "pool": pool, "points": [{"time": 0, "value": 0}, {"time": 2, "value": 1}]}),
+    );
+    let env = ok(&mut s, at(json!({"cmd": "envelope.item_duplicate", "index": 0, "pooled": true})));
+    assert_eq!((env["items"][1]["position"].as_f64(), env["items"][1]["pooled_copies"].as_u64()), (Some(3.0), Some(1)));
+    let v = ok(&mut s, at(json!({"cmd": "envelope.evaluate", "time": 2.0})));
+    assert!((v["value"].as_f64().unwrap() - 2.0).abs() < 1e-9, "{v}");
+    ok(&mut s, at(json!({"cmd": "envelope.item_edit", "index": 1, "baseline": 0.3, "amplitude": 0.5})));
+    let env = ok(&mut s, at(json!({"cmd": "envelope.item_unpool", "index": 1})));
+    assert_ne!(env["items"][1]["pool"].as_i64(), Some(pool));
+    let env = ok(&mut s, at(json!({"cmd": "envelope.item_delete", "index": 0, "keep_points": true})));
+    assert_eq!(env["items"].as_array().unwrap().len(), 1);
+    let o = ok(&mut s, json!({"cmd": "envelope.global_override", "mode": "bypass"}));
+    assert_eq!(o["mode"], "bypass");
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("GLOBAL_AUTO 6") && text.contains("<POOLEDENV") && text.contains("POOLEDENVINST"), "{text}");
+    let list = ok(&mut s, json!({"cmd": "envelope.list", "track": t}));
+    assert_eq!(list[0]["envelope"], "volume");
+    let bad = execute_json(&mut s, at(json!({"cmd": "envelope.point_edit", "index": 9}))).unwrap_err();
+    assert_eq!(bad.kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn fx_parameter_envelopes_are_created_and_edited() {
+    let mut s = session();
+    let t = add_track(&mut s, "Bus");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    let env = ok(&mut s, json!({"cmd": "envelope.set", "track": t, "envelope": "fx:0:1", "armed": true}));
+    assert_eq!(env["armed"], true);
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 0.25}));
+    let list = ok(&mut s, json!({"cmd": "envelope.list", "track": t}));
+    assert_eq!(list[0]["envelope"], "fx:0:1");
+    assert_eq!(list[0]["points"][0]["value"], 0.25);
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PARMENV 1 "), "{text}");
+    ok(&mut s, json!({"cmd": "envelope.remove", "track": t, "envelope": "fx:0:1"}));
+    assert!(ok(&mut s, json!({"cmd": "envelope.list", "track": t})).as_array().unwrap().is_empty());
+}

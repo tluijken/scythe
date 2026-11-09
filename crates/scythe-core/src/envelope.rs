@@ -92,6 +92,25 @@ impl EnvelopeKind {
         }
     }
 
+    /// The name the control API uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Volume => "volume",
+            Self::VolumePreFx => "volume_pre_fx",
+            Self::Trim => "trim",
+            Self::Pan => "pan",
+            Self::Mute => "mute",
+            Self::Width => "width",
+            Self::DualPanLeft => "dual_pan_left",
+            Self::DualPanRight => "dual_pan_right",
+            Self::Pitch => "pitch",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().chain([Self::Pitch]).find(|k| k.name() == name)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Volume => "Volume",
@@ -147,6 +166,18 @@ impl PointShape {
             5 => Self::Bezier(tension),
             _ => Self::Linear,
         }
+    }
+
+    pub const NAMES: [&'static str; 6] = ["linear", "square", "slow_start_end", "fast_start", "fast_end", "bezier"];
+
+    /// The name the control API uses.
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self.rpp_code() as usize]
+    }
+
+    pub fn from_name(name: &str, tension: f64) -> Option<Self> {
+        let code = Self::NAMES.iter().position(|n| *n == name)?;
+        Some(Self::from_rpp(code as i64, tension.clamp(-1.0, 1.0)))
     }
 
     pub fn rpp_code(self) -> i64 {
@@ -242,6 +273,10 @@ pub struct Envelope {
     pub kind: EnvelopeKind,
     pub active: bool,
     pub visible: bool,
+    /// Shown in a lane of its own rather than over the track (`VIS <visible> <in lane>`).
+    pub in_lane: bool,
+    /// Armed for writing (`ARM`): automation modes write only armed envelopes.
+    pub armed: bool,
     pub points: Vec<EnvPoint>,
     /// A volume envelope in fader scaling (`VOLTYPE 1`): it moves linearly in fader position
     /// rather than in gain between points. REAPER makes new volume envelopes so.
@@ -261,6 +296,8 @@ impl Envelope {
             kind,
             active: true,
             visible: true,
+            in_lane: true,
+            armed: true,
             points: Vec::new(),
             fader_scaled: false,
             range: None,
