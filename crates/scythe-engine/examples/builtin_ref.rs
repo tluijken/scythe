@@ -14,6 +14,17 @@ use scythe_engine::builtin::{Builtin, eq_state, reverb_state};
 
 const SR: u32 = 48000;
 
+/// A built-in with parameters set the way the UI sets them, saved as Scythe saves it.
+fn edited(builtin: Builtin, changes: &[(u32, f64)]) -> scythe_core::FxSlot {
+    let stock = builtin.stock();
+    let cx = scythe_engine::stock::StockContext { sample_rate: SR, project_dir: None };
+    let mut fx = (stock.create)(&builtin.default_state(), &cx).unwrap();
+    for &(id, value) in changes {
+        fx.set_param(id, value);
+    }
+    builtin.slot_with(&fx.save_state().unwrap())
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let dir = PathBuf::from(args.next().expect("work dir"));
@@ -35,15 +46,14 @@ fn main() {
     track.items[0].fade_in = scythe_core::Fade::new(0.0);
     track.items[0].fade_out = scythe_core::Fade::new(0.0);
     track.fx = vec![
-        Builtin::Gate.slot(),
+        edited(Builtin::Gate, &[(0, -30.0), (12, -6.0), (14, 5.0)]),
         Builtin::Eq.slot_with(&eq_state(&[(4, 120.0, 1.0, 0.8), (8, 2000.0, 2.0, 1.0), (1, 6000.0, 0.5, 0.8)])),
-        Builtin::Compressor.slot(),
+        edited(Builtin::Compressor, &[(0, -18.0), (14, 6.0), (15, 1.0), (16, 1.0)]),
         Builtin::Delay.slot(),
         Builtin::Reverb.slot_with(&reverb_state(Some(&ir), 0.5, 1.0)),
+        edited(Builtin::Multiband, &[(2, -20.0), (14, -20.0), (26, -20.0), (38, -20.0), (16, 6.0)]),
+        edited(Builtin::Limiter, &[(0, -6.0), (1, -1.0), (2, 30.0)]),
     ];
-    if std::env::var_os("EXACT_ONLY").is_some() {
-        track.fx.retain(|s| !s.name.contains("Gate") && !s.name.contains("Comp"));
-    }
     let mut project = Project { sample_rate: Some(SR), ..Project::default() };
     project.tracks.push(track);
     let out = dir.join("builtin.reaper.wav");

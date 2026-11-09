@@ -12,6 +12,8 @@ pub enum Builtin {
     Compressor,
     Delay,
     Reverb,
+    Limiter,
+    Multiband,
 }
 
 /// Default states as REAPER writes them for a freshly added instance.
@@ -19,9 +21,12 @@ const GATE_DEFAULT: &str = "776t3g3wrd6c0QczppvEOwrXozwAAAAAAAAAAAAAgD8AAAAAAAAA
 const COMP_DEFAULT: &str = "776t3g3wrd4AAIA/ED74PKabxDsK16M8AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAnNEHMwAAgD8AAAAAzcxMPQAAAAAAAAAAAAAAAAAAgD4AAAAAAAAAAAAAAAA=";
 const DELAY_DEFAULT: &str =
     "AAAAAAAAAAABAAAALAAAAAIAAAAAAAAAQwIAPwAAgD8AAAAAAACAPwAAAAAAAAA8nNEHMwAAgD8AAAAAAACAPwAAgD8AAIA/AAAAPw==";
+const LIMIT_DEFAULT: &str = "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAACAAAAAAAAAAAAAD+fduMQw8Y/";
+const XCOMP_DEFAULT: &str = "OAAAAAQAAAAAAAAAAABpQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAAAAAAAQI9AAAAAAAAA8D8AAAAAAADwPwAAAAAAAABAAAAAAAAAAAAPAAAAlgAAAAUAAAARAAAAAAAAAACIs0AAAAAAAADwPwAAAAAAAPA/AAAAAAAAAEAAAAAAAAAAAA8AAACWAAAABQAAABEAAAAAAAAAAHDXQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAEAAAABAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAgAAAA==";
 
 impl Builtin {
-    pub const ALL: [Builtin; 5] = [Self::Eq, Self::Gate, Self::Compressor, Self::Delay, Self::Reverb];
+    pub const ALL: [Builtin; 7] =
+        [Self::Eq, Self::Gate, Self::Compressor, Self::Delay, Self::Reverb, Self::Limiter, Self::Multiband];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -30,6 +35,8 @@ impl Builtin {
             Self::Compressor => "Compressor",
             Self::Delay => "Delay",
             Self::Reverb => "Convolution reverb",
+            Self::Limiter => "Limiter",
+            Self::Multiband => "Multiband compressor",
         }
     }
 
@@ -41,6 +48,8 @@ impl Builtin {
             Self::Compressor => "ReaComp",
             Self::Delay => "ReaDelay",
             Self::Reverb => "ReaVerb",
+            Self::Limiter => "ReaLimit",
+            Self::Multiband => "ReaXcomp",
         };
         crate::stock::by_name(name).expect("built-ins are stock plugins")
     }
@@ -55,6 +64,8 @@ impl Builtin {
             Self::Compressor => b64.decode(COMP_DEFAULT).unwrap(),
             Self::Delay => b64.decode(DELAY_DEFAULT).unwrap(),
             Self::Reverb => reverb_state(None, 0.25, 1.0),
+            Self::Limiter => b64.decode(LIMIT_DEFAULT).unwrap(),
+            Self::Multiband => b64.decode(XCOMP_DEFAULT).unwrap(),
         }
     }
 
@@ -69,7 +80,12 @@ impl Builtin {
         let display = stock.display();
         let id = format!("{}<{}>", stock.vst_id, stock.guid);
         let mut chunk = Chunk::new("VST", &[&display, stock.file, "0", "", &id, ""]);
-        for line in vst_lines(stock.vst_id, state) {
+        let lines = if matches!(self, Self::Gate | Self::Compressor) {
+            sidechain_vst_lines(stock.vst_id, state)
+        } else {
+            vst_lines(stock.vst_id, state)
+        };
+        for line in lines {
             chunk.line([line]);
         }
         FxSlot {
@@ -83,6 +99,31 @@ impl Builtin {
             ],
         }
     }
+}
+
+/// The state block REAPER writes for ReaGate and ReaComp: four input pins (the last two the
+/// sidechain, magic 0xfeed5eef), and the first flag word 0, which marks the data as the plugin's
+/// parameters. REAPER ignores these states when written like other plugins'.
+pub fn sidechain_vst_lines(unique_id: u32, chunk: &[u8]) -> Vec<String> {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut h = Vec::new();
+    h.extend(unique_id.to_le_bytes());
+    h.extend(0xfeed_5eef_u32.to_le_bytes());
+    h.extend(4u32.to_le_bytes());
+    for mask in [1u64, 2, 4, 8] {
+        h.extend(mask.to_le_bytes());
+    }
+    h.extend(2u32.to_le_bytes());
+    for mask in [1u64, 2] {
+        h.extend(mask.to_le_bytes());
+    }
+    h.extend((chunk.len() as u32).to_le_bytes());
+    h.extend(0u32.to_le_bytes());
+    h.extend(0x0010_0000u32.to_le_bytes());
+    let mut lines = vec![b64.encode(&h)];
+    lines.extend(b64.encode(chunk).as_bytes().chunks(128).map(|c| String::from_utf8_lossy(c).into_owned()));
+    lines.push(b64.encode(b"\0Program 1\0\x10\0\0\0"));
+    lines
 }
 
 /// REAPER's VST state block: a header (id, magic, two stereo pin maps, chunk size), the plugin
