@@ -3,8 +3,12 @@
 //! one it asks RealtimeKit over the system D-Bus, as PipeWire does. Promotion happens on a
 //! helper thread, so the audio thread only hands over its id and never waits; when neither
 //! works the audio plays on at normal priority and the reason is printed once.
+//!
+//! RealtimeKit grants priority only under a CPU-time limit (`RLIMIT_RTTIME`). Its soft limit
+//! is kept below the hard one, so a block that runs past it raises `SIGXCPU`, which drops the
+//! promoted threads back to normal priority, instead of reaching the hard limit's `SIGKILL`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Mutex, OnceLock};
 
@@ -35,10 +39,16 @@ impl Realtime {
 static PROMOTER: OnceLock<SyncSender<libc::pid_t>> = OnceLock::new();
 static STATUS: Mutex<Option<Realtime>> = Mutex::new(None);
 
+/// Threads promoted so far, demoted together when the CPU-time limit is hit.
+static PROMOTED: [AtomicI32; 8] = [const { AtomicI32::new(0) }; 8];
+static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
+static DEMOTED: AtomicBool = AtomicBool::new(false);
+
 /// Starts promoting the threads that [`request`] names. Without it (tests, offline renders)
 /// audio threads keep their normal priority.
 pub fn enable() {
     PROMOTER.get_or_init(|| {
+        catch_cpu_limit();
         let (tx, rx) = sync_channel(4);
         std::thread::Builder::new()
             .name("scythe-realtime".into())
@@ -58,13 +68,56 @@ pub fn request() {
 
 /// How the last thread that asked is scheduled, once it has been looked at.
 pub fn status() -> Option<Realtime> {
-    STATUS.lock().ok().and_then(|s| s.clone())
+    let status = STATUS.lock().ok().and_then(|s| s.clone())?;
+    if DEMOTED.load(Ordering::Relaxed) {
+        return Some(Realtime {
+            policy: "SCHED_OTHER",
+            priority: 0,
+            via: "none",
+            reason: Some("demoted after a block ran past the real-time CPU-time limit".into()),
+        });
+    }
+    Some(status)
+}
+
+fn catch_cpu_limit() {
+    // SAFETY: the handler only makes async-signal-safe system calls and reads atomics.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = on_cpu_limit as *const () as libc::sighandler_t;
+        action.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGXCPU, &action, std::ptr::null_mut());
+    }
+}
+
+extern "C" fn on_cpu_limit(_: libc::c_int) {
+    // The kernel would SIGKILL a thread that keeps running real-time up to the hard limit;
+    // under normal priority the limit no longer applies.
+    let param = libc::sched_param { sched_priority: 0 };
+    for slot in &PROMOTED {
+        let tid = slot.load(Ordering::Relaxed);
+        if tid > 0 {
+            // SAFETY: sched_setscheduler is a plain system call; a thread that is gone gives ESRCH.
+            unsafe { libc::sched_setscheduler(tid, libc::SCHED_OTHER | libc::SCHED_RESET_ON_FORK, &param) };
+        }
+    }
+    DEMOTED.store(true, Ordering::Relaxed);
+}
+
+fn remember_promoted(tid: libc::pid_t) {
+    let slot = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % PROMOTED.len();
+    PROMOTED[slot].store(tid, Ordering::Relaxed);
+    DEMOTED.store(false, Ordering::Relaxed);
 }
 
 fn promoter(rx: Receiver<libc::pid_t>) {
     let warned = AtomicBool::new(false);
     while let Ok(tid) = rx.recv() {
         let status = promote(tid);
+        if matches!(status.via, "direct" | "rtkit") {
+            remember_promoted(tid);
+        }
         if let Some(reason) = &status.reason
             && !warned.swap(true, Ordering::Relaxed)
         {
@@ -151,8 +204,7 @@ fn set_fifo(tid: libc::pid_t, limit: libc::rlim_t) -> Result<(), String> {
 }
 
 /// Asks RealtimeKit for its highest priority for thread `tid`. RealtimeKit only serves
-/// processes whose `RLIMIT_RTTIME` is at most its own limit; the soft limit is set equal to the
-/// hard one, as a soft limit below it would send SIGXCPU, ending the process on one long block.
+/// processes whose hard `RLIMIT_RTTIME` is at most its own limit.
 fn rtkit(tid: libc::pid_t) -> Result<(), String> {
     let err = |e: zbus::Error| e.to_string();
     let conn = zbus::blocking::Connection::system().map_err(err)?;
@@ -172,19 +224,24 @@ fn rtkit(tid: libc::pid_t) -> Result<(), String> {
     // SAFETY: getrlimit and setrlimit only read and write `limit`.
     unsafe {
         libc::getrlimit(libc::RLIMIT_RTTIME, &mut limit);
-        let max = max_rttime as libc::rlim_t;
-        if limit.rlim_max == libc::RLIM_INFINITY || limit.rlim_max > max || limit.rlim_cur != limit.rlim_max {
-            let capped = limit.rlim_max.min(max);
-            let new = libc::rlimit { rlim_cur: capped, rlim_max: capped };
-            if libc::setrlimit(libc::RLIMIT_RTTIME, &new) != 0 {
-                return Err(format!("RLIMIT_RTTIME: {}", std::io::Error::last_os_error()));
-            }
+        let new = rttime_limit(limit.rlim_max, max_rttime as libc::rlim_t);
+        if (new.rlim_cur, new.rlim_max) != (limit.rlim_cur, limit.rlim_max)
+            && libc::setrlimit(libc::RLIMIT_RTTIME, &new) != 0
+        {
+            return Err(format!("RLIMIT_RTTIME: {}", std::io::Error::last_os_error()));
         }
     }
     // SAFETY: getpid has no preconditions.
     let pid = unsafe { libc::getpid() } as u64;
     kit.call_method("MakeThreadRealtimeWithPID", &(pid, tid as u64, max_priority as u32)).map_err(err)?;
     Ok(())
+}
+
+/// The `RLIMIT_RTTIME` to run under: a hard limit RealtimeKit accepts, and a soft one at three
+/// quarters of it so the soft limit's SIGXCPU comes well before the hard limit's SIGKILL.
+fn rttime_limit(hard: libc::rlim_t, kit_max: libc::rlim_t) -> libc::rlimit {
+    let hard = hard.min(kit_max);
+    libc::rlimit { rlim_cur: hard / 4 * 3, rlim_max: hard }
 }
 
 #[cfg(test)]
@@ -203,6 +260,14 @@ mod tests {
         }
         let (policy, priority) = scheduling(current_tid());
         assert_eq!((policy, priority), ("SCHED_OTHER", 0), "only the thread asked for is promoted");
+    }
+
+    #[test]
+    fn the_soft_cpu_limit_stays_below_the_hard_one() {
+        let unlimited = rttime_limit(libc::RLIM_INFINITY, 200_000);
+        assert_eq!((unlimited.rlim_cur, unlimited.rlim_max), (150_000, 200_000));
+        let lower = rttime_limit(40_000, 200_000);
+        assert_eq!((lower.rlim_cur, lower.rlim_max), (30_000, 40_000));
     }
 
     #[test]

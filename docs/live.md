@@ -55,8 +55,9 @@ desktop distributions and PipeWire setups run) grants over the system D-Bus, usu
 20. Without either the session plays on at normal priority and says so once in its log.
 `--status` (and the `health` event's `realtime`) shows what it got, e.g.
 `scheduling: SCHED_RR 20 (rtkit)`. Through RealtimeKit the process gets a CPU-time limit
-(`RLIMIT_RTTIME`, 200 ms by default): a block that renders that long without a break ends the
-process, which the service then restarts.
+(`RLIMIT_RTTIME`, 200 ms by default). Scythe sets its soft limit at three quarters of that, so a
+block that renders 150 ms without a break raises `SIGXCPU` and the audio threads drop back to
+normal priority (the `health` event then says so) before the hard limit would kill the process.
 
 The unit asks for real-time priority (`LimitRTPRIO`, at most 95) and unlimited locked memory
 (`LimitMEMLOCK`) only as far as the user's hard limits allow when it is written, because a user
