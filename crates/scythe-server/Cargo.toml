@@ -12,6 +12,7 @@ path = "src/main.rs"
 scythe-core.workspace = true
 scythe-engine.workspace = true
 scythe-session.workspace = true
+scythe-mcp.workspace = true
 axum.workspace = true
 futures-util.workspace = true
 libc.workspace = true

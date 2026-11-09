@@ -30,6 +30,7 @@ files. There is no TLS; put a reverse proxy in front for anything beyond a trust
 | `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}` |
 | `GET` | `/api/snapshot` | the same as the `snapshot` command |
 | `GET` | `/api/ws` | WebSocket: commands in, replies and events out |
+| `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md) |
 
 Errors answer `{"ok": false, "error": {"kind": …, "message": …}}` with HTTP status 400 for
 `invalid` (malformed, unknown command, value out of range), 404 for `not_found` (a track, send,
@@ -177,7 +178,7 @@ Effects are numbered from 0 per chain; `track` may be `"master"`.
 | `cmd` | Arguments | Answer |
 |---|---|---|
 | `fx.list` | `track` | `[{"index", "name", "enabled", "running"}]` (`running`: processing audio, not passed through) |
-| `fx.catalog` | | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
+| `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case) | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
 | `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`, or exact name), `index?` | the chain |
 | `fx.remove` | `track`, `index` | the chain |
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |
@@ -297,8 +298,11 @@ command enum (`#[serde(tag = "cmd")]`, variants renamed `domain.action`) and an 
 function. A new domain needs a module, a variant of `api::Command` and one line in each of
 its two `match`es (parsing by domain prefix and dispatching). Commands change the project with
 `Session::edit` (one undo step) or `Session::edit_merging` (continuous controls), so the UI,
-undo and `project_changed` events follow without more work.
+undo and `project_changed` events follow without more work. MCP clients reach a new domain
+through `scythe_command` at once; deriving `JsonSchema` on its command enum and listing it in
+`crates/scythe-mcp/src/tools.rs` turns its commands into tools of their own.
 
 The server side is `crates/scythe-server`: `ControlServer::start` binds, runs axum on a thread
 and tokio runtime of its own, and returns a `ControlPump` that the thread owning the session
-calls (`pump` every frame, or `wait` in a loop) to run commands and publish events.
+calls (`pump` every frame, or `wait` in a loop) to run commands and publish events. The same
+server answers MCP at `/mcp` with `scythe-mcp`'s `McpServer`.

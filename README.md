@@ -53,6 +53,23 @@ open/save/undo, tracks, sends, effects and their parameters, items and markers, 
 `--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
 Binding beyond localhost without a token prints a warning.
 
+### AI agents (MCP)
+
+```sh
+devbox run -- scripts/cargo.sh build --release -p scythe-mcp
+claude mcp add scythe -- $PWD/target/release/scythe-mcp --url http://127.0.0.1:8770
+claude mcp add --transport http scythe http://127.0.0.1:8770/mcp   # or without the binary
+```
+
+Scythe is an [MCP](docs/mcp.md) server, so Claude Code, Claude Desktop and other agents can
+read and edit a running session: a compact project overview (`get_project`), transport,
+project open/save/undo, tracks, sends, effects (catalog search and parameters), items and
+markers, plus `scythe_command` for any control API command. Every Scythe serving the control
+API answers MCP over Streamable HTTP at `/mcp`; the `scythe-mcp` binary serves stdio, bridging
+to a running Scythe (`--url`, `--token`) or running a session of its own (`--headless
+song.RPP`). Tool schemas are generated from the API's command types; deleting, opening,
+starting a new project and saving are marked destructive for clients to confirm.
+
 ## Layout
 
 | Crate | Contents |
@@ -61,7 +78,8 @@ Binding beyond localhost without a token prints a warning.
 | `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia, with REAPER's MP3 framing) and REAPER's resample modes, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
-| `scythe-server` | Control API over HTTP and WebSocket (axum), the headless runner and its config, the `scythe-server` binary |
+| `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the headless runner and its config, the `scythe-server` binary |
+| `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts; the `scythe-mcp` stdio binary |
 | `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), plugin editor windows, ReaScript, demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back

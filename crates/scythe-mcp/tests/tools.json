@@ -1,0 +1,1799 @@
+[
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "A compact overview of the open project: file, tempo, transport, undo state, the master and every track (id, name, level, pan, mute/solo/arm, effects, sends, items) and the markers. Start here: tools name tracks by the ids and names it shows. Times are in seconds.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "description": "`summary` (default): a few lines per track. `json`: the full snapshot, which can be large.",
+          "enum": [
+            "summary",
+            "json"
+          ],
+          "type": "string"
+        },
+        "items": {
+          "default": false,
+          "description": "List every item (media clip) under its track, with its id, position and length.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "get_project",
+    "title": "Project overview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Starts playback from the edit cursor; nothing happens while playing.\n\nControl API command `transport.play`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_play",
+    "title": "Transport play"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stops and leaves the edit cursor where playback was.\n\nControl API command `transport.pause`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_pause",
+    "title": "Transport pause"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stops (ending a recording) and returns to the edit cursor.\n\nControl API command `transport.stop`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_stop",
+    "title": "Transport stop"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Starts recording the armed tracks; `transport.stop` ends it.\n\nControl API command `transport.record`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_record",
+    "title": "Transport record"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the edit cursor, and the playhead while playing.\n\nControl API command `transport.seek`.",
+    "inputSchema": {
+      "properties": {
+        "position": {
+          "description": "Seconds from the start of the project.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "position"
+      ],
+      "type": "object"
+    },
+    "name": "transport_seek",
+    "title": "Transport seek"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Turns repeat on or off and/or sets the range it repeats.\n\nControl API command `transport.loop`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "end": {
+          "default": null,
+          "description": "Seconds; give `start` with it.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "start": {
+          "default": null,
+          "description": "Seconds; give `end` with it.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "transport_loop",
+    "title": "Transport loop"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Turns the metronome (click) on or off.\n\nControl API command `transport.metronome`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "name": "transport_metronome",
+    "title": "Transport metronome"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Play state, playhead and edit cursor, loop and metronome.\n\nControl API command `transport.state`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_state",
+    "title": "Transport state"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Opens an .RPP project, dropping unsaved changes to the current one.\n\nControl API command `project.open`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "A path on the machine running Scythe.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "project_open",
+    "title": "Project open"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Saves to `path`, or to the project's own file; an existing file is overwritten.\n\nControl API command `project.save`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "default": null,
+          "description": "A path on the machine running Scythe.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "project_save",
+    "title": "Project save"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Starts an empty project; unsaved changes are dropped.\n\nControl API command `project.new`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "project_new",
+    "title": "Project new"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Undoes the last change, from any client or the UI.\n\nControl API command `project.undo`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "project_undo",
+    "title": "Project undo"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Redoes the last undone change.\n\nControl API command `project.redo`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "project_redo",
+    "title": "Project redo"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every track with its level, pan, flags, effects, sends and items.\n\nControl API command `track.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "track_list",
+    "title": "Track list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One track, or the master.\n\nControl API command `track.get`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_get",
+    "title": "Track get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a track at `index` (at the end when left out) and answers with it.\n\nControl API command `track.add`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "description": "Position from the top, counted from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "\"Track N\" when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "track_add",
+    "title": "Track add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the track with its items, effects and sends.\n\nControl API command `track.delete`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_delete",
+    "title": "Track delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs `track.rename`.\n\nControl API command `track.rename`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "track_rename",
+    "title": "Track rename"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the track to position `index` from the top.\n\nControl API command `track.move`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "The new position, counted from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "track_move",
+    "title": "Track move"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the fader, as gain (`volume`) or in dB (`db`); capped at +24 dB.\n\nControl API command `track.volume`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB, 0.5 about -6 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_volume",
+    "title": "Track volume"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs `track.pan`.\n\nControl API command `track.pan`.",
+    "inputSchema": {
+      "properties": {
+        "pan": {
+          "description": "From -1 (left) through 0 (centre) to 1 (right).",
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "pan"
+      ],
+      "type": "object"
+    },
+    "name": "track_pan",
+    "title": "Track pan"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets mute, or toggles it when `muted` is left out.\n\nControl API command `track.mute`.",
+    "inputSchema": {
+      "properties": {
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_mute",
+    "title": "Track mute"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets solo, or toggles it when `solo` is left out.\n\nControl API command `track.solo`.",
+    "inputSchema": {
+      "properties": {
+        "solo": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_solo",
+    "title": "Track solo"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Arms the track for recording, or toggles it when `armed` is left out.\n\nControl API command `track.arm`.",
+    "inputSchema": {
+      "properties": {
+        "armed": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_arm",
+    "title": "Track arm"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Input monitoring: an armed track with monitoring on plays its input through its FX.\nToggles when `monitor` is left out.\n\nControl API command `track.monitor`.",
+    "inputSchema": {
+      "properties": {
+        "monitor": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_monitor",
+    "title": "Track monitor"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The record input, in REAPER's `I_RECINPUT` numbering (see `TrackInfo::input`).\n\nControl API command `track.input`.",
+    "inputSchema": {
+      "properties": {
+        "input": {
+          "description": "Inputs counted from 0: mono input n is n, the stereo pair from n is 1024 + n, MIDI is\n4096 + device * 32 + channel (device 63 = all, channel 0 = all), -1 is none.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "input"
+      ],
+      "type": "object"
+    },
+    "name": "track_input",
+    "title": "Track input"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the track colour.\n\nControl API command `track.color`.",
+    "inputSchema": {
+      "properties": {
+        "color": {
+          "description": "`#rrggbb`, or `null` for no colour.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_color",
+    "title": "Track color"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "REAPER's folder depth change (`I_FOLDERDEPTH`): 1 makes the track a folder holding the\ntracks below it, -n makes it the last track of n folders, 0 a plain track.\n\nControl API command `track.folder`.",
+    "inputSchema": {
+      "properties": {
+        "depth": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "depth"
+      ],
+      "type": "object"
+    },
+    "name": "track_folder",
+    "title": "Track folder"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The sends of `track`.\n\nControl API command `send.list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "send_list",
+    "title": "Send list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sends `track` to `dest` and answers with the new send.\n\nControl API command `send.add`.",
+    "inputSchema": {
+      "properties": {
+        "dest": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "The track receiving the send."
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "dest"
+      ],
+      "type": "object"
+    },
+    "name": "send_add",
+    "title": "Send add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes send number `send` (its index in `send.list`).\n\nControl API command `send.remove`.",
+    "inputSchema": {
+      "properties": {
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "send"
+      ],
+      "type": "object"
+    },
+    "name": "send_remove",
+    "title": "Send remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the send level, as gain (`volume`) or in dB (`db`).\n\nControl API command `send.volume`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "send"
+      ],
+      "type": "object"
+    },
+    "name": "send_volume",
+    "title": "Send volume"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs `send.pan`.\n\nControl API command `send.pan`.",
+    "inputSchema": {
+      "properties": {
+        "pan": {
+          "description": "From -1 (left) to 1 (right).",
+          "format": "double",
+          "type": "number"
+        },
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "send",
+        "pan"
+      ],
+      "type": "object"
+    },
+    "name": "send_pan",
+    "title": "Send pan"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Mutes the send, or toggles it when `muted` is left out.\n\nControl API command `send.mute`.",
+    "inputSchema": {
+      "properties": {
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "send"
+      ],
+      "type": "object"
+    },
+    "name": "send_mute",
+    "title": "Send mute"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The effects on `track` (`\"master\"` for the master).\n\nControl API command `fx.list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "fx_list",
+    "title": "FX list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Effects that `fx.add` can add: the built-in ones and the installed CLAP, LV2 and VST 3\nplugins.\n\nControl API command `fx.catalog`.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "default": null,
+          "description": "Only entries whose name, id or format contain this, ignoring case.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "fx_catalog",
+    "title": "FX catalog"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds the effect `plugin` names (a catalog `id` or exact `name`) at `index`, at the end\nof the chain when left out.\n\nControl API command `fx.add`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "plugin": {
+          "description": "A catalog id such as `builtin:compressor`, or an exact name.",
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "plugin"
+      ],
+      "type": "object"
+    },
+    "name": "fx_add",
+    "title": "FX add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes the effect at `index` in the chain.\n\nControl API command `fx.remove`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_remove",
+    "title": "FX remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Bypasses the effect, or lets it process again; toggles when `bypassed` is left out.\n\nControl API command `fx.bypass`.",
+    "inputSchema": {
+      "properties": {
+        "bypassed": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_bypass",
+    "title": "FX bypass"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The parameters of a running effect with their values.\n\nControl API command `fx.params`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_params",
+    "title": "FX params"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets parameter `param` (an id from `fx.params`) to `value`, within its range.\n\nControl API command `fx.param`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "description": "A parameter id from `fx.params`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "value": {
+          "description": "Clamped to the parameter's range.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "param",
+        "value"
+      ],
+      "type": "object"
+    },
+    "name": "fx_param",
+    "title": "FX param"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The items of `track`, or of every track.\n\nControl API command `item.list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "item_list",
+    "title": "Item list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the item to `position` (seconds) and/or onto `track`.\n\nControl API command `item.move`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_move",
+    "title": "Item move"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Splits the item at `at` (seconds) and answers with both halves.\n\nControl API command `item.split`.",
+    "inputSchema": {
+      "properties": {
+        "at": {
+          "description": "Project time in seconds, inside the item.",
+          "format": "double",
+          "type": "number"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "at"
+      ],
+      "type": "object"
+    },
+    "name": "item_split",
+    "title": "Item split"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the item.\n\nControl API command `item.delete`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_delete",
+    "title": "Item delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the item's gain, as gain (`volume`) or in dB (`db`).\n\nControl API command `item.volume`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_volume",
+    "title": "Item volume"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Mutes the item, or toggles it when `muted` is left out.\n\nControl API command `item.mute`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_mute",
+    "title": "Item mute"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "All markers and regions, by position.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "marker_list",
+    "title": "Marker list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a marker at `position` (the edit cursor when left out), or a region when `end` is\ngiven, and answers with it.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.add`.",
+    "inputSchema": {
+      "properties": {
+        "color": {
+          "default": null,
+          "description": "`#rrggbb`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "end": {
+          "default": null,
+          "description": "Seconds; makes it a region ending here.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "default": null,
+          "description": "Seconds; the edit cursor when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "marker_add",
+    "title": "Marker add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes what is given; the rest stays.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.edit`.",
+    "inputSchema": {
+      "properties": {
+        "color": {
+          "default": null,
+          "description": "`#rrggbb`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "end": {
+          "default": null,
+          "description": "Seconds; regions only.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "marker": {
+          "description": "The marker's or region's number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "position": {
+          "default": null,
+          "description": "Seconds.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "region": {
+          "default": null,
+          "description": "Picks the region (true) or the marker (false) when both use the number.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "marker"
+      ],
+      "type": "object"
+    },
+    "name": "marker_edit",
+    "title": "Marker edit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the marker or region.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.delete`.",
+    "inputSchema": {
+      "properties": {
+        "marker": {
+          "description": "The marker's or region's number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "region": {
+          "default": null,
+          "description": "Picks the region (true) or the marker (false) when both use the number.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "marker"
+      ],
+      "type": "object"
+    },
+    "name": "marker_delete",
+    "title": "Marker delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the edit cursor (and the playhead while playing) to the marker or region start.\n\nMarkers and regions are named by their number; `region` tells a marker and a region with\nthe same number apart (REAPER numbers them separately).\n\nControl API command `marker.goto`.",
+    "inputSchema": {
+      "properties": {
+        "marker": {
+          "description": "The marker's or region's number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "region": {
+          "default": null,
+          "description": "Picks the region (true) or the marker (false) when both use the number.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "marker"
+      ],
+      "type": "object"
+    },
+    "name": "marker_goto",
+    "title": "Marker goto"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs any control API command and answers with its JSON result, for commands no other tool covers (new domains show up here first). Example: {\"command\": {\"cmd\": \"track.volume\", \"track\": \"Vox\", \"db\": -6}}. The resource scythe://docs/control-api lists every command.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "additionalProperties": true,
+          "description": "The command: `cmd` names it (`domain.action`), the other fields are its arguments.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "scythe_command",
+    "title": "Run a control API command"
+  }
+]

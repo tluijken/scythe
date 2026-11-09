@@ -1,6 +1,7 @@
-//! The control API over HTTP and WebSocket (see `docs/control-api.md`). The server runs on a
-//! thread and tokio runtime of its own; commands reach the session through a
-//! [`ControlHandle`] and are answered on the session's thread.
+//! The control API over HTTP and WebSocket (see `docs/control-api.md`), and MCP for AI agents
+//! over Streamable HTTP at `/mcp` (see `docs/mcp.md`). The server runs on a thread and tokio
+//! runtime of its own; commands reach the session through a [`ControlHandle`] and are
+//! answered on the session's thread.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,12 +11,13 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Request, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
+use scythe_mcp::McpServer;
 use scythe_session::Waker;
 use scythe_session::api::{ApiError, Command, ErrorKind, Event};
 use scythe_session::control::{self, ControlHandle, ControlPump, EventSink};
@@ -53,6 +55,7 @@ struct AppState {
     control: ControlHandle,
     events: broadcast::Sender<Arc<str>>,
     token: Option<Arc<str>>,
+    mcp: McpServer,
 }
 
 impl ControlServer {
@@ -74,7 +77,8 @@ impl ControlServer {
             let _ = publish.send(value.to_string().into());
         });
         let (handle, pump) = control::channel(wake, sink);
-        let state = AppState { control: handle, events, token: config.token.map(Into::into) };
+        let mcp = McpServer::new(scythe_mcp::Local(handle.clone()));
+        let state = AppState { control: handle, events, token: config.token.map(Into::into), mcp };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("scythe-control")
@@ -124,6 +128,7 @@ fn router(state: AppState) -> Router {
         .route("/api/command", post(command))
         .route("/api/snapshot", get(snapshot))
         .route("/api/ws", get(websocket))
+        .route("/mcp", post(mcp).get(mcp_stream).delete(mcp_stream))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .route("/api/health", get(health))
         .with_state(state)
@@ -201,6 +206,58 @@ async fn snapshot(State(state): State<AppState>) -> Response {
     }
 }
 
+/// Whether `origin` is this machine or the host the request was sent to, so a web page
+/// elsewhere cannot reach the session through a browser (DNS rebinding).
+fn trusted_origin(origin: &str, host: Option<&str>) -> bool {
+    let Some((_, authority)) = origin.split_once("://") else { return false };
+    let authority = authority.trim_end_matches('/');
+    if host == Some(authority) {
+        return true;
+    }
+    let name = match authority.rfind(':') {
+        Some(i) if !authority[i..].contains(']') => &authority[..i],
+        _ => authority,
+    };
+    matches!(name, "localhost" | "127.0.0.1" | "[::1]")
+}
+
+/// One MCP message (or batch) per POST, answered as JSON; notifications get 202.
+async fn mcp(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
+    if state.token.is_none()
+        && let Some(origin) = text(header::ORIGIN)
+        && !trusted_origin(origin, text(header::HOST))
+    {
+        let body = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "origin not allowed"}});
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
+    let version = headers.get("mcp-protocol-version").and_then(|v| v.to_str().ok());
+    if version.is_some_and(|v| !scythe_mcp::PROTOCOL_VERSIONS.contains(&v)) {
+        let message = format!(
+            "unsupported MCP-Protocol-Version; this server speaks {}",
+            scythe_mcp::PROTOCOL_VERSIONS.join(", ")
+        );
+        let body = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": message}});
+        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    }
+    let message: Value = match serde_json::from_slice(&body) {
+        Ok(m) => m,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(scythe_mcp::protocol::parse_error(e))).into_response(),
+    };
+    let server = state.mcp.clone();
+    // Tool calls wait for the session's thread to answer.
+    match tokio::task::spawn_blocking(move || server.handle(message)).await {
+        Ok(Some(answer)) => Json(answer).into_response(),
+        Ok(None) => StatusCode::ACCEPTED.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// No server-initiated stream: this server sends no requests or notifications of its own.
+async fn mcp_stream() -> Response {
+    (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response()
+}
+
 async fn websocket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
     upgrade.on_upgrade(move |socket| serve_socket(socket, state))
 }
@@ -270,5 +327,21 @@ async fn serve_socket(socket: WebSocket, state: AppState) {
                 Err(broadcast::error::RecvError::Closed) => break,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_local_or_same_host_origins_are_trusted() {
+        assert!(trusted_origin("http://localhost:3000", Some("127.0.0.1:8770")));
+        assert!(trusted_origin("http://127.0.0.1", None));
+        assert!(trusted_origin("http://[::1]:8770", None));
+        assert!(trusted_origin("http://studio.lan:8770", Some("studio.lan:8770")));
+        assert!(!trusted_origin("https://evil.example", Some("127.0.0.1:8770")));
+        assert!(!trusted_origin("http://localhost.evil.example", None));
+        assert!(!trusted_origin("null", None));
     }
 }

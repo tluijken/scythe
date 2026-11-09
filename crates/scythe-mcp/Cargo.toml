@@ -1,0 +1,22 @@
+[package]
+name = "scythe-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "scythe-mcp"
+path = "src/main.rs"
+
+[dependencies]
+scythe-core.workspace = true
+scythe-engine.workspace = true
+scythe-session.workspace = true
+libc.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+scythe-server.workspace = true
