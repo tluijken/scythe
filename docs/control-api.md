@@ -366,6 +366,30 @@ spreads its stretch markers), `beats_position` moves only its start, `time` leav
 
 These are admin commands.
 
+### Parameter modulation and learn
+
+Parameter modulation, links and MIDI/OSC learn of effect parameters, stored beside the plugin as
+REAPER stores them (`<PROGRAMENV`, `PARMLEARN`/`LFOLEARN`), and MIDI/OSC shortcuts to actions,
+kept in `reaper-kb.ini` beside the preferences (`KEY <status> <data1> <action> 0` as REAPER
+writes MIDI shortcuts; OSC ones as `SCYTHE_OSC <address> <action>`). `param` counts in REAPER's
+order from 0 (a JSFX's sliders in order). Edits are undo steps. Admin only.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `fx.modulation.list` | `track`, `index` | `[{"param", "name", "modulation"?, "learn"?}]` of the modulated or learned parameters |
+| `fx.modulation.set` | `track`, `index`, `param`, `enabled?`, `base?` (the parameter's own units), `lfo?` `{active, shape, strength, direction, hz \| period_qn, tempo_sync, free, phase}`, `audio?` `{active, channel, stereo, attack_ms, release_ms, min_db, max_db, strength, direction, curve_x, curve_y}`, `link?` `{active, fx, param \| midi, scale, offset}`; fields left out keep their value | the modulation |
+| `fx.modulation.remove` | `track`, `index`, `param` | `{}` |
+| `fx.learn.set` | `track`, `index`, `param`, `midi?` `{"type": "cc"\|"note"\|"pitch"\|…, "number", "channel"}`, `osc?`, `heard?`, `mode?` (`absolute`, `relative1`-`3`, `toggle`), `soft_takeover?`, `selected_track_only?`, `focused_fx_only?`, `visible_fx_only?`, `lfo_retrigger?` | the binding |
+| `fx.learn.remove` | `track`, `index`, `param` | `{}` |
+| `fx.learn.listen` | `on?` (default true) | `{"listening", "heard"}`: waits for the next MIDI message from an input enabled for control (`midiins_cs`; all enabled inputs when the key is absent) or OSC message from a surface with `learn` |
+| `fx.learn.heard` | | `{"listening", "heard", "describe"}` |
+| `action.learn.list` | | `[{"action", "midi"?, "osc"?, "describe"}]` |
+| `action.learn.add` | `action`, `midi?` \| `osc?` \| `heard: true` | the binding |
+| `action.learn.remove` | `action?`, `midi?`, `osc?` | `{"removed"}` |
+
+A value is `baseline + LFO + audio follower + scale * (source + offset)` in the parameter's
+0..1 range, clamped; a parameter envelope stands in for the baseline.
+
 ### Control surfaces
 
 OSC devices, Mackie Control (and extenders) and HUI, kept in the preferences as REAPER keeps

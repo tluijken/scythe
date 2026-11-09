@@ -231,6 +231,18 @@ Working:
   user switches as footswitches for the setlist) and HUI partly, as REAPER (faders, touch,
   select/mute/solo/arm, V-pots, four-letter names, meters, transport). See
   [docs/live.md](docs/live.md#footswitches-tablets-and-control-surfaces).
+- **Parameter modulation and learn** (`<PROGRAMENV`, `PARMLEARN`, `LFOLEARN`): baseline, LFO
+  (six shapes, Hz or tempo-synced periods, strength, direction, phase, follow-the-position or
+  free-running), audio control signal from any input channel pair (sidechain on 3/4) with
+  attack, release, dB range and curve, and links from another effect's parameter (earlier or
+  later in the chain, offset and scale) or from MIDI CC/pitch bend on the effect's input, all
+  per 512-frame block in REAPER's update order; a parameter envelope stands in for the baseline.
+  MIDI learn from the inputs enabled for control (`midiins_cs`) and OSC learn from surfaces
+  that allow it: absolute, relative 1-3, toggle, soft takeover, "only when the track is
+  selected", LFO retrigger. MIDI shortcuts to actions (pedals to setlist next/previous, mutes,
+  markers) are kept in `reaper-kb.ini` as REAPER keeps them. The `~` button on an inspector
+  parameter opens the modulation window with its Learn button; the settings window learns
+  shortcuts. API: `fx.modulation.*`, `fx.learn.*`, `action.learn.*`.
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
   preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
   write mode are recorded into the volume and pan envelopes.
@@ -731,6 +743,8 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 | OSC fader positions and texts: `0.716`, `0.592449`, `0.852774`, `0.002514` for 0, -6, +6 dB and silence; `-11.0dB` (cut, not rounded), `-inf dB`, `25%L`, `C`, `/tempo` normalised as (bpm - 40) / 256 | same values |
 | Fader curve: REAPER's `DB2SLIDER` at every whole dB from -150 to +24 and `SLIDER2DB` at 10, 100, 500 and 999, against the fader-scaled envelope curve Scythe's faders now use | within 1e-9, but REAPER puts 0 dB at exactly 716 (the curve: 716.22), which Scythe follows |
 | Mackie Control input: a fader move, mute, solo, select, two V-pot turns, arm and click buttons, then the tracks read back with `GetMediaTrackInfo_Value` | same state (pan steps of 1/31; the fader within 0.002 dB). Surface edits go through the control API, so track groups carry them to followers |
+| Parameter modulation on a JSFX parameter (stock Volume Adjustment and a DC probe slider): LFO sine/square/saw/triangle at Hz rates and tempo-synced periods (97 and 120 BPM), phases, directions, baseline clipping; the audio follower from channels 1/2 and a 3/4 sidechain (attack/release 0-1000 ms, dB ranges, curve); links forward and backward across the chain and within an effect, with offset and scale, and MIDI CC/pitch links from a MIDI item; a parameter envelope with an LFO or link on top. Measured: LFO Hz = 1/256 + speed × (8 - 1/256), synced 8 - 8s (s ≤ 0.5) or 4 - 7.5(s - 0.5) quarter notes; the follower runs per sample on \|x\| (or the pair's mean) with τ = ms/2 and gives the block its peak over the previous block; values are worked out after each block for the next | exact (73/80 cases at 1e-5; the random shape and renders starting off the 512-frame grid differ) |
+| MIDI learn through a virtual MIDI port into REAPER on a dummy JACK server and into Scythe (absolute CC, relative 1-3, toggle, soft takeover, pitch bend, notes, other channels) and MIDI shortcuts to actions (CC on and off values, notes, channels) | same parameter values and toggles in the same order |
 | Mackie Control output: scribble strips (six characters and a space), meter mode SysEx, transport and automation LEDs, the time display in beats mode, empty strips (fader 41, ring centred), the extender's SysEx id | same bytes; REAPER sent no fader, ring or LED updates for strips holding tracks under this setup, so those follow the published protocol |
 | HUI: transport LEDs (zone 0x0E: stop, play and record; REAPER never lights stop), the ping every second | same bytes |
 
@@ -763,8 +777,17 @@ compares the two files.
   does not chase clock) and follows song position, not tempo. LTC chase reads 24/25/30 fps and
   needs the audio input open. REAPER's first MTC quarter-frame run after a start carries a
   stale seconds nibble; Scythe's does not. NTSC LTC rates are not sample-exact. Input
-  quantize, MIDI learn and the "faders send MIDI volume/pan" flag (kept, not acted on) are not
-  there.
+  quantize and the "faders send MIDI volume/pan" flag (kept, not acted on) are not there.
+- Parameter modulation: the random LFO shape has its own generator (REAPER's is not
+  reproducible); renders that start off the 512-frame grid change modulated values at other
+  frames than REAPER (whose blocks start at the render start); links across effects are
+  block-exact in renders, which then run 512 frames at a time, but live playback with device
+  buffers off the grid can be a block late; MIDI links read bus 0 only; master FX are not
+  modulated. Learn: "only when the FX window is focused/open" needs the effect's window, which
+  Scythe does not track yet, so such bindings stay inactive; OSC action shortcuts are Scythe's
+  own `SCYTHE_OSC` lines (REAPER's OSC shortcut format was not measured); a learned control
+  reacts on the session's thread (a frame, not a block); relative modes step 1/762 of the range
+  per count, as measured.
 
 - Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
   not advance playback without an audio device and the test setup has no SWS, so neither when
