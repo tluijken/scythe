@@ -1,6 +1,6 @@
 //! ReaGate, from the parameters it stores.
 
-use super::{Lookahead, db_value, marked_chunk, marked_params, ms_value, param, samples, sidechain};
+use super::{Lookahead, db_value, marked_chunk, marked_params, ms_value, param, samples, DetectorInput};
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
 
@@ -106,14 +106,12 @@ impl Effect for Gate {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        let key = sidechain(&self.params, 7, ctx);
+        let input = DetectorInput::new(self.params.get(7).copied().unwrap_or(0.0));
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
             // The detector sees the incoming signal (or the sidechain); with pre-open the audio
             // is delayed so the gate is already open when a hit arrives.
-            let level = match key {
-                Some((kl, kr)) => kl[i].abs().max(kr[i].abs()),
-                None => l.abs().max(r.abs()),
-            };
+            let (kl, kr) = input.frame(i, *l, *r, ctx);
+            let level = kl.abs().max(kr.abs());
             if level >= self.threshold {
                 self.open = true;
                 self.below = 0;

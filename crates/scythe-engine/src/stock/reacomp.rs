@@ -1,172 +1,265 @@
-//! ReaComp, from the parameters it stores.
+//! ReaComp, from the parameters it stores. Every parameter follows REAPER 7.73 renders sample
+//! for sample (see `examples/stock_ref.rs`), but for auto release with releases under 4 ms
+//! (REAPER then floors the release at about 2.5 ms in a way not modelled) and the deprecated
+//! anti-alias setting.
 
-use super::{db_value, marked_chunk, marked_params, ms_value, param, samples, sidechain};
+use super::params::{Params, Spec, Unit, spec};
+use super::{DetectorFilter, DetectorInput, Rms, marked_params};
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
 
-pub struct Compressor {
-    params: Vec<f32>,
-    sample_rate: u32,
+const SPECS: &[Spec] = &[
+    spec(0, "Threshold", Unit::Gain, 2.0),
+    spec(1, "Ratio", Unit::Ratio, 1.0),
+    spec(2, "Attack (ms)", Unit::Ms(500.0), 1.0),
+    spec(3, "Release (ms)", Unit::Ms(5000.0), 1.0),
+    spec(4, "Pre-comp (ms)", Unit::Ms(250.0), 1.0),
+    spec(6, "Detector lowpass (Hz)", Unit::Hz, 1.0),
+    spec(7, "Detector highpass (Hz)", Unit::Hz, 1.0),
+    spec(10, "Dry", Unit::Gain, 2.0),
+    spec(11, "Wet", Unit::Gain, 2.0),
+    spec(12, "Preview filter", Unit::Switch, 1.0),
+    spec(13, "RMS size (ms)", Unit::Ms(100.0), 10.0),
+    spec(14, "Knee (dB)", Unit::Knee, 1.0),
+    spec(15, "Auto make-up", Unit::Switch, 1.0),
+    spec(16, "Auto release", Unit::Switch, 1.0),
+    spec(17, "Legacy attack/knee", Unit::Steps(4.0), 1.0),
+];
+
+/// A fresh ReaComp's parameters as REAPER 7.73 stores them.
+const DEFAULTS: [f32; 21] = [
+    1.0, 0.030303, 0.006, 0.02, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.162_277_6e-8, 1.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.25, 0.0,
+    0.0, 0.0,
+];
+
+/// Auto release stretches the release to this many ms per dB of gain reduction (48 ms per
+/// halving of the gain).
+const AUTO_RELEASE_MS_PER_DB: f64 = 48.0 / 6.020_599_913_279_624;
+
+/// The gain computer and timing derived from the parameters.
+struct Settings {
     threshold: f64,
-    threshold_db: f64,
-    ratio: f64,
+    /// 1 - 1/ratio.
+    slope: f64,
     knee_db: f64,
+    knee: f64,
+    soft_knee: bool,
+    classic_attack: bool,
     attack: f64,
-    release: f64,
+    release_ms: f64,
+    auto_release: bool,
+    makeup: f64,
     dry: f32,
     wet: f32,
-    /// Squared levels over the RMS window, with their running sum.
-    window: Vec<f64>,
-    window_at: usize,
-    window_sum: f64,
-    env: f64,
+    preview: bool,
+    sample_rate: u32,
 }
 
-impl Compressor {
-    /// Parameters 0..: threshold, ratio, attack, release, pre-comp, reserved, lowpass, hipass,
-    /// …, dry (10), wet (11), …, RMS size (13, fraction of 100 ms), knee (14).
-    pub fn from_reacomp(chunk: &[u8], sample_rate: u32) -> Option<Self> {
-        let p = marked_params(chunk)?;
-        let get = |i: usize, d: f32| p.get(i).copied().unwrap_or(d);
-        let threshold = get(0, 1.0).max(1e-9) as f64;
-        let coeff = |frames: f64| if frames <= 0.0 { 0.0 } else { (-1.0 / frames).exp() };
-        let window = (samples(get(13, 0.05), 100.0, sample_rate) as usize).max(1);
-        Some(Self {
-            params: p.clone(),
-            sample_rate,
-            threshold,
-            threshold_db: 20.0 * threshold.log10(),
-            // The top of the range is infinity rather than 100:1.
-            ratio: if get(1, 0.0303) >= 1.0 { f64::INFINITY } else { 1.0 + get(1, 0.0303) as f64 * 99.0 },
-            knee_db: get(14, 0.0) as f64 * 24.0,
-            attack: coeff(samples(get(2, 0.006), 500.0, sample_rate)),
-            release: coeff(samples(get(3, 0.02), 5000.0, sample_rate)),
-            dry: get(10, 0.0),
-            wet: get(11, 1.0),
-            window: vec![0.0; window],
-            window_at: 0,
-            window_sum: 0.0,
-            env: 0.0,
-        })
-    }
+fn coefficient(frames: f64) -> f64 {
+    if frames <= 0.0 { 0.0 } else { (-1.0 / frames).exp() }
+}
 
-    fn gain_reduction_db(&self, level_db: f64) -> f64 {
-        /// Inside REAPER's knee the slope grows with the level by this many dB per full slope,
-        /// whatever the knee width (fitted to 6 and 12 dB knees, within 0.06 dB).
-        const KNEE_RAMP_DB: f64 = 36.0;
-        let over = level_db - self.threshold_db;
-        let slope = 1.0 - 1.0 / self.ratio;
-        let k = self.knee_db;
-        if k > 0.0 && over.abs() < k {
-            // The knee reaches the knee setting either side of the threshold; at its ends it
-            // meets the flat and the hard curve, with a bend in slope.
-            slope * (0.5 * (over + k) + (over * over - k * k) / (2.0 * KNEE_RAMP_DB))
-        } else {
-            slope * over.max(0.0)
+impl Settings {
+    fn new(p: &Params, sample_rate: u32) -> Self {
+        let threshold = (p.get(0) as f64).max(1e-12);
+        let ratio = 1.0 + p.get(1) as f64 * 99.0;
+        let slope = 1.0 - 1.0 / if ratio >= 99.0 { 10000.0 } else { ratio };
+        let knee_db = p.get(14) as f64 * 24.0;
+        let legacy = p.get(17);
+        Self {
+            threshold,
+            slope,
+            knee_db,
+            knee: 10f64.powf(knee_db / 20.0),
+            soft_knee: (legacy * 4.0) as i32 & 1 == 1,
+            classic_attack: legacy > 0.5,
+            attack: coefficient(p.get(2) as f64 * 500.0 * 0.001 * sample_rate as f64),
+            release_ms: p.get(3) as f64 * 5000.0,
+            auto_release: p.get(16) >= 0.5,
+            makeup: if p.get(15) >= 0.5 { 10f64.powf(-slope * threshold.log10() / 2.0) } else { 1.0 },
+            dry: p.get(10),
+            wet: p.get(11),
+            preview: p.get(12) >= 0.5,
+            sample_rate,
         }
     }
 
-    /// The level gain reduction starts at: the threshold, or the bottom of the knee.
+    /// Gain reduction in dB for envelope level `env`.
+    fn reduction_db(&self, env: f64) -> f64 {
+        let x = env / self.threshold;
+        let over = 20.0 * x.max(1e-30).log10();
+        let k = self.knee_db;
+        if k > 0.0 && over.abs() < k {
+            if self.soft_knee {
+                // The slope of the curve grows as x / (1 + x) through the knee.
+                self.slope * 20.0 * ((1.0 + x) / (1.0 + 1.0 / self.knee)).log10()
+            } else {
+                self.slope * k * (x - 1.0 / self.knee) / (self.knee - 1.0 / self.knee)
+            }
+        } else {
+            self.slope * over.max(0.0)
+        }
+    }
+
+    fn release(&self, reduction_db: f64) -> f64 {
+        let ms = if self.auto_release {
+            self.release_ms.max(AUTO_RELEASE_MS_PER_DB * reduction_db)
+        } else {
+            self.release_ms
+        };
+        coefficient(ms * 0.001 * self.sample_rate as f64)
+    }
+
+    /// Where reduction begins: the threshold, or the bottom of the knee.
     fn onset(&self) -> f64 {
-        self.threshold * 10f64.powf(-self.knee_db / 20.0)
+        if self.knee_db > 0.0 { self.threshold / self.knee } else { self.threshold }
+    }
+}
+
+pub struct Compressor {
+    params: Params,
+    sample_rate: u32,
+    settings: Settings,
+    input: DetectorInput,
+    filter: DetectorFilter,
+    rms: Rms,
+    window: usize,
+    /// Pre-comp: the audio and the detector level are delayed by this many frames, and the
+    /// envelope follows the louder of the newest and the delayed level.
+    lookahead: usize,
+    audio: Vec<[f32; 2]>,
+    levels: Vec<f64>,
+    at: usize,
+    env: f64,
+    reduction_db: f64,
+}
+
+impl Compressor {
+    /// Parameters 0..=20: threshold, ratio, attack, release, pre-comp, reserved, lowpass,
+    /// highpass, detector input, audio input, dry, wet, filter preview, RMS size, knee, auto
+    /// make-up, auto release, legacy attack/knee options, anti-alias, multichannel mode,
+    /// metering index.
+    pub fn from_reacomp(chunk: &[u8], sample_rate: u32) -> Option<Self> {
+        let params = Params::new(marked_params(chunk)?, SPECS, &DEFAULTS);
+        let mut comp = Self {
+            settings: Settings::new(&params, sample_rate),
+            input: DetectorInput::new(0.0),
+            filter: DetectorFilter::new(1.0, 0.0, sample_rate),
+            rms: Rms::new(1),
+            window: 1,
+            lookahead: 0,
+            audio: Vec::new(),
+            levels: Vec::new(),
+            at: 0,
+            env: 0.0,
+            reduction_db: 0.0,
+            params,
+            sample_rate,
+        };
+        comp.configure(true);
+        Some(comp)
+    }
+
+    /// Applies the parameters; `fresh` also rebuilds the detector's memories.
+    fn configure(&mut self, fresh: bool) {
+        let p = &self.params;
+        let sr = self.sample_rate;
+        self.settings = Settings::new(p, sr);
+        self.input = DetectorInput::new(p.get(8));
+        // REAPER counts whole frames of the stored f32 times.
+        let frames = |raw: f32, full_ms: f64| (raw as f64 * full_ms * 0.001 * sr as f64) as usize;
+        let window = frames(p.get(13), 100.0).max(1);
+        let lookahead = frames(p.get(4), 250.0);
+        if fresh || window != self.window {
+            self.window = window;
+            self.rms = Rms::new(window);
+        }
+        if fresh || lookahead != self.lookahead {
+            self.lookahead = lookahead;
+            self.audio = vec![[0.0; 2]; lookahead];
+            self.levels = vec![0.0; lookahead];
+            self.at = 0;
+        }
+        self.filter = DetectorFilter::new(p.get(6), p.get(7), sr);
     }
 }
 
 impl Effect for Compressor {
     fn params(&mut self) -> Vec<ParamInfo> {
-        vec![
-            param(0, "Threshold (dB)", -60.0, 0.0, 0.0, false),
-            param(1, "Ratio", 1.0, 100.0, 4.0, true),
-            param(2, "Attack (ms)", 0.1, 500.0, 3.0, true),
-            param(3, "Release (ms)", 1.0, 5000.0, 100.0, true),
-        ]
+        self.params.infos()
     }
 
     fn param(&mut self, id: u32) -> Option<(f64, String)> {
-        let raw = *self.params.get(id as usize)? as f64;
-        Some(match id {
-            0 => db_value(raw),
-            1 => {
-                let r = 1.0 + raw * 99.0;
-                (r, format!("{r:.1}:1"))
-            }
-            2 => ms_value(raw * 500.0),
-            _ => ms_value(raw * 5000.0),
-        })
+        self.params.display(id)
     }
 
     fn set_param(&mut self, id: u32, value: f64) {
-        let raw = match id {
-            0 => 10f64.powf(value / 20.0),
-            1 => (value - 1.0) / 99.0,
-            2 => value / 500.0,
-            3 => value / 5000.0,
-            _ => return,
-        };
-        if let Some(slot) = self.params.get_mut(id as usize) {
-            *slot = raw as f32;
-            if let Some(fresh) = Compressor::from_reacomp(&marked_chunk(&self.params), self.sample_rate) {
-                let window = std::mem::take(&mut self.window);
-                *self = Compressor {
-                    env: self.env,
-                    window,
-                    window_at: self.window_at,
-                    window_sum: self.window_sum,
-                    ..fresh
-                };
-            }
+        if self.params.set(id, value) {
+            self.configure(false);
         }
     }
 
     fn set_normalized(&mut self, index: usize, v: f64) -> bool {
-        use crate::normalized::{amp2_db, linear};
-        match index {
-            0 => self.set_param(0, amp2_db(v)),
-            1 => self.set_param(1, linear(v, 1.0, 100.0)),
-            2 => self.set_param(2, linear(v, 0.0, 500.0)),
-            3 => self.set_param(3, linear(v, 0.0, 5000.0)),
-            _ => return false,
+        let set = self.params.set_normalized(index, v);
+        if set {
+            self.configure(false);
         }
-        true
+        set
+    }
+
+    fn latency(&mut self) -> usize {
+        self.lookahead
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
-        Some(marked_chunk(&self.params))
+        Some(self.params.chunk())
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        let n = self.window.len();
-        let key = sidechain(&self.params, 8, ctx);
+        let s = &self.settings;
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-            let (dl, dr) = key.map_or((*l, *r), |(kl, kr)| (kl[i], kr[i]));
-            let sq = (dl as f64 * dl as f64).max(dr as f64 * dr as f64);
-            self.window_sum += sq - self.window[self.window_at];
-            self.window[self.window_at] = sq;
-            self.window_at = (self.window_at + 1) % n;
-            if self.window_at == 0 {
-                // Resum now and then so rounding cannot drift.
-                self.window_sum = self.window.iter().sum();
-            }
-            let level = (self.window_sum.max(0.0) / n as f64).sqrt();
-            // Rising levels start from where reduction begins: below it the envelope is irrelevant.
-            if level > self.env {
-                self.env = self.env.max(self.onset());
-                self.env = level + self.attack * (self.env - level);
+            let (dl, dr) = self.input.frame(i, *l, *r, ctx);
+            let (fl, fr) = self.filter.run(dl as f64, dr as f64);
+            let mut level = self.rms.run(fl, fr);
+            let (out_l, out_r) = if self.lookahead > 0 {
+                let delayed = std::mem::replace(&mut self.levels[self.at], level);
+                level = level.max(delayed);
+                let [al, ar] = std::mem::replace(&mut self.audio[self.at], [*l, *r]);
+                self.at = (self.at + 1) % self.lookahead;
+                (al, ar)
             } else {
-                self.env = level + self.release * (self.env - level);
+                (*l, *r)
+            };
+            if s.preview {
+                *l = fl as f32;
+                *r = fr as f32;
+                continue;
             }
-            let db = 20.0 * self.env.max(1e-9).log10();
-            let g = 10f64.powf(-self.gain_reduction_db(db) / 20.0) as f32;
-            let out = self.dry + self.wet * g;
-            *l *= out;
-            *r *= out;
+            if level > self.env {
+                // Rising levels start from where reduction begins: below it the envelope is
+                // irrelevant (unless the legacy options ask for the classic attack).
+                if !s.classic_attack {
+                    self.env = self.env.max(s.onset());
+                }
+                self.env = level + s.attack * (self.env - level);
+            } else {
+                self.env = level + s.release(self.reduction_db) * (self.env - level);
+            }
+            self.reduction_db = s.reduction_db(self.env);
+            let g = 10f64.powf(-self.reduction_db / 20.0) * s.makeup;
+            let gain = s.dry + s.wet * g as f32;
+            *l = out_l * gain;
+            *r = out_r * gain;
         }
     }
 
     fn reset(&mut self) {
         self.env = 0.0;
-        self.window.fill(0.0);
-        self.window_sum = 0.0;
+        self.reduction_db = 0.0;
+        self.rms.reset();
+        self.filter.reset();
+        self.audio.fill([0.0; 2]);
+        self.levels.fill(0.0);
     }
 }
 
@@ -178,7 +271,7 @@ mod tests {
     #[test]
     fn compressor_matches_reaper() {
         // 4:1, attack 10 ms, release 100 ms, RMS 5 ms.
-        let mut params = vec![0.0; 24];
+        let mut params = DEFAULTS.to_vec();
         (params[0], params[1], params[2], params[3], params[11], params[13]) = (0.2512, 0.0303, 0.02, 0.02, 1.0, 0.05);
         let gain = run(&mut Compressor::from_reacomp(&chunk(&params), 48000).unwrap());
         check(
@@ -194,5 +287,19 @@ mod tests {
                 (38400, 0.9986),
             ],
         );
+    }
+
+    /// The static curve REAPER 7.73 renders for a level ramp: threshold -12 dB, infinite ratio
+    /// (10000:1) and a 12 dB knee give 4.07 dB of reduction at the threshold, 2.41 dB with the
+    /// legacy knee.
+    #[test]
+    fn knees_follow_reaper() {
+        let mut params = DEFAULTS.to_vec();
+        (params[0], params[1], params[14]) = (0.2512, 1.0, 0.5);
+        let comp = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
+        assert!((comp.settings.reduction_db(0.2512) - 4.0735).abs() < 1e-3);
+        params[17] = 0.0;
+        let legacy = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
+        assert!((legacy.settings.reduction_db(0.2512) - 2.4089).abs() < 1e-3);
     }
 }

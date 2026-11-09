@@ -2,6 +2,7 @@
 //! store. `PLUGINS` maps each one's VST identity to a constructor; an emulation lives in its own
 //! file and only adds a row here.
 
+pub(crate) mod params;
 pub mod reacomp;
 pub mod reagate;
 pub mod realimit;
@@ -206,11 +207,136 @@ impl Lookahead {
     }
 }
 
-/// The detector input when `SignIn` (parameter `index`) picks channels 3/4 and the track has
-/// them: REAPER stores the detector's first input channel there, 0 for the main pair.
-pub(crate) fn sidechain<'a>(params: &[f32], index: usize, ctx: &ProcessContext<'a>) -> Option<(&'a [f32], &'a [f32])> {
-    let first = params.get(index).copied().unwrap_or(0.0).round() as usize;
-    if first >= 2 { ctx.aux } else { None }
+/// The two channels a detector listens to. `SignIn` stores the first of them as a fraction of
+/// 1084 (0: the main pair; 1: right and aux left; 2 and up: the aux pair, channels 3/4),
+/// silent where the track has no such channels.
+pub(crate) struct DetectorInput {
+    first: usize,
+}
+
+impl DetectorInput {
+    pub fn new(sign_in: f32) -> Self {
+        Self { first: ((sign_in as f64 * 1084.0).round().max(0.0) as usize).min(2) }
+    }
+
+    /// Frame `i` of the detector's channels, given the main pair's.
+    pub fn frame(&self, i: usize, l: f32, r: f32, ctx: &ProcessContext) -> (f32, f32) {
+        let aux = |c: usize| ctx.aux.map_or(0.0, |a| if c == 0 { a.0[i] } else { a.1[i] });
+        match self.first {
+            0 => (l, r),
+            1 => (r, aux(0)),
+            _ => (aux(0), aux(1)),
+        }
+    }
+}
+
+/// A biquad from the RBJ cookbook, run in transposed direct form II.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Biquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
+}
+
+impl Biquad {
+    pub fn lowpass(freq: f64, q: f64, sample_rate: u32) -> Self {
+        let (w, alpha) = Self::omega(freq, q, sample_rate);
+        let c = w.cos();
+        Self::normalized([(1.0 - c) / 2.0, 1.0 - c, (1.0 - c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
+    }
+
+    pub fn highpass(freq: f64, q: f64, sample_rate: u32) -> Self {
+        let (w, alpha) = Self::omega(freq, q, sample_rate);
+        let c = w.cos();
+        Self::normalized([(1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0], [1.0 + alpha, -2.0 * c, 1.0 - alpha])
+    }
+
+    fn omega(freq: f64, q: f64, sample_rate: u32) -> (f64, f64) {
+        let w = 2.0 * std::f64::consts::PI * freq / sample_rate as f64;
+        (w, w.sin() / (2.0 * q))
+    }
+
+    fn normalized(b: [f64; 3], a: [f64; 3]) -> Self {
+        Self { b: b.map(|v| v / a[0]), a: [a[1] / a[0], a[2] / a[0]], z: [0.0; 2] }
+    }
+
+    pub fn run(&mut self, x: f64) -> f64 {
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x - self.a[0] * y + self.z[1];
+        self.z[1] = self.b[2] * x - self.a[1] * y;
+        y
+    }
+
+    pub fn reset(&mut self) {
+        self.z = [0.0; 2];
+    }
+}
+
+/// The detector's low- and high-pass filters (ReaComp and ReaGate), one pair per channel;
+/// a filter at its end of the range (20 kHz, 0 Hz) is off.
+#[derive(Clone)]
+pub(crate) struct DetectorFilter {
+    stages: Vec<[Biquad; 2]>,
+}
+
+impl DetectorFilter {
+    pub fn new(lowpass: f32, hipass: f32, sample_rate: u32) -> Self {
+        let (lp, hp) = (lowpass as f64 * 20000.0, hipass as f64 * 20000.0);
+        let mut stages = Vec::new();
+        if lp < 20000.0 {
+            stages.push([Biquad::lowpass(lp.max(1.0), 1.0, sample_rate); 2]);
+        }
+        if hp > 0.0 {
+            stages.push([Biquad::highpass(hp, 1.0, sample_rate); 2]);
+        }
+        Self { stages }
+    }
+
+    pub fn run(&mut self, l: f64, r: f64) -> (f64, f64) {
+        self.stages.iter_mut().fold((l, r), |(l, r), [fl, fr]| (fl.run(l), fr.run(r)))
+    }
+
+    pub fn reset(&mut self) {
+        self.stages.iter_mut().flatten().for_each(Biquad::reset);
+    }
+}
+
+/// Per-channel RMS over a window of frames (the peak of each channel for a window of one),
+/// louder channel wins.
+pub(crate) struct Rms {
+    squares: Vec<[f64; 2]>,
+    sum: [f64; 2],
+    at: usize,
+}
+
+impl Rms {
+    pub fn new(frames: usize) -> Self {
+        Self { squares: vec![[0.0; 2]; frames.max(1)], sum: [0.0; 2], at: 0 }
+    }
+
+    pub fn run(&mut self, l: f64, r: f64) -> f64 {
+        let n = self.squares.len();
+        if n == 1 {
+            return l.abs().max(r.abs());
+        }
+        let sq = [l * l, r * r];
+        for c in 0..2 {
+            self.sum[c] += sq[c] - self.squares[self.at][c];
+        }
+        self.squares[self.at] = sq;
+        self.at = (self.at + 1) % n;
+        if self.at == 0 {
+            // Resum now and then so rounding cannot drift.
+            self.sum = self.squares.iter().fold([0.0; 2], |s, v| [s[0] + v[0], s[1] + v[1]]);
+        }
+        (self.sum[0].max(0.0) / n as f64).sqrt().max((self.sum[1].max(0.0) / n as f64).sqrt())
+    }
+
+    pub fn reset(&mut self) {
+        self.squares.fill([0.0; 2]);
+        self.sum = [0.0; 2];
+        self.at = 0;
+    }
 }
 
 #[cfg(test)]
