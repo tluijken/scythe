@@ -11,10 +11,10 @@ use std::sync::LazyLock;
 
 use crate::Session;
 use crate::api::{self, ApiError};
+use scythe_core::AutoMode;
 use scythe_core::keymap::{self, Line, SECTION_MAIN};
 use scythe_core::marker_action as ids;
 use scythe_core::model::GlobalAutomation;
-use scythe_core::AutoMode;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -681,33 +681,6 @@ pub fn marker_step(session: &Session, at: f64, forward: bool) -> f64 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builtin_commands_are_unique() {
-        let mut seen = std::collections::HashSet::new();
-        for a in builtin() {
-            assert!(seen.insert(a.command.to_ascii_uppercase()), "{} twice", a.command);
-        }
-    }
-
-    /// REAPER 7.73's names for the command ids Scythe registers, as `kbd_enumerateActions`
-    /// listed them.
-    #[test]
-    fn reaper_ids_carry_reapers_names() {
-        let measured = include_str!("../testdata/reaper-action-names.txt");
-        for line in measured.lines() {
-            let (id, name) = line.split_once('\t').unwrap();
-            let ours = find_builtin(id).unwrap_or_else(|| panic!("{id} not registered"));
-            assert_eq!(ours.name, name, "{id}");
-        }
-        let numeric = builtin().iter().filter(|a| a.command.parse::<u32>().is_ok()).count();
-        assert_eq!(measured.lines().count(), numeric);
-    }
-}
-
 /// The global override a REAPER override action sets (`Some(None)` for "no override").
 fn override_for(c: &str) -> Option<Option<GlobalAutomation>> {
     let mode = |m| Some(Some(GlobalAutomation::Mode(m)));
@@ -743,3 +716,31 @@ fn track_mode_for(c: &str) -> Option<(AutoMode, bool)> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_commands_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for a in builtin() {
+            assert!(seen.insert(a.command.to_ascii_uppercase()), "{} twice", a.command);
+        }
+    }
+
+    /// REAPER 7.73's names for the command ids Scythe registers, as `kbd_enumerateActions`
+    /// listed them.
+    #[test]
+    fn reaper_ids_carry_reapers_names() {
+        let measured = include_str!("../testdata/reaper-action-names.txt");
+        for line in measured.lines() {
+            let (id, name) = line.split_once('\t').unwrap();
+            let ours = find_builtin(id).unwrap_or_else(|| panic!("{id} not registered"));
+            assert_eq!(ours.name, name, "{id}");
+        }
+        let numeric = builtin().iter().filter(|a| a.command.parse::<u32>().is_ok()).count();
+        assert_eq!(measured.lines().count(), numeric);
+    }
+}
+

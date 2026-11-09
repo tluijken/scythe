@@ -8,8 +8,7 @@ use crate::groups::GroupFlags;
 use crate::lanes::{COMP_FADE, CompArea};
 use crate::model::{
     AutoMode, ChannelMode, Color, FxSlot, GlobalAutomation, HwOut, Item, LineMemo, Marker, Processing, Project,
-    RegionRenderTrack,
-    Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
+    RegionRenderTrack, Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
 };
 use crate::recording::{RecordMode, RecordTap};
 use crate::tempo::TempoPoint;

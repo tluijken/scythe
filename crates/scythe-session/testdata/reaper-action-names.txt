@@ -152,3 +152,24 @@
 40252	Record: Set record mode to normal
 40076	Record: Set record mode to time selection auto-punch
 40253	Record: Set record mode to selected item auto-punch
+40876	Global automation override: No override (set automation modes per track)
+40878	Global automation override: All automation in trim/read mode
+40879	Global automation override: All automation in read mode
+40880	Global automation override: All automation in touch mode
+40881	Global automation override: All automation in latch mode
+42022	Global automation override: All automation in latch preview mode
+40882	Global automation override: All automation in write mode
+40885	Global automation override: Bypass all automation
+40908	Global automation override: Toggle bypass all automation
+40400	Automation: Set track automation mode to trim/read
+40401	Automation: Set track automation mode to read
+40402	Automation: Set track automation mode to touch
+40403	Automation: Set track automation mode to write
+40404	Automation: Set track automation mode to latch
+42023	Automation: Set track automation mode to latch preview
+40088	Automation: Set all tracks automation mode to trim/read
+40086	Automation: Set all tracks automation mode to read
+40087	Automation: Set all tracks automation mode to touch
+40090	Automation: Set all tracks automation mode to write
+40266	Automation: Set all tracks automation mode to latch
+42024	Automation: Set all tracks automation mode to latch preview

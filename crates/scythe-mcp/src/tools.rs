@@ -7,8 +7,7 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
     customize::CustomizeCommand, envelope::EnvelopeCommand, fx::FxCommand, groups::GroupCommand, items::ItemCommand,
-    markers::MarkerCommand,
-    midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
+    markers::MarkerCommand, midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
     recording::RecordingCommand, render::RenderCommand, sends::SendCommand, setlist::SetlistCommand,
     surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
     transport::TransportCommand,

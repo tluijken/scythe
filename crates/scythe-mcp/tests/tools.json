@@ -8800,6 +8800,1139 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every envelope of `track`: its own, its sends' and its effects' parameter envelopes.\n\nControl API command `envelope.list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_list",
+    "title": "Envelope list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One envelope with its points and automation items.\n\nControl API command `envelope.get`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_get",
+    "title": "Envelope get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Creates the envelope when missing and changes what is given.\n\nControl API command `envelope.set`.",
+    "inputSchema": {
+      "properties": {
+        "active": {
+          "default": null,
+          "description": "Off bypasses the envelope.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "armed": {
+          "default": null,
+          "description": "Armed envelopes are the ones automation writing records into.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "in_lane": {
+          "default": null,
+          "description": "In a lane of its own rather than over the track.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "visible": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "envelope"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_set",
+    "title": "Envelope set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes the envelope with its points and items.\n\nControl API command `envelope.remove`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_remove",
+    "title": "Envelope remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a point (creating the envelope) and answers with the envelope.\n\nControl API command `envelope.point_add`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "default": null,
+          "description": "`linear`, `square`, `slow_start_end`, `fast_start`, `fast_end` or `bezier`; the shape\nof the segment to the next point.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tension": {
+          "default": null,
+          "description": "Bezier tension, -1 to 1.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "time": {
+          "description": "Seconds (quarter notes from the pool's start for pool points).",
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "value": {
+          "description": "In the envelope's units (0..1 of its range for pool points).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "time",
+        "value"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_point_add",
+    "title": "Envelope point add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes point `index` (its position in `envelope.get`).\n\nControl API command `envelope.point_edit`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "default": null,
+          "description": "See `PointSpec::shape`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tension": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "time": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "value": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_point_edit",
+    "title": "Envelope point edit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Which envelope of a track.\n\nControl API command `envelope.point_delete`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_point_delete",
+    "title": "Envelope point delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the shape of every point from `from` to `to` seconds (all points when left out).\n\nControl API command `envelope.shape`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "from": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "shape": {
+          "description": "See `PointSpec::shape`.",
+          "type": "string"
+        },
+        "tension": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "to": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "shape"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_shape",
+    "title": "Envelope shape"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The envelope's value at `time` seconds, automation items included.\n\nControl API command `envelope.evaluate`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "time": {
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "time"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_evaluate",
+    "title": "Envelope evaluate"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Inserts an automation item. With `pool` it is a pooled copy of that pool; with `lfo` a\nnew pool shaped by the LFO; otherwise a new pool holding the envelope as it is there.\n\nControl API command `envelope.item_add`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "length": {
+          "description": "Seconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "lfo": {
+          "default": null,
+          "description": "Settings that generate a pool's points as an LFO.",
+          "properties": {
+            "cycles": {
+              "description": "Cycles over the pool's length.",
+              "format": "double",
+              "type": "number"
+            },
+            "phase": {
+              "default": 0.0,
+              "description": "Where the first cycle starts, 0 to 1.",
+              "format": "double",
+              "type": "number"
+            },
+            "shape": {
+              "description": "`sine`, `triangle`, `square`, `saw_up` or `saw_down`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "shape",
+            "cycles"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "pool": {
+          "default": null,
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "position": {
+          "description": "Seconds.",
+          "format": "double",
+          "type": "number"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "position",
+        "length"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_item_add",
+    "title": "Envelope item add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes automation item `index` (its position in `envelope.get`).\n\nControl API command `envelope.item_edit`.",
+    "inputSchema": {
+      "properties": {
+        "amplitude": {
+          "default": null,
+          "description": "-1 to 1: how far the pool's values reach from the baseline.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "baseline": {
+          "default": null,
+          "description": "0 to 1: where the middle of the pool's range plays.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "length": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "looped": {
+          "default": null,
+          "description": "Repeat the pool over the item's length.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "position": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "rate": {
+          "default": null,
+          "description": "Play rate, above 0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "selected": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "start_offset": {
+          "default": null,
+          "description": "Seconds into the pool where the item starts.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "transition": {
+          "default": null,
+          "description": "Seconds of the ramps at the item's edges.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_item_edit",
+    "title": "Envelope item edit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes automation item `index`; with `keep_points` its values stay as envelope points.\n\nControl API command `envelope.item_delete`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "keep_points": {
+          "default": false,
+          "type": "boolean"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_item_delete",
+    "title": "Envelope item delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Copies automation item `index` to right after it, pooled (sharing its points) or with\na pool of its own.\n\nControl API command `envelope.item_duplicate`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pooled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_item_duplicate",
+    "title": "Envelope item duplicate"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Gives automation item `index` a pool of its own (REAPER's unpool).\n\nControl API command `envelope.item_unpool`.",
+    "inputSchema": {
+      "properties": {
+        "envelope": {
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "type": "string"
+        },
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "send": {
+          "default": null,
+          "description": "A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "envelope",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_item_unpool",
+    "title": "Envelope item unpool"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A pool's points, or sets them (every pooled item changes): times in quarter notes from\nthe pool's start, values 0..1 of the envelope's range.\n\nControl API command `envelope.pool`.",
+    "inputSchema": {
+      "properties": {
+        "length_qn": {
+          "default": null,
+          "description": "Source length in quarter notes.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "lfo": {
+          "default": null,
+          "description": "Generates the points as an LFO instead.",
+          "properties": {
+            "cycles": {
+              "description": "Cycles over the pool's length.",
+              "format": "double",
+              "type": "number"
+            },
+            "phase": {
+              "default": 0.0,
+              "description": "Where the first cycle starts, 0 to 1.",
+              "format": "double",
+              "type": "number"
+            },
+            "shape": {
+              "description": "`sine`, `triangle`, `square`, `saw_up` or `saw_down`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "shape",
+            "cycles"
+          ],
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "points": {
+          "default": null,
+          "items": {
+            "description": "A point as the API gives and takes it.",
+            "properties": {
+              "shape": {
+                "default": null,
+                "description": "`linear`, `square`, `slow_start_end`, `fast_start`, `fast_end` or `bezier`; the shape\nof the segment to the next point.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tension": {
+                "default": null,
+                "description": "Bezier tension, -1 to 1.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "time": {
+                "description": "Seconds (quarter notes from the pool's start for pool points).",
+                "format": "double",
+                "type": "number"
+              },
+              "value": {
+                "description": "In the envelope's units (0..1 of its range for pool points).",
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "time",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "pool": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "pool"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_pool",
+    "title": "Envelope pool"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A track's automation mode, or sets it (on every track when `track` is left out):\n`trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`.\n\nControl API command `envelope.mode`.",
+    "inputSchema": {
+      "properties": {
+        "mode": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "envelope_mode",
+    "title": "Envelope mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Writes the values the last latch preview pass remembered: over the time selection\n(`time_selection`), from the edit cursor on (`to_end`) or up to it (`to_start`).\n\nControl API command `envelope.latch_preview_apply`.",
+    "inputSchema": {
+      "properties": {
+        "span": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "span"
+      ],
+      "type": "object"
+    },
+    "name": "envelope_latch_preview_apply",
+    "title": "Envelope latch preview apply"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The global automation override, or sets it: `none` (every track its own mode),\n`trim_read`, `read`, `touch`, `write`, `latch`, `latch_preview` or `bypass`.\n\nControl API command `envelope.global_override`.",
+    "inputSchema": {
+      "properties": {
+        "mode": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "envelope_global_override",
+    "title": "Envelope global override"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,
