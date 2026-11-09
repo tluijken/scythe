@@ -1273,6 +1273,8 @@ fn stretch_markers_channel_modes_and_play_rate() {
         execute_json(&mut s, json!({"cmd": "project.playrate", "rate": 9.0})).unwrap_err().kind,
         ErrorKind::Invalid
     );
+}
+
 #[test]
 fn render_matrix_settings_and_queue() {
     let mut s = session();

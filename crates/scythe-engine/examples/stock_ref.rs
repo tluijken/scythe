@@ -408,8 +408,10 @@ fn read(path: &Path) -> Option<Vec<(f32, f32)>> {
 fn null(rpp: &Path) -> Result<f32, String> {
     let project = scythe_core::rpp::read_project(rpp).map_err(|e| e.to_string())?;
     let settings = RenderSettings::from_project(&project);
-    let jobs = settings.jobs(&project, 0).map_err(|e| format!("{e:?}"))?;
-    let (range, theirs_path) = jobs.into_iter().next().ok_or("nothing to render")?;
+    let selection = scythe_core::render_settings::RenderSelection::saved(&project);
+    let jobs = settings.jobs(&project, &selection, 0).map_err(|e| format!("{e:?}"))?;
+    let job = jobs.into_iter().next().ok_or("nothing to render")?;
+    let (range, theirs_path) = (job.range, job.path);
     let theirs = read(&theirs_path).ok_or("no REAPER render")?;
     let pool = MediaPool::with_resample(settings.resample);
     for t in &project.tracks {

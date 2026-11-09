@@ -287,6 +287,7 @@ mod tests {
             name: String::new(),
             color: None,
             region_end: None,
+            render_matrix: Vec::new(),
             lines: Default::default(),
         });
         p
