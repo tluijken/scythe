@@ -212,7 +212,7 @@ impl PointShape {
 /// the corner (1, 0) when positive or (0, 1) when negative. REAPER plays the curve as a
 /// polyline through `VERTICES` steps of the curve parameter.
 #[derive(Debug, Clone, Copy)]
-struct Bezier {
+pub(crate) struct Bezier {
     ax: f64,
     ay: f64,
     bx: f64,
@@ -222,7 +222,7 @@ struct Bezier {
 impl Bezier {
     const VERTICES: usize = 256;
 
-    fn new(tension: f64, s0: f64, s1: f64) -> Self {
+    pub(crate) fn new(tension: f64, s0: f64, s1: f64) -> Self {
         let t = tension.clamp(-1.0, 1.0);
         let (cx, cy) = if t < 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
         let pull = |(hx, hy): (f64, f64)| (hx + (cx - hx) * t.abs(), hy + (cy - hy) * t.abs());
@@ -247,7 +247,7 @@ impl Bezier {
         (self.vertex(lo), self.vertex(hi))
     }
 
-    fn value(self, x: f64) -> f64 {
+    pub(crate) fn value(self, x: f64) -> f64 {
         let ((x0, y0), (x1, y1)) = self.step(x);
         if x1 > x0 { y0 + (y1 - y0) * ((x - x0) / (x1 - x0)).clamp(0.0, 1.0) } else { y1 }
     }

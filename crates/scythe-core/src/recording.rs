@@ -694,15 +694,16 @@ pub fn place_midi_recording(
         } else if on {
             held.push(key);
         }
-        out.push(MidiEvent { tick: tick(t), bytes, len, flags: 0 });
+        out.push(MidiEvent { tick: tick(t), bytes, len, flags: 0, shape: None });
     }
     if out.is_empty() {
         return None;
     }
     for (ch, k) in held {
-        out.push(MidiEvent { tick: length, bytes: [0x80 | ch, k, 0], len: 3, flags: 0 });
+        out.push(MidiEvent { tick: length, bytes: [0x80 | ch, k, 0], len: 3, flags: 0, shape: None });
     }
-    let source = MidiSource { ticks_per_qn: RECORD_PPQ, events: out, long: Vec::new(), length_ticks: length };
+    let source =
+        MidiSource { ticks_per_qn: RECORD_PPQ, events: out, long: Vec::new(), length_ticks: length, cc_interp: 32 };
     let mut take = Take::from_file(PathBuf::new());
     take.source = Source::Raw(source.to_chunk());
     Some(Item::new(from, to - from, take))

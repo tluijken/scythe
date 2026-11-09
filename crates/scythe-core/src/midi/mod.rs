@@ -3,6 +3,17 @@
 
 use crate::rpp::{Chunk, Node, line_key, tokenize};
 
+pub mod actions;
+pub mod edit;
+pub mod groove;
+pub mod lanes;
+pub mod names;
+pub mod scale;
+mod shape;
+pub mod view;
+
+pub use shape::{CcShape, ShapeKind};
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MidiEvent {
     /// Absolute position in ticks from the source start.
@@ -11,9 +22,14 @@ pub struct MidiEvent {
     pub len: u8,
     /// [`SELECTED`] and [`MUTED`], as the line's keyword marks them (`e`, `Em`).
     pub flags: u8,
+    /// How a controller moves on to the next event of its lane (the `ENV` line after it).
+    pub shape: Option<CcShape>,
 }
 
 pub const SELECTED: u8 = 1;
+
+/// The `CCINTERP` REAPER plays shaped controllers at when the take sets none (0 or below).
+pub const DEFAULT_CC_INTERP: u32 = 32;
 pub const MUTED: u8 = 2;
 
 impl MidiEvent {
@@ -50,6 +66,8 @@ pub struct MidiSource {
     /// Source length in ticks: the position of the last event, which REAPER writes as an
     /// end-of-source marker.
     pub length_ticks: u64,
+    /// Steps per quarter note at which shaped controllers are played (`CCINTERP`).
+    pub cc_interp: u32,
 }
 
 /// A note with its duration, in quarter notes from the source start.
@@ -70,8 +88,9 @@ impl MidiSource {
             return None;
         }
         let mut ticks_per_qn = 960;
+        let mut cc_interp = None;
         let mut tick = 0u64;
-        let mut events = Vec::new();
+        let mut events: Vec<MidiEvent> = Vec::new();
         let mut long = Vec::new();
         for node in &c.children {
             if let Node::Chunk(x) = node
@@ -98,6 +117,14 @@ impl MidiSource {
                     let t = tokenize(l);
                     ticks_per_qn = t.get(2).and_then(|v| v.parse().ok()).unwrap_or(960);
                 }
+                "CCINTERP" if cc_interp.is_none() => {
+                    cc_interp = tokenize(l).get(1).and_then(|v| v.parse::<i64>().ok());
+                }
+                "ENV" => {
+                    if let Some(e) = events.last_mut() {
+                        e.shape = CcShape::parse(&tokenize(l));
+                    }
+                }
                 key @ ("E" | "e" | "Em" | "em") => {
                     let flags =
                         if key.starts_with('e') { SELECTED } else { 0 } | if key.ends_with('m') { MUTED } else { 0 };
@@ -112,7 +139,7 @@ impl MidiSource {
                             len = i as u8 + 1;
                         }
                     }
-                    events.push(MidiEvent { tick, bytes, len, flags });
+                    events.push(MidiEvent { tick, bytes, len, flags, shape: None });
                 }
                 // Sysex and other long events only advance time.
                 "X" | "x" => {
@@ -122,7 +149,19 @@ impl MidiSource {
                 _ => {}
             }
         }
-        Some(Self { ticks_per_qn: ticks_per_qn.max(1), length_ticks: tick, events, long })
+        let cc_interp = cc_interp.filter(|&n| n > 0).map_or(DEFAULT_CC_INTERP, |n| n.min(10_000) as u32);
+        Some(Self { ticks_per_qn: ticks_per_qn.max(1), length_ticks: tick, events, long, cc_interp })
+    }
+
+    /// A copy with the same settings and no events.
+    pub fn without_events(&self) -> MidiSource {
+        MidiSource {
+            ticks_per_qn: self.ticks_per_qn,
+            events: Vec::new(),
+            long: self.long.clone(),
+            length_ticks: self.length_ticks,
+            cc_interp: self.cc_interp,
+        }
     }
 
     pub fn length_qn(&self) -> f64 {
@@ -194,12 +233,13 @@ impl MidiSource {
                 bytes: [0x90 | n.channel, n.key, n.velocity.max(1)],
                 len: 3,
                 flags: 0,
+                shape: None,
             });
-            events.push(MidiEvent { tick: end, bytes: [0x80 | n.channel, n.key, 0], len: 3, flags: 0 });
+            events.push(MidiEvent { tick: end, bytes: [0x80 | n.channel, n.key, 0], len: 3, flags: 0, shape: None });
         }
         // Note-offs before note-ons at the same tick, so a repeated key is not cut short.
         events.sort_by_key(|e| (e.tick, e.bytes[0] & 0xf0 == 0x90, !is_note(e)));
-        MidiSource { ticks_per_qn: self.ticks_per_qn, events, long: self.long.clone(), length_ticks: length }
+        MidiSource { events, length_ticks: length, ..self.without_events() }
     }
 
     /// Writes the events into a copy of the original chunk, keeping its other lines. Pooling
@@ -237,6 +277,9 @@ impl MidiSource {
             write_long_until(&mut out, &mut prev, Some(e.tick));
             let bytes: Vec<String> = e.bytes[..e.len as usize].iter().map(|b| format!("{b:02x}")).collect();
             out.children.push(Node::Line(format!("{} {} {}", e.keyword(), e.tick - prev, bytes.join(" "))));
+            if let Some(shape) = e.shape {
+                out.children.push(Node::Line(shape.line()));
+            }
             prev = e.tick;
         }
         write_long_until(&mut out, &mut prev, None);
@@ -245,104 +288,11 @@ impl MidiSource {
     }
 }
 
-/// One kind of channel message edited as a lane of values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ControlLane {
-    Cc(u8),
-    PitchBend,
-    ChannelPressure,
-}
-
-/// A lane value in quarter notes from the source start: 0-127, or 0-16383 for pitch bend.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ControlPoint {
-    pub qn: f64,
-    pub value: u16,
-    pub channel: u8,
-}
-
-impl ControlLane {
-    pub fn max(self) -> u16 {
-        if self == Self::PitchBend { 16383 } else { 127 }
-    }
-
-    fn matches(self, e: &MidiEvent) -> bool {
-        match self {
-            Self::Cc(n) => e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == n,
-            Self::PitchBend => e.bytes[0] & 0xf0 == 0xe0,
-            Self::ChannelPressure => e.bytes[0] & 0xf0 == 0xd0,
-        }
-    }
-
-    fn value(self, e: &MidiEvent) -> u16 {
-        match self {
-            Self::Cc(_) => e.bytes[2] as u16,
-            Self::PitchBend => (e.bytes[2] as u16) << 7 | e.bytes[1] as u16,
-            Self::ChannelPressure => e.bytes[1] as u16,
-        }
-    }
-
-    fn event(self, tick: u64, channel: u8, value: u16) -> MidiEvent {
-        let value = value.min(self.max());
-        let ch = channel & 0x0f;
-        match self {
-            Self::Cc(n) => MidiEvent { tick, bytes: [0xb0 | ch, n, value as u8], len: 3, flags: 0 },
-            Self::PitchBend => {
-                MidiEvent { tick, bytes: [0xe0 | ch, (value & 0x7f) as u8, (value >> 7) as u8], len: 3, flags: 0 }
-            }
-            Self::ChannelPressure => MidiEvent { tick, bytes: [0xd0 | ch, value as u8, 0], len: 2, flags: 0 },
-        }
-    }
-}
-
 impl MidiSource {
     /// REAPER's end-of-source marker: all notes off at the very end.
     fn is_end_marker(&self, e: &MidiEvent) -> bool {
         e.tick == self.length_ticks && e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == 0x7b
     }
-
-    pub fn controls(&self, lane: ControlLane) -> Vec<ControlPoint> {
-        let ppq = self.ticks_per_qn as f64;
-        self.events
-            .iter()
-            .filter(|e| lane.matches(e) && !self.is_end_marker(e))
-            .map(|e| ControlPoint { qn: e.tick as f64 / ppq, value: lane.value(e), channel: e.bytes[0] & 0x0f })
-            .collect()
-    }
-
-    /// The same source with the lane's events replaced by `points`; the source grows if a
-    /// point lies past its end.
-    pub fn with_controls(&self, lane: ControlLane, points: &[ControlPoint]) -> MidiSource {
-        let ppq = self.ticks_per_qn as f64;
-        let tick = |qn: f64| (qn.max(0.0) * ppq).round() as u64;
-        let length = self.length_ticks.max(points.iter().map(|p| tick(p.qn)).max().unwrap_or(0));
-        let mut events: Vec<MidiEvent> = self
-            .events
-            .iter()
-            .filter(|e| !lane.matches(e) || self.is_end_marker(e))
-            .map(|e| if self.is_end_marker(e) { MidiEvent { tick: length, ..e.clone() } } else { e.clone() })
-            .collect();
-        events.extend(points.iter().map(|p| lane.event(tick(p.qn), p.channel, p.value)));
-        // Stable, so the end marker stays after anything placed at the very end.
-        events.sort_by_key(|e| (e.tick, e.tick == length && e.bytes[0] & 0xf0 == 0xb0 && e.bytes[1] == 0x7b));
-        MidiSource { ticks_per_qn: self.ticks_per_qn, events, long: self.long.clone(), length_ticks: length }
-    }
-}
-
-/// Moves note starts to the nearest multiple of `grid` (quarter notes) by `strength` (0-1),
-/// keeping each note's length.
-pub fn quantize(notes: &[Note], grid: f64, strength: f64) -> Vec<Note> {
-    if grid <= 0.0 {
-        return notes.to_vec();
-    }
-    notes
-        .iter()
-        .map(|n| {
-            let target = (n.start_qn / grid).round() * grid;
-            let shift = (target - n.start_qn) * strength.clamp(0.0, 1.0);
-            Note { start_qn: (n.start_qn + shift).max(0.0), end_qn: (n.end_qn + shift).max(n.start_qn + shift), ..*n }
-        })
-        .collect()
 }
 
 /// A note placed on the project timeline, in seconds.
@@ -448,7 +398,8 @@ impl MidiSource {
         out
     }
 
-    /// The take's channel messages other than notes, placed like [`MidiSource::place`]. REAPER's
+    /// The take's channel messages other than notes, placed like [`MidiSource::place`], with
+    /// shaped controllers played as the steps REAPER sends between their events. REAPER's
     /// end-of-source marker (all notes off at the very end) is left out.
     pub fn place_events(
         &self,
@@ -457,17 +408,12 @@ impl MidiSource {
         timeline: &crate::tempo::Timeline,
     ) -> Vec<TimedEvent> {
         let ppq = self.ticks_per_qn as f64;
-        let controls: Vec<&MidiEvent> = self
-            .events
-            .iter()
-            .filter(|e| matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0) && !e.muted())
-            .filter(|e| !self.is_end_marker(e))
-            .collect();
+        let controls = self.shaped_controls();
         let p = self.placement(item, take, timeline);
         let mut out = Vec::new();
         for base in &p.bases {
             for e in &controls {
-                let at = base + e.tick as f64 / ppq / p.rate;
+                let at = base + e.tick / ppq / p.rate;
                 if at < p.item_qn - 1e-9 || at >= p.end_qn {
                     continue;
                 }
@@ -478,6 +424,44 @@ impl MidiSource {
             }
         }
         out
+    }
+}
+
+impl crate::Project {
+    /// The source chunk of the item's active take, when it is MIDI.
+    pub fn midi_chunk(&self, item: crate::ItemId) -> Option<&Chunk> {
+        let (_, it) = self.find_item(item)?;
+        match &it.take()?.source {
+            crate::Source::Raw(c) if c.args().first().map(String::as_str) == Some("MIDI") => Some(c),
+            _ => None,
+        }
+    }
+
+    pub fn midi_source(&self, item: crate::ItemId) -> Option<MidiSource> {
+        MidiSource::parse(self.midi_chunk(item)?)
+    }
+
+    /// Changes the source chunk of the item's active take; false when it is not MIDI.
+    pub fn edit_midi_chunk(&mut self, item: crate::ItemId, f: impl FnOnce(&mut Chunk)) -> bool {
+        let Some(it) = self.tracks.iter_mut().find_map(|t| t.item_mut(item)) else { return false };
+        let active = it.active_take;
+        let Some(take) = it.takes.get_mut(active) else { return false };
+        match &mut take.source {
+            crate::Source::Raw(c) if c.args().first().map(String::as_str) == Some("MIDI") => {
+                f(c);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Changes the events of the item's active take; false when it is not MIDI.
+    pub fn edit_midi(&mut self, item: crate::ItemId, f: impl FnOnce(&MidiSource) -> MidiSource) -> bool {
+        self.edit_midi_chunk(item, |c| {
+            if let Some(src) = MidiSource::parse(c) {
+                *c = f(&src).write_chunk(c);
+            }
+        })
     }
 }
 
@@ -549,37 +533,5 @@ mod tests {
         let events = m.place_events(&item, &take, &tempo.timeline());
         let times: Vec<(f64, u8)> = events.iter().map(|e| (e.time, e.bytes[0])).collect();
         assert_eq!(times, [(1.0, 0xb0), (1.25, 0xe0), (2.0, 0xb0), (2.25, 0xe0)]);
-    }
-
-    #[test]
-    fn edits_controller_lanes() {
-        let c = parse("<SOURCE MIDI\n  HASDATA 1 960 QN\n  E 0 b0 01 10\n  E 480 e0 00 40\n  E 480 90 3c 50\n  E 960 80 3c 00\n  E 0 b0 7b 00\n>\n")
-            .unwrap();
-        let m = MidiSource::parse(&c).unwrap();
-        assert_eq!(m.controls(ControlLane::Cc(1)), [ControlPoint { qn: 0.0, value: 16, channel: 0 }]);
-        assert_eq!(m.controls(ControlLane::PitchBend), [ControlPoint { qn: 0.5, value: 8192, channel: 0 }]);
-        assert!(m.controls(ControlLane::Cc(0x7b)).is_empty(), "the end marker is not a lane value");
-        let points =
-            [ControlPoint { qn: 0.25, value: 100, channel: 0 }, ControlPoint { qn: 3.0, value: 0, channel: 0 }];
-        let edited = m.with_controls(ControlLane::Cc(1), &points);
-        assert_eq!(edited.controls(ControlLane::Cc(1)), points);
-        assert_eq!(edited.length_qn(), 3.0);
-        assert_eq!(edited.controls(ControlLane::PitchBend), m.controls(ControlLane::PitchBend));
-        assert_eq!(edited.notes(), m.notes());
-        let last = edited.events.last().unwrap();
-        assert_eq!((last.tick, last.bytes), (2880, [0xb0, 0x7b, 0]));
-        let back = MidiSource::parse(&edited.write_chunk(&c)).unwrap();
-        assert_eq!(back, edited);
-    }
-
-    #[test]
-    fn quantizes_starts_and_keeps_lengths() {
-        let n = |s: f64, e: f64| Note { start_qn: s, end_qn: e, channel: 0, key: 60, velocity: 90 };
-        let q = quantize(&[n(0.1, 0.6), n(0.95, 1.2), n(1.4, 2.0)], 0.5, 1.0);
-        let spans: Vec<(f64, f64)> =
-            q.iter().map(|n| ((n.start_qn * 1e9).round() / 1e9, (n.end_qn * 1e9).round() / 1e9)).collect();
-        assert_eq!(spans, [(0.0, 0.5), (1.0, 1.25), (1.5, 2.1)]);
-        let half = quantize(&[n(0.2, 0.4)], 0.5, 0.5);
-        assert!((half[0].start_qn - 0.1).abs() < 1e-12);
     }
 }

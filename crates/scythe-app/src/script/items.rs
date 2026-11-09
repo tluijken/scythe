@@ -187,6 +187,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 events: Vec::new(),
                 long: Vec::new(),
                 length_ticks: (length_qn * 960.0).round() as u64,
+                cc_interp: 32,
             };
             let take = Take {
                 name: String::new(),
@@ -549,7 +550,7 @@ fn sort_midi(src: &mut MidiSource) {
     let last = src.events.iter().map(|e| e.tick).max().unwrap_or(0);
     src.length_ticks = src.length_ticks.max(last);
     src.events.sort_by_key(|e| (e.tick, is_note_on(e)));
-    let mut marker = marker.unwrap_or(MidiEvent { tick: 0, bytes: [0xb0, 0x7b, 0], len: 3, flags: 0 });
+    let mut marker = marker.unwrap_or(MidiEvent { tick: 0, bytes: [0xb0, 0x7b, 0], len: 3, flags: 0, shape: None });
     marker.tick = src.length_ticks;
     src.events.push(marker);
 }
@@ -665,8 +666,8 @@ fn midi(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             let flags = if a.bool(1) { SELECTED } else { 0 } | if a.bool(2) { MUTED } else { 0 };
             let (start, end) = (tick(a.num(3)), tick(a.num(4)));
             let (ch, key, vel) = ((a.int(5) & 0x0f) as u8, a.int(6).clamp(0, 127) as u8, a.int(7).clamp(1, 127) as u8);
-            src.events.push(MidiEvent { tick: start, bytes: [0x90 | ch, key, vel], len: 3, flags });
-            src.events.push(MidiEvent { tick: end.max(start), bytes: [0x80 | ch, key, 0], len: 3, flags });
+            src.events.push(MidiEvent { tick: start, bytes: [0x90 | ch, key, vel], len: 3, flags, shape: None });
+            src.events.push(MidiEvent { tick: end.max(start), bytes: [0x80 | ch, key, 0], len: 3, flags, shape: None });
             if !a.bool(8) {
                 sort_midi(&mut src);
             }
@@ -758,7 +759,7 @@ fn midi(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             }
             let flags = if a.bool(1) { SELECTED } else { 0 } | if a.bool(2) { MUTED } else { 0 };
             let bytes = [status, a.int(6).clamp(0, 127) as u8, a.int(7).clamp(0, 127) as u8];
-            src.events.push(MidiEvent { tick: tick(a.num(3)), bytes, len: event_len(status), flags });
+            src.events.push(MidiEvent { tick: tick(a.num(3)), bytes, len: event_len(status), flags, shape: None });
             sort_midi(&mut src);
             store_midi(s, take, &src, &chunk);
             ret(Val::Bool(true))

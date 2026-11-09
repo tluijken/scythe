@@ -136,7 +136,7 @@ pub fn read_smf(data: &[u8]) -> Result<(MidiSource, SmfInfo), SmfError> {
                             _ => t.byte("event")?,
                         };
                     }
-                    events.push(MidiEvent { tick, bytes, len: n as u8 + 1, flags: 0 });
+                    events.push(MidiEvent { tick, bytes, len: n as u8 + 1, flags: 0, shape: None });
                 }
             }
         }
@@ -144,7 +144,16 @@ pub fn read_smf(data: &[u8]) -> Result<(MidiSource, SmfInfo), SmfError> {
     }
     // Stable: events of the same tick keep their file order across tracks.
     events.sort_by_key(|e| e.tick);
-    Ok((MidiSource { ticks_per_qn: division.max(1) as u32, events, long: Vec::new(), length_ticks: length }, info))
+    Ok((
+        MidiSource {
+            ticks_per_qn: division.max(1) as u32,
+            events,
+            long: Vec::new(),
+            length_ticks: length,
+            cc_interp: 32,
+        },
+        info,
+    ))
 }
 
 fn put_varlen(out: &mut Vec<u8>, mut v: u64) {
@@ -198,17 +207,17 @@ impl MidiSource {
     pub fn to_chunk(&self) -> Chunk {
         let mut c = Chunk::new("SOURCE", &["MIDI"]);
         c.children.push(Node::Line(format!("HASDATA 1 {} QN", self.ticks_per_qn)));
-        let mut events = self.events.clone();
-        if events.last().is_none_or(|e| e.tick < self.length_ticks) {
-            events.push(MidiEvent { tick: self.length_ticks, bytes: [0xb0, 0x7b, 0], len: 3, flags: 0 });
+        let mut src = self.clone();
+        if src.events.last().is_none_or(|e| e.tick < self.length_ticks) {
+            src.events.push(MidiEvent {
+                tick: self.length_ticks,
+                bytes: [0xb0, 0x7b, 0],
+                len: 3,
+                flags: 0,
+                shape: None,
+            });
         }
-        let mut prev = 0;
-        for e in &events {
-            let bytes: Vec<String> = e.bytes[..e.len as usize].iter().map(|b| format!("{b:02x}")).collect();
-            c.children.push(Node::Line(format!("{} {} {}", e.keyword(), e.tick - prev, bytes.join(" "))));
-            prev = e.tick;
-        }
-        c
+        src.write_chunk(&c)
     }
 }
 
@@ -247,12 +256,13 @@ mod tests {
             ticks_per_qn: 960,
             long: Vec::new(),
             events: vec![
-                MidiEvent { tick: 0, bytes: [0xc0, 5, 0], len: 2, flags: 0 },
-                MidiEvent { tick: 0, bytes: [0x99, 36, 110], len: 3, flags: 0 },
-                MidiEvent { tick: 240, bytes: [0x89, 36, 0], len: 3, flags: 0 },
-                MidiEvent { tick: 200_000, bytes: [0xe0, 0, 64], len: 3, flags: 0 },
+                MidiEvent { tick: 0, bytes: [0xc0, 5, 0], len: 2, flags: 0, shape: None },
+                MidiEvent { tick: 0, bytes: [0x99, 36, 110], len: 3, flags: 0, shape: None },
+                MidiEvent { tick: 240, bytes: [0x89, 36, 0], len: 3, flags: 0, shape: None },
+                MidiEvent { tick: 200_000, bytes: [0xe0, 0, 64], len: 3, flags: 0, shape: None },
             ],
             length_ticks: 230_400,
+            cc_interp: 32,
         };
         let bytes = write_smf(&src, Some(128.0), Some("Drums"));
         let (back, info) = read_smf(&bytes).unwrap();
