@@ -61,7 +61,7 @@ async fn websocket(addr: std::net::SocketAddr) -> Seen {
 fn commands_over_http_and_websocket() {
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
     let mut session = Session::new(Engine::start_offline(pool, 48_000));
-    let config = ServerConfig { addr: "127.0.0.1:0".parse().unwrap(), token: Some(TOKEN.into()) };
+    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), Some(TOKEN.into()));
     let (server, mut pump) = ControlServer::start(config, Arc::new(|| {})).expect("server");
     let addr = server.addr();
 

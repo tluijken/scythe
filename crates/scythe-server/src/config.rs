@@ -4,6 +4,8 @@
 //! project = "/home/band/live/monitors.RPP"
 //! control = "0.0.0.0:8770"
 //! token = "change-me"
+//! folders = ["/home/band/live"]
+//! access_file = "/home/band/.config/scythe/access.json"
 //! no_input = false
 //!
 //! [audio]
@@ -29,6 +31,11 @@ pub struct Config {
     /// Where the control API listens, `"off"` for not at all.
     pub control: Option<String>,
     pub token: Option<String>,
+    /// Folders the web UI's file browser offers (the home folder when none are given).
+    #[serde(default)]
+    pub folders: Vec<PathBuf>,
+    /// Where access links are kept (`$XDG_CONFIG_HOME/scythe/access.json` by default).
+    pub access_file: Option<PathBuf>,
     #[serde(default)]
     pub no_input: bool,
     #[serde(default)]
@@ -55,6 +62,8 @@ pub struct Options {
     pub project: Option<PathBuf>,
     pub control: Option<SocketAddr>,
     pub token: Option<String>,
+    pub folders: Vec<PathBuf>,
+    pub access_file: Option<PathBuf>,
     pub devices: DeviceRequest,
     pub null_audio: bool,
     pub list_devices: bool,
@@ -78,7 +87,9 @@ usage: scythe-server [project.RPP] [options]
 
   --config FILE          settings file (default $XDG_CONFIG_HOME/scythe/headless.toml)
   --control ADDR         control API address (default 127.0.0.1:8770), `off` to disable
-  --token TOKEN          require this token from clients (also SCYTHE_CONTROL_TOKEN)
+  --token TOKEN          the admin token clients need (also SCYTHE_CONTROL_TOKEN)
+  --folder DIR           a folder the web UI may browse for projects (repeatable; default: home)
+  --access-file FILE     where access links are kept (default $XDG_CONFIG_HOME/scythe/access.json)
   --audio-host NAME      audio host (ALSA, JACK, ...)
   --output-device NAME   output device, exact or part of its name
   --input-device NAME    input device for monitoring and recording
@@ -96,10 +107,12 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     let mut flags: Vec<(String, Option<String>)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
     let mut it = args.iter();
-    const VALUED: [&str; 9] = [
+    const VALUED: [&str; 11] = [
         "--config",
         "--control",
         "--token",
+        "--folder",
+        "--access-file",
         "--audio-host",
         "--output-device",
         "--input-device",
@@ -152,6 +165,11 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         .or_else(|| std::env::var("SCYTHE_CONTROL_TOKEN").ok())
         .or(config.token)
         .filter(|t| !t.is_empty());
+    let folders: Vec<PathBuf> =
+        flags.iter().filter(|(n, _)| n == "--folder").filter_map(|(_, v)| v.clone().map(PathBuf::from)).collect();
+    let folders = if folders.is_empty() { config.folders } else { folders };
+    let access_file =
+        value("--access-file").map(PathBuf::from).or(config.access_file).or_else(crate::access::default_file);
     let audio = config.audio;
     let devices = DeviceRequest {
         host: value("--audio-host").or(audio.host),
@@ -169,6 +187,8 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         project: positional.pop().map(PathBuf::from).or(config.project),
         control,
         token,
+        folders,
+        access_file,
         devices,
         null_audio: flag("--null-audio").is_some() || audio.null,
         list_devices: flag("--list-devices").is_some(),

@@ -15,6 +15,7 @@ scythe-session.workspace = true
 scythe-mcp.workspace = true
 axum.workspace = true
 futures-util.workspace = true
+getrandom.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

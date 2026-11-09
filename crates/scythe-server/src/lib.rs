@@ -1,7 +1,9 @@
 //! Serving a Scythe session to other programs: the control API over HTTP and WebSocket, and
 //! running a session with no window at all (`scythe-server`, `scythe --headless`).
 
+pub mod access;
 pub mod config;
+pub mod files;
 pub mod headless;
 pub mod server;
 pub mod web;

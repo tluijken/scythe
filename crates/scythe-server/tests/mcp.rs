@@ -30,7 +30,7 @@ fn call(id: u64, name: &str, arguments: Value) -> Value {
 fn serve(token: Option<&str>, client: impl FnOnce(SocketAddr) + Send + 'static) -> Session {
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
     let mut session = Session::new(Engine::start_offline(pool, 48_000));
-    let config = ServerConfig { addr: "127.0.0.1:0".parse().unwrap(), token: token.map(Into::into) };
+    let config = ServerConfig::new("127.0.0.1:0".parse().unwrap(), token.map(Into::into));
     let (server, mut pump) = ControlServer::start(config, Arc::new(|| {})).expect("server");
     let addr = server.addr();
     let client = std::thread::spawn(move || client(addr));

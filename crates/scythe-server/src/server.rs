@@ -3,14 +3,16 @@
 //! runtime of its own; commands reach the session through a [`ControlHandle`] and are
 //! answered on the session's thread.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Request, State};
+use axum::extract::{Extension, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -19,10 +21,13 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use scythe_mcp::McpServer;
 use scythe_session::Waker;
+use scythe_session::access::Scope;
 use scythe_session::api::{ApiError, Command, ErrorKind, Event};
 use scythe_session::control::{self, ControlHandle, ControlPump, EventSink};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
+
+use crate::access::Access;
 
 /// Bumped when a change to the protocol would break existing clients.
 pub const PROTOCOL: u32 = 1;
@@ -32,11 +37,21 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
     pub addr: SocketAddr,
-    /// Required from every client when set, as `Authorization: Bearer <token>` or `?token=`.
+    /// The admin token: required from every client when set, as `Authorization: Bearer <token>`
+    /// or `?token=`. Access links (see [`crate::access`]) carry tokens of their own.
     pub token: Option<String>,
+    /// Where access links are kept; in memory only when `None`.
+    pub access_file: Option<PathBuf>,
+    /// The folders the web UI's file browser offers; the home folder when empty.
+    pub folders: Vec<PathBuf>,
 }
 
 impl ServerConfig {
+    /// Listening on `addr` with `token`, no stored links and the default folders.
+    pub fn new(addr: SocketAddr, token: Option<String>) -> Self {
+        Self { addr, token, access_file: None, folders: Vec::new() }
+    }
+
     /// Whether clients on other machines can reach the server.
     pub fn is_public(&self) -> bool {
         !self.addr.ip().is_loopback()
@@ -50,11 +65,25 @@ pub struct ControlServer {
     thread: Option<JoinHandle<()>>,
 }
 
+/// An event as it goes out: the event, and its text as the admin receives it.
+struct Published {
+    event: Event,
+    text: Arc<str>,
+}
+
+fn event_text(event: &Event) -> String {
+    let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+    value["type"] = "event".into();
+    value.to_string()
+}
+
 #[derive(Clone)]
 struct AppState {
     control: ControlHandle,
-    events: broadcast::Sender<Arc<str>>,
-    token: Option<Arc<str>>,
+    events: broadcast::Sender<Arc<Published>>,
+    access: Arc<Access>,
+    folders: Arc<Vec<PathBuf>>,
+    addr: SocketAddr,
     mcp: McpServer,
 }
 
@@ -63,22 +92,27 @@ impl ControlServer {
     /// which calls it to run commands and publish events; `wake` tells that thread a command
     /// is waiting.
     pub fn start(config: ServerConfig, wake: Waker) -> std::io::Result<(Self, ControlPump)> {
+        let access = Access::load(config.token, config.access_file).map_err(std::io::Error::other)?;
         let listener = std::net::TcpListener::bind(config.addr)?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
-        let (events, _) = broadcast::channel::<Arc<str>>(1024);
+        let (events, _) = broadcast::channel::<Arc<Published>>(1024);
         let publish = events.clone();
         let sink: EventSink = Arc::new(move |event: &Event| {
             if publish.receiver_count() == 0 {
                 return;
             }
-            let mut value = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
-            value["type"] = "event".into();
-            let _ = publish.send(value.to_string().into());
+            let _ = publish.send(Arc::new(Published { event: event.clone(), text: event_text(event).into() }));
         });
         let (handle, pump) = control::channel(wake, sink);
         let mcp = McpServer::new(scythe_mcp::Local(handle.clone()));
-        let state = AppState { control: handle, events, token: config.token.map(Into::into), mcp };
+        let folders = if config.folders.is_empty() {
+            std::env::var_os("HOME").map(PathBuf::from).into_iter().collect()
+        } else {
+            config.folders
+        };
+        let state =
+            AppState { control: handle, events, access: Arc::new(access), folders: Arc::new(folders), addr, mcp };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("scythe-control")
@@ -127,6 +161,8 @@ fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/command", post(command))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/peaks", get(peaks))
+        .route("/api/files", get(files))
         .route("/api/ws", get(websocket))
         .route("/mcp", post(mcp).get(mcp_stream).delete(mcp_stream))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
@@ -135,34 +171,34 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Compares without stopping at the first difference, so timing tells nothing about the token.
-fn same_token(given: &str, token: &str) -> bool {
-    given.len() == token.len() && given.bytes().zip(token.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+fn refuse(status: StatusCode, kind: &str, message: &str) -> Response {
+    (status, Json(json!({"ok": false, "error": {"kind": kind, "message": message}}))).into_response()
 }
 
-async fn authorize(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let Some(token) = state.token.as_deref() else { return next.run(request).await };
+/// Finds the scope of the token presented and hands it to the handler; an unknown token is
+/// refused here.
+async fn authorize(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
     let bearer = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     let query = request.uri().query().and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")));
-    if bearer.or(query).is_some_and(|given| same_token(given, token)) {
-        return next.run(request).await;
-    }
-    let body = json!({"ok": false, "error": {"kind": "unauthorized", "message": "a valid token is required"}});
-    (StatusCode::UNAUTHORIZED, Json(body)).into_response()
+    let Some(scope) = state.access.scope(bearer.or(query)) else {
+        return refuse(StatusCode::UNAUTHORIZED, "unauthorized", "a valid token is required");
+    };
+    request.extensions_mut().insert(scope);
+    next.run(request).await
 }
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"ok": true, "name": "scythe", "protocol": PROTOCOL, "token": state.token.is_some()}))
+    Json(json!({"ok": true, "name": "scythe", "protocol": PROTOCOL, "token": state.access.has_admin_token()}))
 }
 
-/// Queues a command and waits for its answer.
-async fn run(state: &AppState, command: Command) -> Result<Value, ApiError> {
+/// Queues a command for a client with `scope` and waits for its answer.
+async fn run(state: &AppState, scope: Scope, command: Command) -> Result<Value, ApiError> {
     let (tx, rx) = oneshot::channel();
-    if !state.control.send(command, move |answer| {
+    if !state.control.send_as(scope, command, move |answer| {
         let _ = tx.send(answer);
     }) {
         return Err(ApiError::failed("the session has ended"));
@@ -181,6 +217,7 @@ fn respond(answer: Result<Value, ApiError>) -> Response {
                 ErrorKind::Invalid => StatusCode::BAD_REQUEST,
                 ErrorKind::NotFound => StatusCode::NOT_FOUND,
                 ErrorKind::Failed => StatusCode::CONFLICT,
+                ErrorKind::Forbidden => StatusCode::FORBIDDEN,
             };
             (status, Json(json!({"ok": false, "error": error}))).into_response()
         }
@@ -191,19 +228,100 @@ fn parse(value: Value) -> Result<Command, ApiError> {
     serde_json::from_value(value).map_err(|e| ApiError::invalid(e.to_string()))
 }
 
-async fn command(State(state): State<AppState>, body: Bytes) -> Response {
-    let parsed = serde_json::from_slice(&body).map_err(|e| ApiError::invalid(format!("not JSON: {e}"))).and_then(parse);
-    match parsed {
-        Ok(command) => respond(run(&state, command).await),
+fn is_access(value: &Value) -> bool {
+    value.get("cmd").and_then(Value::as_str).is_some_and(|c| c.starts_with("access."))
+}
+
+/// Addresses phones on the network can reach this server at, for the links' QR codes.
+fn origins(addr: SocketAddr) -> Vec<String> {
+    let ip = addr.ip();
+    if ip.is_loopback() {
+        return Vec::new();
+    }
+    if !ip.is_unspecified() {
+        return vec![format!("http://{addr}")];
+    }
+    // Connecting a UDP socket sends nothing; it only makes the system pick the interface it
+    // would route through, which is the address the LAN knows this machine by.
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("192.0.2.1:9").and(s.local_addr()));
+    match probe {
+        Ok(local) if !local.ip().is_unspecified() => vec![format!("http://{}:{}", local.ip(), addr.port())],
+        _ => Vec::new(),
+    }
+}
+
+/// `access.*` commands, which the server answers itself: the links live here, not in the
+/// session.
+fn access_command(state: &AppState, scope: &Scope, value: Value) -> Result<Value, ApiError> {
+    let listing = value.get("cmd").and_then(Value::as_str) == Some("access.list");
+    let mut answer = state.access.execute(scope, value)?;
+    if listing {
+        answer["origins"] = origins(state.addr).into();
+    }
+    Ok(answer)
+}
+
+async fn command(State(state): State<AppState>, Extension(scope): Extension<Scope>, body: Bytes) -> Response {
+    let value: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return respond(Err(ApiError::invalid(format!("not JSON: {e}")))),
+    };
+    if is_access(&value) {
+        return respond(access_command(&state, &scope, value));
+    }
+    match parse(value) {
+        Ok(command) => respond(run(&state, scope, command).await),
         Err(e) => respond(Err(e)),
     }
 }
 
-async fn snapshot(State(state): State<AppState>) -> Response {
-    let command = parse(json!({"cmd": "snapshot"}));
-    match command {
-        Ok(command) => respond(run(&state, command).await),
+async fn snapshot(State(state): State<AppState>, Extension(scope): Extension<Scope>) -> Response {
+    match parse(json!({"cmd": "snapshot"})) {
+        Ok(command) => respond(run(&state, scope, command).await),
         Err(e) => respond(Err(e)),
+    }
+}
+
+/// `item.peaks` as a GET, so a browser can cache waveforms by address.
+async fn peaks(
+    State(state): State<AppState>,
+    Extension(scope): Extension<Scope>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    let number = |name: &str| query.get(name).and_then(|v| v.parse::<f64>().ok());
+    let mut value = json!({"cmd": "item.peaks"});
+    for name in ["item", "width"] {
+        match query.get(name).and_then(|v| v.parse::<u64>().ok()) {
+            Some(n) => value[name] = n.into(),
+            None => return respond(Err(ApiError::invalid(format!("give \"{name}\" as a whole number")))),
+        }
+    }
+    for name in ["from", "to"] {
+        if let Some(t) = number(name) {
+            value[name] = t.into();
+        }
+    }
+    match parse(value) {
+        Ok(command) => respond(run(&state, scope, command).await),
+        Err(e) => respond(Err(e)),
+    }
+}
+
+/// The file browser: folders and .RPP files under the configured folders, for the admin only.
+async fn files(
+    State(state): State<AppState>,
+    Extension(scope): Extension<Scope>,
+    Query(query): Query<HashMap<String, String>>,
+) -> Response {
+    if !scope.is_admin() {
+        return respond(Err(ApiError::forbidden("browsing files needs the admin token")));
+    }
+    let folders = state.folders.clone();
+    let path = query.get("path").filter(|p| !p.is_empty()).map(PathBuf::from);
+    let listing = tokio::task::spawn_blocking(move || crate::files::list(&folders, path.as_deref())).await;
+    match listing {
+        Ok(answer) => respond(answer.map(|l| serde_json::to_value(l).unwrap_or(Value::Null))),
+        Err(_) => respond(Err(ApiError::failed("listing the folder failed"))),
     }
 }
 
@@ -223,9 +341,19 @@ fn trusted_origin(origin: &str, host: Option<&str>) -> bool {
 }
 
 /// One MCP message (or batch) per POST, answered as JSON; notifications get 202.
-async fn mcp(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn mcp(
+    State(state): State<AppState>,
+    Extension(scope): Extension<Scope>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !scope.is_admin() {
+        let body =
+            json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": "MCP needs the admin token"}});
+        return (StatusCode::FORBIDDEN, Json(body)).into_response();
+    }
     let text = |name: header::HeaderName| headers.get(name).and_then(|v| v.to_str().ok());
-    if state.token.is_none()
+    if !state.access.has_admin_token()
         && let Some(origin) = text(header::ORIGIN)
         && !trusted_origin(origin, text(header::HOST))
     {
@@ -259,8 +387,12 @@ async fn mcp_stream() -> Response {
     (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response()
 }
 
-async fn websocket(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
-    upgrade.on_upgrade(move |socket| serve_socket(socket, state))
+async fn websocket(
+    State(state): State<AppState>,
+    Extension(scope): Extension<Scope>,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade.on_upgrade(move |socket| serve_socket(socket, state, scope))
 }
 
 fn ws_reply(id: &Value, answer: Result<Value, ApiError>) -> String {
@@ -271,13 +403,13 @@ fn ws_reply(id: &Value, answer: Result<Value, ApiError>) -> String {
     .to_string()
 }
 
-/// One WebSocket client: commands in (answered in the order sent), replies and every event
-/// out.
-async fn serve_socket(socket: WebSocket, state: AppState) {
+/// One WebSocket client: commands in (answered in the order sent), replies and the events its
+/// scope may hear out.
+async fn serve_socket(socket: WebSocket, state: AppState, scope: Scope) {
     let (mut sink, mut stream) = socket.split();
     let (replies, mut pending) = mpsc::unbounded_channel::<String>();
     let mut events = state.events.subscribe();
-    let hello = json!({"type": "hello", "protocol": PROTOCOL}).to_string();
+    let hello = json!({"type": "hello", "protocol": PROTOCOL, "access": scope}).to_string();
     if sink.send(Message::Text(hello.into())).await.is_err() {
         return;
     }
@@ -293,11 +425,15 @@ async fn serve_socket(socket: WebSocket, state: AppState) {
                         }
                     };
                     let id = value.as_object_mut().and_then(|o| o.remove("id")).unwrap_or(Value::Null);
+                    if is_access(&value) {
+                        let _ = replies.send(ws_reply(&id, access_command(&state, &scope, value)));
+                        continue;
+                    }
                     match parse(value) {
                         Ok(command) => {
                             let out = replies.clone();
                             let reply_id = id.clone();
-                            let sent = state.control.send(command, move |answer| {
+                            let sent = state.control.send_as(scope.clone(), command, move |answer| {
                                 let _ = out.send(ws_reply(&reply_id, answer));
                             });
                             if !sent {
@@ -319,8 +455,16 @@ async fn serve_socket(socket: WebSocket, state: AppState) {
                 }
             }
             event = events.recv() => match event {
-                Ok(text) => {
-                    if sink.send(Message::Text(String::from(&*text).into())).await.is_err() {
+                Ok(published) => {
+                    let text = if scope.is_admin() {
+                        String::from(&*published.text)
+                    } else {
+                        match scope.event(&published.event) {
+                            Some(event) => event_text(&event),
+                            None => continue,
+                        }
+                    };
+                    if sink.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
                 }

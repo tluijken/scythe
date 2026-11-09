@@ -86,7 +86,12 @@ pub fn run(options: Options) -> Result<(), String> {
 
     let mut control = None;
     if let Some(addr) = options.control {
-        let config = ServerConfig { addr, token: options.token.clone() };
+        let config = ServerConfig {
+            addr,
+            token: options.token.clone(),
+            access_file: options.access_file.clone(),
+            folders: options.folders.clone(),
+        };
         if config.is_public() && config.token.is_none() {
             eprintln!("warning: the control API at {addr} takes commands from anyone on the network; set a token");
         }

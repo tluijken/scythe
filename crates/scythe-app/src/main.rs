@@ -151,7 +151,10 @@ fn control_config(args: &[String]) -> Result<Option<scythe_server::ServerConfig>
     let addr = addr.parse().map_err(|_| format!("--control takes an address like 0.0.0.0:8770, not {addr}"))?;
     let token =
         value("--control-token").or_else(|| std::env::var("SCYTHE_CONTROL_TOKEN").ok()).filter(|t| !t.is_empty());
-    let config = scythe_server::ServerConfig { addr, token };
+    let config = scythe_server::ServerConfig {
+        access_file: scythe_server::access::default_file(),
+        ..scythe_server::ServerConfig::new(addr, token)
+    };
     if config.is_public() && config.token.is_none() {
         eprintln!("warning: the control API at {addr} takes commands from anyone on the network; set a token");
     }
