@@ -1364,10 +1364,12 @@ impl ScytheApp {
             dirty: self.dirty,
             gfx: self.script_gfx.pointer.take_input(),
             gfx_closed: closed,
+            actions: std::rc::Rc::new(self.action_table()),
         }
     }
 
-    fn apply_script(&mut self, name: &str, out: crate::script::ScriptOutcome) {
+    fn apply_script(&mut self, name: &str, mut out: crate::script::ScriptOutcome) {
+        self.apply_script_actions(&mut out);
         if let Some(project) = out.project {
             let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
             self.edit(&label, |p| *p = project);

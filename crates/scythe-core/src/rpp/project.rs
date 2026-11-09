@@ -1704,6 +1704,70 @@ pub fn tracks_from_template(text: &str) -> Result<Vec<Track>, ParseError> {
     Ok(tracks)
 }
 
+/// `GetTrackStateChunk`: the track as the project file has it, its receives as `AUXRECV`
+/// lines numbering the project's tracks.
+pub fn track_state_chunk(p: &Project, id: TrackId) -> Option<String> {
+    let t = if p.master.id == id { &p.master } else { p.track(id)? };
+    Some(unindented(&write(&write_track(p, t))))
+}
+
+/// A chunk as REAPER's state chunk functions give it: every line flush left.
+fn unindented(text: &str) -> String {
+    text.lines().map(|l| format!("{}\n", l.trim_start())).collect()
+}
+
+/// `SetTrackStateChunk`: replaces the track (keeping its identity) with a `<TRACK` chunk,
+/// receives included. False when the text is not a track.
+pub fn set_track_state_chunk(p: &mut Project, id: TrackId, text: &str) -> bool {
+    let Ok(c) = parse(text.trim()) else { return false };
+    if c.name() != "TRACK" || p.track(id).is_none() {
+        return false;
+    }
+    let (mut track, receives) = parse_track(&c);
+    track.id = id;
+    track.sends = p.track(id).map(|t| t.sends.clone()).unwrap_or_default();
+    for t in &mut p.tracks {
+        t.sends.retain(|s| s.dest != id);
+    }
+    for (src, mut send) in receives {
+        if let Some(t) = p.tracks.get_mut(src).filter(|t| t.id != id) {
+            send.dest = id;
+            t.sends.push(send);
+        }
+    }
+    if let Some(slot) = p.track_mut(id) {
+        *slot = track;
+    }
+    true
+}
+
+/// `GetItemStateChunk`: the item as the project file has it.
+pub fn item_state_chunk(item: &Item) -> String {
+    unindented(&write(&write_item(item)))
+}
+
+/// `SetItemStateChunk`: the item an `<ITEM` chunk describes, with `id` as its identity.
+pub fn item_from_state_chunk(text: &str, id: crate::ItemId) -> Option<Item> {
+    let c = parse(text.trim()).ok()?;
+    if c.name() != "ITEM" {
+        return None;
+    }
+    let mut item = parse_item(&c);
+    item.id = id;
+    Some(item)
+}
+
+/// `GetEnvelopeStateChunk`: the envelope's chunk (`<VOLENV2`, `<PANENV2`…).
+pub fn envelope_state_chunk(env: &Envelope) -> String {
+    unindented(&write(&write_envelope(env)))
+}
+
+/// `SetEnvelopeStateChunk`: the envelope a chunk describes, keeping `kind`.
+pub fn envelope_from_state_chunk(kind: EnvelopeKind, text: &str) -> Option<Envelope> {
+    let c = parse(text.trim()).ok()?;
+    Some(parse_envelope(kind, &c))
+}
+
 /// Resolves a take's source path against the project directory, as REAPER stores media
 /// relative to the project file when it lives below it.
 pub fn resolve_media_path(project: &Project, path: &Path) -> PathBuf {

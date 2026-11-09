@@ -1,0 +1,38 @@
+lookup true true true 0 0 40001
+reverse wp12two wp12loop nil
+names Custom: two tracks Track: Insert new track Transport: Toggle repeat Options: Toggle metronome
+keys40001 2 Ctrl+T|B
+keysloop 1 Ctrl+A
+keys1068 1 R
+tog0 0 0 -1 -1 0 -1
+tog1 1 1 -1
+tog2 0 0
+two 2
+mix 3 1
+context false actions.lua 0 false -1 -1 -1
+tchunk true <TRACK Lead 0.5 true
+tset true true 0.5 3
+tset2 true true 1 1
+env true 2
+echunk true <VOLENV2
+ true 1 -1
+eset true 3 0.75 0 0 false
+ichunk true <ITEM 1 2 Clip
+iset true 3 2 1
+mm2 _wp12loop
+mm3 40001 c
+settog false -1
+guid 38 { }
+solo false
+solo2 true 3
+solo3 false
+mute 1 1
+arm 0
+trguid 38 1
+items 1
+take true
+file true false
+cur 2.5
+ts 120 4
+bad false true Env
+after_bad 0 0

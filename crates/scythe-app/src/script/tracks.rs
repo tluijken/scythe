@@ -746,7 +746,7 @@ fn env_name(kind: EnvelopeKind) -> &'static str {
 }
 
 /// An envelope the script holds, when it exists.
-fn envelope(p: &mut Project, e: Option<Env>) -> Option<&mut Envelope> {
+pub(super) fn envelope(p: &mut Project, e: Option<Env>) -> Option<&mut Envelope> {
     match e? {
         Env::Track(t, kind) => track(p, Some(t))?.envelopes.iter_mut().find(|e| e.kind == kind),
         Env::Take(i, k, kind) => p

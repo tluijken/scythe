@@ -128,6 +128,8 @@ pub enum Builtin {
     Strlen,
     Strcmp,
     Stricmp,
+    Strncmp,
+    Strnicmp,
     StrGetchar,
     MemTop,
     TimePrecise,
@@ -225,6 +227,8 @@ impl Builtin {
             "set_host_numchan" | "set_pin_mapping" | "set_pinmapper_flags" => (Nop, usize::MAX),
             "strcmp" => (Strcmp, 2),
             "stricmp" => (Stricmp, 2),
+            "strncmp" => (Strncmp, 3),
+            "strnicmp" => (Strnicmp, 3),
             "str_getchar" => (StrGetchar, usize::MAX),
             "__memtop" => (MemTop, 0),
             "time_precise" => (TimePrecise, usize::MAX),
@@ -1725,10 +1729,20 @@ impl Machine {
                 let h = arg(self, 0);
                 self.string(h).len() as f64
             }
-            Strcmp | Stricmp => {
+            Strcmp | Stricmp | Strncmp | Strnicmp => {
                 let (a, c) = (arg(self, 0), arg(self, 1));
                 let (mut a, mut c) = (self.string(a), self.string(c));
-                if b == Stricmp {
+                if matches!(b, Strncmp | Strnicmp) {
+                    let n = arg(self, 2).max(0.0) as usize;
+                    for s in [&mut a, &mut c] {
+                        let mut k = n.min(s.len());
+                        while !s.is_char_boundary(k) {
+                            k -= 1;
+                        }
+                        s.truncate(k);
+                    }
+                }
+                if matches!(b, Stricmp | Strnicmp) {
                     (a, c) = (a.to_lowercase(), c.to_lowercase());
                 }
                 match a.cmp(&c) {
@@ -2427,8 +2441,10 @@ mod tests {
     fn strings_and_printf() {
         let m = run(
             "#s = \"x\"; strcat(#s, \"y\"); n = strlen(#s); printf(\"a%02d|%s|%.2f|%-3d|\\n\", 7, #s, 3.14159, 5); \
-                     sprintf(#t, \"%d-%d\", 1, 2); same = strcmp(#t, \"1-2\") == 0;",
+                     sprintf(#t, \"%d-%d\", 1, 2); same = strcmp(#t, \"1-2\") == 0; \
+                     pre = strncmp(#t, \"1-9\", 2); prei = strnicmp(\"ABc\", \"abd\", 3);",
         );
+        assert_eq!((var(&m, "pre"), var(&m, "prei")), (0.0, -1.0));
         assert_eq!(var(&m, "n"), 2.0);
         assert_eq!(m.output, "a07|xy|3.14|5  |\n");
         assert_eq!(var(&m, "same"), 1.0);

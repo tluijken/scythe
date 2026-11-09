@@ -1,0 +1,14 @@
+lookup 1 1 40001 0
+reverse wp12two
+name Track: Insert new track
+key 2 B 0
+tog 0 0 -1
+tog 1 1
+tracks 2
+chunk 1
+set 1 1
+name Bass
+item 1 2 1
+mm [1068 c]
+guid 38
+solo 0

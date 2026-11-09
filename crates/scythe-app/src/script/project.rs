@@ -163,19 +163,6 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 None => (Val::Bool(false), vec![Val::Str(String::new()), Val::Str(String::new())]),
             }
         }
-        "Main_OnCommand" | "Main_OnCommandEx" => {
-            command(s, a.int(0));
-            ret(Val::Nil)
-        }
-        "NamedCommandLookup" => {
-            let name = a.text(0);
-            ret(Val::Int(name.trim().parse::<i64>().ok().filter(|&n| n > 0).unwrap_or(0)))
-        }
-        "GetToggleCommandState" => ret(Val::Int(match a.int(0) {
-            1068 => s.project.loop_enabled as i64,
-            40364 => 0,
-            _ => -1,
-        })),
 
         // Transport and cursor.
         "GetCursorPosition" | "GetCursorPositionEx" => ret(Val::Num(s.cursor())),
@@ -579,7 +566,7 @@ fn ext_state<R>(s: &State, f: impl FnOnce(&mut ExtState) -> R) -> R {
 /// `Main_OnCommand`: runs the REAPER actions that edit what the script holds; others are left
 /// for the app, which runs those it has once the script's changes are in
 /// (`ScriptOutcome::commands`).
-fn command(s: &mut State, id: i64) {
+pub(super) fn command(s: &mut State, id: i64) {
     let selected_tracks: Vec<TrackId> =
         s.project.tracks.iter().map(|t| t.id).filter(|t| s.sel_tracks.contains(t)).collect();
     match id {

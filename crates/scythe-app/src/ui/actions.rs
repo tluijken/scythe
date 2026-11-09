@@ -99,7 +99,7 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
             }
             ui.end_row();
             for a in &list {
-                let keys = crate::keys::keys_text(app, &a.command);
+                let keys = crate::keys::keys_text(&app.session, &a.command);
                 let selected = state.selected.as_deref() == Some(a.command.as_str());
                 ui.label(RichText::new(keys).monospace().size(11.0));
                 let name = match a.kind {
@@ -139,7 +139,7 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
         if ui.selectable_label(state.capturing, label).clicked() {
             state.capturing = !state.capturing;
         }
-        let keys = crate::keys::keys_for(app, &a.command);
+        let keys = crate::keys::keys_for(&app.session, &a.command);
         if !keys.is_empty() {
             ui.menu_button("Remove shortcut", |ui| {
                 for k in keys {

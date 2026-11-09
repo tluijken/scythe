@@ -387,7 +387,11 @@ impl Action {
             "41929" => Some(Action::NewTab),
             _ => None,
         };
-        alias.or_else(|| Self::all().into_iter().find(|a| a.command().eq_ignore_ascii_case(&c)))
+        static BY_COMMAND: std::sync::LazyLock<std::collections::HashMap<String, Action>> =
+            std::sync::LazyLock::new(|| {
+                Action::all().into_iter().map(|a| (a.command().to_ascii_uppercase(), a)).collect()
+            });
+        alias.or_else(|| BY_COMMAND.get(&c.to_ascii_uppercase()).copied())
     }
 
     pub fn shortcut(self) -> Option<KeyboardShortcut> {
@@ -855,7 +859,7 @@ impl Action {
 
 /// The keys that run `action`, as REAPER writes them.
 pub fn shortcut_text(app: &ScytheApp, action: Action) -> String {
-    crate::keys::keys_text(app, &action.command())
+    crate::keys::keys_text(&app.session, &action.command())
 }
 
 /// Dispatches keyboard shortcuts unless a text field or a graphics window takes the keys: the
@@ -934,7 +938,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut egui::Ui) {
         .into_iter()
         .filter(|a| a.section == scythe_core::keymap::SECTION_MAIN && matches(&a.name, &query))
         .map(|a| {
-            let keys = crate::keys::keys_text(app, &a.command);
+            let keys = crate::keys::keys_text(&app.session, &a.command);
             (a.command, a.name, keys)
         })
         .collect();

@@ -2,9 +2,13 @@
 //! session's), the toggle states only the window knows, screensets, toolbar icons, and the
 //! import and export of REAPER's keymap and menu files.
 
+use std::path::Path;
+
 use scythe_core::ini::Ini;
 use scythe_core::keymap::{Line, SECTION_MAIN};
 use scythe_core::menus;
+
+use scythe_session::Session;
 
 use crate::app::ScytheApp;
 use crate::palette::Action;
@@ -226,5 +230,142 @@ impl ScytheApp {
         if let Err(e) = std::fs::write(&path, file.write()) {
             self.notify(format!("Cannot save {}: {e}", path.display()));
         }
+    }
+}
+
+/// The actions as a script sees them: ids, names, toggle states, shortcuts, custom actions and
+/// mouse modifiers; `script` is the running script's file.
+pub fn action_table(s: &Session, script: Option<&Path>) -> crate::script::ActionTable {
+    let mut t = crate::script::ActionTable::default();
+    for a in s.action_list() {
+        let id = s.command_id(&a.command);
+        if id == 0 {
+            continue;
+        }
+        let state = s.toggle_state(&a.command);
+        if state >= 0 {
+            t.toggles.insert(id, state);
+        }
+        let keys = if a.section == SECTION_MAIN {
+            crate::keys::keys_for(s, &a.command)
+        } else {
+            s.shortcuts(&a.command, a.section)
+        };
+        if !keys.is_empty() {
+            t.shortcuts.insert((a.section, id), keys.iter().map(|k| k.describe()).collect());
+        }
+        let named = if a.command.starts_with('_') { a.command.clone() } else { String::new() };
+        t.actions.push((id, named, a.name, a.section));
+    }
+    for act in s.keymap.custom_actions() {
+        let members = act.commands.iter().map(|c| s.command_id(c)).filter(|&id| id != 0).collect();
+        t.custom.insert(s.command_id(&act.named_command()), members);
+    }
+    t.mouse = s.mouse.clone();
+    if let Some(file) = script {
+        t.script_file = file.to_string_lossy().into_owned();
+        t.script_command = s
+            .keymap
+            .scripts()
+            .find(|x| x.section == SECTION_MAIN && s.script_path(&x.named_command()).as_deref() == Some(file))
+            .map_or(0, |x| s.command_id(&x.named_command()));
+    }
+    t.next_id = scythe_core::keymap::FIRST_NAMED_ID + s.keymap.named_commands().len() as u32;
+    t
+}
+
+impl ScytheApp {
+    pub fn action_table(&self) -> crate::script::ActionTable {
+        action_table(&self.session, self.last_script.as_deref())
+    }
+
+    /// Applies what a script asked of the actions: toggle states of its own, scripts added or
+    /// removed as actions, mouse modifiers.
+    pub fn apply_script_actions(&mut self, out: &mut crate::script::ScriptOutcome) {
+        for (id, state) in std::mem::take(&mut out.toggle_states) {
+            if let Some(c) = self.session.command_for_id(id) {
+                self.session.host_toggles.insert(c, state == 1);
+            }
+        }
+        for (add, section, path) in std::mem::take(&mut out.script_actions) {
+            if add {
+                self.session.add_script_action(&path, section);
+            } else {
+                let found = self
+                    .session
+                    .keymap
+                    .scripts()
+                    .find(|s| s.path == path && s.section == section)
+                    .map(|s| s.named_command());
+                if let Some(c) = found {
+                    self.session.remove_named_action(&c);
+                }
+            }
+        }
+        for (context, modifiers, action) in std::mem::take(&mut out.mouse_modifiers) {
+            let assignment = action.as_deref().and_then(scythe_core::mousemap::Assignment::parse);
+            self.session.set_mouse_modifier(&context, modifiers, assignment.as_ref());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use scythe_core::keymap::Keymap;
+    use scythe_core::render_settings::ResampleMode;
+    use scythe_engine::{Engine, MediaPool};
+
+    use super::*;
+
+    const KB: &str = include_str!("../tests/fixtures/reascript/actions.reaper-kb.ini");
+
+    fn session() -> Session {
+        let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+        let mut s = Session::new(Engine::start_offline(pool, 48_000));
+        s.keymap = Keymap::parse(KB);
+        s
+    }
+
+    /// The action, state chunk and general calls of `actions.lua`, run in REAPER 7.73 with the
+    /// same `reaper-kb.ini` on a new project, and here.
+    #[test]
+    fn script_actions_and_chunks_match_reaper() {
+        let source = include_str!("../tests/fixtures/reascript/actions.lua");
+        let reaper = include_str!("../tests/fixtures/reascript/actions.reaper.txt");
+        let s = session();
+        let table = action_table(&s, Some(Path::new("/scripts/actions.lua")));
+        let ctx = crate::script::ScriptContext { actions: Rc::new(table), ..Default::default() };
+        let (out, _) = crate::script::run(source, "actions.lua", &scythe_core::Project::default(), ctx).unwrap();
+        let ours: Vec<&str> = out.console.lines().collect();
+        let theirs: Vec<&str> = reaper.lines().collect();
+        for (a, b) in ours.iter().zip(&theirs) {
+            assert_eq!(a, b);
+        }
+        assert_eq!(ours.len(), theirs.len(), "{}", out.console);
+    }
+
+    /// The same for EEL2 (`actions.eel`, run in REAPER as a registered script).
+    #[test]
+    fn eel_actions_and_chunks_match_reaper() {
+        let source = include_str!("../tests/fixtures/reascript/actions.eel");
+        let reaper = include_str!("../tests/fixtures/reascript/actions.eel.reaper.txt");
+        let s = session();
+        let ctx = crate::script::ScriptContext { actions: Rc::new(action_table(&s, None)), ..Default::default() };
+        let (out, _) = crate::script::run(source, "actions.eel", &scythe_core::Project::default(), ctx).unwrap();
+        assert_eq!(out.console, reaper);
+    }
+
+    #[test]
+    fn custom_actions_and_scripts_get_reapers_ids() {
+        let s = session();
+        let t = action_table(&s, None);
+        let two = s.command_id("_wp12two");
+        assert_eq!(two, scythe_core::keymap::FIRST_NAMED_ID);
+        assert_eq!(t.custom[&two], vec![40001, 40001]);
+        assert_eq!(t.shortcuts[&(0, s.command_id("_wp12loop"))], vec!["Ctrl+A".to_owned()]);
+        assert_eq!(t.next_id, two + 3);
     }
 }

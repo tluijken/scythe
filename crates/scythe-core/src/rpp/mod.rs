@@ -8,6 +8,10 @@ pub use project::{
     ProjectIoError, autosave_path, fmt_num, fx_chain_from_text, fx_chain_to_text, project_from_rpp, project_to_rpp,
     prune_backups, read_project, resolve_media_path, save_project, track_template, tracks_from_template, write_project,
 };
+pub use project::{
+    envelope_from_state_chunk, envelope_state_chunk, item_from_state_chunk, item_state_chunk, set_track_state_chunk,
+    track_state_chunk,
+};
 
 use std::fmt::Write as _;
 

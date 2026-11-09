@@ -7,6 +7,7 @@
 //! values; each language passes arguments and returns results its own way, as REAPER's
 //! signatures for it say (`API`).
 
+mod actions;
 mod eel;
 mod items;
 mod lua;
@@ -78,6 +79,27 @@ pub struct ScriptContext {
     /// The mouse and keys over the script's graphics window, and whether the user closed it.
     pub gfx: Input,
     pub gfx_closed: bool,
+    /// The actions the script can look up and run.
+    pub actions: Rc<ActionTable>,
+}
+
+/// The actions a script can look up and run, as the session had them when it started.
+#[derive(Debug, Clone, Default)]
+pub struct ActionTable {
+    /// Command id, named command (with its `_`; empty for REAPER's own), name, section.
+    pub actions: Vec<(u32, String, String, u32)>,
+    /// Toggle states other than -1, by command id.
+    pub toggles: HashMap<u32, i32>,
+    /// Keyboard shortcuts as REAPER describes them, by section and command id.
+    pub shortcuts: HashMap<(u32, u32), Vec<String>>,
+    /// The commands custom actions run, by their command id.
+    pub custom: HashMap<u32, Vec<u32>>,
+    pub mouse: scythe_core::mousemap::MouseMap,
+    /// The running script's file, and its command id (0 when it is not an action).
+    pub script_file: String,
+    pub script_command: u32,
+    /// The id the next script registered as an action gets.
+    pub next_id: u32,
 }
 
 #[derive(Debug, Default)]
@@ -93,6 +115,12 @@ pub struct ScriptOutcome {
     /// REAPER command ids passed to `Main_OnCommand` for the app to run once the project is
     /// applied (those the script could not run itself).
     pub commands: Vec<i64>,
+    /// `SetToggleCommandState` calls: command id and state.
+    pub toggle_states: Vec<(u32, i32)>,
+    /// `AddRemoveReaScript` calls: add (or remove), section, script file.
+    pub script_actions: Vec<(bool, u32, String)>,
+    /// `SetMouseModifier` calls: context, modifiers, action (`None` for the default).
+    pub mouse_modifiers: Vec<(String, u8, Option<String>)>,
     /// An effect parameter was set.
     pub fx_touched: bool,
     pub dirty: bool,
@@ -804,6 +832,54 @@ static API: &[Sig] = sigs! {
     "MIDI_GetProjTimeFromPPQPos" Num [K, N];
     "MIDI_GetPPQPosFromProjQN" Num [K, N];
     "MIDI_GetProjQNFromPPQPos" Num [K, N];
+
+    // Actions, shortcuts, toolbars and mouse modifiers.
+    "ReverseNamedCommandLookup" Str [Z];
+    "kbd_getTextFromCmd" Str [Z, Z];
+    "SectionFromUniqueID" Int [Z];
+    "CountActionShortcuts" Int [Z, Z];
+    "GetActionShortcutDesc" Bool [Z, Z, Z, SO, SZ];
+    "GetToggleCommandStateEx" Int [Z, Z];
+    "SetToggleCommandState" Bool [Z, Z, Z];
+    "RefreshToolbar" Void [Z];
+    "RefreshToolbar2" Void [Z, Z];
+    "AddRemoveReaScript" Int [B, Z, S, B];
+    "GetMouseModifier" Void [S, Z, SO, SZ];
+    "SetMouseModifier" Void [S, Z, S];
+    "get_action_context" Bool [SO, ZO, ZO, ZO, ZO, NO, SO];
+
+    // State chunks.
+    "GetTrackStateChunk" Bool [T, SIO, SZ, B];
+    "SetTrackStateChunk" Bool [T, S, B];
+    "GetItemStateChunk" Bool [I, SIO, SZ, B];
+    "SetItemStateChunk" Bool [I, S, B];
+    "GetEnvelopeStateChunk" Bool [E, SIO, SZ, B];
+    "SetEnvelopeStateChunk" Bool [E, S, B];
+
+    // General functions scripts often call.
+    "genGuid" Void [SIO];
+    "guidToString" Void [S, SIO];
+    "stringToGuid" Void [S, SIO];
+    "AnyTrackSolo" Bool [P];
+    "SoloAllTracks" Void [Z];
+    "MuteAllTracks" Void [B];
+    "ClearAllRecArmed" Void [];
+    "GetTrackGUID" Str [T];
+    "GetNumTracks" Int [];
+    "GetLastTouchedTrack" Track [];
+    "IsTrackVisible" Bool [T, B];
+    "GetMasterMuteSoloFlags" Int [];
+    "file_exists" Bool [S];
+    "RecursiveCreateDirectory" Int [S, Z];
+    "EnumerateFiles" Str [S, Z];
+    "EnumerateSubdirectories" Str [S, Z];
+    "SetEditCurPos2" Void [P, N, B, B];
+    "OnPauseButton" Void [];
+    "Main_SaveProject" Void [P, B];
+    "GetPlayStateEx" Int [P];
+    "MB" Int [S, S, Z];
+    "Undo_OnStateChangeEx" Void [S, Z, Z];
+    "Undo_OnStateChangeEx2" Void [P, S, Z, Z];
 };
 
 /// Pointers as EEL and Python see them: a tag for the kind above 40 bits of identity, so a
@@ -911,7 +987,8 @@ fn ret(v: Val) -> Ret {
 /// track, item or take make the call do nothing, as REAPER's null checks do.
 fn call(s: &mut State, sig: &Sig, args: &[Val]) -> Ret {
     let a = Args(args);
-    tracks::call(s, sig.name, &a)
+    actions::call(s, sig.name, &a)
+        .or_else(|| tracks::call(s, sig.name, &a))
         .or_else(|| items::call(s, sig.name, &a))
         .or_else(|| project::call(s, sig.name, &a))
         .unwrap_or_else(|| ret(Val::Nil))

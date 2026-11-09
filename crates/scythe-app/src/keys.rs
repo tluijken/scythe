@@ -82,6 +82,11 @@ pub fn default_chord(action: Action) -> Option<Chord> {
     action.shortcut().and_then(|s| chord(s.logical_key, s.modifiers))
 }
 
+/// Scythe's default shortcuts: command, key, action.
+static DEFAULTS: std::sync::LazyLock<Vec<(String, Chord, Action)>> = std::sync::LazyLock::new(|| {
+    Action::all().into_iter().filter_map(|a| Some((a.command(), default_chord(a)?, a))).collect()
+});
+
 /// What a key runs in the main window: the shortcut file's binding (`None` when it disables
 /// the key), else the default action's command.
 pub fn command_for(app: &ScytheApp, key: Chord) -> Option<String> {
@@ -89,18 +94,17 @@ pub fn command_for(app: &ScytheApp, key: Chord) -> Option<String> {
         return (binding.command != "0").then(|| binding.command.clone());
     }
     let on_setlist = app.view.setlist;
-    Action::all()
-        .into_iter()
-        .find(|a| default_chord(*a) == Some(key) && a.shortcut_active(on_setlist))
-        .map(Action::command)
+    DEFAULTS.iter().find(|(_, c, a)| *c == key && a.shortcut_active(on_setlist)).map(|(cmd, ..)| cmd.clone())
 }
 
 /// The keys that run `command`: those the shortcut file binds, and its default unless the file
 /// rebinds or disables that key.
-pub fn keys_for(app: &ScytheApp, command: &str) -> Vec<Chord> {
-    let mut out = app.session.shortcuts(command, SECTION_MAIN);
-    if let Some(def) = Action::from_command(command).and_then(default_chord)
-        && app.session.key_command(def, SECTION_MAIN).is_none()
+pub fn keys_for(session: &scythe_session::Session, command: &str) -> Vec<Chord> {
+    let mut out = session.shortcuts(command, SECTION_MAIN);
+    let c = scythe_session::actions::normalize(command);
+    let def = Action::from_command(&c).and_then(|a| DEFAULTS.iter().find(|(_, _, d)| *d == a)).map(|(_, k, _)| *k);
+    if let Some(def) = def
+        && session.key_command(def, SECTION_MAIN).is_none()
         && !out.contains(&def)
     {
         out.insert(0, def);
@@ -109,8 +113,8 @@ pub fn keys_for(app: &ScytheApp, command: &str) -> Vec<Chord> {
 }
 
 /// The keys that run `command`, as REAPER writes them ("Ctrl+Shift+S, F5").
-pub fn keys_text(app: &ScytheApp, command: &str) -> String {
-    keys_for(app, command).iter().map(Chord::describe).collect::<Vec<_>>().join(", ")
+pub fn keys_text(session: &scythe_session::Session, command: &str) -> String {
+    keys_for(session, command).iter().map(Chord::describe).collect::<Vec<_>>().join(", ")
 }
 
 #[cfg(test)]
