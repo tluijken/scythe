@@ -2,7 +2,7 @@
 //! holding whitespace-separated lines. Lines are kept verbatim so unknown content survives a
 //! load/save cycle.
 
-mod project;
+pub(crate) mod project;
 
 pub use project::{
     ProjectIoError, autosave_path, fmt_num, fx_chain_from_text, fx_chain_to_text, project_from_rpp, project_to_rpp,

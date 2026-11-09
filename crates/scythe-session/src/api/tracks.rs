@@ -29,6 +29,14 @@ pub enum TrackCommand {
     Delete { track: TrackRef },
     #[serde(rename = "track.rename")]
     Rename { track: TrackRef, name: String },
+    /// Freezes the track: renders its items through its effects (before the fader) to a file
+    /// beside the project and plays that instead, keeping the effects and items to restore.
+    /// Freezing again stacks another level. The project must have been saved.
+    #[serde(rename = "track.freeze")]
+    Freeze { track: TrackRef },
+    /// Restores the effects and items of the track's last freeze level.
+    #[serde(rename = "track.unfreeze")]
+    Unfreeze { track: TrackRef },
     /// Moves the track to position `index` from the top.
     #[serde(rename = "track.move")]
     Move {
@@ -254,6 +262,20 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
             Ok(super::done())
         }
         TrackCommand::Rename { track, name } => set(session, &track, "Rename track", |t| t.name = name),
+        TrackCommand::Freeze { track } => {
+            let id = track.track(&session.project)?;
+            let path = session.freeze_track(id).map_err(ApiError::failed)?;
+            Ok(
+                serde_json::json!({ "file": path, "levels": session.project.track(id).map_or(0, scythe_core::freeze::levels) }),
+            )
+        }
+        TrackCommand::Unfreeze { track } => {
+            let id = track.track(&session.project)?;
+            if !session.unfreeze_track(id) {
+                return Err(ApiError::invalid("the track is not frozen"));
+            }
+            Ok(serde_json::json!({ "levels": session.project.track(id).map_or(0, scythe_core::freeze::levels) }))
+        }
         TrackCommand::Move { track, index } => {
             let id = track.track(&session.project)?;
             let n = session.project.tracks.len();

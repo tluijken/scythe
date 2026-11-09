@@ -2,6 +2,7 @@ pub mod envelope;
 pub mod ext_state;
 pub mod fade;
 pub mod fader;
+pub mod freeze;
 pub mod fx_chain;
 pub mod glue;
 pub mod groups;

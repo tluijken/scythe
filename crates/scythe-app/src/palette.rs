@@ -32,6 +32,8 @@ pub enum Action {
     ReverseItem,
     GlueItems,
     ApplyTrackFx,
+    FreezeTrack,
+    UnfreezeTrack,
     NextTake,
     OpenMidiEditor,
     ExportMidi,
@@ -133,6 +135,8 @@ impl Action {
         Action::ReverseItem,
         Action::GlueItems,
         Action::ApplyTrackFx,
+        Action::FreezeTrack,
+        Action::UnfreezeTrack,
         Action::NextTake,
         Action::OpenMidiEditor,
         Action::ExportMidi,
@@ -230,6 +234,8 @@ impl Action {
             Action::ReverseItem => "Item: Reverse",
             Action::GlueItems => "Item: Glue items",
             Action::ApplyTrackFx => "Item: Apply track FX to items as new take",
+            Action::FreezeTrack => "Track: Freeze to stereo (render pre-fader, save/remove items and all FX)",
+            Action::UnfreezeTrack => "Track: Unfreeze tracks (restore previously saved items and FX)",
             Action::NextTake => "Take: Switch items to next take",
             Action::OpenMidiEditor => "Item: Open in MIDI editor",
             Action::ExportMidi => "Item: Export MIDI item to file",
@@ -331,6 +337,8 @@ impl Action {
             40200 => Action::InsertSpace,
             40201 => Action::RippleCutSelection,
             40209 => Action::ApplyTrackFx,
+            41223 => Action::FreezeTrack,
+            41644 => Action::UnfreezeTrack,
             40285 => Action::NextTrack,
             40286 => Action::PreviousTrack,
             40295 => Action::ZoomToProject,
@@ -379,7 +387,7 @@ impl Action {
             Action::DuplicateItem => k(CMD, Key::D),
             Action::ReverseItem => None,
             Action::GlueItems => k(CMD, Key::G),
-            Action::ApplyTrackFx => None,
+            Action::ApplyTrackFx | Action::FreezeTrack | Action::UnfreezeTrack => None,
             Action::NextTake => k(Modifiers::NONE, Key::T),
             Action::OpenMidiEditor => k(Modifiers::NONE, Key::E),
             Action::ExportMidi => None,
@@ -502,6 +510,23 @@ impl Action {
             Action::ReverseItem => app.reverse_item(),
             Action::GlueItems => app.glue_selected(),
             Action::ApplyTrackFx => app.apply_track_fx(),
+            Action::FreezeTrack => {
+                if let Some(t) = app.sel.track {
+                    app.busy = Some("Freezing…".into());
+                    let result = app.freeze_track(t);
+                    app.busy = None;
+                    if let Err(e) = result {
+                        app.notify(format!("Cannot freeze: {e}"));
+                    }
+                }
+            }
+            Action::UnfreezeTrack => {
+                if let Some(t) = app.sel.track
+                    && !app.unfreeze_track(t)
+                {
+                    app.notify("The track is not frozen");
+                }
+            }
             Action::NextTake => {
                 if let Some(id) = app.sel.item {
                     app.edit("Next take", |p| {

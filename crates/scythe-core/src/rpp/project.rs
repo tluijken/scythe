@@ -671,7 +671,7 @@ fn parse_fx_chain(c: &Chunk) -> (Vec<FxSlot>, Vec<Node>) {
 
 const TAKE_KEYS: &[&str] = &["NAME", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "CHANMODE", "GUID", "TAKECOLOR", "SM"];
 
-fn parse_item(c: &Chunk) -> Item {
+pub(crate) fn parse_item(c: &Chunk) -> Item {
     let mut item = Item::new(0.0, 0.0, empty_take());
     item.takes.clear();
     let mut first_take = None;
@@ -1352,7 +1352,7 @@ fn write_fx_chain(name: &str, t: &Track) -> Chunk {
     c
 }
 
-fn write_item(it: &Item) -> Chunk {
+pub(crate) fn write_item(it: &Item) -> Chunk {
     let mut c = Chunk::new("ITEM", &[]);
     let l = &it.lines;
     c.line(line_from(l, "POSITION", &["POSITION"], &[(1, fmt_num(it.position))]));

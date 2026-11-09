@@ -630,6 +630,70 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Freezes the track: renders its items through its effects (before the fader) to a file\nbeside the project and plays that instead, keeping the effects and items to restore.\nFreezing again stacks another level. The project must have been saved.\n\nControl API command `track.freeze`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_freeze",
+    "title": "Track freeze"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Restores the effects and items of the track's last freeze level.\n\nControl API command `track.unfreeze`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_unfreeze",
+    "title": "Track unfreeze"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Moves the track to position `index` from the top.\n\nControl API command `track.move`.",
     "inputSchema": {
       "properties": {

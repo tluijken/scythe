@@ -343,6 +343,69 @@ impl Session {
         self.rescan_midi_devices();
     }
 
+    /// Freezes `track`: renders its items through its effects (before the fader, with a
+    /// second of tail) to `reaper_freeze_<name>.wav` beside the project, then stores the
+    /// effects and items as a freeze level and plays the render in their place, as REAPER's
+    /// "Freeze to stereo" does. Freezing a frozen track stacks another level.
+    pub fn freeze_track(&mut self, track: TrackId) -> Result<PathBuf, String> {
+        const TAIL: f64 = 1.0;
+        let t = self.project.track(track).ok_or("the track is gone")?;
+        let ids: Vec<_> = t.items.iter().filter(|i| !i.muted).map(|i| i.id).collect();
+        let (mut isolated, range) =
+            scythe_core::glue::isolate(&self.project, track, &ids, true).ok_or("the track has no items to freeze")?;
+        if let (Some(iso), Some(src)) = (isolated.tracks.first_mut(), self.project.track(track)) {
+            iso.channels = src.channels;
+        }
+        let dir = self.project.path.as_deref().and_then(std::path::Path::parent).ok_or("save the project first")?;
+        let base: String =
+            t.name.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+        let base = format!("reaper_freeze_{}", if base.trim().is_empty() { "track" } else { base.trim() });
+        let path = (0..1000)
+            .map(|n| dir.join(if n == 0 { format!("{base}.wav") } else { format!("{base}-{n:03}.wav") }))
+            .find(|p| !p.exists())
+            .ok_or("no free file name for the freeze render")?;
+        let range = scythe_core::TimeRange::new(range.start, range.end + TAIL);
+        let rate = self.engine.sample_rate();
+        let pool = self.engine.pool().clone();
+        for take in isolated.tracks.iter().flat_map(|t| &t.items).flat_map(|i| &i.takes) {
+            if let Some(f) = take.source.file() {
+                let _ = pool.load(&scythe_core::rpp::resolve_media_path(&self.project, f), rate);
+            }
+        }
+        pool.prepare_project(&isolated);
+        scythe_engine::bounce::bounce_to_wav(
+            &isolated,
+            &pool,
+            range,
+            rate,
+            scythe_engine::bounce::BitDepth::Float32,
+            &path,
+            |_| {},
+        )
+        .map_err(|e| e.to_string())?;
+        let file = path.to_string_lossy().into_owned();
+        self.edit("Freeze track", |p| {
+            if let Some(t) = p.track_mut(track) {
+                scythe_core::freeze::freeze(t, &file, range);
+            }
+        });
+        Ok(path)
+    }
+
+    /// Restores the effects and items of `track`'s last freeze level; false when it is not
+    /// frozen.
+    pub fn unfreeze_track(&mut self, track: TrackId) -> bool {
+        let frozen = self.project.track(track).is_some_and(|t| scythe_core::freeze::levels(t) > 0);
+        if frozen {
+            self.edit("Unfreeze track", |p| {
+                if let Some(t) = p.track_mut(track) {
+                    scythe_core::freeze::unfreeze(t);
+                }
+            });
+        }
+        frozen
+    }
+
     /// Where the monitoring effects are kept: `reaper-hwoutfx.ini` beside the preferences, as
     /// in REAPER's resource folder.
     fn monitor_fx_file(&self) -> Option<PathBuf> {
