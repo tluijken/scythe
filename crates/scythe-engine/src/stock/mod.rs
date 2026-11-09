@@ -5,6 +5,7 @@
 pub(crate) mod params;
 pub mod reacomp;
 pub mod reacontrolmidi;
+pub mod reafir;
 pub mod reagate;
 pub mod realimit;
 pub mod reasynth;
@@ -170,6 +171,14 @@ pub static PLUGINS: &[StockPlugin] = &[
         "56535472636D64726561636F6E74726F",
         "ReaControlMIDI-compatible MIDI control",
         |chunk, _| boxed(reacontrolmidi::ControlMidi::from_chunk(chunk), "ReaControlMIDI")
+    ),
+    stock!(
+        "ReaFir (FFT EQ+Dynamics Processor)",
+        "reafir.vst.so",
+        1919247986,
+        "56535472656672726561666972666674",
+        "ReaFIR-compatible FFT EQ",
+        |chunk, cx| Ok(Box::new(reafir::Fir::from_reafir(chunk, cx.sample_rate)?))
     ),
 ];
 

@@ -271,6 +271,19 @@ local function set_vst_data(tr, b64)
   lines[vst + 2] = b64
   reaper.SetTrackStateChunk(tr, table.concat(lines, "\n"), false)
 end
+-- Replaces the header line as well, for states whose length differs from the fresh one.
+local function set_vst_full(tr, b64)
+  local _, c = reaper.GetTrackStateChunk(tr, "", false)
+  local lines = {}
+  for l in (c .. "\n"):gmatch("([^\n]*)\n") do lines[#lines + 1] = l end
+  local vst
+  for i, l in ipairs(lines) do if l:match("^%s*<VST") then vst = i end end
+  local out = {}
+  for i, l in ipairs(lines) do
+    if i == vst + 1 then out[#out + 1] = b64 elseif i ~= vst + 2 then out[#out + 1] = l end
+  end
+  reaper.SetTrackStateChunk(tr, table.concat(out, "\n"), false)
+end
 for line in io.lines(os.getenv("LIST")) do
   local name, fxname, tpl, spec = line:match("^([^;]+);([^;]+);([^;]+);?(.*)$")
   if name then
@@ -282,6 +295,7 @@ for line in io.lines(os.getenv("LIST")) do
       for item in spec:gmatch("%S+") do
         local k, v = item:match("^([^=]+)=(.*)$")
         if k == "chunk" then set_vst_data(tr, v)
+        elseif k == "full" then set_vst_full(tr, v)
         else reaper.TrackFX_SetParam(tr, fx, tonumber(k:sub(2)), tonumber(v)) end
       end
       reaper.GetSetProjectInfo_String(0, "RENDER_FILE", dir, true)
@@ -334,6 +348,41 @@ fn reaxcomp_chunk(output: f64) -> String {
     }
     b.extend(2u32.to_le_bytes());
     base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+/// A whole VST state for REAPER: the 60-byte header of a two-in, two-out effect whose id is
+/// `id`, then `data`.
+fn vst_state(id: &[u8; 4], data: &[u8]) -> String {
+    use base64::Engine as _;
+    let mut b = Vec::new();
+    b.extend(id);
+    for w in [0xfeed_5eee_u32, 2, 1, 0, 2, 0, 2, 1, 0, 2, 0, data.len() as u32, 1, 0x0010_0000] {
+        b.extend(w.to_le_bytes());
+    }
+    b.extend(data);
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+/// ReaFIR's state for an EQ curve.
+fn reafir_state(points: &[(f32, f32)], fft: u32, mode: u32, gain: f32) -> String {
+    let mut b = Vec::new();
+    for w in [0x129c, (-90f32).to_bits(), 24f32.to_bits(), fft, 1f32.to_bits(), 0] {
+        b.extend(w.to_le_bytes());
+    }
+    b.extend((points.len() as u32).to_le_bytes());
+    b.extend((points.len() as u32).to_le_bytes());
+    for (hz, db) in points {
+        b.extend(hz.to_le_bytes());
+        b.extend(db.to_le_bytes());
+    }
+    b.extend(mode.to_le_bytes());
+    for v in [0.0f32, 0.008_016_032, gain, 3.162_277_8e-5, 0.125] {
+        b.extend(v.to_le_bytes());
+    }
+    for w in [0u32, 0, 0x0200_0002, 1f32.to_bits()] {
+        b.extend(w.to_le_bytes());
+    }
+    vst_state(b"rfer", &b)
 }
 
 /// `name;effect;template;p<index>=<raw value> …` lines for the Lua runner.
@@ -534,6 +583,38 @@ fn cases() -> Vec<String> {
         ("both", "p13=1 p14=1 p8=0.1 p4=0.2"),
     ] {
         add(&format!("controlmidi_{name}"), "ReaControlMIDI", "probe", spec);
+    }
+    // ReaFIR's EQ mode: straight segments, the two-point Bézier, FFT sizes and output gain.
+    let fir = "ReaFir (FFT EQ+Dynamics Processor)";
+    let lines: &[(f32, f32)] = &[(1000.0, 0.0), (2000.0, -3.0), (5000.0, -12.0)];
+    let many: &[(f32, f32)] = &[
+        (40.0, 6.0),
+        (120.0, -4.0),
+        (400.0, 2.0),
+        (900.0, 2.0),
+        (2500.0, -9.0),
+        (6000.0, 3.0),
+        (12000.0, -20.0),
+        (18000.0, 0.0),
+    ];
+    for (name, points, fft, gain) in [
+        ("flat", &[(382.45, 0.0), (3202.7, 0.0)][..], 4096, 1.0),
+        ("lines", lines, 4096, 1.0),
+        ("lines_gain", lines, 4096, 0.5),
+        ("lines_1024", lines, 1024, 1.0),
+        ("lines_2048", lines, 2048, 1.0),
+        ("lines_8192", lines, 8192, 1.0),
+        ("lines_16384", lines, 16384, 1.0),
+        ("bump", &[(1000.0, 0.0), (2000.0, -6.0), (4000.0, 6.0), (8000.0, 0.0)], 4096, 1.0),
+        ("many", many, 4096, 1.0),
+        ("one_point", &[(1000.0, -6.0)], 4096, 1.0),
+        ("tilt", &[(1000.0, 0.0), (5000.0, -12.0)], 4096, 1.0),
+        ("shelf", &[(2000.0, -6.0), (8000.0, 6.0)], 4096, 1.0),
+        ("wide", &[(100.0, 0.0), (10000.0, -12.0)], 4096, 1.0),
+    ] {
+        let spec = format!("full={}", reafir_state(points, fft, 0, gain));
+        add(&format!("fir_{name}"), fir, "main", &spec);
+        add(&format!("fir_imp_{name}"), fir, "imp", &spec);
     }
     c
 }

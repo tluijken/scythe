@@ -1159,15 +1159,21 @@ impl FxRegistry {
                     }
                     return Ok((Box::new(Vst3Effect::new(plugin)), FxStatus::Hosted(info.path.clone())));
                 }
+                let file = args.get(1).cloned().unwrap_or_default();
                 if let Some(stock) = crate::stock::find(&display) {
-                    let state = state.ok_or_else(|| format!("unreadable {} state", stock.name))?;
+                    let state = state.as_ref().ok_or_else(|| format!("unreadable {} state", stock.name))?;
                     let cx = crate::stock::StockContext {
                         sample_rate: self.sample_rate,
                         project_dir: self.project_dir.as_deref(),
                     };
-                    return Ok(((stock.create)(&state.chunk, &cx)?, FxStatus::Native(stock.status)));
+                    // Settings an emulation does not cover run in REAPER's own binary when it
+                    // is installed.
+                    match (stock.create)(&state.chunk, &cx) {
+                        Ok(fx) => return Ok((fx, FxStatus::Native(stock.status))),
+                        Err(e) if self.find_vst(&file).is_none() => return Err(e),
+                        Err(_) => {}
+                    }
                 }
-                let file = args.get(1).cloned().unwrap_or_default();
                 let path = self.find_vst(&file).ok_or_else(|| format!("{file} not found in the VST paths"))?;
                 if !file.ends_with(".so") {
                     return Err(format!("{file} is not a Linux VST 2 plugin"));
