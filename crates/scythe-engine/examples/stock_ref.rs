@@ -236,6 +236,29 @@ fn midi_template(dir: &Path, notes: &[(u32, u32, u8, u8)], raw: &[(u32, &str)]) 
     t
 }
 
+/// A JSFX that plays each MIDI message it receives as one sample (status, data 1 and data 2
+/// packed into 24 bits), one per frame in order, so MIDI effects can be compared as audio.
+const MIDI_PROBE: &str = r#"desc:Scythe MIDI probe (one message per sample as audio)
+@init
+n = 0;
+@block
+k = 0;
+while (k < n - rd) ( q[k*2] = 0; q[k*2+1] = q[(rd+k)*2+1]; k += 1; );
+n = n - rd; rd = 0; s = 0;
+while (midirecv(ofs, m1, m2, m3)) ( q[n*2] = ofs; q[n*2+1] = m1*65536 + m2*256 + m3; n += 1; );
+@sample
+rd < n && q[rd*2] <= s ? ( spl0 = q[rd*2+1] / 16777216; spl1 = (q[rd*2] + 1) / 1024; rd += 1; ) : ( spl0 = 0; spl1 = 0; );
+s += 1;
+"#;
+
+/// Every pitch class from C4 and the extremes, two channels, a controller, the pitch wheel
+/// and a program change, for the MIDI probe.
+fn probe_events() -> (Notes, Vec<(u32, &'static str)>) {
+    let mut notes: Notes = (0..12).map(|k| (100 + k * 100, 50, 60 + k as u8, 100)).collect();
+    notes.extend([(1500, 50, 127, 100), (1600, 50, 0, 100)]);
+    (notes, vec![(400, "b0 07 50"), (500, "e0 00 50"), (1010, "91 40 30"), (1110, "81 40 00"), (1200, "c0 05 00")])
+}
+
 const RUNNER: &str = r#"local dir = os.getenv("WDIR")
 local log = io.open(dir .. "/run.log", "a")
 local function set_vst_data(tr, b64)
@@ -253,7 +276,8 @@ for line in io.lines(os.getenv("LIST")) do
     local ok, err = pcall(function()
       reaper.Main_openProject("noprompt:" .. dir .. "/tpl_" .. tpl .. ".RPP")
       local tr = reaper.GetTrack(0, reaper.CountTracks(0) - 1)
-      local fx = reaper.TrackFX_AddByName(tr, fxname, false, -1)
+      -- Probe templates already end in the MIDI probe; the effect goes in front of it.
+      local fx = reaper.TrackFX_AddByName(tr, fxname, false, tpl:match("^probe") and -1000 or -1)
       for item in spec:gmatch("%S+") do
         local k, v = item:match("^([^=]+)=(.*)$")
         if k == "chunk" then set_vst_data(tr, v)
@@ -493,6 +517,23 @@ fn cases() -> Vec<String> {
         add(&format!("synth_grid_{name}"), "ReaSynth", "notes", spec);
     }
     add("synth_bend", "ReaSynth", "bend", "");
+    // ReaControlMIDI: what reaches the MIDI probe after it.
+    for (name, spec) in [
+        ("base", ""),
+        ("transpose", "p9=0.6"),
+        ("transpose_max", "p9=1"),
+        ("snap", "p10=1"),
+        ("snap_d", "p10=1 p11=0.2"),
+        ("snap_down", "p10=1 p11=0.2 p9=0.3"),
+        ("program_all", "p13=1 p2=0.3"),
+        ("program_ch3", "p13=1 p2=0.3 p0=0.1 p1=0.6 p8=0.2"),
+        ("controls_all", "p14=1 p3=0.5 p4=0.3 p5=0.7"),
+        ("controls_ch2", "p14=1 p3=0.5 p4=0.3 p5=0.7 p8=0.1"),
+        ("controls_unset", "p14=1 p8=0.1"),
+        ("both", "p13=1 p14=1 p8=0.1 p4=0.2"),
+    ] {
+        add(&format!("controlmidi_{name}"), "ReaControlMIDI", "probe", spec);
+    }
     c
 }
 
@@ -550,6 +591,15 @@ fn main() {
     for (name, notes, raw) in note_grids() {
         std::fs::write(dir.join(format!("tpl_{name}.RPP")), midi_template(&dir, &notes, &raw)).unwrap();
     }
+    let effects = dir.join("reaper-cfg").join("Effects");
+    std::fs::create_dir_all(&effects).unwrap();
+    std::fs::write(effects.join("scythe_midi_probe.jsfx"), MIDI_PROBE).unwrap();
+    // SAFETY: set before any thread starts.
+    unsafe { std::env::set_var("SCYTHE_JSFX_PATH", &effects) };
+    let (notes, raw) = probe_events();
+    let probe = midi_template(&dir, &notes, &raw)
+        .replace("    <ITEM", "    <FXCHAIN\n      <JS scythe_midi_probe.jsfx \"\"\n      >\n    >\n    <ITEM");
+    std::fs::write(dir.join("tpl_probe.RPP"), probe).unwrap();
     std::fs::write(dir.join("run.lua"), RUNNER).unwrap();
 
     let cases: Vec<String> = cases().into_iter().filter(|c| c.contains(&filter)).collect();

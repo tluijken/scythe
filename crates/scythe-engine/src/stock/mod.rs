@@ -4,6 +4,7 @@
 
 pub(crate) mod params;
 pub mod reacomp;
+pub mod reacontrolmidi;
 pub mod reagate;
 pub mod realimit;
 pub mod reasynth;
@@ -161,6 +162,14 @@ pub static PLUGINS: &[StockPlugin] = &[
         "5653547265737972656173796E746800",
         "ReaSynth-compatible synth",
         |chunk, cx| boxed(reasynth::Synth::from_reasynth(chunk, cx.sample_rate), "ReaSynth")
+    ),
+    stock!(
+        "ReaControlMIDI",
+        "reacontrolmidi.vst.so",
+        1919118692,
+        "56535472636D64726561636F6E74726F",
+        "ReaControlMIDI-compatible MIDI control",
+        |chunk, _| boxed(reacontrolmidi::ControlMidi::from_chunk(chunk), "ReaControlMIDI")
     ),
 ];
 

@@ -16,6 +16,7 @@ pub enum Builtin {
     Multiband,
     Verbate,
     Synth,
+    MidiControl,
 }
 
 /// Default states as REAPER writes them for a freshly added instance.
@@ -23,11 +24,13 @@ const GATE_DEFAULT: &str = "776t3g3wrd6c0QczppvEOwrXozwAAAAAAAAAAAAAgD8AAAAAAAAA
 const COMP_DEFAULT: &str = "776t3g3wrd4AAIA/ED74PKabxDsK16M8AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAnNEHMwAAgD8AAAAAzcxMPQAAAAAAAAAAAAAAAAAAgD4AAAAAAAAAAAAAAAA=";
 const DELAY_DEFAULT: &str =
     "AAAAAAAAAAABAAAALAAAAAIAAAAAAAAAQwIAPwAAgD8AAAAAAACAPwAAAAAAAAA8nNEHMwAAgD8AAAAAAACAPwAAgD8AAIA/AAAAPw==";
+/// A fresh ReaControlMIDI's state, without the bank file path REAPER fills in.
+const CONTROL_MIDI_DEFAULT: &str = "/////wAAAAAAAAAAAAAAAAkAAAAMAAAAAQAAAP8/AAAAIAAAACAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgAAAE1ham9yAA0AAAAxMDIwMzQwNTA2MDcAAQAAAAAAAAAAAAAAAAoAAAANAAAAAQAAAAAAAAAAAAAAAAAAAA==";
 const LIMIT_DEFAULT: &str = "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAACAAAAAAAAAAAAAD+fduMQw8Y/";
 const XCOMP_DEFAULT: &str = "OAAAAAQAAAAAAAAAAABpQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAAAAAAAQI9AAAAAAAAA8D8AAAAAAADwPwAAAAAAAABAAAAAAAAAAAAPAAAAlgAAAAUAAAARAAAAAAAAAACIs0AAAAAAAADwPwAAAAAAAPA/AAAAAAAAAEAAAAAAAAAAAA8AAACWAAAABQAAABEAAAAAAAAAAHDXQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAEAAAABAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAgAAAA==";
 
 impl Builtin {
-    pub const ALL: [Builtin; 9] = [
+    pub const ALL: [Builtin; 10] = [
         Self::Eq,
         Self::Gate,
         Self::Compressor,
@@ -37,6 +40,7 @@ impl Builtin {
         Self::Multiband,
         Self::Verbate,
         Self::Synth,
+        Self::MidiControl,
     ];
 
     pub fn label(self) -> &'static str {
@@ -50,6 +54,7 @@ impl Builtin {
             Self::Multiband => "Multiband compressor",
             Self::Verbate => "Algorithmic reverb",
             Self::Synth => "Synth",
+            Self::MidiControl => "MIDI control",
         }
     }
 
@@ -65,6 +70,7 @@ impl Builtin {
             Self::Multiband => "ReaXcomp",
             Self::Verbate => "ReaVerbate",
             Self::Synth => "ReaSynth",
+            Self::MidiControl => "ReaControlMIDI",
         };
         crate::stock::by_name(name).expect("built-ins are stock plugins")
     }
@@ -83,6 +89,7 @@ impl Builtin {
             Self::Multiband => b64.decode(XCOMP_DEFAULT).unwrap(),
             Self::Verbate => crate::stock::marked_chunk(&crate::stock::reaverbate::DEFAULTS),
             Self::Synth => crate::stock::marked_chunk(&crate::stock::reasynth::DEFAULTS),
+            Self::MidiControl => b64.decode(CONTROL_MIDI_DEFAULT).unwrap(),
         }
     }
 
