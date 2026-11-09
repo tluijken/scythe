@@ -1,13 +1,17 @@
 // The session editor: transport, arrange, mixer and inspector, laid out like the desktop app.
 
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
+import { AccessDialog } from "./access.js";
 import { Arrange } from "./arrange.js";
 import { detector } from "./domains.js";
+import { FileDialog } from "./files.js";
 import { formatBpm, formatTime } from "./format.js";
 import { Inspector } from "./inspector.js";
 import { Mixer } from "./mixer.js";
+import { MixManager } from "./mixes.js";
+import { SetlistManager } from "./setlist-editor.js";
 import { useStoreValue } from "./store.js";
-import { Icon, IconButton, Logo, Modal, OfflineVeil, StatusPill } from "./ui.js";
+import { IconButton, Logo, OfflineVeil, StatusPill } from "./ui.js";
 
 export const trackRef = (id) => (id === 0 ? "master" : id);
 
@@ -59,36 +63,7 @@ function Transport({ store, snap }) {
   </div>`;
 }
 
-function FileDialog({ store, snap, onClose }) {
-  const [path, setPath] = useState(snap.path || "");
-  const [busy, setBusy] = useState(false);
-  const act = async (command, message) => {
-    setBusy(true);
-    try {
-      await store.run(command);
-      store.notify(message);
-      onClose();
-    } catch {
-      setBusy(false);
-    }
-  };
-  return html`<${Modal} title="Project" onClose=${onClose}>
-    <p class="dim small">Paths are on the machine running Scythe.</p>
-    <label class="field"><span>File</span>
-      <input class="mono" value=${path} onInput=${(e) => setPath(e.target.value)} placeholder="/home/band/live/set.RPP" spellcheck="false" /></label>
-    <div class="button-row">
-      <button class="btn" disabled=${busy || !path} onClick=${() => act({ cmd: "project.open", path }, "Opened")}><${Icon} name="open" size=${16} />Open</button>
-      <button class="btn" disabled=${busy || !snap.path} onClick=${() => act({ cmd: "project.save" }, "Saved")}><${Icon} name="save" size=${16} />Save</button>
-      <button class="btn" disabled=${busy || !path || path === snap.path} onClick=${() => act({ cmd: "project.save", path }, "Saved")}>Save as</button>
-      <span class="grow"></span>
-      <button class="btn danger" disabled=${busy} onClick=${() => {
-        if (!snap.dirty || confirm("Drop the unsaved changes and start an empty project?")) act({ cmd: "project.new" }, "New project");
-      }}>New</button>
-    </div>
-  </${Modal}>`;
-}
-
-function TopBar({ store, snap, status, domains, onFile }) {
+function TopBar({ store, snap, status, domains, onFile, onDialog }) {
   const sub = `${snap.dirty ? "Unsaved changes" : snap.path ? "Saved" : "Not saved yet"}${snap.path ? " · " + snap.path.split("/").pop() : ""}`;
   return html`<header class="topbar">
     <div class="title">
@@ -102,8 +77,9 @@ function TopBar({ store, snap, status, domains, onFile }) {
       <${IconButton} icon="redo" title=${snap.redo ? `Redo ${snap.redo} (Ctrl+Shift+Z)` : "Nothing to redo"} disabled=${!snap.redo}
         onClick=${() => store.fire({ cmd: "project.redo" })} />
       <${IconButton} icon="save" title="Open, save, new (Ctrl+S saves)" onClick=${onFile} />
-      ${domains.mix && html`<a class="icon-btn" href="/monitor" title="Monitor mixes"><${Icon} name="headphones" /></a>`}
-      ${domains.setlist && html`<a class="icon-btn" href="/setlist" title="Setlist"><${Icon} name="list" /></a>`}
+      ${domains.mix && html`<${IconButton} icon="headphones" title="Monitor mixes" onClick=${() => onDialog("mixes")} />`}
+      ${domains.setlist && html`<${IconButton} icon="list" title="Setlists" onClick=${() => onDialog("setlists")} />`}
+      <${IconButton} icon="qr" title="Access links for phones and the stage" onClick=${() => onDialog("access")} />
       <${StatusPill} status=${status} />
     </div>
   </header>`;
@@ -157,17 +133,18 @@ export function Editor({ client, store }) {
   const [view, setView] = useState({ mixer: true, inspector: wide });
   const [sel, setSel] = useState({ track: null, item: null });
   const [file, setFile] = useState(false);
+  const [dialog, setDialog] = useState(null);
   useShortcuts(store, snap, sel, setSel, setFile);
   useEffect(() => {
     document.title = snap ? `${snap.dirty ? "* " : ""}${snap.name || "Untitled"} – Scythe` : "Scythe";
   }, [snap?.name, snap?.dirty]);
-  if (!snap) return html`<div class="boot"><${Logo} size=${56} /><div>Connecting to Scythe…</div><${OfflineVeil} status=${status} /></div>`;
+  if (!snap?.tracks) return html`<div class="boot"><${Logo} size=${56} /><div>Connecting to Scythe…</div><${OfflineVeil} status=${status} /></div>`;
   const select = (next) => {
     setSel(next);
     if (next.track != null && !view.inspector && wide) setView({ ...view, inspector: true });
   };
   return html`<div class=${`editor ${view.inspector ? "with-inspector" : ""} ${view.mixer ? "with-mixer" : ""}`}>
-    <${TopBar} store=${store} snap=${snap} status=${status} domains=${domains} onFile=${() => setFile(true)} />
+    <${TopBar} store=${store} snap=${snap} status=${status} domains=${domains} onFile=${() => setFile(true)} onDialog=${setDialog} />
     <${Rail} view=${view} setView=${setView} />
     <main class="main">
       <${Arrange} store=${store} snap=${snap} sel=${sel} setSel=${select} />
@@ -176,6 +153,9 @@ export function Editor({ client, store }) {
     ${view.inspector && html`<${Inspector} store=${store} snap=${snap} sel=${sel} setSel=${setSel}
       onClose=${() => setView({ ...view, inspector: false })} />`}
     ${file && html`<${FileDialog} store=${store} snap=${snap} onClose=${() => setFile(false)} />`}
+    ${dialog === "mixes" && html`<${MixManager} store=${store} snap=${snap} onClose=${() => setDialog(null)} />`}
+    ${dialog === "setlists" && html`<${SetlistManager} store=${store} onClose=${() => setDialog(null)} />`}
+    ${dialog === "access" && html`<${AccessDialog} store=${store} snap=${snap} onClose=${() => setDialog(null)} />`}
     <${OfflineVeil} status=${status} />
   </div>`;
 }

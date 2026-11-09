@@ -42,6 +42,12 @@ pub const FILES: &[(&str, &[u8])] = web![
     "js/monitor.js",
     "js/setlist.js",
     "js/qr.js",
+    "js/waveform.js",
+    "js/tempo.js",
+    "js/access.js",
+    "js/mixes.js",
+    "js/setlist-editor.js",
+    "js/files.js",
     "vendor/preact-htm.js",
     "vendor/LICENSE-htm.txt",
     "vendor/LICENSE-preact.txt",
@@ -52,6 +58,8 @@ pub const FILES: &[(&str, &[u8])] = web![
     "test/api.test.js",
     "test/domains.test.js",
     "test/qr.test.js",
+    "test/waveform.test.js",
+    "test/editor.test.js",
 ];
 
 /// The desktop app's fonts, so the web UI looks the same.

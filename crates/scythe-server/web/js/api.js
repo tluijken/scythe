@@ -70,6 +70,8 @@ export class Client {
     this.timer = null;
     this.stopped = true;
     this.coalesced = new Map();
+    // What the token may do (`{"role": "admin" | "musician" | "stage", "musician"?}`), once known.
+    this.access = null;
   }
 
   on(type, fn) {
@@ -153,6 +155,7 @@ export class Client {
     try {
       const snapshot = await this.http("GET", "/api/snapshot");
       if (this.stopped) return;
+      if (snapshot.access) this.access = snapshot.access;
       this.emit("snapshot", snapshot);
     } catch (e) {
       if (e.kind === "unauthorized") return;
@@ -196,6 +199,7 @@ export class Client {
     }
     if (msg.type === "hello") {
       this.attempt = 0;
+      if (msg.access) this.access = msg.access;
       this.setStatus("open");
       this.emit("hello", msg);
     } else if (msg.type === "reply") {

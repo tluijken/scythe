@@ -1,5 +1,6 @@
 import { html, render, useEffect, useState } from "../vendor/preact-htm.js";
 import { Client, adoptTokenFromUrl, storeToken, storedToken } from "./api.js";
+import { pageForAccess } from "./domains.js";
 import { Login } from "./login.js";
 import { Store, useStoreValue } from "./store.js";
 import { Toasts } from "./ui.js";
@@ -15,14 +16,22 @@ function pageFor(pathname) {
   return PAGES[path] ? path : "/";
 }
 
-function App({ client, store, path }) {
+function App({ client, store, path: asked }) {
   const status = useStoreValue(store, "status");
-  const [Page, setPage] = useState(null);
+  const access = useStoreValue(store, "access");
+  const path = pageForAccess(asked, access);
+  const [loaded, setLoaded] = useState(null);
   useEffect(() => {
-    PAGES[path]().then((page) => setPage(() => page));
+    let current = true;
+    PAGES[path]().then((page) => current && setLoaded({ path, page }));
+    return () => {
+      current = false;
+    };
   }, [path]);
+  const Page = loaded?.path === path ? loaded.page : null;
   useEffect(() => {
     document.body.dataset.page = path.slice(1) || "editor";
+    if (path !== asked) history.replaceState(null, "", path);
   }, [path]);
   const login = (token) => {
     storeToken(token);

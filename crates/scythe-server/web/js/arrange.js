@@ -5,12 +5,15 @@
 import { html, useEffect, useLayoutEffect, useRef, useState } from "../vendor/preact-htm.js";
 import { barIndexAt, barStep, clamp, formatDb, formatTime, SWATCHES } from "./format.js";
 import { useStoreValue } from "./store.js";
+import { TempoDialog, TempoLane, TempoMapDialog } from "./tempo.js";
 import { EditableText, Icon, IconButton, Modal, dragPointer, useDoubleTap } from "./ui.js";
+import { PeakCache, columnsFor, drawPeaks } from "./waveform.js";
 
 const HEADER_W = 236;
 const RULER_H = 30;
 const MARKER_H = 26;
-const TOP_H = RULER_H + MARKER_H;
+const TEMPO_H = 24;
+const TOP_H = RULER_H + MARKER_H + TEMPO_H;
 const ROW_HEIGHTS = [44, 64, 92];
 const MIN_PPS = 0.5;
 const MAX_PPS = 800;
@@ -89,6 +92,44 @@ function TrackHeader({ store, track, selected, onSelect, rowH }) {
   </div>`;
 }
 
+// One cache per connection, kept across re-renders and remounts of the arrange view.
+const caches = new WeakMap();
+
+function peakCache(client) {
+  if (!caches.has(client)) {
+    caches.set(client, new PeakCache((item, width) => client.http("GET", `/api/peaks?item=${item}&width=${width}`)));
+  }
+  return caches.get(client);
+}
+
+function ItemWave({ store, item, width, color }) {
+  const canvas = useRef(null);
+  const [state, setState] = useState(null);
+  const [retry, setRetry] = useState(0);
+  const columns = columnsFor(width);
+  useEffect(() => {
+    if (!item.file) return;
+    let live = true;
+    let timer = null;
+    peakCache(store.client)
+      .get(item, columns)
+      .then((peaks) => {
+        if (!live) return;
+        setState(peaks.state);
+        if (peaks.state === "ready" && canvas.current) drawPeaks(canvas.current, peaks, color);
+        // A long file can take a while to read; keep asking while the item is on screen.
+        if (peaks.state === "loading") timer = setTimeout(() => setRetry((r) => r + 1), 2000);
+      }, () => {});
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [item.id, item.length, item.volume, item.active_take, item.file, columns, color, retry]);
+  if (!item.file) return null;
+  if (state === "offline") return html`<span class="item-note">media offline</span>`;
+  return html`<canvas class="item-wave" ref=${canvas} width=${columns} height="64"></canvas>`;
+}
+
 function Item({ store, item, track, pps, rowH, selected, onSelect, snap, snapOn, rowIndex, rows }) {
   const [preview, setPreview] = useState(null);
   const down = (e) => {
@@ -129,6 +170,7 @@ function Item({ store, item, track, pps, rowH, selected, onSelect, snap, snapOn,
       style=${{ left: `${left}px`, width: `${width}px`, transform: shift ? `translateY(${shift}px)` : "", "--item-color": color }}
       title=${`${item.name}\n${formatTime(item.position)} – ${formatTime(item.position + item.length)}`}
       onPointerDown=${down} onClick=${(e) => e.stopPropagation()}>
+    <${ItemWave} store=${store} item=${item} width=${width} color=${color} />
     ${width > 24 && html`<span class="item-name">${item.name}</span>`}
   </div>`;
 }
@@ -250,6 +292,8 @@ export function Arrange({ store, snap, sel, setSel }) {
   const [snapOn, setSnapOn] = useState(true);
   const [view, setView] = useState({ left: 0, width: 1200 });
   const [editing, setEditing] = useState(null);
+  const [tempoMarker, setTempoMarker] = useState(null);
+  const [tempoMap, setTempoMap] = useState(false);
   const anchor = useRef(null);
   const rowH = ROW_HEIGHTS[rowSize];
   const tracks = snap.tracks;
@@ -373,6 +417,7 @@ export function Arrange({ store, snap, sel, setSel }) {
       <button class="btn small" onClick=${() => store.fire({ cmd: "track.add" })}><${Icon} name="plus" size=${14} />Track</button>
       <button class="btn small" onClick=${() => store.fire({ cmd: "marker.add" })} title="Add a marker at the edit cursor"><${Icon} name="marker" size=${14} />Marker</button>
       <button class="btn small" onClick=${addRegion} title="Add a region over the loop range">Region</button>
+      <button class="btn small" onClick=${() => setTempoMap(true)} title="Tempo and time signature markers">Tempo</button>
       <span class="tool-sep"></span>
       <${IconButton} icon="split" title="Split the selected item at the edit cursor (S)" disabled=${!selectedItem}
         onClick=${() => store.fire({ cmd: "item.split", item: sel.item, at: t.cursor })} />
@@ -393,13 +438,16 @@ export function Arrange({ store, snap, sel, setSel }) {
         <${Grid} snap=${snap} pps=${pps} range=${range} from=${visible0} height=${TOP_H + rowsH + 40} />
         <${LoopRange} store=${store} pps=${pps} />
         <div class="arr-top">
-          <div class="arr-corner"><span class="dim small">Bars</span><span class="dim small">Markers</span></div>
+          <div class="arr-corner"><span class="dim small">Bars</span><span class="dim small">Markers</span>
+            <button class="corner-link dim small" onClick=${() => setTempoMap(true)}>Tempo</button></div>
           <div class="arr-top-lanes">
             <${Ruler} store=${store} snap=${snap} pps=${pps} range=${range} snapOn=${snapOn} width=${contentW} />
             <div class="marker-lane" style=${{ width: `${contentW}px` }}>
               ${snap.markers.map((m) => html`<${MarkerFlag} key=${`${m.region}-${m.number}`} store=${store} marker=${m} room=${markerRoom(snap.markers, m)}
                 pps=${pps} onEdit=${setEditing} />`)}
             </div>
+            <${TempoLane} store=${store} snap=${snap} pps=${pps} width=${contentW} onEdit=${setTempoMarker}
+              snapTo=${(t) => (snapOn ? snapTime(t, snap.bars, snap.time_signature[0]) : t)} />
           </div>
         </div>
         <div class="arr-rows">
@@ -424,5 +472,7 @@ export function Arrange({ store, snap, sel, setSel }) {
       </div>
     </div>
     ${editing && html`<${MarkerDialog} store=${store} marker=${editing} onClose=${() => setEditing(null)} />`}
+    ${tempoMarker && html`<${TempoDialog} store=${store} marker=${tempoMarker} onClose=${() => setTempoMarker(null)} />`}
+    ${tempoMap && html`<${TempoMapDialog} store=${store} snap=${snap} onClose=${() => setTempoMap(false)} />`}
   </section>`;
 }

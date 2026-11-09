@@ -120,3 +120,46 @@ export const setlistCommands = {
   previous: () => ({ cmd: "setlist.previous" }),
   autoAdvance: (enabled) => ({ cmd: "setlist.auto_advance", enabled }),
 };
+
+// A musician's or the stage's link only reaches its own page, whatever the address says.
+export function pageForAccess(path, access) {
+  if (access?.role === "musician") return "/monitor";
+  if (access?.role === "stage") return "/setlist";
+  return path;
+}
+
+// The address a phone opens for `link` (as `access.list` gives it): the server's network
+// address when this page was opened on the machine itself, which a phone cannot reach.
+export function linkUrl(link, origins, here = globalThis.location?.origin) {
+  const local = /^https?:\/\/(localhost|127\.[\d.]+|\[::1\])(:|\/|$)/.test(here || "");
+  const base = local && origins?.length ? origins[0] : here;
+  return new URL(link.path, base).toString();
+}
+
+export const accessCommands = {
+  list: () => ({ cmd: "access.list" }),
+  createMusician: (musician, name) => ({ cmd: "access.create", role: "musician", musician, ...(name ? { name } : {}) }),
+  createStage: (name) => ({ cmd: "access.create", role: "stage", ...(name ? { name } : {}) }),
+  rename: (id, name) => ({ cmd: "access.update", id, name }),
+  renew: (id) => ({ cmd: "access.renew", id }),
+  remove: (id) => ({ cmd: "access.delete", id }),
+};
+
+// What a setlist entry is sent back as in `setlist.set`: its start marker's GUID when it has
+// one, else its name.
+export function songSelector(entry) {
+  return entry.guid || entry.name;
+}
+
+// The entries of a setlist with the one at `from` moved to `to`, as `setlist.move` does.
+export function moveEntry(list, from, to) {
+  const next = [...list];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+// Where an entry dragged by `dy` pixels lands, rows being `rowHeight` apart.
+export function dropIndex(from, dy, rowHeight, count) {
+  return Math.max(0, Math.min(count - 1, from + Math.round(dy / rowHeight)));
+}

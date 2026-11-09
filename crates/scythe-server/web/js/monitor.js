@@ -26,9 +26,9 @@ function remember(mix) {
   }
 }
 
-export function Unavailable({ what }) {
+export function Unavailable({ what, note }) {
   return html`<div class="unavailable"><${Logo} size=${56} /><h1>${what} is not available</h1>
-    <p class="dim">This Scythe does not offer ${what.toLowerCase()} yet. Update Scythe on the machine running the session.</p></div>`;
+    <p class="dim">${note || `This Scythe does not offer ${what.toLowerCase()} yet. Update Scythe on the machine running the session.`}</p></div>`;
 }
 
 // Mixes from the server, kept fresh: fetched on connecting and after project changes, with
@@ -105,10 +105,13 @@ export function MonitorPage({ client, store }) {
   const status = useStoreValue(store, "status");
   const { mixes, setMixes, supported, load } = useMixes(client, store, status);
   const params = new URLSearchParams(location.search);
-  const locked = params.get("lock") === "1" && params.has("mix");
+  const access = useStoreValue(store, "access");
+  // A musician's link: the server answers with their mix alone.
+  const own = access?.role === "musician";
+  const locked = own || (params.get("lock") === "1" && params.has("mix"));
   const [chosen, setChosen] = useState(() => (params.has("mix") ? { name: params.get("mix") } : remembered()));
   const [picking, setPicking] = useState(false);
-  const mix = mixes ? pickMix(mixes, chosen) : null;
+  const mix = mixes ? (own ? mixes[0] || null : pickMix(mixes, chosen)) : null;
 
   useEffect(() => {
     document.title = mix ? `${mix.name} – Scythe` : "Monitor – Scythe";
@@ -123,6 +126,10 @@ export function MonitorPage({ client, store }) {
     setPicking(false);
   };
   if (!mix || picking) {
+    if (own) {
+      const note = `This session has no monitor mix for ${access.musician}. Ask whoever runs Scythe to make one.`;
+      return html`<${Unavailable} what=${`The mix of ${access.musician}`} note=${note} />`;
+    }
     if (locked && !picking) return html`<${Unavailable} what=${`The mix "${params.get("mix")}"`} />`;
     return html`<div class="monitor-page"><${MixPicker} mixes=${mixes} current=${mix} onPick=${pick} /><${OfflineVeil} status=${status} /></div>`;
   }

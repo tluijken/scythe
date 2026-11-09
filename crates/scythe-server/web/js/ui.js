@@ -41,6 +41,12 @@ const ICONS = {
   headphones: `<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3" y="14" width="5" height="7" rx="2"/><rect x="16" y="14" width="5" height="7" rx="2"/>`,
   list: `<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/>`,
   key: `<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3"/>`,
+  qr: `<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/>`,
+  copy: `<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>`,
+  grip: `<circle cx="9" cy="6" r="1" fill="currentColor"/><circle cx="15" cy="6" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="18" r="1" fill="currentColor"/><circle cx="15" cy="18" r="1" fill="currentColor"/>`,
+  refresh: `<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>`,
+  file: `<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>`,
+  download: `<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>`,
 };
 
 export function Icon({ name, size = 18, cls = "" }) {
@@ -247,14 +253,14 @@ export function Switch({ on, onChange, title }) {
     onClick=${() => onChange(!on)}><span></span></button>`;
 }
 
-export function Modal({ title, onClose, children, wide = false }) {
+export function Modal({ title, onClose, children, wide = false, cls = "" }) {
   useEffect(() => {
     const key = (e) => e.key === "Escape" && onClose();
     addEventListener("keydown", key);
     return () => removeEventListener("keydown", key);
   }, [onClose]);
   return html`<div class="modal-backdrop" onPointerDown=${(e) => e.target === e.currentTarget && onClose()}>
-    <div class=${`modal ${wide ? "wide" : ""}`} role="dialog" aria-label=${title}>
+    <div class=${`modal ${wide ? "wide" : ""} ${cls}`} role="dialog" aria-label=${title}>
       <div class="modal-head"><h2>${title}</h2><${IconButton} icon="close" title="Close" onClick=${onClose} /></div>
       <div class="modal-body">${children}</div>
     </div>

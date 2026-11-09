@@ -11,10 +11,12 @@ export class Store {
     this.transport = null;
     this.status = client.status;
     this.meters = { master: [0, 0], tracks: new Map(), mixes: new Map() };
-    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set() };
+    this.access = client.access;
+    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set() };
     this.fetching = false;
     this.wanted = 0;
     client.on("status", (s) => this.set("status", s));
+    client.on("hello", (h) => h.access && this.set("access", h.access));
     // A snapshot fetched on (re)connecting is the truth even when its revision is lower: the
     // server may have restarted.
     client.on("snapshot", (snap) => this.applySnapshot(snap, true));
@@ -50,6 +52,7 @@ export class Store {
 
   applySnapshot(snap, force = false) {
     if (!force && this.snapshot && snap.revision < this.snapshot.revision) return;
+    if (snap.access) this.set("access", snap.access);
     this.set("snapshot", snap);
     this.set("transport", snap.transport);
   }
