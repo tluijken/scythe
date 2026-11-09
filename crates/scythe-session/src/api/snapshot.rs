@@ -59,7 +59,7 @@ pub struct TrackInfo {
     pub solo: bool,
     pub armed: bool,
     pub monitor: bool,
-    /// REAPER's record input (`I_RECINPUT`): mono input n is n, stereo pair from n is
+    /// REAPER's record input (`I_RECINPUT`), inputs from 0: mono input n is n, stereo pair from n is
     /// 1024 + n, MIDI is 4096 + device * 32 + channel; -1 is none.
     pub input: i64,
     /// REAPER's folder depth change (`I_FOLDERDEPTH`): 1 opens a folder, -n closes n.

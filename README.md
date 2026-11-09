@@ -27,6 +27,32 @@ open the audio input for monitoring), `--view=START-END`
 
 The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`.
 
+### Headless (no screen) and remote control
+
+```sh
+devbox run -- scripts/cargo.sh run -p scythe-server -- song.RPP --output-device Scarlett
+devbox run app -- --headless song.RPP          # the same, from the app binary
+devbox run app -- --control 0.0.0.0:8770 --control-token secret song.RPP  # window + remote
+```
+
+`scythe-server` (or `scythe --headless`) runs a session without a window and without
+X11/Wayland, for example as an in-ear-monitor mixer on a machine in the rack: it opens the
+audio device, loads the project, keeps input monitoring and effects running, auto-saves
+backups, serves the [control API](docs/control-api.md) on `127.0.0.1:8770` and stops cleanly on
+Ctrl+C or SIGTERM (writing unsaved changes to the project's `Backups` folder). Flags:
+`--audio-host`, `--output-device`, `--input-device` (exact name or part of it),
+`--sample-rate`, `--buffer-size`, `--output-channels`, `--null-audio` (open no device),
+`--no-input`, `--control ADDR` (`off` to disable), `--token`, `--config FILE`,
+`--list-devices`. The same settings can live in `$XDG_CONFIG_HOME/scythe/headless.toml`
+(see `crates/scythe-server/src/config.rs`); flags win.
+
+The control API is JSON over HTTP (`POST /api/command`) and a WebSocket (`/api/ws`) that also
+streams transport, meter and project-changed events. It covers transport, project
+open/save/undo, tracks, sends, effects and their parameters, items and markers, plus a full
+`snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
+`--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
+Binding beyond localhost without a token prints a warning.
+
 ## Layout
 
 | Crate | Contents |
@@ -34,7 +60,9 @@ The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`
 | `scythe-core` | Project model (tracks, folders, items, takes, sends, markers, tempo map, envelopes, fades, MIDI sources), lossless `.RPP` reader/writer, pan and fader laws, undo history |
 | `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia, with REAPER's MP3 framing) and REAPER's resample modes, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
-| `scythe-app` | egui UI: arrange view, mixer dock, inspector, action palette (Ctrl+K), demo generator |
+| `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
+| `scythe-server` | Control API over HTTP and WebSocket (axum), the headless runner and its config, the `scythe-server` binary |
+| `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), plugin editor windows, ReaScript, demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back
 in memory and lists every line whose content changed. On 33 real REAPER projects
