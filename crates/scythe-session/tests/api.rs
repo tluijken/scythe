@@ -1154,6 +1154,8 @@ fn midi_device_settings_are_kept_in_the_preferences() {
     );
     assert_eq!(devices["inputs"][0]["enabled"], false);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The positions REAPER 7.73 gives the same items after `SetTempoTimeSigMarker` halves the
 /// starting tempo of a map with markers at 0 and 4 s.
 #[test]

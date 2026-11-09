@@ -5302,6 +5302,407 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The stretch markers of the item's active take.\n\nControl API command `item.stretch_markers`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_stretch_markers",
+    "title": "Item stretch markers"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a stretch marker at `position` and answers with the markers.\n\nControl API command `item.stretch_markers.add`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "description": "Seconds from the item's start.",
+          "format": "double",
+          "type": "number"
+        },
+        "source": {
+          "default": null,
+          "description": "Seconds into the source the marker pins there; where the take plays at `position`\nwhen left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "position"
+      ],
+      "type": "object"
+    },
+    "name": "item_stretch_markers_add",
+    "title": "Item stretch markers.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves a stretch marker: `position` moves it along the item keeping its source position\n(the audio around it stretches), `source` changes which source position it pins (as\nShift-dragging a marker does in REAPER).\n\nControl API command `item.stretch_markers.move`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "The marker's number from `item.stretch_markers`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "position": {
+          "default": null,
+          "description": "Seconds from the item's start.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source": {
+          "default": null,
+          "description": "Seconds into the source.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "item_stretch_markers_move",
+    "title": "Item stretch markers.move"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets how the rate ramps from a marker to the next: -0.99 to 0.99, 0 for a steady rate.\n\nControl API command `item.stretch_markers.slope`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "The marker's number from `item.stretch_markers`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "slope": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "item",
+        "index",
+        "slope"
+      ],
+      "type": "object"
+    },
+    "name": "item_stretch_markers_slope",
+    "title": "Item stretch markers.slope"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes a stretch marker, or all of them when `index` is left out.\n\nControl API command `item.stretch_markers.delete`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "description": "The marker's number from `item.stretch_markers`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_stretch_markers_delete",
+    "title": "Item stretch markers.delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "What the item follows when the tempo changes; `project` uses the track's or project's\nsetting. Answers with the item's and the effective timebase.\n\nControl API command `item.timebase`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timebase": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "enum": [
+                    "time",
+                    "beats",
+                    "beats_position"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "const": "project",
+                  "description": "The track's timebase, or the project's.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "item_timebase",
+    "title": "Item timebase"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Which source channels the item's active take plays.\n\nControl API command `take.channel_mode`.",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "default": null,
+          "description": "For `mono` and `stereo`: the (first) source channel, from 1; 1 when left out.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "enum": [
+                    "normal",
+                    "reverse_stereo"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "const": "downmix",
+                  "description": "The first two channels averaged.",
+                  "type": "string"
+                },
+                {
+                  "const": "mono",
+                  "description": "One channel on both sides.",
+                  "type": "string"
+                },
+                {
+                  "const": "stereo",
+                  "description": "A pair of channels.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Left out to just read it."
+        },
+        "take": {
+          "default": null,
+          "description": "The take's number in the item, from 0; the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "take_channel_mode",
+    "title": "Take channel mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "What items, envelopes and markers follow when the tempo changes, and whether tempo\nmarkers keep their beat when an earlier one changes. Answers with both.\n\nControl API command `project.timebase`.",
+    "inputSchema": {
+      "properties": {
+        "tempo_follows_beats": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timebase": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "const": "time",
+                  "description": "Positions stay in seconds.",
+                  "type": "string"
+                },
+                {
+                  "const": "beats",
+                  "description": "Position, length and rate follow the beat.",
+                  "type": "string"
+                },
+                {
+                  "const": "beats_position",
+                  "description": "Only the position follows the beat.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "project_timebase",
+    "title": "Project timebase"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The project play rate: playback and renders run this many times as fast. Answers with\nthe rate and whether it keeps the pitch.\n\nControl API command `project.playrate`.",
+    "inputSchema": {
+      "properties": {
+        "preserve_pitch": {
+          "default": null,
+          "description": "Time-stretch instead of resampling.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rate": {
+          "default": null,
+          "description": "0.25 to 4; 1 is normal speed.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "project_playrate",
+    "title": "Project playrate"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,
