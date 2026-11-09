@@ -43,14 +43,15 @@ backups, serves the [control API](docs/control-api.md) on `127.0.0.1:8770` and s
 Ctrl+C or SIGTERM (writing unsaved changes to the project's `Backups` folder). Flags:
 `--audio-host`, `--output-device`, `--input-device` (exact name or part of it),
 `--sample-rate`, `--buffer-size`, `--output-channels`, `--null-audio` (open no device),
-`--no-input`, `--control ADDR` (`off` to disable), `--token`, `--config FILE`,
-`--list-devices`. The same settings can live in `$XDG_CONFIG_HOME/scythe/headless.toml`
+`--no-input`, `--control ADDR` (`off` to disable), `--token` (the admin token), `--folder DIR`
+(a folder the web UI may browse for projects; repeatable, home by default), `--access-file FILE`
+(where access links are kept), `--config FILE`, `--list-devices`. The same settings can live in `$XDG_CONFIG_HOME/scythe/headless.toml`
 (see `crates/scythe-server/src/config.rs`); flags win.
 
 The control API is JSON over HTTP (`POST /api/command`) and a WebSocket (`/api/ws`) that also
 streams transport, meter and project-changed events. It covers transport, project
-open/save/undo, tracks, sends, effects and their parameters, items and markers, plus a full
-`snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
+open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
+markers, the tempo map, monitor mixes, setlists and access links, plus a full `snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
 `--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
 Binding beyond localhost without a token prints a warning.
 
@@ -78,25 +79,40 @@ needed on stage, no Node toolchain to build it):
 
 | Page | For |
 |---|---|
-| `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with items (move, split, delete) and markers and regions, track headers, mixer with meters, sends, effects with their parameters, undo and redo, open and save |
+| `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with waveforms on items (move, split, delete), markers and regions, a tempo lane (drag a tempo or time signature marker, double-tap to edit or add) and the tempo map, track headers, mixer with meters, sends, effects with their parameters, undo and redo, a file browser to open and save projects, monitor mixes (a wizard like the desktop one: musician, sources, own sources, output, limiter; copy, rename, delete, output, limiter, sources), setlists (make, rename, duplicate, delete, add songs, drag to reorder, import and export text, auto-advance) and access links with QR codes |
 | `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, the mix's meter; nothing else of the session |
 | `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap |
 
 The monitor and setlist pages appear once the server offers monitor mixes (`mix.*`) and
 setlists (`setlist.*`); against an older server they say so instead.
 
-To open it from a phone or tablet on the band's network, listen on the LAN with a token:
+To open it from a phone or tablet on the band's network, listen on the LAN with an admin token:
 
 ```sh
-scythe-server --control 0.0.0.0:8770 --token stage-secret set.RPP
+scythe-server --control 0.0.0.0:8770 --token admin-secret --folder ~/live set.RPP
 ```
 
-then browse to `http://<the machine's IP>:8770/` and enter the token once (each device
-remembers it), or hand out a link that logs in by itself, for example as a QR code:
-`http://192.168.1.20:8770/monitor?token=stage-secret`. `/monitor?mix=Bass&lock=1` pins a
-device to one mix and hides the mix switcher. The token gives full control of the session (the
-monitor page only *shows* one mix), so keep it to the band's own network. Pages reconnect by
-themselves when the wifi drops or Scythe restarts, and grey out while they are offline.
+The admin token gives full control; keep it to whoever runs the session. Everyone else gets an
+**access link** made in the editor (the QR button in the top bar, or the QR button on a monitor
+mix): a phone scans its code and is in, without typing anything.
+
+| Link | Opens | May |
+|---|---|---|
+| musician | `/monitor`, locked to their mix | read and change their own monitor mix (levels, pans, mutes, more me, its volume); see the transport and setlist status; nothing else |
+| stage | `/setlist` | play the setlist: choose, cue, play, stop, next, previous, auto-advance; plain play and stop; no editing |
+
+Scythe checks every command against the link's role on the session's side, so a link cannot do
+more by calling the API itself, and its WebSocket only carries what the role needs (a
+musician's meters are their mix's alone). Links are kept in
+`$XDG_CONFIG_HOME/scythe/access.json` (or `--access-file`), readable by its owner only, not in
+the project: they are secrets, and a phone's link keeps working when another project is
+opened. A link finds its mix by the musician's name. Renewing a link gives it a new token;
+deleting it locks its phones out at once. When the editor runs on the machine itself
+(`localhost`), the codes carry the machine's network address instead, so phones can reach it.
+
+A browser with the admin token can still open `/monitor` (pick any mix, remembered per device;
+`/monitor?mix=Bass&lock=1` pins one) and `/setlist`. Pages reconnect by themselves when the
+wifi drops or Scythe restarts, and grey out while they are offline.
 
 `SCYTHE_WEB_DIR=crates/scythe-server/web` serves the files from disk instead, for working on
 the UI without rebuilding. Its logic tests run with `node crates/scythe-server/web/test/run.mjs`

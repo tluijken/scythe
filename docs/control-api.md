@@ -15,12 +15,31 @@ Protocol version: **1** (reported by `/api/health` and the WebSocket `hello`).
 | Headless | `scythe-server [project.RPP]` or `scythe --headless [project.RPP]`; listens on `127.0.0.1:8770` unless `--control ADDR` (or `control = "…"` in the config file) says otherwise; `--control off` disables it |
 | Desktop app | `scythe --control 0.0.0.0:8770` or `SCYTHE_CONTROL=0.0.0.0:8770` |
 
-A token (`--token`, `--control-token` in the app, `token = "…"` in the config file, or
-`SCYTHE_CONTROL_TOKEN`) makes every endpoint except `/api/health` require it, either as
-`Authorization: Bearer <token>` or as a `?token=<token>` query parameter (for browsers opening
-a WebSocket). Binding to anything other than a loopback address without a token prints a
-warning: anyone on the network could then drive the session, including opening and saving
-files. There is no TLS; put a reverse proxy in front for anything beyond a trusted LAN.
+An admin token (`--token`, `--control-token` in the app, `token = "…"` in the config file, or
+`SCYTHE_CONTROL_TOKEN`) makes every endpoint except `/api/health` and the web UI's files
+require a token, either as `Authorization: Bearer <token>` or as a `?token=<token>` query
+parameter (for browsers opening a WebSocket). Binding to anything other than a loopback
+address without a token prints a warning: anyone on the network could then drive the session,
+including opening and saving files. There is no TLS; put a reverse proxy in front for anything
+beyond a trusted LAN.
+
+### Roles and access links
+
+The admin token may do everything. Access links (see `access.*` below) carry tokens of their
+own, each limited to a role:
+
+| Role | Commands | Events |
+|---|---|---|
+| `admin` | all, MCP, `/api/files`, `/api/peaks` | all |
+| `musician` (one musician's mix, found by name) | `mix.list` (their mix alone), `mix.get`, `mix.level`, `mix.pan`, `mix.mute`, `mix.more_me`, `mix.volume` on their own mix; `transport.state`, `setlist.status`, `access.whoami`; `snapshot` answers `{"revision", "name", "transport", "access"}` | `meters` with only their mix in `mixes` (no tracks, no master), `project_changed` |
+| `stage` | `setlist.songs`, `list`, `get`, `export`, `status`, `select`, `cue`, `play`, `stop`, `next`, `previous`, `auto_advance`; `transport.play`, `transport.stop`, `transport.state`; `access.whoami`; the same short `snapshot` | `transport`, `setlist`, `project_changed` |
+
+Anything else answers `forbidden` (HTTP 403). The check runs on the session's thread for every
+command, from HTTP, the WebSocket or anything else, so a page cannot widen it. Without an admin
+token a client presenting no token is admin, as before; a link token still narrows. Links are
+kept in a JSON file of the server's own (`access_file` in the config, `--access-file`;
+`$XDG_CONFIG_HOME/scythe/access.json` by default, mode 0600), not in the project, so they
+survive restarts and opening another project, and do not travel with a copied .RPP.
 
 ## Endpoints
 
@@ -29,6 +48,8 @@ files. There is no TLS; put a reverse proxy in front for anything beyond a trust
 | `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1, "token": true}` (`token`: whether the others need one), no token needed |
 | `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}` |
 | `GET` | `/api/snapshot` | the same as the `snapshot` command |
+| `GET` | `/api/peaks?item=…&width=…&from=…&to=…` | the same as `item.peaks` (`from` and `to` optional), for waveforms a browser can cache by address |
+| `GET` | `/api/files?path=…` | admin only: the folders (`--folder`, `folders = […]`; home by default) and, given a `path` inside one, its sub-folders and `.RPP` files: `{"roots", "path", "parent", "entries": [{"name", "path", "dir", "size", "modified"}]}`; a path resolving outside every folder (through `..` or a link) is `forbidden` |
 | `GET` | `/api/ws` | WebSocket: commands in, replies and events out |
 | `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md) |
 | `GET` | `/`, `/monitor`, `/setlist`, … | the web UI (see the README), no token needed to load it |
@@ -36,12 +57,13 @@ files. There is no TLS; put a reverse proxy in front for anything beyond a trust
 Errors answer `{"ok": false, "error": {"kind": …, "message": …}}` with HTTP status 400 for
 `invalid` (malformed, unknown command, value out of range), 404 for `not_found` (a track, send,
 effect, item or marker that does not exist), 409 for `failed` (understood but could not be
-done: the file did not open, nothing to undo, no armed track to record) and 401 for
-`unauthorized`.
+done: the file did not open, nothing to undo, no armed track to record), 403 for `forbidden`
+(the token's role may not do it) and 401 for `unauthorized`.
 
 ### WebSocket
 
-On connecting the server sends `{"type": "hello", "protocol": 1}`. A client sends commands as
+On connecting the server sends `{"type": "hello", "protocol": 1, "access": {"role": "admin"}}`
+(`access` is the token's role, with `musician` for a musician's link). A client sends commands as
 JSON text messages, optionally with an `id` of any JSON type; each gets exactly one reply, in
 the order the commands were sent:
 
@@ -51,8 +73,9 @@ the order the commands were sent:
 ← {"type": "reply", "id": 8, "ok": false, "error": {"kind": "not_found", "message": "no track with id 99"}}
 ```
 
-Every connected client also receives every event (below) as `{"type": "event", "event": …}`. A
-client that falls behind skips events rather than slowing the session down.
+Every connected client also receives the events (below) its role may hear as `{"type":
+"event", "event": …}`. A client that falls behind skips events rather than slowing the session
+down. `access.*` commands are answered by the server itself, at once.
 
 ## Commands
 
@@ -202,6 +225,7 @@ Items are named by their `id` from a snapshot or `item.list`.
 | `item.delete` | `item` | `{}` |
 | `item.volume` | `item`, `volume` or `db` | the item |
 | `item.mute` | `item`, `muted?` | the item |
+| `item.peaks` | `item`, `width` (columns, 1 to 8192), `from?`, `to?` (seconds into the item; all of it when left out) | `{"item", "from", "to", "state", "min", "max"}`: per column the lowest and highest sample (channels summed, item and take gain applied, -1 to 1) from the engine's peak cache; `state` is `ready`, `loading` (ask again shortly), `offline` (the file is missing) or `none` (no audio file) |
 
 ### Markers and regions
 
@@ -216,6 +240,34 @@ match wins.
 | `marker.edit` | `marker`, `region?`, `position?`, `end?` (regions only), `name?`, `color?` | the marker |
 | `marker.delete` | `marker`, `region?` | `{}` |
 | `marker.goto` | `marker`, `region?` | the transport state |
+
+### Tempo map
+
+Tempo and time signature markers (REAPER's tempo envelope) are numbered from 0 in time order.
+A time signature always starts a bar, so a marker given one moves to the next bar line.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `tempo.list` | | `{"bpm", "time_signature", "markers": [{"index", "time", "bpm", "linear", "time_signature", "bar_beat"}]}`; `time_signature` is `[num, denom]` where a marker starts one, else `null` |
+| `tempo.add` | `time`, `bpm?` (the tempo there), `time_signature?`, `linear?` | the tempo map; a map without markers first gets one at the start |
+| `tempo.edit` | `index`, any of `time`, `bpm`, `time_signature` (`null` removes it), `linear` | the tempo map; changes of one marker within a second are one undo step |
+| `tempo.delete` | `index` | the tempo map |
+
+### Access links
+
+Answered by the server, not the session; all but `access.whoami` need the admin token.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `access.whoami` | | the caller's role: `{"role": "musician", "musician": "Drummer"}` |
+| `access.list` | | `{"links": [link…], "admin_token", "stored", "origins"}`; `origins` are addresses phones can reach this server at (empty when it listens on loopback only) |
+| `access.create` | `role` (`musician` or `stage`), `musician` (for a musician), `name?` | the link |
+| `access.update` | `id`, `name?`, `musician?` | the link |
+| `access.renew` | `id` | the link with a new token; the old one stops working |
+| `access.delete` | `id` | `{"links"}` left |
+
+A link: `{"id", "name", "role", "musician"?, "token", "created", "path"}`; `path` is the page it
+opens with its token, such as `/monitor?token=…`.
 
 ### Setlists
 
@@ -277,7 +329,8 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
   }],
   "mixes": […monitor mixes, as `mix.list`…],
   "markers": [{"number": 1, "region": true, "name": "Song 1", "position": 10.0, "end": 200.0,
-               "color": null}]
+               "color": null}],
+  "tempo": […tempo markers, as `tempo.list`…]
 }
 ```
 
@@ -291,7 +344,7 @@ runs (also across undo) but not across opening the project again; names and GUID
 | `event` | Fields | When |
 |---|---|---|
 | `transport` | the transport state | about 20 times a second while playing or recording, and whenever play state, cursor, loop or metronome change |
-| `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]`, `mixes` (the monitor mixes' own meters, same shape) | about 20 times a second; peaks as gain, falling back like the UI's meters |
+| `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]`, `mixes` (the monitor mixes' own meters, same shape plus `musician`) | about 20 times a second; peaks as gain, falling back like the UI's meters |
 | `project_changed` | `revision` | after any change to the project, from any client or the UI; fetch a new snapshot when yours is older |
 | `notice` | `message` | what the UI shows as a toast: saved, could not open, recording started… |
 | `setlist` | the setlist status | when the setlist played, its current or next song, play state or options change (not as the song plays on; use `transport` for that) |
@@ -307,7 +360,9 @@ undo and `project_changed` events follow without more work. MCP clients reach a 
 through `scythe_command` at once; deriving `JsonSchema` on its command enum and listing it in
 `crates/scythe-mcp/src/tools.rs` turns its commands into tools of their own.
 
-The server side is `crates/scythe-server`: `ControlServer::start` binds, runs axum on a thread
+Who may run what is `scythe_session::access` (`Scope`, checked in `ControlPump` before a
+command runs); a new command is admin-only until it is listed there. The server side is
+`crates/scythe-server`: `ControlServer::start` binds, runs axum on a thread
 and tokio runtime of its own, and returns a `ControlPump` that the thread owning the session
 calls (`pump` every frame, or `wait` in a loop) to run commands and publish events. The same
 server answers MCP at `/mcp` with `scythe-mcp`'s `McpServer`.

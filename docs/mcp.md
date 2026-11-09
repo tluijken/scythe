@@ -109,6 +109,7 @@ musician's in-ear mix in small steps and report what it changed; `record_setup` 
   Binding to another address without a token prints a warning.
 - With a token (`--token`, `--control-token`, `SCYTHE_CONTROL_TOKEN`), `/mcp` requires it like
   every other endpoint, as `Authorization: Bearer <token>`; `scythe-mcp --token` sends it.
+  It must be the admin token: a musician's or the stage's access link is refused (403).
 - Without a token, `/mcp` refuses requests whose `Origin` is a web page on another host, so a
   site in a browser cannot reach the session through DNS rebinding.
 - Paths in `project_open` and `project_save` are on the machine running Scythe; an agent can
