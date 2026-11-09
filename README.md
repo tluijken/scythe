@@ -1,3 +1,6 @@
+| ReaVerbate (`stock_ref`, 28 cases on the program material and an impulse: room size, dampening, width, pre-delay, low/high-pass, wet/dry, all at once) | within 1.2e-7 (28/28) |
+| ReaSynth (`stock_ref`, 41 cases on one note and a grid of chords, extreme keys and velocities, short and overlapping notes: attack, decay, sustain, release, each oscillator and their mixes, pulse width, extra sine and its tuning, detune, volume, legacy mode, pitch wheel) | within 3e-6 (37/41); decay towards a sustain under 0 dB within 2e-4 |
+| ReaControlMIDI (`stock_ref`, 12 cases: what reaches a JSFX that turns each MIDI message into a sample, after transpose, snap to scale with roots, bank/program and volume/pan/pitch sends on one or all channels) | exact (12/12) |
 # Scythe
 
 A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
@@ -501,7 +504,12 @@ Working:
   its two-stage release) and ReaXcomp (any number of bands, feedback detector, band gains and
   bypass, output gain), all latency compensated and modelled on REAPER 7.73 renders
   (`scythe-engine/src/stock/`, one file per plugin, dispatched from a table of REAPER's VST
-  identities). JSFX run from their own
+  identities). ReaVerbate (Freeverb with REAPER's ten combs and six allpasses per channel,
+  pre-delay, width and wet filters), ReaSynth (its naive oscillators and mix laws, envelope,
+  pitch wheel, REAPER's -80 dB voice gating and 512-frame block behaviour) and ReaControlMIDI
+  (transpose, snap to a scale, and the bank/program, volume, pan and pitch-wheel sends at
+  playback start) are emulated the same way and offered as the built-ins "Algorithmic reverb",
+  "Synth" and "MIDI control". JSFX run from their own
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
   user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
   bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
@@ -908,6 +916,15 @@ compares the two files.
   Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
+- Stock plugins: ReaSynth's portamento (REAPER then glides monophonically) is ignored, and a
+  decay towards a sustain below 0 dB is within 2e-4 (REAPER pauses it for a frame at a block
+  boundary in a way not modelled). ReaControlMIDI's two user CC sliders are kept but not sent,
+  and its scale type comes only from the stored state. Not emulated yet (Scythe hosts REAPER's own
+  Linux binaries when they are on the VST path, otherwise the slots pass audio through): ReaFIR (measured so far: a zero-phase FFT filter whose curve
+  is smoothed between points, flat curves pass bit-exact), ReaPitch, ReaTune, ReaVocode,
+  ReaVoice, ReaSynDr, ReaSurround/ReaSurroundPan, ReaVerb's generator modules, ReaInsert (renders
+  silence without an audio device in REAPER; a hardware insert needs the live engine),
+  ReaStream, ReaNINJAM and ReaCast (network clients).
 - The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
   it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
   edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null

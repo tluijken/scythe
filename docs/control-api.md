@@ -307,7 +307,7 @@ itself).
 |---|---|---|
 | `fx.list` | `track` | `[{"index", "name", "enabled", "running", "offline", "wet", "delta", "parallel", "container"}]` (`running`: processing audio, not passed through; `parallel`: `serial`, `parallel` or `merge_midi`; `container`: `{"channels", "inputs", "outputs", "effects"}` for an FX container) |
 | `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case) | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
-| `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`; the built-ins are `equalizer`, `gate`, `compressor`, `delay`, `convolution-reverb`, `limiter` and `multiband-compressor`; or an exact name), `index?` | the chain |
+| `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`; the built-ins are `equalizer`, `gate`, `compressor`, `delay`, `convolution-reverb`, `limiter`, `multiband-compressor`, `algorithmic-reverb`, `synth` and `midi-control`; or an exact name), `index?` | the chain |
 | `fx.remove` | `track`, `index` | the chain |
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |
 | `fx.params` | `track`, `index` | `[{"id", "name", "value", "text", "min", "max", "default"}]` of a hosted plugin |
