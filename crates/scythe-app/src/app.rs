@@ -56,6 +56,8 @@ pub struct ViewState {
     pub grid: usize,
     pub midi_editor: Option<ItemId>,
     pub midi_state: crate::ui::midi_editor::EditorState,
+    /// MIDI items whose inline editor is open in the arrange view.
+    pub inline_midi: Vec<ItemId>,
     pub snap: bool,
     /// Range to zoom the arrange view to on the next frame, once its width is known.
     pub fit: Option<TimeRange>,
@@ -87,7 +89,20 @@ pub struct ViewState {
 }
 
 /// What a cached MIDI note layout depends on.
-type MidiKey = (u64, u64, u64, u64, bool, usize, TempoMap);
+type MidiKey = (u64, u64, u64, u64, bool, u64, TempoMap);
+
+/// A hash of the chunk's text, so any edit of a MIDI source redraws its notes.
+fn chunk_hash(c: &scythe_core::rpp::Chunk) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for n in &c.children {
+        match n {
+            scythe_core::rpp::Node::Line(l) => l.hash(&mut h),
+            scythe_core::rpp::Node::Chunk(x) => chunk_hash(x).hash(&mut h),
+        }
+    }
+    h.finish()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderKind {
@@ -216,6 +231,7 @@ impl ScytheApp {
                 grid: 0,
                 midi_editor: None,
                 midi_state: Default::default(),
+                inline_midi: Vec::new(),
                 snap: true,
                 fit: None,
                 monitor_page: false,
@@ -323,7 +339,7 @@ impl ScytheApp {
             take.source_offset.to_bits(),
             take.playrate.to_bits(),
             item.looped,
-            chunk.children.len(),
+            chunk_hash(chunk),
             self.project.tempo.clone(),
         );
         if let Some((k, notes)) = self.midi_cache.get(&item.id)

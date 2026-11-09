@@ -804,6 +804,7 @@ fn draw_item(
                     item_painter.vline(x, (wave.bottom() - h)..=wave.bottom(), Stroke::new(1.0, color));
                 });
             }
+            None if app.view.inline_midi.contains(&item.id) => {}
             None if let Some(notes) = app.midi_notes(&item) => {
                 draw_midi(&item_painter, wave.expand2(vec2(0.0, 10.0)), axis, &notes, color.gamma_multiply(fade));
             }
@@ -909,7 +910,9 @@ fn draw_item(
     if resp.clicked() {
         crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_ITEM_CLK");
     }
-    if !assigned
+    if !assigned && resp.double_clicked() && ui.input(|i| i.modifiers.alt) {
+        crate::ui::midi_editor::toggle_inline(app, id);
+    } else if !assigned
         && resp.double_clicked()
         && item.take().is_some_and(
             |t| matches!(&t.source, scythe_core::Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI")),
@@ -923,6 +926,9 @@ fn draw_item(
     let (x, t) = (|t: f64| axis.x(t), |x: f32| axis.t(x));
     crate::ui::stretch_markers::show(app, ui, &item_painter, outer, (&x, &t), track, &item);
     item_handles(app, ui, &item_painter, outer, axis, track, &item);
+    if app.view.inline_midi.contains(&item.id) {
+        crate::ui::midi_editor::inline_editor(app, ui, wave.intersect(outer), item.id, &x, &t);
+    }
 }
 
 #[derive(Clone, Copy)]
