@@ -400,9 +400,24 @@ fn setlist_panel(
         TEXT_MID,
     );
     if let Some(l) = list {
+        let sw3 = Rect::from_min_size(sw2.right_top() + vec2(150.0, 0.0), vec2(40.0, 22.0));
+        if switch(ui, sw3, l.count_in, ACCENT)
+            .on_hover_text("Count each song in with the metronome (the project's count-in length)")
+            .clicked()
+        {
+            let at = app.live.list;
+            app.set_setlist_count_in(at, !l.count_in);
+        }
+        painter.text(
+            sw3.right_center() + vec2(8.0, 0.0),
+            Align2::LEFT_CENTER,
+            "Count-in",
+            theme::regular(13.0),
+            TEXT_MID,
+        );
         let total = format!("{} · {}", plural(l.songs.len(), "song"), clock(l.duration(songs)));
         let room =
-            foot.right() - (sw2.right() + 8.0 + widgets::text_width(ui, "Marker actions", theme::regular(13.0)) + 16.0);
+            foot.right() - (sw3.right() + 8.0 + widgets::text_width(ui, "Count-in", theme::regular(13.0)) + 16.0);
         if widgets::text_width(ui, &total, theme::mono(12.0)) <= room {
             painter.text(foot.right_center(), Align2::RIGHT_CENTER, total, theme::mono(12.0), TEXT_DIM);
         }

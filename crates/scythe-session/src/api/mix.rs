@@ -135,6 +135,21 @@ pub enum MixCommand {
         #[serde(default)]
         on: Option<bool>,
     },
+    /// The metronome in the mix, as a source with its own level (`volume` as gain or `db`; 0
+    /// takes it out). It clicks when the metronome is on and through every count-in, so a
+    /// drummer hears the click while the audience does not. Scythe only: REAPER plays the click
+    /// to a musician through `transport.metronome_output`.
+    #[serde(rename = "mix.click")]
+    Click {
+        /// The monitor mix.
+        mix: TrackRef,
+        /// Gain: 1.0 is the metronome's default level.
+        #[serde(default)]
+        volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
+        #[serde(default)]
+        db: Option<f64>,
+    },
     /// Adds a track to the mix.
     #[serde(rename = "mix.add_source")]
     AddSource {
@@ -180,6 +195,9 @@ pub struct MixInfo {
     pub output: Option<OutputInfo>,
     /// `None` when the mix has no safety limiter.
     pub limiter: Option<bool>,
+    /// The metronome's level in the mix (gain), `None` when it has no click.
+    #[serde(default)]
+    pub click: Option<f64>,
     pub sources: Vec<MixSource>,
 }
 
@@ -224,6 +242,7 @@ pub fn info(p: &Project, m: &MonitorMix) -> MixInfo {
             MonitorOutput::Mono(n) => OutputInfo { output: n, mono: true, label: o.label() },
         }),
         limiter: p.monitor_limiter(m.track),
+        click: m.click,
         sources: p
             .monitor_sources(m.track)
             .into_iter()
@@ -422,6 +441,14 @@ pub fn execute(session: &mut Session, command: MixCommand) -> Result<Value, ApiE
             };
             session.edit("Set monitor output", |p| {
                 p.set_monitor_output(id, o);
+            });
+            Ok(mix_info(session, id))
+        }
+        MixCommand::Click { mix: m, volume, db } => {
+            let id = mix(session, &m)?;
+            let gain = level(volume, db)?;
+            session.edit("Set monitor click", |p| {
+                p.set_monitor_click(id, (gain > 0.0).then_some(gain));
             });
             Ok(mix_info(session, id))
         }

@@ -19,6 +19,8 @@ pub struct ActiveRecording {
     pub(crate) midi_tracks: Vec<(TrackId, Option<u8>)>,
     /// MIDI received so far, with the project frame it arrived at.
     pub(crate) midi: Vec<(i64, LiveMidi)>,
+    /// Seconds of count-in recorded before the playhead started moving.
+    pub(crate) count_in: f64,
 }
 
 impl Session {
@@ -102,10 +104,12 @@ impl Session {
             looped: selection.filter(|_| self.project.loop_enabled),
             punch: selection.filter(|_| self.auto_punch),
         };
-        if !playing {
-            self.engine.seek(start);
-            self.engine.play();
-        }
+        let count_in = match self.counting_in() {
+            Some((before, _, _)) => -before,
+            None if playing => 0.0,
+            None => self.start_playback(start, self.project.metronome.counts_in(true)),
+        };
+        self.engine.set_recording(true);
         let from = session.as_ref().map(|s| s.device.clone());
         let midi = self.engine.midi_input_names().join(", ");
         self.notify(match (from, midi.is_empty()) {
@@ -120,12 +124,14 @@ impl Session {
             audio_tracks: audio_armed.iter().map(|t| t.id).collect(),
             midi_tracks: midi_armed.iter().map(|t| (t.id, midi_input_channel(t.rec_input).flatten())).collect(),
             midi: Vec::new(),
+            count_in,
         });
     }
 
     fn finish_recording(&mut self, mut rec: ActiveRecording) {
         let stop = self.engine.transport().position_seconds();
         self.engine.stop();
+        self.engine.set_recording(false);
         rec.midi.extend(self.engine.take_recorded_midi());
         let sr = self.engine.sample_rate() as f64;
         let timeline = self.project.tempo.timeline();
@@ -152,7 +158,7 @@ impl Session {
                     // reached the file `input_latency` after that.
                     let output_latency = self.engine.transport().output_latency();
                     for take in &takes {
-                        let offset = take.input_latency + output_latency;
+                        let offset = take.input_latency + output_latency + rec.count_in;
                         let len = take.frames as f64 / take.sample_rate as f64;
                         if let Some(item) = place_recording(take.path.clone(), len, offset, rec.pass) {
                             items.push((take.track, item));
@@ -195,9 +201,27 @@ impl Session {
             self.project.cursor = self.engine.transport().position_seconds();
             self.engine.stop();
         } else {
-            self.engine.seek(self.project.cursor);
-            self.engine.play();
+            self.start_playback(self.project.cursor, self.project.metronome.counts_in(false));
         }
+    }
+
+    /// Plays from `at`, after the project's count-in when `count_in`; answers the count-in's
+    /// length in seconds.
+    pub fn start_playback(&mut self, at: f64, count_in: bool) -> f64 {
+        self.engine.seek(at);
+        if !count_in {
+            self.engine.play();
+            return 0.0;
+        }
+        let count_in = self.project.metronome.count_in_at(&self.project.tempo, at);
+        self.engine.play_counting_in(&count_in);
+        count_in.seconds()
+    }
+
+    /// While counting in: how far before the start playback is (negative seconds), and the
+    /// beat sounding (from 1) of how many.
+    pub fn counting_in(&self) -> Option<(f64, u32, u32)> {
+        self.engine.transport().count_in()
     }
 
     /// Stop returns the play cursor to the edit cursor, as in REAPER.

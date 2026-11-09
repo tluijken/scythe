@@ -5,6 +5,7 @@
 
 mod automation;
 mod files;
+mod health;
 mod live;
 mod media;
 mod transport;
@@ -54,7 +55,6 @@ pub struct Session {
     pub live: LiveState,
     /// Record mode "time selection auto-punch": keep only what falls inside the time selection.
     pub auto_punch: bool,
-    pub metronome: bool,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
     pub dirty: bool,
@@ -75,6 +75,8 @@ pub struct Session {
     /// The last MIDI input error shown, so it is not repeated on every edit.
     midi_error: Option<String>,
     autosaved_at: Instant,
+    /// The highest DSP load of the last window, and when the window started.
+    load_window: (f32, Instant),
     toast: Option<(String, Instant)>,
     gesture: Option<(String, Project)>,
     meters_at: Instant,
@@ -99,7 +101,6 @@ impl Session {
             recording: None,
             live: LiveState::default(),
             auto_punch: false,
-            metronome: false,
             no_input: false,
             dirty: false,
             saved_at: None,
@@ -114,6 +115,7 @@ impl Session {
             pending_stretch: HashSet::new(),
             midi_error: None,
             autosaved_at: Instant::now(),
+            load_window: (0.0, Instant::now()),
             toast: None,
             gesture: None,
             meters_at: Instant::now(),
@@ -263,14 +265,28 @@ impl Session {
         self.sync();
     }
 
-    pub fn toggle_metronome(&mut self) {
-        self.set_metronome(!self.metronome);
+    /// Whether the metronome is on (it clicks while playing unless the project says otherwise).
+    pub fn metronome(&self) -> bool {
+        self.project.metronome.enabled()
     }
 
+    pub fn toggle_metronome(&mut self) {
+        self.set_metronome(!self.metronome());
+    }
+
+    /// Turns the metronome on or off. Like REAPER's action this is saved with the project but
+    /// is not an undo step.
     pub fn set_metronome(&mut self, on: bool) {
-        self.metronome = on;
-        self.engine.set_metronome(if self.metronome { 0.5 } else { 0.0 });
-        self.engine.sync(&self.project);
+        self.change_metronome(|m| m.set(scythe_core::metronome::ENABLED, on));
+    }
+
+    /// Changes the project's metronome settings (count-in, volume, outputs), not as an undo step.
+    pub fn change_metronome(&mut self, f: impl FnOnce(&mut scythe_core::metronome::Metronome)) {
+        let before = self.project.metronome.clone();
+        f(&mut self.project.metronome);
+        if self.project.metronome != before {
+            self.changed();
+        }
     }
 
     /// Hands the project to the engine and opens or closes the live inputs and outputs it

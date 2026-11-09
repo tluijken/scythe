@@ -79,6 +79,7 @@ function MixPicker({ mixes, onPick, current }) {
 }
 
 function SourceRow({ source, onLevel, onPan, onMute }) {
+  const panned = !!onPan;
   const [open, setOpen] = useState(false);
   const [drag, setDrag] = useState(null);
   const db = drag ?? source.db;
@@ -97,7 +98,7 @@ function SourceRow({ source, onLevel, onPan, onMute }) {
         setDrag(gainToDb(g));
         onLevel(gainToDb(g));
       }} onCommit=${() => setDrag(null)} />
-    ${open && html`<div class="source-pan"><span class="dim small">Pan ${formatPan(source.pan)}</span><${Pan} pan=${source.pan} width=${240} onInput=${onPan} /></div>`}
+    ${open && panned && html`<div class="source-pan"><span class="dim small">Pan ${formatPan(source.pan)}</span><${Pan} pan=${source.pan} width=${240} onInput=${onPan} /></div>`}
   </div>`;
 }
 
@@ -189,6 +190,15 @@ export function MonitorPage({ client, store }) {
             send(mixCommands.mute(mix.id, s.id, muted), `mute:${s.id}`);
           }} />`,
       )}
+      <${SourceRow} key="click" source=${{ id: "click", name: "Click", color: "var(--accent)", db: mix.clickDb ?? 0, pan: 0, muted: mix.clickDb == null, own: false }}
+        onLevel=${(db) => {
+          patch((m) => ({ ...m, clickDb: db }));
+          send(mixCommands.click(mix.id, db), "click");
+        }}
+        onMute=${(muted) => {
+          patch((m) => ({ ...m, clickDb: muted ? null : 0 }));
+          send(muted ? mixCommands.clickOff(mix.id) : mixCommands.click(mix.id, 0), "click");
+        }} />
     </div>
     <${OfflineVeil} status=${status} />
   </div>`;

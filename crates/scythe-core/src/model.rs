@@ -795,6 +795,7 @@ pub struct Project {
     pub time_selection: Option<TimeRange>,
     pub loop_enabled: bool,
     pub cursor: f64,
+    pub metronome: crate::metronome::Metronome,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
@@ -813,6 +814,7 @@ impl Default for Project {
             time_selection: None,
             loop_enabled: false,
             cursor: 0.0,
+            metronome: Default::default(),
             lines: LineMemo::new(),
             extra: Vec::new(),
         }

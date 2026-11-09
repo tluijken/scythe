@@ -14,6 +14,8 @@ use crate::model::Project;
 pub const SECTION: &str = "SCYTHE_SETLISTS";
 const LIST_KEY: &str = "SETLIST";
 const AUTO_ADVANCE_KEY: &str = "AUTOADVANCE";
+/// Per setlist, numbered like its `SETLIST` key: "1" when each song plays after a count-in.
+const COUNT_IN_KEY: &str = "COUNTIN";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SongEnd {
@@ -123,11 +125,14 @@ impl SongRef {
 pub struct Setlist {
     pub name: String,
     pub songs: Vec<SongRef>,
+    /// Playing a song counts in first (the project's metronome count-in length), so the band
+    /// starts together without the drummer counting.
+    pub count_in: bool,
 }
 
 impl Setlist {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), songs: Vec::new() }
+        Self { name: name.into(), ..Self::default() }
     }
 
     /// The song each entry plays: by GUID, else by name (case-insensitive).
@@ -194,7 +199,7 @@ impl Setlist {
                 (!name.is_empty() || guid.is_some()).then(|| SongRef { guid, name: name.to_owned() })
             })
             .collect();
-        Self { name, songs }
+        Self { name, songs, count_in: false }
     }
 }
 
@@ -213,8 +218,12 @@ pub struct Setlists {
 impl Setlists {
     pub fn load(project: &Project) -> Self {
         let lists = (1..)
-            .map_while(|n| project.ext_state(SECTION, &format!("{LIST_KEY}{n}")))
-            .map(|t| Setlist::from_text(&t))
+            .map_while(|n| {
+                let text = project.ext_state(SECTION, &format!("{LIST_KEY}{n}"))?;
+                let count_in =
+                    project.ext_state(SECTION, &format!("{COUNT_IN_KEY}{n}")).is_some_and(|v| v.trim() == "1");
+                Some(Setlist { count_in, ..Setlist::from_text(&text) })
+            })
             .collect();
         let auto_advance = project.ext_state(SECTION, AUTO_ADVANCE_KEY).is_some_and(|v| v.trim() == "1");
         Self { lists, auto_advance }
@@ -223,15 +232,19 @@ impl Setlists {
     pub fn store(&self, project: &mut Project) {
         for (n, list) in self.lists.iter().enumerate() {
             project.set_ext_state(SECTION, &format!("{LIST_KEY}{}", n + 1), Some(&list.to_text(true)));
+            project.set_ext_state(SECTION, &format!("{COUNT_IN_KEY}{}", n + 1), list.count_in.then_some("1"));
         }
         let stale = project
             .ext_state_section(SECTION)
             .into_iter()
-            .filter_map(|(k, _)| k.strip_prefix(LIST_KEY).and_then(|n| n.parse::<usize>().ok()))
-            .filter(|&n| n > self.lists.len())
+            .filter_map(|(k, _)| {
+                let n = k.strip_prefix(LIST_KEY).or_else(|| k.strip_prefix(COUNT_IN_KEY))?;
+                Some((k.clone(), n.parse::<usize>().ok()?))
+            })
+            .filter(|&(_, n)| n > self.lists.len())
             .collect::<Vec<_>>();
-        for n in stale {
-            project.set_ext_state(SECTION, &format!("{LIST_KEY}{n}"), None);
+        for (key, _) in stale {
+            project.set_ext_state(SECTION, &key, None);
         }
         project.set_ext_state(SECTION, AUTO_ADVANCE_KEY, self.auto_advance.then_some("1"));
     }
@@ -425,6 +438,7 @@ mod tests {
                 SongRef { guid: None, name: "04 - blackened sun ".into() },
                 SongRef { guid: None, name: "Gone".into() },
             ],
+            count_in: false,
         };
         assert_eq!(list.resolve(&s), [Some(1), Some(3), None]);
         let mut bound = list.clone();
@@ -442,6 +456,7 @@ mod tests {
                 SongRef { guid: Some("{24777E83-6425-D14D-BD7C-36DCA6A188CE}".into()), name: "Intro  jam".into() },
                 SongRef { guid: None, name: "2. Not a number".into() },
             ],
+            count_in: false,
         };
         let text = list.to_text(true);
         assert_eq!(text, "Saturday\n1. Intro  jam  {24777E83-6425-D14D-BD7C-36DCA6A188CE}\n2. 2. Not a number\n");
@@ -459,8 +474,12 @@ mod tests {
         let s = songs(&p);
         let mut sets = Setlists {
             lists: vec![
-                Setlist { name: "Long \"set\" 'A' `x`".into(), songs: s.iter().map(SongRef::to).collect() },
-                Setlist { name: "Short".into(), songs: vec![SongRef::to(&s[4]), SongRef::to(&s[0])] },
+                Setlist {
+                    name: "Long \"set\" 'A' `x`".into(),
+                    songs: s.iter().map(SongRef::to).collect(),
+                    count_in: false,
+                },
+                Setlist { name: "Short".into(), songs: vec![SongRef::to(&s[4]), SongRef::to(&s[0])], count_in: true },
             ],
             auto_advance: true,
         };
@@ -472,6 +491,7 @@ mod tests {
         sets.store(&mut p);
         assert_eq!(Setlists::load(&p), sets);
         assert_eq!(p.ext_state(SECTION, "SETLIST2"), None);
+        assert_eq!(p.ext_state(SECTION, "COUNTIN2"), None);
         assert_eq!(sets.unique_name("Short"), "Short");
         assert_eq!(sets.unique_name("Long \"set\" 'A' `x`"), "Long \"set\" 'A' `x` 2");
     }
@@ -482,6 +502,7 @@ mod tests {
         let list = Setlist {
             name: "Show".into(),
             songs: vec![SongRef::to(&s[2]), SongRef { guid: None, name: "missing".into() }, SongRef::to(&s[0])],
+            count_in: false,
         };
         let mut player = SetlistPlayer::default();
         assert_eq!(player.play(&list, &s), Some(PlayerCommand::PlayFrom(736.0)));

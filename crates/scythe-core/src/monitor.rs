@@ -14,6 +14,9 @@ pub const EXT_MUSICIAN: &str = "scythe_monitor";
 pub const EXT_OWN: &str = "scythe_monitor_own";
 /// The "more me" amount in dB.
 pub const EXT_MORE_ME: &str = "scythe_monitor_more_me";
+/// The metronome's level in the mix as a gain (1.0 is 0 dB); unset when it has no click. REAPER
+/// has no such source: there the click reaches a musician through the metronome outputs.
+pub const EXT_CLICK: &str = "scythe_monitor_click";
 /// Monitor mix tracks are named after the musician with this prefix.
 pub const NAME_PREFIX: &str = "MON ";
 /// Range of the "more me" control in dB.
@@ -105,6 +108,8 @@ pub struct MonitorMix {
     pub more_me: f64,
     /// The first hardware output, when it is a plain stereo or mono one.
     pub output: Option<MonitorOutput>,
+    /// The metronome's level in the mix as a gain, when it has a click.
+    pub click: Option<f64>,
 }
 
 /// One source of a monitor mix: the receive from `track`.
@@ -150,6 +155,7 @@ impl Project {
             own,
             more_me: t.ext(EXT_MORE_ME).and_then(|v| v.parse().ok()).unwrap_or(0.0),
             output: t.hw_outs.first().and_then(MonitorOutput::from_hw_out),
+            click: t.ext(EXT_CLICK).and_then(|v| v.trim().parse().ok()),
         })
     }
 
@@ -315,6 +321,16 @@ impl Project {
         }
         let value = if db == 0.0 { None } else { Some(crate::rpp::fmt_num((db * 100.0).round() / 100.0)) };
         self.track_mut(mix).unwrap().set_ext(EXT_MORE_ME, value.as_deref());
+        true
+    }
+
+    /// Puts the metronome (and the count-in) into the mix at `gain`, or takes it out with `None`.
+    pub fn set_monitor_click(&mut self, mix: TrackId, gain: Option<f64>) -> bool {
+        if !self.is_monitor_mix(mix) {
+            return false;
+        }
+        let value = gain.map(|g| crate::rpp::fmt_num(g.max(0.0)));
+        self.track_mut(mix).unwrap().set_ext(EXT_CLICK, value.as_deref());
         true
     }
 

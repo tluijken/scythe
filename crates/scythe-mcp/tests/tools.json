@@ -159,20 +159,124 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Turns the metronome (click) on or off.\n\nControl API command `transport.metronome`.",
+    "description": "Turns the metronome (click) on or off and/or sets its level at its outputs (`volume` as\ngain, REAPER's default 0.25, or `db`). Saved with the project, like REAPER's.\n\nControl API command `transport.metronome`.",
     "inputSchema": {
       "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "enabled": {
-          "type": "boolean"
+          "default": null,
+          "description": "On or off; left out, it stays as it is.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain at the metronome's outputs.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
         }
       },
-      "required": [
-        "enabled"
-      ],
       "type": "object"
     },
     "name": "transport_metronome",
     "title": "Transport metronome"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Where the metronome plays: device output `output` (from 0; a pair unless `mono`), or\nwith the master when `null`. Pointed at a drummer's in-ear output, the click reaches\nonly them. REAPER's metronome hardware output (`METRONOMEOUT`).\n\nControl API command `transport.metronome_output`.",
+    "inputSchema": {
+      "properties": {
+        "mono": {
+          "default": false,
+          "description": "Play to that one output instead of the pair starting there.",
+          "type": "boolean"
+        },
+        "output": {
+          "description": "First device output, from 0; `null` plays it with the master.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "transport_metronome_output",
+    "title": "Transport metronome output"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Count-in: whether playback and/or recording start after `measures` measures of\nmetronome at the tempo where they start. The count-in clicks even with the metronome off.\n\nControl API command `transport.count_in`.",
+    "inputSchema": {
+      "properties": {
+        "measures": {
+          "default": null,
+          "description": "Length in measures, up to 16.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "playback": {
+          "default": null,
+          "description": "Count in before playback (REAPER's \"Count-in before playback\").",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "record": {
+          "default": null,
+          "description": "Count in before recording.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "transport_count_in",
+    "title": "Transport count in"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The audio device and how it holds up: xruns, DSP load, latency, a lost device.\n\nControl API command `transport.health`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_health",
+    "title": "Transport health"
   },
   {
     "annotations": {
@@ -2877,6 +2981,56 @@
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The metronome in the mix, as a source with its own level (`volume` as gain or `db`; 0\ntakes it out). It clicks when the metronome is on and through every count-in, so a\ndrummer hears the click while the audience does not. Scythe only: REAPER plays the click\nto a musician through `transport.metronome_output`.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.click`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "The monitor mix."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is the metronome's default level.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_click",
+    "title": "Mix click"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false
@@ -3626,6 +3780,51 @@
     },
     "name": "setlist_auto_advance",
     "title": "Setlist auto advance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Whether playing a song from the setlist counts in first (the project's count-in length,\nat the song's tempo), so the band starts together; toggles when `enabled` is left out.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.count_in`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "default": null,
+          "description": "Count in or not; left out, toggles.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_count_in",
+    "title": "Setlist count in"
   },
   {
     "annotations": {

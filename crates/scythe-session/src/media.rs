@@ -150,6 +150,7 @@ impl Session {
     /// Takes in what background work finished, follows up on crossed marker actions, and
     /// auto-saves when it is time.
     pub fn poll(&mut self) {
+        self.watch_device();
         self.autosave();
         self.handle_marker_actions();
         while let Ok(msg) = self.loader_rx.try_recv() {

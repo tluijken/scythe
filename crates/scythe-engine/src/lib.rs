@@ -40,6 +40,6 @@ pub mod wavcodec;
 
 pub use cues::MarkerAction;
 pub use devices::DeviceRequest;
-pub use engine::{DeviceInfo, Engine, Transport};
+pub use engine::{DeviceEvent, DeviceInfo, Engine, Health, Transport};
 pub use media::{AudioData, Media, MediaPool, MediaState, Peaks};
 pub use meter::Meter;

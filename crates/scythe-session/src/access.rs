@@ -47,9 +47,10 @@ impl Scope {
                     .collect(),
             })),
             (Self::Musician { .. }, Event::ProjectChanged { .. }) => Some(event.clone()),
-            (Self::Stage, Event::Transport(_) | Event::Setlist(_) | Event::ProjectChanged { .. }) => {
-                Some(event.clone())
-            }
+            (
+                Self::Stage,
+                Event::Transport(_) | Event::Setlist(_) | Event::Health(_) | Event::ProjectChanged { .. },
+            ) => Some(event.clone()),
             _ => None,
         }
     }
@@ -118,7 +119,8 @@ pub fn run(session: &mut Session, scope: &Scope, command: Command) -> Result<Val
                 | MixCommand::Pan { mix, .. }
                 | MixCommand::Mute { mix, .. }
                 | MixCommand::MoreMe { mix, .. }
-                | MixCommand::Volume { mix, .. },
+                | MixCommand::Volume { mix, .. }
+                | MixCommand::Click { mix, .. },
             ) => {
                 check_mix(session, scope, musician, mix)?;
                 true
@@ -133,21 +135,23 @@ pub fn run(session: &mut Session, scope: &Scope, command: Command) -> Result<Val
     }
     let allowed = matches!(
         &command,
-        Command::Transport(TransportCommand::Play | TransportCommand::Stop | TransportCommand::State)
-            | Command::Setlist(
-                SetlistCommand::Songs
-                    | SetlistCommand::List
-                    | SetlistCommand::Get { .. }
-                    | SetlistCommand::Export { .. }
-                    | SetlistCommand::Select { .. }
-                    | SetlistCommand::Cue { .. }
-                    | SetlistCommand::Play { .. }
-                    | SetlistCommand::Stop
-                    | SetlistCommand::Next
-                    | SetlistCommand::Previous
-                    | SetlistCommand::AutoAdvance { .. }
-                    | SetlistCommand::Status
-            )
+        Command::Transport(
+            TransportCommand::Play | TransportCommand::Stop | TransportCommand::State | TransportCommand::Health
+        ) | Command::Setlist(
+            SetlistCommand::Songs
+                | SetlistCommand::List
+                | SetlistCommand::Get { .. }
+                | SetlistCommand::Export { .. }
+                | SetlistCommand::Select { .. }
+                | SetlistCommand::Cue { .. }
+                | SetlistCommand::Play { .. }
+                | SetlistCommand::Stop
+                | SetlistCommand::Next
+                | SetlistCommand::Previous
+                | SetlistCommand::AutoAdvance { .. }
+                | SetlistCommand::CountIn { .. }
+                | SetlistCommand::Status
+        )
     );
     if !allowed {
         return Err(denied(scope));

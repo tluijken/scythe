@@ -11,12 +11,15 @@ use serde_json::Value;
 use crate::access::{self, Scope};
 use crate::api::events::{Meters, TrackMeter};
 use crate::api::setlist::{self, SetlistStatus};
-use crate::api::snapshot::{self, TransportState};
+use crate::api::snapshot::{self, CountInState, TransportState};
+use crate::api::transport::{self, HealthInfo};
 use crate::api::{ApiError, Command, Event};
 use crate::{Session, Waker};
 
 /// How often transport and meter events go out at most: about 20 a second.
 pub const EVENT_INTERVAL: Duration = Duration::from_millis(50);
+/// How often the health event goes out when nothing happens.
+pub const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
 pub type Reply = Box<dyn FnOnce(Result<Value, ApiError>) + Send>;
 
@@ -68,6 +71,8 @@ pub struct ControlPump {
     meters_at: Instant,
     revision: u64,
     setlist: Option<SetlistStatus>,
+    health: Option<HealthInfo>,
+    health_at: Instant,
 }
 
 /// A connected pair. `wake` is called when a command is queued, so a UI that sleeps between
@@ -75,7 +80,17 @@ pub struct ControlPump {
 pub fn channel(wake: Waker, sink: EventSink) -> (ControlHandle, ControlPump) {
     let (tx, rx) = mpsc_channel();
     let due = Instant::now().checked_sub(EVENT_INTERVAL).unwrap_or_else(Instant::now);
-    let pump = ControlPump { rx, sink, transport: None, transport_at: due, meters_at: due, revision: 0, setlist: None };
+    let pump = ControlPump {
+        rx,
+        sink,
+        transport: None,
+        transport_at: due,
+        meters_at: due,
+        revision: 0,
+        setlist: None,
+        health: None,
+        health_at: due,
+    };
     (ControlHandle { tx, wake }, pump)
 }
 
@@ -142,6 +157,17 @@ impl ControlPump {
                 .collect();
             (self.sink)(&Event::Meters(Meters { master: session.master_level, tracks, mixes }));
         }
+        let health = transport::health(session);
+        let news = self.health.as_ref().is_none_or(|last| {
+            (&last.status, last.xruns, last.overloads, last.reconnects)
+                != (&health.status, health.xruns, health.overloads, health.reconnects)
+        });
+        let since = now.duration_since(self.health_at);
+        if (news && since >= EVENT_INTERVAL) || since >= HEALTH_INTERVAL {
+            self.health_at = now;
+            (self.sink)(&Event::Health(health.clone()));
+            self.health = Some(health);
+        }
     }
 }
 
@@ -155,4 +181,8 @@ fn same_state(a: &TransportState, b: &TransportState) -> bool {
         && a.loop_enabled == b.loop_enabled
         && a.loop_range == b.loop_range
         && a.metronome == b.metronome
+        && a.metronome_volume == b.metronome_volume
+        && a.metronome_outputs == b.metronome_outputs
+        && CountInState { position: None, ..a.count_in.clone() }
+            == CountInState { position: None, ..b.count_in.clone() }
 }

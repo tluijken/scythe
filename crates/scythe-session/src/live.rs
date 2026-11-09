@@ -70,7 +70,8 @@ impl Session {
                     return;
                 }
                 self.project.cursor = at;
-                self.engine.play_from(at);
+                let count_in = self.current_setlist().is_some_and(|l| l.count_in);
+                self.start_playback(at, count_in || self.project.metronome.counts_in(false));
                 self.live.driving = true;
             }
             None => {}
@@ -142,7 +143,7 @@ impl Session {
             return;
         }
         self.project.cursor = song.start;
-        self.engine.play_from(song.start);
+        self.start_playback(song.start, self.project.metronome.counts_in(false));
         self.live.driving = false;
     }
 
@@ -150,7 +151,7 @@ impl Session {
         let mut index = 0;
         self.edit_setlists("New setlist", |s| {
             let name = s.unique_name(name.filter(|n| !n.trim().is_empty()).unwrap_or("Setlist").trim());
-            s.lists.push(Setlist { name, songs });
+            s.lists.push(Setlist { name, songs, count_in: false });
             index = s.lists.len() - 1;
         });
         self.choose_setlist(index);
@@ -201,6 +202,15 @@ impl Session {
         }
         let at = self.live.list;
         self.edit_setlists("Add song to setlist", |s| s.lists[at].songs.push(SongRef::to(song)));
+    }
+
+    /// Whether setlist `at` counts each song in.
+    pub fn set_setlist_count_in(&mut self, at: usize, on: bool) {
+        self.edit_setlists(if on { "Count in setlist songs" } else { "Play setlist songs without count-in" }, |s| {
+            if let Some(list) = s.lists.get_mut(at) {
+                list.count_in = on;
+            }
+        });
     }
 
     pub fn set_auto_advance(&mut self, on: bool) {

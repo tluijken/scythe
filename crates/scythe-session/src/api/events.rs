@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::setlist::SetlistStatus;
 use super::snapshot::TransportState;
+use super::transport::HealthInfo;
 
 /// What the session tells every client without being asked.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,6 +19,9 @@ pub enum Event {
     Notice { message: String },
     /// The setlist played, its current or next song, playing or stopped, or its options changed.
     Setlist(SetlistStatus),
+    /// The audio device and how it holds up: every second, and at once when xruns are counted
+    /// or the device goes away or comes back.
+    Health(HealthInfo),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

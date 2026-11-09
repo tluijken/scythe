@@ -3,7 +3,7 @@
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
 import { AccessDialog } from "./access.js";
 import { Arrange } from "./arrange.js";
-import { detector } from "./domains.js";
+import { countInLabel, detector, healthLine } from "./domains.js";
 import { FileDialog } from "./files.js";
 import { formatBpm, formatTime } from "./format.js";
 import { Inspector } from "./inspector.js";
@@ -49,7 +49,7 @@ function Transport({ store, snap }) {
       onClick=${() => store.fire({ cmd: "transport.loop", enabled: !t.loop_enabled })} />
     <div class="sep"></div>
     <div class="clock">
-      <span class="bars">${t.bar_beat ?? ""}</span>
+      <span class="bars">${countInLabel(t) ? `Count-in ${countInLabel(t)}` : t.bar_beat ?? ""}</span>
       <span class="time">${formatTime(t.position)}</span>
     </div>
     ${editingBpm
@@ -61,6 +61,12 @@ function Transport({ store, snap }) {
     <${IconButton} icon="metronome" title="Metronome" cls="raised wide-only" size=${16} active=${t.metronome}
       onClick=${() => store.fire({ cmd: "transport.metronome", enabled: !t.metronome })} />
   </div>`;
+}
+
+function HealthPill({ store }) {
+  const line = healthLine(useStoreValue(store, "health"));
+  if (!line) return null;
+  return html`<div class=${`health-pill wide-only ${line.warn ? "warn" : ""}`} title=${line.title}>${line.text}</div>`;
 }
 
 function TopBar({ store, snap, status, domains, onFile, onDialog }) {
@@ -80,6 +86,7 @@ function TopBar({ store, snap, status, domains, onFile, onDialog }) {
       ${domains.mix && html`<${IconButton} icon="headphones" title="Monitor mixes" onClick=${() => onDialog("mixes")} />`}
       ${domains.setlist && html`<${IconButton} icon="list" title="Setlists" onClick=${() => onDialog("setlists")} />`}
       <${IconButton} icon="qr" title="Access links for phones and the stage" onClick=${() => onDialog("access")} />
+      <${HealthPill} store=${store} />
       <${StatusPill} status=${status} />
     </div>
   </header>`;

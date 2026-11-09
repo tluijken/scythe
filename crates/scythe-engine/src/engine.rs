@@ -16,7 +16,7 @@ use crate::devices::DeviceRequest;
 use crate::fx::FxRegistry;
 use crate::media::MediaPool;
 use crate::midi_io::{ALL_PORTS, LiveMidi, MidiInputs, MidiSender, OutMessage};
-use crate::render::{LiveInput, MeterRegistry, MidiOutClock, RenderGraph, RenderScratch};
+use crate::render::{Clicks, CountInClicks, LiveInput, MeterRegistry, MidiOutClock, RenderGraph, RenderScratch};
 
 const NO_SEEK: i64 = i64::MIN;
 /// Upper bound on tracks the audio callback preallocates scratch buffers for.
@@ -41,6 +41,25 @@ pub struct Transport {
     marker_actions: AtomicBool,
     cues: ArcSwap<CueList>,
     sample_rate: u32,
+    /// Frames of count-in left before the playhead moves; the others describe its clicks.
+    count_in_left: AtomicI64,
+    count_in_beat: AtomicU64,
+    count_in_beats: AtomicU32,
+    count_in_bar: AtomicU32,
+    /// Recording is on, for the metronome's "run during recording".
+    recording: AtomicBool,
+    /// Buffer underruns and overruns the device reported.
+    xruns: AtomicU64,
+    /// Callbacks that took longer to render than the audio they produced.
+    overloads: AtomicU64,
+    /// Highest `load` since the last health report, as f32 bits.
+    load_peak: AtomicU32,
+    /// Output callbacks so far, so a stream that stopped calling back shows.
+    callbacks: AtomicU64,
+    /// The device reported it is gone.
+    lost: AtomicBool,
+    /// Frames the device asked for in its last callback.
+    block_frames: AtomicU32,
 }
 
 impl Transport {
@@ -58,6 +77,17 @@ impl Transport {
             marker_actions: AtomicBool::new(true),
             cues: ArcSwap::from_pointee(CueList::default()),
             sample_rate,
+            count_in_left: AtomicI64::new(0),
+            count_in_beat: AtomicU64::new(0),
+            count_in_beats: AtomicU32::new(0),
+            count_in_bar: AtomicU32::new(0),
+            recording: AtomicBool::new(false),
+            xruns: AtomicU64::new(0),
+            overloads: AtomicU64::new(0),
+            load_peak: AtomicU32::new(0),
+            callbacks: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
+            block_frames: AtomicU32::new(0),
         }
     }
 
@@ -78,6 +108,41 @@ impl Transport {
 
     pub fn load(&self) -> f32 {
         f32::from_bits(self.load.load(Ordering::Relaxed))
+    }
+
+    /// While counting in: how far before the start playback is, as negative seconds, and the
+    /// beat sounding (from 1) of how many.
+    pub fn count_in(&self) -> Option<(f64, u32, u32)> {
+        let left = self.count_in_left.load(Ordering::Relaxed);
+        if !self.is_playing() || left <= 0 {
+            return None;
+        }
+        let beat = f64::from_bits(self.count_in_beat.load(Ordering::Relaxed));
+        let beats = self.count_in_beats.load(Ordering::Relaxed);
+        let total = (beat * beats as f64).round() as i64;
+        let current = if beat > 0.0 { ((total - left) as f64 / beat).floor() as u32 + 1 } else { 1 };
+        Some((-(left as f64) / self.sample_rate as f64, current.min(beats), beats))
+    }
+
+    /// Takes up to `frames` of a running count-in: its clicks, how far into it the block starts
+    /// and how many frames it fills.
+    fn count_in_step(&self, frames: usize) -> Option<(CountInClicks, i64, usize)> {
+        if !self.is_playing() {
+            return None;
+        }
+        let left = self.count_in_left.load(Ordering::Acquire);
+        if left <= 0 {
+            return None;
+        }
+        let len = (left as usize).min(frames);
+        // Stop and play clear the count-in from the main thread meanwhile; theirs wins.
+        self.count_in_left.compare_exchange(left, left - len as i64, Ordering::AcqRel, Ordering::Relaxed).ok()?;
+        let clicks = CountInClicks {
+            beat: f64::from_bits(self.count_in_beat.load(Ordering::Relaxed)),
+            beats: self.count_in_beats.load(Ordering::Relaxed),
+            beats_per_bar: self.count_in_bar.load(Ordering::Relaxed),
+        };
+        Some((clicks, clicks.frames() - left, len))
     }
 
     /// Advances the playhead over one block, honouring seeks, the loop range and marker
@@ -304,18 +369,29 @@ impl Processor {
             b[..frames].fill(0.0);
         }
         let mut segments = [(0i64, 0usize, 0usize); 8];
+        let count_in = self.transport.count_in_step(frames);
+        let counted = count_in.map_or(0, |(_, _, len)| len);
         let hits = &mut self.hits;
-        let n = self.transport.advance(frames, &mut segments, &mut |h| {
+        let n = self.transport.advance(frames - counted, &mut segments, &mut |h| {
             let _ = hits.push(h);
         });
+        for segment in &mut segments[..n] {
+            segment.1 += counted;
+        }
         let graph = self.graph.load();
         let has_input = self.read_input(frames);
         let has_midi = self.read_midi();
-        if let Some(&(pos, _, _)) = segments[..n].first() {
+        if counted == 0
+            && let Some(&(pos, _, _)) = segments[..n].first()
+        {
             for &m in &self.live {
                 let _ = self.recorded.push((pos, m));
             }
         }
+        let recording = self.transport.recording.load(Ordering::Relaxed);
+        let metronome = &graph.metronome;
+        let beats = if recording { metronome.on_record } else { metronome.on_play };
+        let song_clicks = if beats { Clicks::Beats } else { Clicks::Off };
         let (l, r) = (&mut self.left[..frames], &mut self.right[..frames]);
         let channels = |from: usize, len: usize| -> [Option<&[f32]>; LiveInput::MAX_CHANNELS] {
             std::array::from_fn(|c| has_input.then(|| &self.in_bufs[c][from..from + len]))
@@ -342,28 +418,55 @@ impl Processor {
             let _ = q.push(OutMessage { due: heard, port: ALL_PORTS, midi: LiveMidi { bytes: [0; 3], len: 0 } });
         }
         self.was_playing = n > 0;
-        if n == 0 && (((has_input || has_midi) && graph.monitoring()) || awake) {
+        if let Some((clicks, at, len)) = count_in {
+            // Items wait for the count-in; live input and effects carry on so the band hears itself.
+            let pos = self.transport.position.load(Ordering::Relaxed);
+            let live = LiveInput {
+                channels: channels(0, len),
+                midi: &self.live,
+                play_items: false,
+                midi_out: clock(pos, 0),
+                clicks: Clicks::CountIn { clicks, at },
+            };
+            graph.render_with(pos, &mut l[..len], &mut r[..len], &mut self.scratch, &live);
+            graph.master_extra_at(0, len, &mut self.extra);
+            graph.device_out_at(0, len, l, r, &mut self.extra);
+        } else if n == 0 && (((has_input || has_midi) && graph.monitoring()) || awake) {
             let pos = self.transport.position.load(Ordering::Relaxed);
             let live = LiveInput {
                 channels: channels(0, frames),
                 midi: &self.live,
                 play_items: false,
                 midi_out: clock(pos, 0),
+                clicks: Clicks::Off,
             };
             graph.render_with(pos, l, r, &mut self.scratch, &live);
             graph.master_extra_at(0, frames, &mut self.extra);
             graph.device_out_at(0, frames, l, r, &mut self.extra);
         }
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
-            let midi: &[LiveMidi] = if i == 0 { &self.live } else { &[] };
-            let live = LiveInput { channels: channels(off, len), midi, play_items: true, midi_out: clock(pos, off) };
+            let midi: &[LiveMidi] = if i == 0 && counted == 0 { &self.live } else { &[] };
+            let live = LiveInput {
+                channels: channels(off, len),
+                midi,
+                play_items: true,
+                midi_out: clock(pos, off),
+                clicks: song_clicks,
+            };
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
             graph.master_extra_at(off, len, &mut self.extra);
             graph.device_out_at(off, len, l, r, &mut self.extra);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
-        self.transport.load.store(load.to_bits(), Ordering::Relaxed);
+        let t = &self.transport;
+        t.load.store(load.to_bits(), Ordering::Relaxed);
+        if load > f32::from_bits(t.load_peak.load(Ordering::Relaxed)) {
+            t.load_peak.store(load.to_bits(), Ordering::Relaxed);
+        }
+        if load > 1.0 {
+            t.overloads.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn write_interleaved<T: SizedSample + FromSample<f32>>(&mut self, out: &mut [T], channels: usize) {
@@ -398,7 +501,39 @@ fn interleave<T: SizedSample + FromSample<f32>>(
 
 enum Output {
     Device(DeviceOutput),
-    Null { stop: Arc<AtomicBool>, thread: Option<JoinHandle<()>> },
+    /// A thread that renders in real time and throws the audio away.
+    Null {
+        stop: Arc<AtomicBool>,
+        thread: Option<JoinHandle<()>>,
+    },
+}
+
+impl Output {
+    const NULL_BLOCK: usize = 512;
+
+    fn null(proc: Arc<Mutex<Processor>>, sample_rate: u32) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_t = stop.clone();
+        let period = Duration::from_secs_f64(Self::NULL_BLOCK as f64 / sample_rate as f64);
+        let thread = std::thread::Builder::new()
+            .name("scythe-null-audio".into())
+            .spawn(move || {
+                let mut next = Instant::now();
+                while !stop_t.load(Ordering::Relaxed) {
+                    if let Ok(mut proc) = proc.lock() {
+                        proc.process(Self::NULL_BLOCK);
+                    }
+                    next += period;
+                    if let Some(wait) = next.checked_duration_since(Instant::now()) {
+                        std::thread::sleep(wait);
+                    } else {
+                        next = Instant::now();
+                    }
+                }
+            })
+            .expect("spawn null audio thread");
+        Output::Null { stop, thread: Some(thread) }
+    }
 }
 
 impl Drop for Output {
@@ -465,6 +600,44 @@ pub struct DeviceInfo {
     pub fallback_reason: Option<String>,
 }
 
+/// How the audio is doing, for a status display and the control API's `health` event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Health {
+    pub device: String,
+    pub sample_rate: u32,
+    /// Frames per callback: what was asked for, else what the device delivers.
+    pub block_size: Option<u32>,
+    /// Seconds from rendering a block until it is heard, as the device reports it.
+    pub output_latency: f64,
+    /// DSP time over buffer time in the last callback; above 1 the output drops out.
+    pub load: f32,
+    /// Highest `load` since [`Engine::take_load_peak`] last ran.
+    pub load_peak: f32,
+    /// Underruns and overruns the device reported.
+    pub xruns: u64,
+    /// Callbacks whose rendering took longer than the audio they made.
+    pub overloads: u64,
+    /// No device is playing: the engine runs on a silent clock, for `reason`.
+    pub silent: bool,
+    pub reason: Option<String>,
+    /// Times the device came back after being lost or missing.
+    pub reconnects: u64,
+}
+
+/// A change in the audio device, from [`Engine::maintain`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceEvent {
+    /// The device went away; the engine plays on silently and keeps trying to reopen it.
+    Lost(String),
+    /// The device (named) is playing again.
+    Restored(String),
+}
+
+/// How often a missing device is looked for again.
+const RETRY_INTERVAL: Duration = Duration::from_secs(5);
+/// A device that has not called back for this long has stopped.
+const STALL_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// The playback engine: owns the output, the media pool and the current render graph.
 pub struct Engine {
     graph: Arc<ArcSwap<RenderGraph>>,
@@ -476,7 +649,6 @@ pub struct Engine {
     /// callback; keeping them alive here ensures the final drop never happens on that thread.
     retired: VecDeque<(Instant, Arc<RenderGraph>)>,
     info: DeviceInfo,
-    metronome: f32,
     input_tx: Sender<Option<InputFeed>>,
     /// Open while a track monitors its input.
     input_stream: Option<cpal::Stream>,
@@ -488,8 +660,16 @@ pub struct Engine {
     marker_hits: rtrb::Consumer<Hit>,
     /// The cue lists handed to the audio thread lately, to name the commands it reports.
     recent_cues: VecDeque<Arc<CueList>>,
+    proc: Arc<Mutex<Processor>>,
     output: Output,
     devices: DeviceRequest,
+    /// When to look for the device again, while it is missing.
+    retry_at: Option<Instant>,
+    reconnects: u64,
+    /// Device output channels the graph last asked for.
+    device_channels: usize,
+    /// The callback count last seen and when it changed.
+    callbacks_seen: (u64, Instant),
 }
 
 impl Engine {
@@ -499,96 +679,145 @@ impl Engine {
         Self::start_with(pool, &DeviceRequest::default())
     }
 
-    /// Opens the devices `request` names, falling back like [`Engine::start`].
+    /// Opens the devices `request` names, falling back like [`Engine::start`] and looking for
+    /// the device again every few seconds (see [`Engine::maintain`]).
     pub fn start_with(pool: Arc<MediaPool>, request: &DeviceRequest) -> Self {
         let rate = request.sample_rate.unwrap_or(48_000);
         let mut engine = match open_device(request) {
             Ok((device, config, format, name)) => {
-                match Self::with_device(pool.clone(), &device, config, format, name.clone()) {
-                    Ok(engine) => engine,
-                    Err(e) => Self::start_null(pool, rate, Some(format!("{name}: {e}"))),
+                let mut engine = Self::start_null(pool, config.sample_rate, None);
+                if let Err(e) = engine.attach(&device, config, format, name.clone()) {
+                    engine.info.fallback_reason = Some(format!("{name}: {e}"));
                 }
+                engine
             }
             Err(reason) => Self::start_null(pool, rate, Some(reason)),
         };
+        if engine.info.fallback_reason.is_some() {
+            engine.retry_at = Some(Instant::now() + RETRY_INTERVAL);
+        }
         engine.devices = request.clone();
         engine
     }
 
-    fn with_device(
-        pool: Arc<MediaPool>,
+    /// Replaces the silent clock with `device`.
+    fn attach(
+        &mut self,
         device: &cpal::Device,
-        config: StreamConfig,
+        mut config: StreamConfig,
         format: SampleFormat,
         name: String,
-    ) -> Result<Self, String> {
-        let sample_rate = config.sample_rate;
-        let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
-        let transport = Arc::new(Transport::new(sample_rate));
-        let (senders, feeds) = feeds();
-        let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
-        proc.set_outputs(config.channels as usize);
-        let proc = Arc::new(Mutex::new(proc));
-        let stream = open_stream(device, &config, format, proc.clone(), transport.clone())?;
-        let block_size = match config.buffer_size {
-            cpal::BufferSize::Fixed(n) => Some(n),
-            cpal::BufferSize::Default => None,
-        };
-        Ok(Self {
-            graph,
-            transport,
-            pool,
-            meters: MeterRegistry::default(),
-            fx: FxRegistry::new(sample_rate),
-            retired: VecDeque::new(),
-            metronome: 0.0,
-            input_tx: senders.input_tx,
-            input_stream: None,
-            midi_tx: senders.midi_tx,
-            midi_inputs: None,
-            recorded_midi: senders.recorded,
-            marker_hits: senders.hits,
-            recent_cues: VecDeque::new(),
-            midi_out_tx: senders.midi_out_tx,
-            midi_sender: None,
-            info: DeviceInfo { name, sample_rate, block_size, fallback_reason: None },
-            output: Output::Device(DeviceOutput {
-                stream: Some(stream),
-                device: device.clone(),
-                config,
-                format,
-                default_channels: config.channels,
-                supported: None,
-                proc,
-            }),
-            devices: DeviceRequest::default(),
-        })
+    ) -> Result<(), String> {
+        config.sample_rate = self.info.sample_rate;
+        self.output = Output::Device(DeviceOutput {
+            stream: None,
+            device: device.clone(),
+            config,
+            format,
+            default_channels: config.channels,
+            supported: None,
+            proc: self.proc.clone(),
+        });
+        if let Ok(mut proc) = self.proc.lock() {
+            proc.set_outputs(config.channels as usize);
+        }
+        match open_stream(device, &config, format, self.proc.clone(), self.transport.clone()) {
+            Ok(stream) => {
+                if let Output::Device(out) = &mut self.output {
+                    out.stream = Some(stream);
+                    out.match_master(self.device_channels, &self.transport);
+                }
+                let block_size = match config.buffer_size {
+                    cpal::BufferSize::Fixed(n) => Some(n),
+                    cpal::BufferSize::Default => None,
+                };
+                self.info = DeviceInfo { name, sample_rate: self.info.sample_rate, block_size, fallback_reason: None };
+                self.callbacks_seen = (self.transport.callbacks.load(Ordering::Relaxed), Instant::now());
+                self.transport.lost.store(false, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(e) => {
+                self.go_silent();
+                Err(e)
+            }
+        }
     }
 
+    fn go_silent(&mut self) {
+        self.output = Output::null(self.proc.clone(), self.info.sample_rate);
+        self.info.block_size = Some(Output::NULL_BLOCK as u32);
+    }
+
+    /// Watches the device: when it disappears (unplugged, or it stopped calling back) the
+    /// engine carries on with a silent clock, so the transport and the control API keep going,
+    /// and the device is looked for again every few seconds. Call it regularly.
+    pub fn maintain(&mut self) -> Option<DeviceEvent> {
+        let now = Instant::now();
+        if let Output::Device(_) = &self.output {
+            let calls = self.transport.callbacks.load(Ordering::Relaxed);
+            if calls != self.callbacks_seen.0 {
+                self.callbacks_seen = (calls, now);
+            }
+            let stalled = now.duration_since(self.callbacks_seen.1) > STALL_TIMEOUT;
+            if !self.transport.lost.swap(false, Ordering::Relaxed) && !stalled {
+                return None;
+            }
+            let what = if stalled { "stopped responding" } else { "was disconnected" };
+            let reason = format!("{} {what}", self.info.name);
+            self.go_silent();
+            self.input_stream = None;
+            let _ = self.input_tx.send(None);
+            self.info.fallback_reason = Some(reason.clone());
+            self.retry_at = Some(now + RETRY_INTERVAL);
+            return Some(DeviceEvent::Lost(reason));
+        }
+        let due = self.retry_at.is_some_and(|at| now >= at);
+        if !due {
+            return None;
+        }
+        self.retry_at = Some(now + RETRY_INTERVAL);
+        let (device, config, format, name) = open_device(&self.devices).ok()?;
+        self.attach(&device, config, format, name.clone()).ok()?;
+        self.retry_at = None;
+        self.reconnects += 1;
+        // The input went with the device; the next sync opens it again.
+        self.input_stream = None;
+        let _ = self.input_tx.send(None);
+        Some(DeviceEvent::Restored(name))
+    }
+
+    /// The device and how the audio is doing.
+    pub fn health(&self) -> Health {
+        let t = &self.transport;
+        let delivered = t.block_frames.load(Ordering::Relaxed);
+        Health {
+            device: self.info.name.clone(),
+            sample_rate: self.info.sample_rate,
+            block_size: self.info.block_size.or((delivered > 0).then_some(delivered)),
+            output_latency: t.output_latency(),
+            load: t.load(),
+            load_peak: f32::from_bits(t.load_peak.load(Ordering::Relaxed)),
+            xruns: t.xruns.load(Ordering::Relaxed),
+            overloads: t.overloads.load(Ordering::Relaxed),
+            silent: matches!(self.output, Output::Null { .. }),
+            reason: self.info.fallback_reason.clone(),
+            reconnects: self.reconnects,
+        }
+    }
+
+    /// The highest load since the last call, starting a new window.
+    pub fn take_load_peak(&self) -> f32 {
+        f32::from_bits(self.transport.load_peak.swap(0, Ordering::Relaxed))
+    }
+
+    /// An engine on a silent real-time clock: no output device. `reason` says why, when it
+    /// should have had one.
     pub fn start_null(pool: Arc<MediaPool>, sample_rate: u32, reason: Option<String>) -> Self {
-        const BLOCK: usize = 512;
         let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
         let transport = Arc::new(Transport::new(sample_rate));
         let (senders, feeds) = feeds();
-        let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_t = stop.clone();
-        let period = Duration::from_secs_f64(BLOCK as f64 / sample_rate as f64);
-        let thread = std::thread::Builder::new()
-            .name("scythe-null-audio".into())
-            .spawn(move || {
-                let mut next = Instant::now();
-                while !stop_t.load(Ordering::Relaxed) {
-                    proc.process(BLOCK);
-                    next += period;
-                    if let Some(wait) = next.checked_duration_since(Instant::now()) {
-                        std::thread::sleep(wait);
-                    } else {
-                        next = Instant::now();
-                    }
-                }
-            })
-            .expect("spawn null audio thread");
+        let proc = Arc::new(Mutex::new(Processor::new(graph.clone(), transport.clone(), feeds)));
+        let output = Output::null(proc.clone(), sample_rate);
         Self {
             graph,
             transport,
@@ -596,7 +825,6 @@ impl Engine {
             meters: MeterRegistry::default(),
             fx: FxRegistry::new(sample_rate),
             retired: VecDeque::new(),
-            metronome: 0.0,
             input_tx: senders.input_tx,
             input_stream: None,
             midi_tx: senders.midi_tx,
@@ -609,11 +837,16 @@ impl Engine {
             info: DeviceInfo {
                 name: "No audio device".into(),
                 sample_rate,
-                block_size: Some(BLOCK as u32),
+                block_size: Some(Output::NULL_BLOCK as u32),
                 fallback_reason: reason,
             },
-            output: Output::Null { stop, thread: Some(thread) },
+            proc,
+            output,
             devices: DeviceRequest::default(),
+            retry_at: None,
+            reconnects: 0,
+            device_channels: 2,
+            callbacks_seen: (0, Instant::now()),
         }
     }
 
@@ -663,8 +896,8 @@ impl Engine {
         self.meters.retain(project);
         self.fx.retain(project);
         self.fx.project_dir = project.path.as_deref().and_then(std::path::Path::parent).map(Into::into);
-        let mut graph = RenderGraph::build(project, &self.pool, &mut self.meters, &mut self.fx, self.info.sample_rate);
-        graph.metronome = self.metronome;
+        let graph = RenderGraph::build(project, &self.pool, &mut self.meters, &mut self.fx, self.info.sample_rate);
+        self.device_channels = graph.device_channels;
         if let Output::Device(out) = &mut self.output {
             out.match_master(graph.device_channels, &self.transport);
         }
@@ -809,17 +1042,31 @@ impl Engine {
         out
     }
 
-    /// Metronome gain while playing; takes effect on the next `sync`.
-    pub fn set_metronome(&mut self, gain: f32) {
-        self.metronome = gain;
+    /// Tells the metronome whether a recording runs ("run metronome during recording").
+    pub fn set_recording(&self, on: bool) {
+        self.transport.recording.store(on, Ordering::Relaxed);
     }
 
     pub fn play(&self) {
+        self.transport.count_in_left.store(0, Ordering::Relaxed);
         self.transport.playing.store(true, Ordering::Relaxed);
+    }
+
+    /// Plays after `count_in`: the playhead waits where it is while the count-in clicks.
+    pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) {
+        let t = &self.transport;
+        let beat = count_in.beat * self.info.sample_rate as f64;
+        t.count_in_beat.store(beat.to_bits(), Ordering::Relaxed);
+        t.count_in_beats.store(count_in.beats, Ordering::Relaxed);
+        t.count_in_bar.store(count_in.beats_per_bar, Ordering::Relaxed);
+        let frames = CountInClicks { beat, beats: count_in.beats, beats_per_bar: count_in.beats_per_bar }.frames();
+        t.count_in_left.store(frames, Ordering::Release);
+        t.playing.store(true, Ordering::Relaxed);
     }
 
     pub fn stop(&self) {
         self.transport.playing.store(false, Ordering::Relaxed);
+        self.transport.count_in_left.store(0, Ordering::Relaxed);
         self.wake_effects();
     }
 
@@ -914,6 +1161,7 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
     transport: Arc<Transport>,
 ) -> Result<cpal::Stream, String> {
     let channels = config.channels as usize;
+    let errors = transport.clone();
     device
         .build_output_stream::<T, _, _>(
             *config,
@@ -921,13 +1169,23 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
                 let t = info.timestamp();
                 let latency = t.playback.duration_since(t.callback);
                 transport.output_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
+                transport.callbacks.fetch_add(1, Ordering::Relaxed);
+                transport.block_frames.store((data.len() / channels.max(1)) as u32, Ordering::Relaxed);
                 // Only contended while the main thread swaps the stream.
                 match proc.try_lock() {
                     Ok(mut proc) => proc.write_interleaved(data, channels),
                     Err(_) => data.fill(T::EQUILIBRIUM),
                 }
             },
-            |err| eprintln!("audio stream error: {err}"),
+            move |err| match err.kind() {
+                cpal::ErrorKind::Xrun => {
+                    errors.xruns.fetch_add(1, Ordering::Relaxed);
+                }
+                cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
+                    errors.lost.store(true, Ordering::Relaxed);
+                }
+                _ => eprintln!("audio stream error: {err}"),
+            },
             None,
         )
         .map_err(|e| e.to_string())
@@ -1162,6 +1420,140 @@ mod tests {
         let frame = &out[6 * 500..6 * 501];
         let expected = [0.1, 0.2, 0.3, 0.4, 0.0, 0.0];
         assert!(frame.iter().zip(expected).all(|(a, b)| (a - b).abs() < 1e-6), "{frame:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A processor at 8 kHz playing `p`, whose first track holds one item of ones from `item_at`.
+    fn ones_project(item_at: f64) -> (Project, MediaPool, std::path::PathBuf) {
+        use scythe_core::{Item, Take};
+        let dir = std::env::temp_dir().join(format!("scythe-engine-ci-{}-{item_at}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("ones.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for _ in 0..80_000 {
+            w.write_sample(1.0f32).unwrap();
+        }
+        w.finalize().unwrap();
+        let mut p = Project { tempo: scythe_core::TempoMap::constant(120.0, 4, 4), ..Project::default() };
+        let t = p.add_track("t");
+        let mut item = Item::new(item_at, 10.0, Take::from_file(src.clone()));
+        (item.fade_in, item.fade_out) = (scythe_core::Fade::default(), scythe_core::Fade::default());
+        p.track_mut(t).unwrap().items.push(item);
+        let pool = MediaPool::default();
+        pool.load(&src, 8000).unwrap();
+        (p, pool, dir)
+    }
+
+    fn processor(p: &Project, pool: &MediaPool, transport: &Arc<Transport>) -> Processor {
+        let graph = RenderGraph::build(p, pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let (_senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport.clone(), feeds);
+        proc.set_outputs(2);
+        proc
+    }
+
+    /// Renders `frames` in uneven blocks so block edges fall everywhere; the left channel.
+    fn run(proc: &mut Processor, frames: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(frames);
+        let mut block = 97;
+        while out.len() < frames {
+            let n = block.min(frames - out.len());
+            let mut buf = vec![0.0f32; n * 2];
+            proc.write_interleaved(&mut buf, 2);
+            out.extend(buf.chunks(2).map(|f| f[0]));
+            block = if block > 1500 { 97 } else { block * 2 + 1 };
+        }
+        out
+    }
+
+    #[test]
+    fn count_in_clicks_on_the_beat_and_starts_on_the_frame() {
+        let (p, pool, dir) = ones_project(2.0);
+        let transport = Arc::new(Transport::new(8000));
+        let mut proc = processor(&p, &pool, &transport);
+        // One 4/4 bar at 120 bpm: four beats of 4000 frames, playback from 2 s (frame 16000).
+        transport.position.store(16_000, Ordering::Relaxed);
+        let beat = 4000.0;
+        transport.count_in_beat.store(f64::to_bits(beat), Ordering::Relaxed);
+        transport.count_in_beats.store(4, Ordering::Relaxed);
+        transport.count_in_bar.store(4, Ordering::Relaxed);
+        transport.count_in_left.store(16_000, Ordering::Release);
+        transport.playing.store(true, Ordering::Relaxed);
+        assert_eq!(transport.count_in(), Some((-2.0, 1, 4)));
+
+        let out = run(&mut proc, 20_000);
+        let click = |at: usize| out[at..at + 200].iter().any(|&s| s != 0.0);
+        for k in 0..4 {
+            let at = k * 4000;
+            assert!(out[at] == 0.0 && click(at), "beat {k} clicks from frame {at}");
+            assert!(at == 0 || out[at - 1] == 0.0, "nothing sounds just before beat {k}");
+            assert!(out[at + 400..at + 4000].iter().all(|&s| s == 0.0), "only the click sounds in beat {k}");
+        }
+        let accent = out[..240].iter().fold(0f32, |m, s| m.max(s.abs()));
+        let second = out[4000..4240].iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(accent > second, "the bar's first beat is accented");
+        assert_eq!(out[15_999], 0.0);
+        assert!(out[16_000..].iter().all(|&s| (s - 1.0).abs() < 1e-6), "the song starts on the count-in's last frame");
+        assert_eq!(transport.position.load(Ordering::Relaxed), 16_000 + 4000);
+        assert_eq!(transport.count_in(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stopping_ends_the_count_in() {
+        let (p, pool, dir) = ones_project(0.0);
+        let mut e = Engine::start_offline(Arc::new(pool), 8000);
+        e.sync(&p);
+        let count_in = scythe_core::metronome::CountIn { beats: 8, beat: 0.5, beats_per_bar: 4 };
+        e.play_counting_in(&count_in);
+        let (at, beat, beats) = e.transport().count_in().unwrap();
+        assert!((-4.0..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");
+        e.stop();
+        assert_eq!(e.transport().count_in(), None);
+        e.play();
+        assert_eq!(e.transport().count_in(), None, "plain play does not resume a count-in");
+        e.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_metronome_follows_its_outputs_and_mix_clicks() {
+        use scythe_core::monitor::{CueBusOptions, EXT_CLICK, MonitorOutput};
+        let (mut p, pool, dir) = ones_project(100.0);
+        p.metronome.set(scythe_core::metronome::ENABLED, true);
+        p.metronome.outputs = vec![2];
+        let ids: Vec<_> = p.tracks.iter().map(|t| t.id).collect();
+        let opts = CueBusOptions { output: Some(MonitorOutput::Stereo(4)), ..CueBusOptions::default() };
+        let mix = p.create_monitor_mix("Drums", &ids, &[], &opts);
+        p.track_mut(mix).unwrap().fx.clear();
+        p.track_mut(mix).unwrap().set_ext(EXT_CLICK, Some("2"));
+        let transport = Arc::new(Transport::new(8000));
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        assert_eq!(graph.device_channels, 6);
+        let (_senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport.clone(), feeds);
+        proc.set_outputs(6);
+        transport.playing.store(true, Ordering::Relaxed);
+        let mut out = vec![0.0f32; 6 * 400];
+        proc.write_interleaved(&mut out, 6);
+        let peak = |c: usize| out.chunks(6).fold(0f32, |m, f| m.max(f[c].abs()));
+        assert_eq!((peak(0), peak(1)), (0.0, 0.0), "the audience hears no click");
+        assert!(peak(2) > 0.0 && peak(3) > 0.0, "the metronome output does");
+        assert!(peak(4) > 0.0 && (peak(4) / peak(2) - 2.0).abs() < 1e-3, "the mix has it at its own level");
+
+        // Off, the metronome leaves the outputs and the mix alone.
+        p.metronome.set(scythe_core::metronome::ENABLED, false);
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        proc.graph.store(Arc::new(graph));
+        transport.seek.store(0, Ordering::Relaxed);
+        proc.write_interleaved(&mut out, 6);
+        assert!(out.iter().all(|&s| s == 0.0));
         std::fs::remove_dir_all(&dir).ok();
     }
 

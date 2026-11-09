@@ -9,10 +9,11 @@ export class Store {
     this.client = client;
     this.snapshot = null;
     this.transport = null;
+    this.health = null;
     this.status = client.status;
     this.meters = { master: [0, 0], tracks: new Map(), mixes: new Map() };
     this.access = client.access;
-    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set() };
+    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set(), health: new Set() };
     this.fetching = false;
     this.wanted = 0;
     client.on("status", (s) => this.set("status", s));
@@ -21,6 +22,7 @@ export class Store {
     // server may have restarted.
     client.on("snapshot", (snap) => this.applySnapshot(snap, true));
     client.on("event:transport", (e) => this.set("transport", e));
+    client.on("event:health", (e) => this.set("health", e));
     client.on("event:meters", (e) => {
       this.meters.master = e.master || [0, 0];
       const tracks = new Map();

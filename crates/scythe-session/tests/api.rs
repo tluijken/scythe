@@ -670,6 +670,7 @@ mod scopes {
             json!({"cmd": "mix.mute", "mix": own, "source": "Vox", "muted": true}),
             json!({"cmd": "mix.more_me", "mix": own, "db": 6.0}),
             json!({"cmd": "mix.volume", "mix": own, "db": -2.0}),
+            json!({"cmd": "mix.click", "mix": own, "db": -6.0}),
             json!({"cmd": "transport.state"}),
             json!({"cmd": "setlist.status"}),
         ] {
@@ -693,6 +694,9 @@ mod scopes {
             json!({"cmd": "project.save", "path": "/tmp/x.RPP"}),
             json!({"cmd": "project.open", "path": "/etc/passwd"}),
             json!({"cmd": "item.list"}),
+            json!({"cmd": "mix.click", "mix": singer, "db": 0.0}),
+            json!({"cmd": "transport.health"}),
+            json!({"cmd": "transport.count_in", "playback": true}),
             json!({"cmd": "tempo.list"}),
         ] {
             forbidden(&mut s, &drummer, refused);
@@ -720,6 +724,8 @@ mod scopes {
             json!({"cmd": "setlist.next"}),
             json!({"cmd": "setlist.previous"}),
             json!({"cmd": "setlist.auto_advance", "enabled": true}),
+            json!({"cmd": "setlist.count_in", "enabled": true}),
+            json!({"cmd": "transport.health"}),
             json!({"cmd": "setlist.play"}),
             json!({"cmd": "setlist.stop"}),
             json!({"cmd": "transport.play"}),
@@ -745,6 +751,10 @@ mod scopes {
             json!({"cmd": "project.undo"}),
             json!({"cmd": "project.new"}),
             json!({"cmd": "item.peaks", "item": 1, "width": 10}),
+            json!({"cmd": "transport.count_in", "playback": true}),
+            json!({"cmd": "transport.metronome", "enabled": true}),
+            json!({"cmd": "transport.metronome_output", "output": 2}),
+            json!({"cmd": "mix.click", "mix": "MON Drummer", "db": 0.0}),
         ] {
             forbidden(&mut s, &Scope::Stage, refused);
         }
@@ -782,6 +792,9 @@ mod scopes {
         let setlist = events.iter().find(|e| matches!(e, Event::Setlist(_))).unwrap();
         assert!(Scope::Stage.event(setlist).is_some());
         assert!(drummer.event(setlist).is_none());
+        let health = events.iter().find(|e| matches!(e, Event::Health(_))).unwrap();
+        assert!(Scope::Stage.event(health).is_some(), "the stage sees when the audio is in trouble");
+        assert!(drummer.event(health).is_none());
         assert!(Scope::Admin.event(&Event::Notice { message: "x".into() }).is_some());
     }
 
@@ -813,4 +826,94 @@ fn tempo_markers_survive_saving() {
     ok(&mut s, json!({"cmd": "project.open", "path": path}));
     assert_eq!(ok(&mut s, json!({"cmd": "tempo.list"})), before);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn count_in_and_metronome_settings() {
+    let mut s = session();
+    let st = ok(&mut s, json!({"cmd": "transport.count_in", "playback": true, "measures": 1}));
+    assert_eq!(st["count_in"]["playback"], true);
+    assert_eq!(st["count_in"]["record"], false);
+    assert_eq!(st["count_in"]["measures"], 1.0);
+    assert_eq!(s.project.metronome.flags, 6 | 8, "REAPER's count-in before playback bit");
+    let bad = execute_json(&mut s, json!({"cmd": "transport.count_in", "measures": 0}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+
+    let st = ok(&mut s, json!({"cmd": "transport.metronome", "db": -6.0}));
+    assert_eq!(st["metronome"], false, "the level alone leaves it off");
+    assert!((st["metronome_volume"].as_f64().unwrap() - 0.501).abs() < 1e-3);
+    let st = ok(&mut s, json!({"cmd": "transport.metronome_output", "output": 4, "mono": true}));
+    assert_eq!(st["metronome_outputs"], json!([{"output": 4, "mono": true}]));
+    assert_eq!(s.project.metronome.outputs, [1028]);
+    let st = ok(&mut s, json!({"cmd": "transport.metronome_output", "output": null}));
+    assert_eq!(st["metronome_outputs"], json!([]));
+
+    // At 120 bpm one 4/4 bar is two seconds; the playhead waits at the cursor meanwhile.
+    ok(&mut s, json!({"cmd": "transport.seek", "position": 3.0}));
+    let st = ok(&mut s, json!({"cmd": "transport.play"}));
+    assert_eq!(st["playing"], true);
+    let position = st["count_in"]["position"].as_f64().unwrap();
+    assert!((-2.0..=-1.5).contains(&position), "{position}");
+    assert_eq!(st["count_in"]["beats"], 4);
+    assert_eq!(st["position"], 3.0);
+    std::thread::sleep(Duration::from_millis(150));
+    let st = ok(&mut s, json!({"cmd": "transport.state"}));
+    assert!(st["count_in"]["position"].as_f64().unwrap() > position);
+    assert_eq!(st["position"], 3.0);
+    let st = ok(&mut s, json!({"cmd": "transport.stop"}));
+    assert_eq!(st["count_in"]["position"], Value::Null);
+    assert!(s.dirty, "the settings are saved with the project");
+}
+
+#[test]
+fn setlist_songs_count_in() {
+    let mut s = session();
+    live_set(&mut s);
+    ok(&mut s, json!({"cmd": "setlist.create", "name": "Gig", "songs": ["Ballad"]}));
+    let list = ok(&mut s, json!({"cmd": "setlist.count_in", "enabled": true}));
+    assert_eq!(list["count_in"], true);
+    assert_eq!(ok(&mut s, json!({"cmd": "setlist.status"}))["count_in"], true);
+    let st = ok(&mut s, json!({"cmd": "setlist.play"}));
+    assert_eq!(st["playing"], true);
+    let state = ok(&mut s, json!({"cmd": "transport.state"}));
+    assert!(state["count_in"]["position"].as_f64().unwrap() < 0.0, "the drummer does not count");
+    assert_eq!(state["position"], 0.3);
+    ok(&mut s, json!({"cmd": "setlist.stop"}));
+    let list = ok(&mut s, json!({"cmd": "setlist.count_in"}));
+    assert_eq!(list["count_in"], false);
+    ok(&mut s, json!({"cmd": "setlist.play"}));
+    assert_eq!(ok(&mut s, json!({"cmd": "transport.state"}))["count_in"]["position"], Value::Null);
+}
+
+#[test]
+fn a_monitor_mix_takes_the_click_at_its_own_level() {
+    let mut s = session();
+    add_track(&mut s, "Kick");
+    let mix = ok(&mut s, json!({"cmd": "mix.create", "musician": "Drummer"}));
+    assert_eq!(mix["click"], Value::Null);
+    let mix = ok(&mut s, json!({"cmd": "mix.click", "mix": "MON Drummer", "db": -6.0}));
+    assert!((mix["click"].as_f64().unwrap() - 0.501).abs() < 1e-3);
+    let mix = ok(&mut s, json!({"cmd": "mix.click", "mix": "MON Drummer", "volume": 0}));
+    assert_eq!(mix["click"], Value::Null);
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    assert!(ok(&mut s, json!({"cmd": "mix.get", "mix": "MON Drummer"}))["click"].is_number());
+}
+
+#[test]
+fn health_reports_the_device() {
+    let mut s = session();
+    let h = ok(&mut s, json!({"cmd": "transport.health"}));
+    assert_eq!(h["status"], "silent");
+    assert_eq!(h["sample_rate"], 48_000);
+    assert_eq!(h["block_size"], 512);
+    assert!((h["buffer_ms"].as_f64().unwrap() - 10.67).abs() < 0.01);
+    assert_eq!(h["xruns"], 0);
+
+    let events: Arc<Mutex<Vec<Event>>> = Arc::default();
+    let seen = events.clone();
+    let (_handle, mut pump) =
+        control::channel(Arc::new(|| {}), Arc::new(move |e: &Event| seen.lock().unwrap().push(e.clone())));
+    pump.pump(&mut s);
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::Health(h) if h.status == "silent" && h.cpu >= 0.0)));
 }

@@ -184,10 +184,13 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         label_pill(ui, Rect::from_min_size(pos2(x, cy - 14.0), vec2(sig_w, 28.0)), &sig, RAISED, TEXT);
         x += sig_w + 4.0;
         let metro = Rect::from_min_size(pos2(x, cy - 16.0), vec2(32.0, 32.0));
-        let fg = if app.metronome { ACCENT } else { TEXT_DIM };
-        if icon_button(ui, metro, Icon::Metronome, RAISED, fg, 16.0, "Metronome").clicked() {
+        let fg = if app.metronome() { ACCENT } else { TEXT_DIM };
+        let tip = "Metronome (right-click for count-in, level and output)";
+        let resp = icon_button(ui, metro, Icon::Metronome, RAISED, fg, 16.0, tip);
+        if resp.clicked() {
             app.toggle_metronome();
         }
+        resp.context_menu(|ui| metronome_menu(app, ui));
     }
 
     // Status + action search, right aligned.
@@ -199,7 +202,11 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         format!("{:.1}k", info.sample_rate as f32 / 1000.0)
     };
     let block = info.block_size.map_or("auto".to_owned(), |b| b.to_string());
-    let status = format!("{rate} · {block} · CPU {:.0}%", load * 100.0);
+    let xruns = app.engine.health().xruns;
+    let status = match xruns {
+        0 => format!("{rate} · {block} · CPU {:.0}%", load * 100.0),
+        n => format!("{rate} · {block} · CPU {:.0}% · {n} xruns", load * 100.0),
+    };
     let ok = info.fallback_reason.is_none();
     let search_w = SEARCH_W;
     let search = Rect::from_min_size(pos2(rect.right() - search_w, cy - 20.0), vec2(search_w, 40.0));
@@ -361,4 +368,54 @@ fn toast(app: &mut ScytheApp, ui: &mut Ui, screen: Rect) {
     ui.painter().rect_filled(r, CornerRadius::same(255), RAISED_HI);
     ui.painter().text(r.center(), Align2::CENTER_CENTER, msg, theme::regular(13.0), TEXT);
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+}
+
+/// The metronome's settings, as in REAPER's metronome and pre-roll dialog: on or off, count-in,
+/// level, and the device output it plays to (a drummer's in-ears instead of the PA).
+fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
+    use scythe_core::metronome::{COUNT_IN_PLAY, COUNT_IN_RECORD};
+    use scythe_core::units::{db_to_gain, gain_to_db};
+    let m = app.project.metronome.clone();
+    let mut on = m.enabled();
+    if ui.checkbox(&mut on, "Metronome").changed() {
+        app.set_metronome(on);
+    }
+    let mut play = m.has(COUNT_IN_PLAY);
+    if ui.checkbox(&mut play, "Count-in before playback").changed() {
+        app.change_metronome(|m| m.set(COUNT_IN_PLAY, play));
+    }
+    let mut record = m.has(COUNT_IN_RECORD);
+    if ui.checkbox(&mut record, "Count-in before recording").changed() {
+        app.change_metronome(|m| m.set(COUNT_IN_RECORD, record));
+    }
+    ui.horizontal(|ui| {
+        ui.label("Count-in length");
+        let mut measures = m.count_in_measures;
+        let field = egui::DragValue::new(&mut measures).range(0.25..=16.0).speed(0.05).suffix(" bars");
+        if ui.add(field).changed() {
+            app.change_metronome(|m| m.count_in_measures = measures);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Level");
+        let mut db = gain_to_db(m.volume).max(-60.0);
+        if ui.add(egui::Slider::new(&mut db, -60.0..=12.0).suffix(" dB")).changed() {
+            app.change_metronome(|m| m.volume = if db <= -60.0 { 0.0 } else { db_to_gain(db) });
+        }
+    });
+    ui.separator();
+    let current = m.device_outputs().first().copied();
+    if ui.radio(current.is_none(), "Play with the master").clicked() {
+        app.change_metronome(|m| m.outputs.clear());
+        ui.close();
+    }
+    ui.menu_button("Play to device output", |ui| {
+        for first in (0..16).step_by(2) {
+            let label = format!("Out {}/{}", first + 1, first + 2);
+            if ui.radio(current == Some((first, false)), label).clicked() {
+                app.change_metronome(|m| m.outputs = vec![first as i64]);
+                ui.close();
+            }
+        }
+    });
 }

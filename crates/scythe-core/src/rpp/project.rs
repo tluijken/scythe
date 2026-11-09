@@ -60,6 +60,28 @@ pub fn autosave_path(path: &Path, unix_seconds: u64) -> PathBuf {
     path.parent().unwrap_or(Path::new(".")).join("Backups").join(name)
 }
 
+/// Deletes all but the newest `keep` backups [`autosave_path`] made for `path`.
+pub fn prune_backups(path: &Path, keep: usize) {
+    let Some(dir) = autosave_path(path, 0).parent().map(Path::to_path_buf) else { return };
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "project".into());
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    let mut backups: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            name.strip_prefix(&stem)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|rest| rest.len() == "YYYY-MM-DD_HHMMSS.rpp-bak".len() && rest.ends_with(".rpp-bak"))
+        })
+        .collect();
+    // The timestamp in the name sorts oldest first.
+    backups.sort();
+    let excess = backups.len().saturating_sub(keep);
+    for old in &backups[..excess] {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
 pub fn write_project(project: &Project, path: &Path) -> Result<(), ProjectIoError> {
     let text = project_to_rpp(project);
     let tmp = path.with_extension("rpp.tmp");
@@ -184,6 +206,7 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         p.pan_law.taper = PanTaper::from_flags(num(&t, 1, 3.0) as i64);
                         p.extra.push(node.clone());
                     }
+                    "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
                     _ => p.extra.push(node.clone()),
                 }
             }
@@ -195,6 +218,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
             }
             Node::Chunk(c) if c.name() == "TEMPOENVEX" => {
                 p.tempo.points = parse_tempo_points(c);
+                p.extra.push(node.clone());
+            }
+            Node::Chunk(c) if c.name() == "METRONOME" => {
+                parse_metronome(c, &mut p.metronome);
                 p.extra.push(node.clone());
             }
             Node::Chunk(c) if c.name() == "MASTERFXLIST" => {
@@ -220,6 +247,45 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
     p.markers.sort_by(|a, b| a.position.total_cmp(&b.position).then(a.index.cmp(&b.index)));
     p.time_selection = selection;
     Ok(p)
+}
+
+/// `<METRONOME <flags> <count-in measures>` with `VOL <primary> <secondary>` inside.
+fn parse_metronome(c: &Chunk, m: &mut crate::metronome::Metronome) {
+    let args = c.args();
+    m.flags = args.first().and_then(|v| v.parse().ok()).unwrap_or(m.flags);
+    m.count_in_measures = args.get(1).and_then(|v| v.parse().ok()).unwrap_or(m.count_in_measures);
+    if let Some(vol) = c.find_line("VOL").and_then(|v| v.first()?.parse().ok()) {
+        m.volume = vol;
+    }
+}
+
+fn write_metronome(root: &mut Chunk, original: Option<&Chunk>, m: &crate::metronome::Metronome) {
+    let mut chunk = original.cloned().unwrap_or_else(|| Chunk::new("METRONOME", &[]));
+    let mut args = chunk.args();
+    args.resize(args.len().max(2), String::new());
+    args[0] = m.flags.to_string();
+    args[1] = fmt_num(m.count_in_measures);
+    chunk.header = super::join_tokens(std::iter::once("METRONOME".to_owned()).chain(args));
+    let vol = chunk.children.iter_mut().find_map(|n| match n {
+        Node::Line(l) if line_key(l) == "VOL" => Some(l),
+        _ => None,
+    });
+    match vol {
+        Some(line) => {
+            let mut toks = tokenize(line);
+            toks.resize(toks.len().max(2), String::new());
+            toks[1] = fmt_num(m.volume);
+            *line = super::join_tokens(toks);
+        }
+        None if m.volume != crate::metronome::Metronome::default().volume => {
+            chunk.line(["VOL".to_owned(), fmt_num(m.volume), fmt_num(m.volume / 2.0)]);
+        }
+        None => {}
+    }
+    root.push_chunk(chunk);
+    for o in &m.outputs {
+        root.line(["METRONOMEOUT".to_owned(), o.to_string()]);
+    }
 }
 
 /// `PT <time> <bpm> <shape> [<time signature: num | denom << 16>] …`; shape 0 ramps linearly.
@@ -843,6 +909,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     root.line(line_from(l, "MASTERMUTESOLO", &["MASTERMUTESOLO"], &[(1, bit(m.muted))]));
     let (mut wrote_law, mut wrote_flags, mut wrote_tempo, mut wrote_nch) = (false, false, false, false);
     let mut wrote_hw = false;
+    let mut wrote_metronome = false;
     for node in &p.extra {
         match node {
             Node::Line(l) if line_key(l) == "MASTERHWOUT" => {
@@ -873,11 +940,20 @@ pub fn project_to_rpp(p: &Project) -> String {
                 root.push_chunk(write_tempo_env(Some(c), &p.tempo.points));
                 wrote_tempo = true;
             }
+            Node::Chunk(c) if c.name() == "METRONOME" => {
+                if !wrote_metronome {
+                    write_metronome(&mut root, Some(c), &p.metronome);
+                }
+                wrote_metronome = true;
+            }
             _ => root.children.push(node.clone()),
         }
     }
     if !wrote_hw && !p.master_default_output() {
         write_master_hw_outs(&mut root, &m.hw_outs);
+    }
+    if !wrote_metronome && p.metronome != crate::metronome::Metronome::default() {
+        write_metronome(&mut root, None, &p.metronome);
     }
     if !wrote_nch && m.channels != 2 {
         root.line(["MASTER_NCH".to_owned(), m.channels.to_string(), "2".to_owned()]);
@@ -1438,6 +1514,24 @@ mod tests {
     }
 
     #[test]
+    fn old_backups_are_pruned() {
+        let dir = std::env::temp_dir().join(format!("scythe-prune-{}", std::process::id()));
+        let song = dir.join("Song.RPP");
+        std::fs::create_dir_all(dir.join("Backups")).unwrap();
+        let other = dir.join("Backups").join("Song B-2025-01-01_000000.rpp-bak");
+        std::fs::write(&other, "").unwrap();
+        let made: Vec<PathBuf> = (0..5).map(|i| autosave_path(&song, 1_762_552_871 + i * 300)).collect();
+        for p in &made {
+            std::fs::write(p, "").unwrap();
+        }
+        prune_backups(&song, 2);
+        let left: Vec<bool> = made.iter().map(|p| p.exists()).collect();
+        assert_eq!(left, [false, false, false, true, true]);
+        assert!(other.exists(), "another project's backups stay");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn rejects_other_roots() {
         assert!(matches!(project_from_rpp("<FXCHAIN\n>\n"), Err(ParseError::WrongRoot { .. })));
     }
@@ -1667,5 +1761,38 @@ mod section_tests {
         fresh.master.hw_outs.push(HwOut::stereo(2));
         let out = project_to_rpp(&fresh);
         assert!(out.contains("  MASTERHWOUT 0 0 1 0 0 0 0 -1\n  MASTERHWOUT 2 0 1 0 0 0 0 -1\n"), "{out}");
+    }
+
+    #[test]
+    fn metronome_settings_round_trip() {
+        // As REAPER 7.73 saves count-in before playback and recording, 3.5 measures, and two outputs.
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <METRONOME 31 3.5\n    VOL 0.25 0.125\n    BEATLEN 4\n    PATTERNSTR ABBB\n  >\n  METRONOMEOUT 2\n  METRONOMEOUT 1028\n  GLOBAL_AUTO -1\n>\n";
+        let mut p = project_from_rpp(text).unwrap();
+        let m = &p.metronome;
+        assert_eq!((m.flags, m.count_in_measures, m.volume, &m.outputs[..]), (31, 3.5, 0.25, &[2, 1028][..]));
+        assert!(m.enabled() && m.counts_in(false) && m.counts_in(true));
+        assert!(
+            project_to_rpp(&p).contains(&text[text.find("  <METRONOME").unwrap()..]),
+            "the chunk and outputs are written as read"
+        );
+        p.metronome.flags = 6;
+        p.metronome.volume = 0.5;
+        p.metronome.outputs = vec![4];
+        let out = project_to_rpp(&p);
+        assert!(
+            out.contains(
+                "  <METRONOME 6 3.5\n    VOL 0.5 0.125\n    BEATLEN 4\n    PATTERNSTR ABBB\n  >\n  METRONOMEOUT 4\n"
+            ),
+            "{out}"
+        );
+
+        let plain = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n>\n").unwrap();
+        assert!(!project_to_rpp(&plain).contains("METRONOME"));
+        let mut set = plain;
+        set.metronome.set(crate::metronome::COUNT_IN_PLAY, true);
+        set.metronome.outputs.push(1030);
+        let out = project_to_rpp(&set);
+        assert!(out.contains("  <METRONOME 14 2\n  >\n  METRONOMEOUT 1030\n"), "{out}");
+        assert_eq!(project_from_rpp(&out).unwrap().metronome, set.metronome);
     }
 }

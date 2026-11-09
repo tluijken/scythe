@@ -6,7 +6,7 @@ mod project;
 
 pub use project::{
     ProjectIoError, autosave_path, fmt_num, fx_chain_from_text, fx_chain_to_text, project_from_rpp, project_to_rpp,
-    read_project, resolve_media_path, save_project, track_template, tracks_from_template, write_project,
+    prune_backups, read_project, resolve_media_path, save_project, track_template, tracks_from_template, write_project,
 };
 
 use std::fmt::Write as _;

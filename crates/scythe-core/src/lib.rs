@@ -5,6 +5,7 @@ pub mod fader;
 pub mod glue;
 pub mod history;
 pub mod marker_action;
+pub mod metronome;
 pub mod midi;
 pub mod model;
 pub mod monitor;

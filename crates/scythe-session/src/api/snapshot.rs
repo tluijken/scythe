@@ -47,6 +47,38 @@ pub struct TransportState {
     /// The time selection the loop repeats, `[start, end]` in seconds.
     pub loop_range: Option<(f64, f64)>,
     pub metronome: bool,
+    /// The metronome's level at its outputs as a gain (REAPER's default is 0.25).
+    #[serde(default)]
+    pub metronome_volume: f64,
+    /// Device outputs the metronome plays to; empty plays it with the master.
+    #[serde(default)]
+    pub metronome_outputs: Vec<ClickOutput>,
+    #[serde(default)]
+    pub count_in: CountInState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ClickOutput {
+    /// First device output, from 0.
+    pub output: u32,
+    pub mono: bool,
+}
+
+/// The count-in settings, and where a running count-in is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CountInState {
+    /// Count in before playback starts.
+    pub playback: bool,
+    /// Count in before recording starts.
+    pub record: bool,
+    /// Count-in length in measures.
+    pub measures: f64,
+    /// While counting in: seconds until playback starts, negative (-2.0 is two seconds before).
+    pub position: Option<f64>,
+    /// While counting in: the beat clicking, from 1.
+    pub beat: Option<u32>,
+    /// While counting in: how many beats it has.
+    pub beats: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -237,7 +269,28 @@ pub fn transport(session: &Session) -> TransportState {
         cursor: p.cursor,
         loop_enabled: p.loop_enabled,
         loop_range: p.time_selection.filter(|r| !r.is_empty()).map(|r| (r.start, r.end)),
-        metronome: session.metronome,
+        metronome: session.metronome(),
+        metronome_volume: p.metronome.volume,
+        metronome_outputs: p
+            .metronome
+            .device_outputs()
+            .into_iter()
+            .map(|(first, mono)| ClickOutput { output: first as u32, mono })
+            .collect(),
+        count_in: count_in(session),
+    }
+}
+
+pub fn count_in(session: &Session) -> CountInState {
+    let m = &session.project.metronome;
+    let running = session.counting_in();
+    CountInState {
+        playback: m.has(scythe_core::metronome::COUNT_IN_PLAY),
+        record: m.has(scythe_core::metronome::COUNT_IN_RECORD),
+        measures: m.count_in_measures,
+        position: running.map(|(at, _, _)| at),
+        beat: running.map(|(_, beat, _)| beat),
+        beats: running.map(|(_, _, beats)| beats),
     }
 }
 

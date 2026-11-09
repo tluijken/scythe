@@ -2,7 +2,7 @@
 // previous / play-stop / next, and the set's songs to cue with a tap.
 
 import { html, useCallback, useEffect, useRef, useState } from "../vendor/preact-htm.js";
-import { detector, normalizeSetlists, normalizeStatus, setlistCommands, songProgress } from "./domains.js";
+import { countInLabel, detector, normalizeSetlists, normalizeStatus, setlistCommands, songProgress } from "./domains.js";
 import { formatClock } from "./format.js";
 import { Unavailable } from "./monitor.js";
 import { useStoreValue } from "./store.js";
@@ -81,6 +81,8 @@ export function SetlistPage({ client, store }) {
     store.run(command).then((answer) => setState(normalizeStatus(answer)), () => load());
   };
   const autoAdvance = state?.autoAdvance ?? data.autoAdvance;
+  const countIn = state?.countIn ?? active?.countIn ?? false;
+  const counting = countInLabel(transport);
   return html`<div class="setlist-page">
     <header class="setlist-head">
       <${Logo} size=${40} />
@@ -92,11 +94,13 @@ export function SetlistPage({ client, store }) {
       <span class="grow"></span>
       <label class="auto-advance"><span>Auto-advance</span>
         <${Switch} on=${!!autoAdvance} title="Cue the next song when one ends" onChange=${(on) => run(setlistCommands.autoAdvance(on), { autoAdvance: on })} /></label>
+      <label class="auto-advance"><span>Count-in</span>
+        <${Switch} on=${!!countIn} title="Count each song in with the metronome" onChange=${(on) => run(setlistCommands.countIn(on), { countIn: on })} /></label>
       <${StatusPill} status=${status} />
     </header>
     <main class="setlist-main">
       <section class="now">
-        <div class="label">${playing ? "Now playing" : "Cued"}</div>
+        <div class=${`label ${counting ? "counting" : ""}`}>${counting ? `Count-in ${counting}` : playing ? "Now playing" : "Cued"}</div>
         <div class="now-title">
           ${song ? html`<span class="now-num mono">${current + 1}</span><span class="now-name">${song.name}</span>` : html`<span class="now-name dim">Nothing cued</span>`}
         </div>

@@ -108,6 +108,9 @@ pub enum ItemAudio {
     Midi(Arc<NoteList>),
 }
 
+/// Gain of a monitor mix's click at 0 dB: what the metronome plays at by default.
+const CLICK_LEVEL: f64 = 0.5;
+
 /// Synthesised metronome clicks at the engine rate.
 #[derive(Debug)]
 pub struct ClickSounds {
@@ -129,6 +132,65 @@ impl ClickSounds {
                 .collect()
         };
         Self { accent: tone(1760.0, 0.6), beat: tone(1320.0, 0.45) }
+    }
+}
+
+/// A count-in as the audio thread plays it: `beats` clicks `beat` frames apart, the first of
+/// each bar accented.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CountInClicks {
+    pub beat: f64,
+    pub beats: u32,
+    pub beats_per_bar: u32,
+}
+
+impl CountInClicks {
+    pub fn frames(&self) -> i64 {
+        self.click_at(self.beats)
+    }
+
+    fn click_at(&self, beat: u32) -> i64 {
+        (beat as f64 * self.beat).round() as i64
+    }
+}
+
+/// What the metronome plays in the block being rendered.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Clicks {
+    #[default]
+    Off,
+    /// On the beats of the tempo map, at the block's project frames.
+    Beats,
+    /// A count-in, `at` frames into it where the block starts.
+    CountIn { clicks: CountInClicks, at: i64 },
+}
+
+/// Where the transport metronome plays, from the project's metronome settings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MetronomeRouting {
+    /// It clicks while playing, and while recording.
+    pub on_play: bool,
+    pub on_record: bool,
+    /// Gain at its outputs.
+    pub gain: f32,
+    /// Device outputs: first channel from 0 and whether mono. Empty plays it with the master.
+    pub outputs: Vec<(usize, bool)>,
+}
+
+impl MetronomeRouting {
+    pub fn from_project(project: &Project) -> Self {
+        let m = &project.metronome;
+        Self {
+            on_play: m.clicks(false),
+            on_record: m.clicks(true),
+            // REAPER's default click volume (0.25) plays at the level clicks have always had here.
+            gain: (m.volume * 2.0) as f32,
+            outputs: m.device_outputs(),
+        }
+    }
+
+    fn end(&self) -> Option<usize> {
+        self.outputs.iter().map(|&(first, mono)| first + if mono { 1 } else { 2 }).max()
     }
 }
 
@@ -189,6 +251,8 @@ pub struct RenderTrack {
     pub send_delays: Vec<Option<Arc<DelayLine>>>,
     pub main_delay: Option<Arc<DelayLine>>,
     pub hw_delays: Vec<Option<Arc<DelayLine>>>,
+    /// Gain of the metronome in this track (a monitor mix with a click), zero for none.
+    pub click: f32,
 }
 
 /// One send or hardware output as the graph plays it.
@@ -385,6 +449,7 @@ pub struct LiveInput<'a> {
     pub midi: &'a [LiveMidi],
     pub play_items: bool,
     pub midi_out: Option<MidiOutClock<'a>>,
+    pub clicks: Clicks,
 }
 
 /// Where hardware MIDI goes, and when a project frame is heard.
@@ -398,7 +463,7 @@ pub struct MidiOutClock<'a> {
 
 impl Default for LiveInput<'_> {
     fn default() -> Self {
-        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true, midi_out: None }
+        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true, midi_out: None, clicks: Clicks::Off }
     }
 }
 
@@ -411,6 +476,10 @@ impl<'a> LiveInput<'a> {
             midi: if from == 0 { self.midi } else { &[] },
             play_items: self.play_items,
             midi_out: self.midi_out,
+            clicks: match self.clicks {
+                Clicks::CountIn { clicks, at } => Clicks::CountIn { clicks, at: at + from as i64 },
+                c => c,
+            },
         }
     }
 }
@@ -540,8 +609,7 @@ pub struct RenderGraph {
     pub device_channels: usize,
     pub timeline: Arc<Timeline>,
     pub clicks: Arc<ClickSounds>,
-    /// Gain of the transport metronome; zero when it is off.
-    pub metronome: f32,
+    pub metronome: MetronomeRouting,
 }
 
 /// Scratch space owned by the audio callback so rendering never allocates.
@@ -619,7 +687,7 @@ impl RenderGraph {
             device_channels: 2,
             timeline: Arc::new(scythe_core::TempoMap::default().timeline()),
             clicks: Arc::new(ClickSounds::new(sample_rate)),
-            metronome: 0.0,
+            metronome: MetronomeRouting::default(),
         }
     }
 
@@ -794,6 +862,10 @@ impl RenderGraph {
                     send_delays: Vec::new(),
                     main_delay: None,
                     hw_delays: Vec::new(),
+                    click: (t.ext(scythe_core::monitor::EXT_MUSICIAN).is_some())
+                        .then(|| t.ext(scythe_core::monitor::EXT_CLICK)?.trim().parse::<f64>().ok())
+                        .flatten()
+                        .map_or(0.0, |g| (g * CLICK_LEVEL) as f32),
                 }
             })
             .collect::<Vec<_>>();
@@ -835,9 +907,10 @@ impl RenderGraph {
             Some(outs) => outs.iter().map(RenderSend::end).max().unwrap_or(0),
             None => master_channels,
         };
-        let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(2);
-        let hw_bus =
-            (track_outputs.is_some() || master_hw_outs.is_some()).then(|| Arc::new(AuxChannels::new(device_channels)));
+        let metronome = MetronomeRouting::from_project(project);
+        let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
+        let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
+            .then(|| Arc::new(AuxChannels::new(device_channels)));
         Self {
             master_hw_outs,
             master_taps,
@@ -862,7 +935,7 @@ impl RenderGraph {
             master_pin_bufs: master_pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
             timeline,
             clicks: Arc::new(ClickSounds::new(sample_rate)),
-            metronome: 0.0,
+            metronome,
         }
     }
 
@@ -1029,11 +1102,27 @@ impl RenderGraph {
         if let Some(l) = &self.master_loudness {
             l.record(out_l, out_r);
         }
-        if self.metronome > 0.0 && input.play_items {
-            let m = self.metronome;
-            self.mix_clicks(start, start..start + n as i64, m, m, out_l, out_r);
+        let gain = self.metronome.gain;
+        if self.metronome.outputs.is_empty() && gain > 0.0 {
+            self.each_click(input.clicks, start, n, |o, s| {
+                out_l[o] += s * gain;
+                out_r[o] += s * gain;
+            });
         }
         self.master_to_device(n, out_l, out_r);
+        if !self.metronome.outputs.is_empty()
+            && gain > 0.0
+            && input.clicks != Clicks::Off
+            && let Some(mut bus) = self.hw_bus.as_ref().and_then(|b| b.0.try_lock().ok())
+        {
+            for &(first, mono) in &self.metronome.outputs {
+                let pair = if mono { first..first + 1 } else { first..first + 2 };
+                for c in pair {
+                    let Some(out) = bus.get_mut(c) else { continue };
+                    self.each_click(input.clicks, start, n, |o, s| out[o] += s * gain);
+                }
+            }
+        }
     }
 
     /// Adds the master's hardware outputs to the device bus, when there is one.
@@ -1138,6 +1227,12 @@ impl RenderGraph {
                     self.mix_clicks(read, from..to, item.gain_l, item.gain_r, tl, tr);
                 }
             }
+        }
+        if track.click > 0.0 {
+            self.each_click(input.clicks, read, n, |o, s| {
+                tl[o] += s * track.click;
+                tr[o] += s * track.click;
+            });
         }
         let sr_f = self.sample_rate as f64;
         // A muted track's sends fall silent whatever they tap.
@@ -1531,6 +1626,35 @@ impl RenderGraph {
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) {
+        self.beat_clicks(block_start, range, |o, s| {
+            out_l[o] += s * gain_l;
+            out_r[o] += s * gain_r;
+        });
+    }
+
+    /// Calls `f(offset, sample)` for the metronome samples `clicks` plays in the `n` frames of a
+    /// block starting at project frame `start`.
+    fn each_click(&self, clicks: Clicks, start: i64, n: usize, mut f: impl FnMut(usize, f32)) {
+        match clicks {
+            Clicks::Off => {}
+            Clicks::Beats => self.beat_clicks(start, start..start + n as i64, f),
+            Clicks::CountIn { clicks, at } => {
+                let end = at + n as i64;
+                for k in 0..clicks.beats {
+                    let sound =
+                        if k % clicks.beats_per_bar.max(1) == 0 { &self.clicks.accent } else { &self.clicks.beat };
+                    let pos = clicks.click_at(k);
+                    for frame in pos.max(at)..(pos + sound.len() as i64).min(end) {
+                        f((frame - at) as usize, sound[(frame - pos) as usize]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Calls `f(offset, sample)` for the beat clicks sounding in project frames `range` of a
+    /// block that starts at `block_start`.
+    fn beat_clicks(&self, block_start: i64, range: std::ops::Range<i64>, mut f: impl FnMut(usize, f32)) {
         if range.is_empty() {
             return;
         }
@@ -1543,11 +1667,8 @@ impl RenderGraph {
             let at = (time * sr).round() as i64;
             let from = range.start.max(at);
             let to = range.end.min(at + sound.len() as i64);
-            for f in from..to {
-                let s = sound[(f - at) as usize];
-                let o = (f - block_start) as usize;
-                out_l[o] += s * gain_l;
-                out_r[o] += s * gain_r;
+            for frame in from..to {
+                f((frame - block_start) as usize, sound[(frame - at) as usize]);
             }
         });
     }
@@ -2048,11 +2169,18 @@ mod tests {
             &mut FxRegistry::new(1000),
             1000,
         );
-        g.metronome = 1.0;
-        let (l, _) = render(&g, 990, 30);
+        g.metronome.gain = 1.0;
+        let clicks = |g: &RenderGraph, start: i64, n: usize| {
+            let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
+            let input = LiveInput { clicks: Clicks::Beats, ..LiveInput::default() };
+            g.render_with(start, &mut l, &mut r, &mut RenderScratch::new(4), &input);
+            (l, r)
+        };
+        assert!(render(&g, 990, 30).0.iter().all(|&s| s == 0.0), "offline renders have no metronome");
+        let (l, _) = clicks(&g, 990, 30);
         assert!(l[..10].iter().all(|&s| s == 0.0));
         assert!(l[10..].iter().any(|&s| s != 0.0));
-        let (quiet, _) = render(&g, 500, 400);
+        let (quiet, _) = clicks(&g, 500, 400);
         assert!(quiet.iter().all(|&s| s == 0.0));
     }
 

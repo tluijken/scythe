@@ -1,6 +1,6 @@
 import { equal, test } from "./harness.js";
 import { ApiError } from "../js/api.js";
-import { detector, normalizeMixes, normalizeSetlists, normalizeStatus, pickMix, songProgress } from "../js/domains.js";
+import { countInLabel, detector, healthLine, normalizeMix, normalizeMixes, normalizeSetlists, normalizeStatus, pickMix, songProgress } from "../js/domains.js";
 
 test("a domain the server does not know is detected once", async () => {
   let calls = 0;
@@ -28,6 +28,8 @@ test("mixes read as mix.list answers them", () => {
   equal(mixes[0].name, "Bass");
   equal(mixes[0].moreMeDb, 3);
   equal(mixes[0].output, "Out 3/4");
+  equal(mixes[0].clickDb, null);
+  equal(Math.round(normalizeMix({ click: 0.5, sources: [] }).clickDb), -6);
   equal(mixes[0].sources.map((x) => [x.id, x.db, x.pan, x.muted, x.own]), [[12, 1.5, 0, false, true], [13, -6, -0.5, true, false]]);
 });
 
@@ -59,4 +61,18 @@ test("setlists join their songs, status reads entries", () => {
   equal(songProgress(list.songs[2], 25), { elapsed: 15, remaining: 45, fraction: 0.25 });
   equal(songProgress(list.songs[2], 100).remaining, 0);
   equal(songProgress(list.songs[1], 100).elapsed, null);
+});
+
+test("a running count-in and the health line read for the stage", () => {
+  equal(countInLabel({ count_in: { playback: true, position: -1.5, beat: 2, beats: 4 } }), "2 / 4");
+  equal(countInLabel({ count_in: { playback: true, position: null, beat: null, beats: null } }), null);
+  equal(countInLabel(null), null);
+  const ok = healthLine({ device: "USB", sample_rate: 48000, block_size: 128, cpu: 12.4, cpu_peak: 30, xruns: 0, status: "running",
+    reason: null, output_latency_ms: 5.3 });
+  equal([ok.text, ok.warn], ["48k · 128 · CPU 12%", false]);
+  const lost = healthLine({ device: "No audio device", sample_rate: 44100, block_size: 512, cpu: 0, cpu_peak: 0, xruns: 3,
+    status: "silent", reason: "USB was disconnected", output_latency_ms: 0 });
+  equal([lost.text, lost.warn, lost.title], ["44.1k · 512 · CPU 0% · 3 xruns · no audio device", true, "USB was disconnected"]);
+  const status = normalizeStatus({ setlist: 0, playing: false, current: null, next: null, auto_advance: false, count_in: true });
+  equal(status.countIn, true);
 });

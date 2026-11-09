@@ -131,6 +131,16 @@ pub enum SetlistCommand {
         #[serde(default)]
         enabled: Option<bool>,
     },
+    /// Whether playing a song from the setlist counts in first (the project's count-in length,
+    /// at the song's tempo), so the band starts together; toggles when `enabled` is left out.
+    #[serde(rename = "setlist.count_in")]
+    CountIn {
+        #[serde(default)]
+        setlist: Option<SetlistRef>,
+        /// Count in or not; left out, toggles.
+        #[serde(default)]
+        enabled: Option<bool>,
+    },
     /// Whether crossing a `!` marker runs its actions (`!1016` stops).
     #[serde(rename = "setlist.marker_actions")]
     MarkerActions {
@@ -171,6 +181,9 @@ pub struct SetlistInfo {
     pub entries: Vec<EntryInfo>,
     /// Total length of the songs found, in seconds.
     pub duration: f64,
+    /// Its songs play after a count-in.
+    #[serde(default)]
+    pub count_in: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -205,6 +218,9 @@ pub struct SetlistStatus {
     pub remaining: Option<f64>,
     pub auto_advance: bool,
     pub marker_actions: bool,
+    /// The setlist's songs play after a count-in.
+    #[serde(default)]
+    pub count_in: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,7 +266,7 @@ fn setlist_info(index: usize, list: &Setlist, songs: &[Song]) -> SetlistInfo {
             duration: s.map(|s| songs[s].duration()),
         })
         .collect();
-    SetlistInfo { index, name: list.name.clone(), entries, duration: list.duration(songs) }
+    SetlistInfo { index, name: list.name.clone(), entries, duration: list.duration(songs), count_in: list.count_in }
 }
 
 pub fn status(session: &Session) -> SetlistStatus {
@@ -270,6 +286,7 @@ pub fn status(session: &Session) -> SetlistStatus {
             remaining: None,
             auto_advance,
             marker_actions,
+            count_in: false,
         };
         return none;
     };
@@ -292,6 +309,7 @@ pub fn status(session: &Session) -> SetlistStatus {
         remaining,
         auto_advance,
         marker_actions,
+        count_in: list.count_in,
     }
 }
 
@@ -447,6 +465,12 @@ pub fn execute(session: &mut Session, command: SetlistCommand) -> Result<Value, 
             find_setlist(session, None)?;
             session.setlist_step(matches!(command, SetlistCommand::Next));
             Ok(json(status(session)))
+        }
+        SetlistCommand::CountIn { setlist, enabled } => {
+            let at = find_setlist(session, setlist.as_ref())?;
+            let on = enabled.unwrap_or_else(|| !session.setlists().lists[at].count_in);
+            session.set_setlist_count_in(at, on);
+            Ok(get(session, at))
         }
         SetlistCommand::AutoAdvance { enabled } => {
             let on = enabled.unwrap_or(!session.setlists().auto_advance);
