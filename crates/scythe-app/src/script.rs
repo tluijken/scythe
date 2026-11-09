@@ -587,6 +587,8 @@ static API: &[Sig] = sigs! {
 
     // Tempo and time signature.
     "Master_GetTempo" Num [];
+    "Master_GetPlayRate" Num [P];
+    "CSurf_OnPlayRateChange" Void [N];
     "SetCurrentBPM" Void [P, N, B];
     "TimeMap2_timeToQN" Num [P, N];
     "TimeMap2_QNToTime" Num [P, N];
@@ -772,6 +774,12 @@ static API: &[Sig] = sigs! {
     "GetMediaItemTakeInfo_Value" Num [K, S];
     "SetMediaItemTakeInfo_Value" Bool [K, S, N];
     "TakeIsMIDI" Bool [K];
+    "GetTakeNumStretchMarkers" Int [K];
+    "GetTakeStretchMarker" Int [K, Z, NO, NO];
+    "SetTakeStretchMarker" Int [K, Z, N, N];
+    "DeleteTakeStretchMarkers" Int [K, Z, Z];
+    "GetTakeStretchMarkerSlope" Num [K, Z];
+    "SetTakeStretchMarkerSlope" Bool [K, Z, N];
     "GetMediaItemTake_Source" Src [K];
     "SetMediaItemTake_Source" Bool [K, R];
     "PCM_Source_CreateFromFile" Src [S];

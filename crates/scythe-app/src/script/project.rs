@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use scythe_core::rpp::{Chunk, Node, line_key, quote, tokenize};
+use scythe_core::timebase::PlayRate;
 use scythe_core::{Marker, Project, TimeRange, TrackId};
 
 use super::items::{select_all_tracks, selection, set_selected};
@@ -712,6 +713,12 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
     let sig_at = |t: f64| s.project.tempo.time_sig_at(t);
     Some(match name {
         "Master_GetTempo" => ret(Val::Num(s.project.tempo.bpm_at(0.0))),
+        "Master_GetPlayRate" => ret(Val::Num(s.project.playrate.rate)),
+        "CSurf_OnPlayRateChange" => {
+            s.project.playrate.rate = a.num(0).clamp(PlayRate::MIN, PlayRate::MAX);
+            s.changed = true;
+            ret(Val::Nil)
+        }
         "SetCurrentBPM" => {
             s.project.change_tempo(|t| t.set_base_bpm(a.num(1).clamp(1.0, 960.0)));
             s.changed = true;
@@ -1180,5 +1187,51 @@ mod tests {
         api(&mut st, "Main_OnCommand", &[Val::Int(40029), Val::Int(0)]);
         api(&mut st, "Main_OnCommand", &[Val::Int(99999), Val::Int(0)]);
         assert_eq!(st.out.commands, [40029, 99999]);
+    }
+
+    /// REAPER 7.73 moves the same items this way after the same calls (Lua probe of D_POSITION,
+    /// D_LENGTH and D_PLAYRATE with the project timebase on beats).
+    #[test]
+    fn tempo_edits_move_items_by_their_timebase() {
+        let rpp = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  TIMELOCKMODE 1\n  TEMPOENVLOCKMODE 1\n  TEMPO 120 4 4\n  <TEMPOENVEX\n    PT 0 120 1\n    PT 4 120 1\n  >\n  <TRACK\n    <ITEM\n      POSITION 2\n      LENGTH 1\n    >\n    <ITEM\n      POSITION 2\n      LENGTH 1\n      BEAT 0\n    >\n    <ITEM\n      POSITION 2\n      LENGTH 1\n      BEAT 2\n    >\n  >\n>\n";
+        let set = |i: i64, time: f64, bpm: f64, linear: bool| {
+            let sig = if i == 0 { 4 } else { 0 };
+            [
+                Val::Proj,
+                Val::Int(i),
+                Val::Num(time),
+                Val::Int(-1),
+                Val::Num(-1.0),
+                Val::Num(bpm),
+                Val::Int(sig),
+                Val::Int(sig),
+                Val::Bool(linear),
+            ]
+        };
+        let items = |st: &mut State| -> Vec<[f64; 3]> {
+            (0..3)
+                .map(|n| {
+                    let item = api(st, "GetTrackMediaItem", &[Val::Track(st.project.tracks[0].id), Val::Int(n)]).0;
+                    let take = api(st, "GetActiveTake", &[item.clone()]).0;
+                    let get =
+                        |st: &mut State, k: &str| api(st, "GetMediaItemInfo_Value", &[item.clone(), s(k)]).0.num();
+                    let rate = api(st, "GetMediaItemTakeInfo_Value", &[take, s("D_PLAYRATE")]).0.num();
+                    [get(st, "D_POSITION"), get(st, "D_LENGTH"), rate]
+                })
+                .collect()
+        };
+        let mut st = state(scythe_core::rpp::project_from_rpp(rpp).unwrap());
+        api(&mut st, "SetTempoTimeSigMarker", &set(0, 0.0, 60.0, false));
+        assert_eq!(items(&mut st), [[4.0, 2.0, 0.5], [2.0, 1.0, 1.0], [4.0, 1.0, 1.0]]);
+        let (_, m) = api(&mut st, "GetTempoTimeSigMarker", &[Val::Proj, Val::Int(1)]);
+        assert_eq!(m[0], Val::Num(8.0));
+
+        let mut st = state(scythe_core::rpp::project_from_rpp(rpp).unwrap());
+        api(&mut st, "SetTempoTimeSigMarker", &set(0, 0.0, 120.0, true));
+        api(&mut st, "SetTempoTimeSigMarker", &set(1, 4.0, 60.0, false));
+        let got = items(&mut st);
+        for (g, want) in got[0].iter().zip([2.343145751, 1.656854249, 0.603553391]) {
+            assert!((g - want).abs() < 1e-8, "{got:?}");
+        }
     }
 }

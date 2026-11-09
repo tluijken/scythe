@@ -90,6 +90,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "B_MUTE" | "B_MUTE_ACTUAL" => it.muted as u8 as f64,
                 "D_VOL" => it.volume,
                 "B_LOOPSRC" => it.looped as u8 as f64,
+                "C_BEATATTACHMODE" => it.timebase.map_or(-1.0, |b| b.rpp_code() as f64),
                 "D_FADEINLEN" => it.fade_in.length,
                 "D_FADEOUTLEN" => it.fade_out.length,
                 "D_FADEINLEN_AUTO" => it.fade_in.auto_length,
@@ -121,6 +122,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "B_MUTE" => it.muted = v != 0.0,
                 "D_VOL" => it.volume = v.max(0.0),
                 "B_LOOPSRC" => it.looped = v != 0.0,
+                "C_BEATATTACHMODE" => it.timebase = scythe_core::timebase::Timebase::from_rpp(v as i64),
                 "D_FADEINLEN" => it.fade_in.length = v.max(0.0),
                 "D_FADEOUTLEN" => it.fade_out.length = v.max(0.0),
                 "D_FADEINLEN_AUTO" => it.fade_in.auto_length = v,
@@ -334,6 +336,7 @@ fn takes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "D_PLAYRATE" => Val::Num(t.playrate),
                 "D_PITCH" => Val::Num(t.pitch),
                 "B_PPITCH" => Val::Num(t.preserve_pitch as u8 as f64),
+                "I_CHANMODE" => Val::Num(t.channel_mode.code() as f64),
                 "IP_TAKENUMBER" => Val::Num(k as f64),
                 "P_ITEM" => Val::Item(item),
                 "P_TRACK" => s.project.find_item(item).map_or(Val::Nil, |(t, _)| Val::Track(t)),
@@ -354,12 +357,66 @@ fn takes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "D_PLAYRATE" => t.playrate = v.max(1e-6),
                 "D_PITCH" => t.pitch = v,
                 "B_PPITCH" => t.preserve_pitch = v != 0.0,
+                "I_CHANMODE" => t.channel_mode = scythe_core::ChannelMode::from_code(v as i64),
                 _ => return Some(ret(Val::Bool(false))),
             }
             s.changed = true;
             ret(Val::Bool(true))
         }
         "TakeIsMIDI" => ret(Val::Bool(take_mut(&mut s.project, take).is_some_and(|t| is_midi(&t.source)))),
+        "GetTakeNumStretchMarkers" => {
+            ret(Val::Int(take_mut(&mut s.project, take).map_or(0, |t| t.stretch_markers.len() as i64)))
+        }
+        "GetTakeStretchMarker" => {
+            let m = take_mut(&mut s.project, take)
+                .and_then(|t| index(t.stretch_markers.len(), a.int(1)).map(|i| (i, t.stretch_markers[i])));
+            match m {
+                Some((i, m)) => (Val::Int(i as i64), vec![Val::Num(m.pos), Val::Num(m.src)]),
+                None => (Val::Int(-1), vec![Val::Num(0.0), Val::Num(0.0)]),
+            }
+        }
+        "SetTakeStretchMarker" => {
+            let (idx, pos, src) = (a.int(1), a.num(2), a.opt(3));
+            let Some(t) = take_mut(&mut s.project, take) else { return Some(ret(Val::Int(-1))) };
+            let rate = if t.playrate > 0.0 { t.playrate } else { 1.0 };
+            let src = src.unwrap_or_else(|| t.source_pos(pos / rate));
+            let at = if idx < 0 {
+                t.stretch_markers.push(scythe_core::stretch::StretchMarker::new(pos, src));
+                t.stretch_markers.len() - 1
+            } else if let Some(i) = index(t.stretch_markers.len(), idx) {
+                t.stretch_markers[i] = scythe_core::stretch::StretchMarker { pos, src, ..t.stretch_markers[i] };
+                i
+            } else {
+                return Some(ret(Val::Int(-1)));
+            };
+            let placed = t.stretch_markers[at];
+            t.stretch_markers.sort_by(|x, y| x.pos.total_cmp(&y.pos));
+            let i = t.stretch_markers.iter().position(|m| *m == placed).unwrap_or(at);
+            s.changed = true;
+            ret(Val::Int(i as i64))
+        }
+        "DeleteTakeStretchMarkers" => {
+            let (idx, count) = (a.int(1), a.opt(2).map_or(1, |c| c.max(0.0) as usize));
+            let Some(t) = take_mut(&mut s.project, take) else { return Some(ret(Val::Int(0))) };
+            let Some(i) = index(t.stretch_markers.len(), idx) else { return Some(ret(Val::Int(0))) };
+            let end = (i + count).min(t.stretch_markers.len());
+            t.stretch_markers.drain(i..end);
+            s.changed |= end > i;
+            ret(Val::Int((end - i) as i64))
+        }
+        "GetTakeStretchMarkerSlope" => {
+            let slope = take_mut(&mut s.project, take)
+                .and_then(|t| index(t.stretch_markers.len(), a.int(1)).map(|i| t.stretch_markers[i].slope));
+            ret(Val::Num(slope.unwrap_or(0.0)))
+        }
+        "SetTakeStretchMarkerSlope" => {
+            let (idx, slope) = (a.int(1), a.num(2));
+            let Some(t) = take_mut(&mut s.project, take) else { return Some(ret(Val::Bool(false))) };
+            let Some(i) = index(t.stretch_markers.len(), idx) else { return Some(ret(Val::Bool(false))) };
+            t.stretch_markers[i].slope = slope.clamp(-1.0, 1.0);
+            s.changed = true;
+            ret(Val::Bool(true))
+        }
         "GetMediaItemTake_Source" => {
             let Some(src) = take_mut(&mut s.project, take).map(|t| t.source.clone()) else {
                 return Some(ret(Val::Nil));

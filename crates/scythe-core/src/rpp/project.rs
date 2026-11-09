@@ -2134,4 +2134,61 @@ mod section_tests {
         assert!(out.contains("  <METRONOME 14 2\n  >\n  METRONOMEOUT 1030\n"), "{out}");
         assert_eq!(project_from_rpp(&out).unwrap().metronome, set.metronome);
     }
+
+    #[test]
+    fn timing_lines_round_trip_and_follow_the_model() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  TIMELOCKMODE 2\n  TEMPOENVLOCKMODE 0\n  PLAYRATE 1.25 0 0.25 4\n  <TRACK\n    BEAT 0\n    <ITEM\n      POSITION 1\n      LENGTH 2\n      BEAT 1\n      NAME \"\"\n      SOFFS 0\n      PLAYRATE 1 1 0 -1 0 0.0025\n      CHANMODE 3\n      GUID {D69F1D2C-4A90-C62C-811C-E649EC1E09B8}\n      SM 0 -0.1 0 1 + 0.5 0.4 0.3 + 2 2.2 0 1\n      <SOURCE WAVE\n        FILE \"a.wav\"\n      >\n      <PITCHENV\n        ACT 1 -1\n        PT 0 0 0\n        PT 1.5 -2 0\n      >\n    >\n  >\n>\n";
+        let p = project_from_rpp(text).unwrap();
+        assert_eq!((p.timebase, p.tempo_follows_beats), (Timebase::BeatsPosition, false));
+        assert_eq!(p.playrate, PlayRate { rate: 1.25, preserve_pitch: false });
+        assert_eq!(p.tracks[0].timebase, Some(Timebase::Time));
+        let it = &p.tracks[0].items[0];
+        assert_eq!(it.timebase, Some(Timebase::Beats));
+        let tk = &it.takes[0];
+        assert_eq!(tk.channel_mode, ChannelMode::Mono(0));
+        assert_eq!(tk.stretch_markers.len(), 3);
+        assert_eq!(tk.stretch_markers[1].slope, 0.3);
+        assert_eq!(tk.pitch_envelope().map(|e| e.points.len()), Some(2));
+        let out = project_to_rpp(&p);
+        for line in [
+            "TIMELOCKMODE 2",
+            "TEMPOENVLOCKMODE 0",
+            "PLAYRATE 1.25 0 0.25 4",
+            "    BEAT 0\n",
+            "      BEAT 1\n",
+            "CHANMODE 3\n      GUID",
+            "SM 0 -0.1 0 1 + 0.5 0.4 0.3 + 2 2.2 0 1\n      <SOURCE",
+            "<PITCHENV",
+            "PT 1.5 -2 0",
+        ] {
+            assert!(out.contains(line), "{line:?} in {out}");
+        }
+        assert_eq!(project_from_rpp(&out).unwrap().tracks[0].items[0].takes[0], *tk);
+
+        let mut q = p.clone();
+        q.timebase = Timebase::Time;
+        q.playrate.rate = 2.0;
+        q.tracks[0].items[0].timebase = None;
+        let tk = &mut q.tracks[0].items[0].takes[0];
+        tk.channel_mode = ChannelMode::Stereo(2);
+        tk.stretch_markers.clear();
+        let out = project_to_rpp(&q);
+        assert!(out.contains("TIMELOCKMODE 0") && out.contains("PLAYRATE 2 0 0.25 4"), "{out}");
+        assert!(out.contains("      BEAT -1\n") && out.contains("CHANMODE 69") && !out.contains("SM "), "{out}");
+
+        let fresh = project_from_rpp(
+            "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    <ITEM\n      POSITION 0\n      LENGTH 1\n    >\n  >\n>\n",
+        )
+        .unwrap();
+        assert_eq!(
+            (fresh.timebase, fresh.tempo_follows_beats, fresh.playrate),
+            (Timebase::Beats, true, PlayRate::default())
+        );
+        let mut fresh = fresh;
+        fresh.tracks[0].items[0].takes[0].channel_mode = ChannelMode::ReverseStereo;
+        fresh.tracks[0].items[0].takes[0].stretch_markers.push(crate::stretch::StretchMarker::new(0.5, 0.25));
+        let out = project_to_rpp(&fresh);
+        assert!(out.contains("CHANMODE 1") && out.contains("SM 0.5 0.25"), "{out}");
+        assert!(!out.contains("TIMELOCKMODE") && !out.contains("PLAYRATE 1 0"), "{out}");
+    }
 }

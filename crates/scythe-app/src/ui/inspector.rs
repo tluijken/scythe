@@ -1,9 +1,10 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
 use scythe_core::midi_route::{MidiDevice, MidiInput, SendMidi};
-use scythe_core::units::format_db;
 use scythe_core::timebase::Timebase;
+use scythe_core::units::format_db;
 use scythe_core::{ChannelMode, EnvelopeKind, HwOut, Send, SendMode, TrackId};
 use scythe_engine::fx::FxStatus;
+use scythe_engine::midi_io::{ALL_MIDI_INPUTS, midi_input_channel};
 
 use crate::app::{InspectorTab, PresetSource, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
