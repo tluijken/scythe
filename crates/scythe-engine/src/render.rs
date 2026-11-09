@@ -11,9 +11,11 @@ use rayon::prelude::*;
 
 use crate::loudness::Loudness;
 use crate::meter::Meter;
-use crate::midi_io::{LiveMidi, OutMessage, midi_input_channel};
+use crate::midi_io::{LiveMidi, OutMessage, RecInput};
+use crate::midi_sync::{LtcWriter, TimecodeRate};
 use crate::mix::{Automation, FaderStage, Matrix, PreFxGain};
 use crate::synth::{ControlEvent, NoteList, SynthNote};
+use scythe_core::midi_route::SendMidi;
 
 /// One item, pre-resolved to frames at the engine rate.
 #[derive(Debug, Clone)]
@@ -106,6 +108,52 @@ pub enum ItemAudio {
     Click,
     /// A MIDI source played by the built-in preview instrument.
     Midi(Arc<NoteList>),
+    /// The timecode generator (RPP `<SOURCE LTC`): LTC audio, or MTC to the track's MIDI
+    /// hardware output.
+    Timecode(Arc<TimecodeItem>),
+}
+
+/// A timecode generator item as it plays.
+#[derive(Debug)]
+pub struct TimecodeItem {
+    /// Timecode (seconds) at the start of the source.
+    pub start: f64,
+    pub rate: TimecodeRate,
+    /// `SEND` bit 2: MTC instead of LTC audio.
+    pub mtc: bool,
+    writer: std::sync::Mutex<LtcWriter>,
+    /// Where the last block sent MTC for ended, and the frame and timecode frame of the
+    /// quarter-frame grid it follows.
+    mtc_state: std::sync::Mutex<Option<(i64, i64, i64)>>,
+}
+
+impl TimecodeItem {
+    pub fn parse(chunk: &scythe_core::rpp::Chunk) -> Self {
+        let mut start = 0.0;
+        let mut rate = TimecodeRate::from_rpp(30.0, 0);
+        let mut send = 0;
+        for node in &chunk.children {
+            if let scythe_core::rpp::Node::Line(l) = node {
+                let t = scythe_core::rpp::tokenize(l);
+                let num = |i: usize| t.get(i).and_then(|v| v.parse::<f64>().ok());
+                match t.first().map(String::as_str) {
+                    Some("STARTTIME") => start = num(1).unwrap_or(0.0),
+                    Some("FRAMERATE") => {
+                        rate = TimecodeRate::from_rpp(num(1).unwrap_or(30.0), num(2).unwrap_or(0.0) as i64)
+                    }
+                    Some("SEND") => send = num(1).unwrap_or(0.0) as i64,
+                    _ => {}
+                }
+            }
+        }
+        Self {
+            start,
+            rate,
+            mtc: send & 2 != 0,
+            writer: std::sync::Mutex::new(LtcWriter::new(rate)),
+            mtc_state: std::sync::Mutex::new(None),
+        }
+    }
 }
 
 /// Gain of a monitor mix's click at 0 dB: what the metronome plays at by default.
@@ -270,13 +318,19 @@ pub struct RenderTrack {
     pub pin_bufs: Option<Arc<AuxChannels>>,
     /// MIDI effects pass down the chain within a block.
     pub chain_midi: Arc<ChainMidi>,
+    /// MIDI sends: destination, what passes, and whether it leaves before the effects.
+    pub midi_sends: Vec<(usize, SendMidi, bool)>,
+    /// MIDI other tracks send here, gathered during the block; only on send destinations.
+    pub midi_inbox: Option<Arc<MidiInbox>>,
     /// MIDI of the track's items when an instrument in the chain plays it.
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
     pub monitor: Option<(usize, Option<usize>)>,
-    /// Live MIDI for an armed, monitored track with a MIDI input: the channel it listens to,
-    /// `None` for all.
-    pub midi_input: Option<Option<u8>>,
+    /// Live MIDI for an armed, monitored track with a MIDI input: the device and channel it
+    /// listens to.
+    pub midi_input: Option<RecInput>,
+    /// The live messages from the track's device, when it listens to one device only.
+    pub live_buf: Arc<std::sync::Mutex<Vec<LiveMidi>>>,
     /// Hardware MIDI output: port and channel (0 keeps each message's own channel).
     pub midi_out: Option<(u8, u8)>,
     /// Frames between this track's input and the master output, including plugin latency
@@ -457,9 +511,14 @@ impl Taps {
 #[derive(Debug)]
 pub struct AuxChannels(std::sync::Mutex<Vec<Vec<f32>>>);
 
-/// The MIDI the chain carries in the current block and the next effect's output.
+/// The MIDI the chain carries in the current block, the next effect's output and, on tracks
+/// that route MIDI, what enters the chain.
 #[derive(Debug, Default)]
-pub struct ChainMidi(std::sync::Mutex<[crate::fx::MidiBlock; 2]>);
+pub struct ChainMidi(std::sync::Mutex<[crate::fx::MidiBlock; 3]>);
+
+/// MIDI sent to a track by others in the current block, as frame offsets from its start.
+#[derive(Debug, Default)]
+pub struct MidiInbox(std::sync::Mutex<crate::fx::MidiBlock>);
 
 impl AuxChannels {
     fn new(channels: usize) -> Self {
@@ -691,6 +750,9 @@ impl RenderGraph {
                             Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI") => {
                                 ItemAudio::Midi(Arc::new(midi_notes(c, it, take, &timeline, sample_rate)?))
                             }
+                            Source::Raw(c) if c.args().first().is_some_and(|k| k == "LTC") => {
+                                ItemAudio::Timecode(Arc::new(TimecodeItem::parse(c)))
+                            }
                             source => {
                                 let path = scythe_core::rpp::resolve_media_path(project, source.file()?);
                                 let base = pool.ready(&path)?;
@@ -741,7 +803,18 @@ impl RenderGraph {
                 let pin_count = pin_buffer_count(&chain, &fx_pins);
                 // MIDI items feed an instrument in the chain or a hardware output instead of the
                 // preview synth.
-                let (items, notes) = if chain.iter().any(|f| f.instrument) || t.midi_out.is_some() {
+                let midi_sends: Vec<(usize, SendMidi, bool)> = t
+                    .sends
+                    .iter()
+                    .zip(&routing.sends[ti])
+                    .filter(|(s, on)| **on && !s.muted && s.midi().enabled)
+                    .map(|(s, _)| s)
+                    .filter_map(|s| Some((*index.get(&s.dest)?, s.midi(), s.mode == SendMode::PreFx)))
+                    .collect();
+                let (items, notes) = if chain.iter().any(|f| f.instrument)
+                    || t.midi_out.is_some()
+                    || !midi_sends.is_empty()
+                {
                     let (midi, audio): (Vec<_>, Vec<_>) =
                         items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)));
                     let lists: Vec<&NoteList> = midi
@@ -812,6 +885,8 @@ impl RenderGraph {
                     fx_automation,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
                     chain_midi: Arc::default(),
+                    midi_sends,
+                    midi_inbox: None,
                     fx_pins,
                     notes,
                     monitor: (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0).then(
@@ -820,7 +895,8 @@ impl RenderGraph {
                             (first, (t.rec_input & 1024 != 0).then_some(first + 1))
                         },
                     ),
-                    midi_input: (t.armed && t.monitor).then(|| midi_input_channel(t.rec_input)).flatten(),
+                    midi_input: (t.armed && t.monitor).then(|| RecInput::from_rec_input(t.rec_input)).flatten(),
+                    live_buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(512))),
                     midi_out: t.midi_out,
                     read_ahead: 0,
                     fx_latency: Vec::new(),
@@ -834,6 +910,10 @@ impl RenderGraph {
                 }
             })
             .collect::<Vec<_>>();
+        let midi_dests: Vec<usize> = tracks.iter().flat_map(|t| t.midi_sends.iter().map(|s| s.0)).collect();
+        for d in midi_dests {
+            tracks[d].midi_inbox.get_or_insert_with(Arc::default);
+        }
         let master_fx = fx.chain_with_automation(None, &project.master.fx, (project.master.channels as usize).max(2)).0;
         let master_fx_latency = chain_latency(&master_fx);
         let master_channels = (project.master.channels as usize).max(2);
@@ -987,6 +1067,11 @@ impl RenderGraph {
                 for b in bufs.iter_mut() {
                     b[..n].fill(0.0);
                 }
+            }
+        }
+        for inbox in self.tracks.iter().filter_map(|t| t.midi_inbox.as_ref()) {
+            if let Ok(mut m) = inbox.0.try_lock() {
+                m.clear();
             }
         }
         let tracks = self.tracks.len();
@@ -1158,8 +1243,22 @@ impl RenderGraph {
     fn process_track(&self, ti: usize, start: i64, tl: &mut [f32], tr: &mut [f32], input: &LiveInput) {
         let track = &self.tracks[ti];
         let n = tl.len();
-        if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
-            self.send_midi(track, out, clock, start, n as i64, input);
+        let mut live_buf = track.live_buf.try_lock().ok();
+        let live: &[LiveMidi] = match (track.midi_input, live_buf.as_deref_mut()) {
+            (None, _) => &[],
+            _ if !track.content => &[],
+            (Some(i), _) if i.device == scythe_core::midi_route::MidiDevice::All => input.midi,
+            (Some(i), Some(buf)) => {
+                buf.clear();
+                buf.extend(input.midi.iter().filter(|m| i.device.hears(m.device)).take(buf.capacity()));
+                buf
+            }
+            (Some(_), None) => &[],
+        };
+        let live_channel = track.midi_input.and_then(|i| i.channel);
+        let routes_midi = track.audible && (track.midi_inbox.is_some() || !track.midi_sends.is_empty());
+        if !routes_midi && let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
+            self.send_midi(track, out, clock, start, n as i64, input, live);
         }
         if let Some((cl, cr)) = track.monitor.filter(|_| track.content)
             && let Some(left) = input.channels.get(cl).copied().flatten()
@@ -1188,6 +1287,20 @@ impl RenderGraph {
                     }
                 }
                 ItemAudio::Midi(notes) => notes.render(read, self.sample_rate, (item.gain_l, item.gain_r), tl, tr),
+                ItemAudio::Timecode(tc) if !tc.mtc => {
+                    let from = read.max(item.start);
+                    let to = (read + n as i64).min(item.start + item.length);
+                    if let Ok(mut w) = tc.writer.try_lock() {
+                        let sr = self.sample_rate as f64;
+                        for f in from..to {
+                            let t = tc.start + (item.source_offset + (f - item.start) as f64 * item.playrate) / sr;
+                            let v = w.sample(t);
+                            tl[(f - read) as usize] += v * item.gain_l;
+                            tr[(f - read) as usize] += v * item.gain_r;
+                        }
+                    }
+                }
+                ItemAudio::Timecode(_) => {}
                 ItemAudio::Click => {
                     let from = read.max(item.start);
                     let to = (read + n as i64).min(item.start + item.length);
@@ -1219,11 +1332,40 @@ impl RenderGraph {
             track.taps.clear(n);
         }
         let mut position = read;
+        let mut midi_bufs = track.chain_midi.0.try_lock().ok();
+        // Set once an effect has passed MIDI on; until then effects read the track's own.
+        let mut chain_has_midi = false;
+        if routes_midi && let Some([held, _, entering]) = midi_bufs.as_deref_mut() {
+            // A track that sends or receives MIDI gathers its items, live input and what it
+            // receives into one block the chain starts from.
+            let ctx = ProcessContext {
+                sample_rate: self.sample_rate,
+                position: read,
+                playing: input.play_items,
+                aux: None,
+                notes: if input.play_items && track.content { track.notes.as_deref() } else { None },
+                live,
+                live_channel,
+                bpm: 0.0,
+                midi: None,
+                midi_from: 0,
+            };
+            entering.clear();
+            ctx.block_midi(n, &mut entering.short);
+            ctx.block_long(n, &mut entering.long);
+            if let Some(inbox) = &track.midi_inbox
+                && let Ok(mut received) = inbox.0.lock()
+            {
+                entering.short.append(&mut received.short);
+                entering.long.append(&mut received.long);
+                entering.bused.append(&mut received.bused);
+                entering.sort();
+            }
+            held.copy_from(entering);
+            chain_has_midi = true;
+        }
         if track.audible && !track.fx.is_empty() {
             let mut pin_bufs = track.pin_bufs.as_ref().and_then(|p| p.0.try_lock().ok());
-            let mut midi_bufs = track.chain_midi.0.try_lock().ok();
-            // Set once an effect has passed MIDI on; until then effects read the track's own.
-            let mut chain_has_midi = false;
             for (k, ((fx, automation), latency)) in
                 track.fx.iter().zip(&track.fx_automation).zip(&track.fx_latency).enumerate()
             {
@@ -1236,14 +1378,14 @@ impl RenderGraph {
                     aux: None,
                     // While stopped the position stands still; feeding notes would retrigger them.
                     notes: if input.play_items && track.content { track.notes.as_deref() } else { None },
-                    live: if track.midi_input.is_some() { input.midi } else { &[] },
-                    live_channel: track.midi_input.flatten(),
+                    live,
+                    live_channel,
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
                     midi: None,
                     midi_from: 0,
                 };
                 let (chain_midi, next_midi) = match midi_bufs.as_deref_mut() {
-                    Some([held, next]) => (chain_has_midi.then_some(&*held), Some(next)),
+                    Some([held, next, _]) => (chain_has_midi.then_some(&*held), Some(next)),
                     None => (None, None),
                 };
                 ctx.midi = chain_midi;
@@ -1340,14 +1482,26 @@ impl RenderGraph {
                 if let Some(next) = next_midi {
                     next.clear();
                     if fx.take_midi(next) {
+                        if !fx.midi_buses
+                            && let Some(held) = chain_midi
+                        {
+                            next.bused.extend_from_slice(&held.bused);
+                        }
                         chain_has_midi = true;
-                        if let Some([held, next]) = midi_bufs.as_deref_mut() {
+                        if let Some([held, next, _]) = midi_bufs.as_deref_mut() {
                             std::mem::swap(held, next);
                         }
                     }
                 }
             }
         }
+        if routes_midi && let Some([held, _, entering]) = midi_bufs.as_deref() {
+            self.route_midi(track, held, entering);
+            if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
+                self.send_block_midi(held, out, clock, start);
+            }
+        }
+        drop(midi_bufs);
         if track.audible {
             track.taps.fill(track.taps.post_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
         }
@@ -1414,9 +1568,54 @@ impl RenderGraph {
         track.meter.record(tl, tr);
     }
 
+    /// Hands the MIDI leaving `track`'s chain (`post`), or entering it (`pre`), to the
+    /// destinations of its MIDI sends.
+    fn route_midi(&self, track: &RenderTrack, post: &crate::fx::MidiBlock, pre: &crate::fx::MidiBlock) {
+        for &(dest, midi, pre_fx) in &track.midi_sends {
+            let Some(inbox) = self.tracks.get(dest).and_then(|t| t.midi_inbox.as_ref()) else { continue };
+            let Ok(mut inbox) = inbox.0.lock() else { continue };
+            let src = if pre_fx { pre } else { post };
+            for &(at, b) in &src.short {
+                if let Some((status, bus)) = midi.route(b[0], 0) {
+                    inbox.push(at, bus, [status, b[1], b[2]]);
+                }
+            }
+            for &(at, from, b) in &src.bused {
+                if let Some((status, bus)) = midi.route(b[0], from) {
+                    inbox.push(at, bus, [status, b[1], b[2]]);
+                }
+            }
+            if midi.route(0xf0, 0) == Some((0xf0, 0)) {
+                inbox.long.extend(src.long.iter().cloned());
+            }
+        }
+    }
+
+    /// Queues a track's routed MIDI (its chain's output) for its hardware output.
+    fn send_block_midi(
+        &self,
+        block: &crate::fx::MidiBlock,
+        (port, channel): (u8, u8),
+        clock: MidiOutClock,
+        start: i64,
+    ) {
+        let Ok(mut queue) = clock.queue.try_lock() else { return };
+        let sr = self.sample_rate as f64;
+        for &(at, mut bytes) in &block.short {
+            if channel > 0 {
+                bytes[0] = bytes[0] & 0xf0 | (channel - 1);
+            }
+            let len = crate::midi_io::message_len(bytes[0]);
+            let ahead = ((start + at as i64 - clock.frame) as f64 / sr).max(0.0);
+            let due = clock.at + std::time::Duration::from_secs_f64(ahead);
+            let _ = queue.push(OutMessage::new(due, port, &bytes[..len]));
+        }
+    }
+
     /// Adds a rendered track to its send destinations and its parent folder or the master.
     /// Queues the MIDI a track sends to its hardware output in this block: its items' messages
     /// (read as far ahead as its audio, so they sound with it) and live input it monitors.
+    #[allow(clippy::too_many_arguments)]
     fn send_midi(
         &self,
         track: &RenderTrack,
@@ -1425,16 +1624,23 @@ impl RenderGraph {
         start: i64,
         n: i64,
         input: &LiveInput,
+        live: &[LiveMidi],
     ) {
         let Ok(mut queue) = clock.queue.try_lock() else { return };
         let sr = self.sample_rate as f64;
-        let mut push = |frame: i64, mut bytes: [u8; 3], len: u8| {
-            if channel > 0 {
-                bytes[0] = bytes[0] & 0xf0 | (channel - 1);
-            }
+        let mut push_long = |frame: i64, msg: &[u8]| {
             let ahead = ((frame - clock.frame) as f64 / sr).max(0.0);
             let due = clock.at + std::time::Duration::from_secs_f64(ahead);
-            let _ = queue.push(OutMessage { due, port, midi: LiveMidi { bytes, len } });
+            let _ = queue.push(OutMessage::new(due, port, msg));
+        };
+        if input.play_items {
+            self.send_mtc(track, start, n, &mut push_long);
+        }
+        let mut push = |frame: i64, mut bytes: [u8; 3], len: u8| {
+            if channel > 0 && bytes[0] < 0xf0 {
+                bytes[0] = bytes[0] & 0xf0 | (channel - 1);
+            }
+            push_long(frame, &bytes[..len as usize]);
         };
         let read = start + track.read_ahead;
         if input.play_items
@@ -1454,9 +1660,49 @@ impl RenderGraph {
             }
         }
         if let Some(listen) = track.midi_input {
-            for m in input.midi.iter().filter(|m| listen.is_none_or(|c| m.channel() == c)) {
+            for m in live.iter().filter(|m| listen.channel.is_none_or(|c| m.channel() == c)) {
                 push(start, m.bytes, m.len);
             }
+        }
+    }
+
+    /// MTC from the track's timecode generator items in this block: a full frame where
+    /// playback enters an item or jumps, then quarter frames on a grid from there.
+    fn send_mtc(&self, track: &RenderTrack, start: i64, n: i64, push: &mut dyn FnMut(i64, &[u8])) {
+        let sr = self.sample_rate as f64;
+        let read = start + track.read_ahead;
+        for item in &track.items {
+            let ItemAudio::Timecode(tc) = &item.audio else { continue };
+            if !tc.mtc {
+                continue;
+            }
+            let (from, to) = (read.max(item.start), (read + n).min(item.start + item.length));
+            let Ok(mut state) = tc.mtc_state.try_lock() else { continue };
+            if from >= to {
+                *state = None;
+                continue;
+            }
+            let tc_at = |f: i64| tc.start + (item.source_offset + (f - item.start) as f64 * item.playrate) / sr;
+            let step = sr / (4.0 * tc.rate.fps);
+            let (anchor, frame0) = match *state {
+                Some((end, anchor, frame0)) if end == from => (anchor, frame0),
+                _ => {
+                    let frame0 = (tc_at(from) * tc.rate.fps + 1e-9).floor() as i64;
+                    push(from - track.read_ahead, &crate::midi_sync::mtc_full_frame(frame0, tc.rate));
+                    (from, frame0)
+                }
+            };
+            let mut k = (((from - anchor) as f64 / step) - 1e-9).ceil().max(0.0) as i64;
+            loop {
+                let at = anchor + (k as f64 * step).round() as i64;
+                if at >= to {
+                    break;
+                }
+                let qf = crate::midi_sync::mtc_quarter_frame((k % 8) as u8, frame0 + 2 * (k / 8), tc.rate);
+                push(at - track.read_ahead, &qf);
+                k += 1;
+            }
+            *state = Some((to, anchor, frame0));
         }
     }
 
@@ -1710,7 +1956,7 @@ fn dependency_levels(tracks: &[RenderTrack], order: &[usize]) -> Vec<usize> {
     let mut level = vec![0usize; tracks.len()];
     for &i in order {
         let t = &tracks[i];
-        for dest in t.sends.iter().map(|s| s.dest).chain(t.parent) {
+        for dest in t.sends.iter().map(|s| s.dest).chain(t.midi_sends.iter().map(|s| s.0)).chain(t.parent) {
             level[dest] = level[dest].max(level[i] + 1);
         }
     }
@@ -1719,7 +1965,9 @@ fn dependency_levels(tracks: &[RenderTrack], order: &[usize]) -> Vec<usize> {
 
 fn send_order(tracks: &[RenderTrack]) -> Vec<usize> {
     let n = tracks.len();
-    let edges = |t: &RenderTrack| t.sends.iter().map(|s| s.dest).chain(t.parent).collect::<Vec<_>>();
+    let edges = |t: &RenderTrack| {
+        t.sends.iter().map(|s| s.dest).chain(t.midi_sends.iter().map(|s| s.0)).chain(t.parent).collect::<Vec<_>>()
+    };
     let mut indegree = vec![0usize; n];
     for t in tracks {
         for d in edges(t) {

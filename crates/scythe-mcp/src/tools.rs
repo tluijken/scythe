@@ -6,9 +6,9 @@ use std::sync::OnceLock;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
-    fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, mix::MixCommand,
-    project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand,
-    tracks::TrackCommand, transport::TransportCommand,
+    fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, midi::MidiCommand,
+    mix::MixCommand, project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand,
+    tempo::TempoCommand, tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -95,6 +95,7 @@ fn domains() -> Vec<Value> {
         schema::<SetlistCommand>(),
         schema::<TempoCommand>(),
         schema::<SurfaceCommand>(),
+        schema::<MidiCommand>(),
     ]
 }
 

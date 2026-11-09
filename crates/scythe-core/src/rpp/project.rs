@@ -222,6 +222,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         }
                     }
                     "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
+                    "SMPTESYNC" => {
+                        p.timecode_sync = crate::midi_route::TimecodeSync::parse(&t[1..]);
+                        p.extra.push(node.clone());
+                    }
                     _ => p.extra.push(node.clone()),
                 }
             }
@@ -453,7 +457,7 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                     }
                     "REC" => {
                         track.armed = flag(&t, 1);
-                        track.rec_input = num(&t, 2, 0.0) as i64;
+                        track.rec_input = crate::midi_route::rec_input_from_rpp(num(&t, 2, 0.0) as i64);
                         track.monitor = flag(&t, 3);
                         track.extra.push(node.clone());
                     }
@@ -479,6 +483,7 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                             envelopes: Vec::new(),
                             src_channels: num(&t, 8, 0.0) as i64,
                             dst_channels: num(&t, 9, 0.0) as i64,
+                            midi_flags: num(&t, 11, crate::midi_route::SEND_MIDI_OFF as f64) as i64,
                             raw: Some(t.clone()),
                         },
                     )),
@@ -948,6 +953,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     let mut wrote_hw = false;
     let (mut wrote_pan_mode, mut wrote_group_names) = (false, false);
     let mut wrote_metronome = false;
+    let mut wrote_sync = false;
     for node in &p.extra {
         match node {
             Node::Line(l) if line_key(l) == "MASTERHWOUT" => {
@@ -987,6 +993,16 @@ pub fn project_to_rpp(p: &Project) -> String {
                 write_group_names(&mut root, p);
                 wrote_group_names = true;
             }
+            Node::Line(l) if line_key(l) == "SMPTESYNC" => {
+                let mut toks = p.timecode_sync.tokens();
+                let old = tokenize(l);
+                // Keep REAPER's own spelling of the numbers while nothing changed.
+                if crate::midi_route::TimecodeSync::parse(&old[1..]) == p.timecode_sync {
+                    toks = old;
+                }
+                root.line(toks);
+                wrote_sync = true;
+            }
             Node::Chunk(c) if c.name() == "TEMPOENVEX" => {
                 root.push_chunk(write_tempo_env(Some(c), &p.tempo.points));
                 wrote_tempo = true;
@@ -1005,6 +1021,9 @@ pub fn project_to_rpp(p: &Project) -> String {
     }
     if !wrote_metronome && p.metronome != crate::metronome::Metronome::default() {
         write_metronome(&mut root, None, &p.metronome);
+    }
+    if !wrote_sync && p.timecode_sync != crate::midi_route::TimecodeSync::default() {
+        root.line(p.timecode_sync.tokens());
     }
     if !wrote_nch && m.channels != 2 {
         root.line(["MASTER_NCH".to_owned(), m.channels.to_string(), "2".to_owned()]);
@@ -1196,7 +1215,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                     toks[1] = if t.armed { "1" } else { "0" }.to_owned();
                 }
                 if toks.len() > 2 {
-                    toks[2] = t.rec_input.to_string();
+                    toks[2] = crate::midi_route::rec_input_to_rpp(t.rec_input).to_string();
                 }
                 // REAPER has several monitoring modes; keep the stored one while it agrees on on/off.
                 if toks.len() > 3 && (num(&toks, 3, 0.0) != 0.0) != t.monitor {
@@ -1230,7 +1249,8 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
     }
     if !wrote_rec && t.armed {
-        c.line(["REC", "1", &t.rec_input.to_string(), &bit(t.monitor), "0", "0", "0", "0", "0"]);
+        let input = crate::midi_route::rec_input_to_rpp(t.rec_input).to_string();
+        c.line(["REC", "1", &input, &bit(t.monitor), "0", "0", "0", "0", "0"]);
     }
     for env in t.envelopes.iter().filter(|e| !wrote_envs.contains(&e.kind)) {
         c.push_chunk(write_envelope(env));
@@ -1253,6 +1273,8 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             toks[7] = bit(s.phase);
             toks[8] = s.src_channels.to_string();
             toks[9] = s.dst_channels.to_string();
+            toks.resize(toks.len().max(12), "-1".into());
+            toks[11] = s.midi_flags.to_string();
             c.line(toks);
             for env in &s.envelopes {
                 if let Some(name) = env.kind.send_chunk_name() {
@@ -1671,6 +1693,38 @@ mod tests {
         assert_eq!(p2.tempo.points.len(), 3);
         assert_eq!(p2.tempo.points[2].time_sig, Some((7, 8)));
         assert_eq!(p2.tempo.points[2].bpm, 140.0);
+    }
+
+    /// MIDI inputs, the MIDI fields of sends and the timecode sync line as REAPER 7.73 saves
+    /// them, read and written back unchanged.
+    #[test]
+    fn midi_routing_round_trips() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  SMPTESYNC 1 25 100 40 1000 300 4192 0.5 1 0 0\n  <TRACK\n    REC 1 5088 1 0 0 0 0 0\n  >\n  <TRACK\n    REC 1 5155 1 0 0 0 0 0\n    AUXRECV 0 0 1 0 0 0 0 -1 0 -1:U 12583009 -1 ''\n  >\n>\n";
+        let mut p = project_from_rpp(text).unwrap();
+        assert_eq!(p.tracks[0].rec_input, 4096 + (63 << 5), "31 in the file is all inputs");
+        assert_eq!(p.tracks[1].rec_input, 4096 + (31 << 5) + 3, "33 in the file is device 31");
+        let send = &p.tracks[0].sends[0];
+        let midi = send.midi();
+        assert_eq!(
+            (send.src_channels, midi.src_channel, midi.dst_channel, midi.dst_bus),
+            (-1, Some(0), Some(2), Some(2))
+        );
+        assert!(p.timecode_sync.enabled());
+        assert_eq!((p.timecode_sync.input, p.timecode_sync.offset), (4192, 0.5));
+        let out = project_to_rpp(&p);
+        for line in [
+            "SMPTESYNC 1 25 100 40 1000 300 4192 0.5 1 0 0",
+            "REC 1 5088 1",
+            "REC 1 5155 1",
+            "AUXRECV 0 0 1 0 0 0 0 -1 0 -1:U 12583009 -1",
+        ] {
+            assert!(out.contains(line), "{line}\n{out}");
+        }
+        p.tracks[0].rec_input = 4096 + (62 << 5) + 1;
+        p.tracks[0].sends[0].set_midi(crate::midi_route::SendMidi::ALL);
+        p.timecode_sync.set_enabled(false);
+        let out = project_to_rpp(&p);
+        assert!(out.contains("REC 1 5057 1") && out.contains("-1:U 0 -1") && out.contains("SMPTESYNC 0 25"), "{out}");
     }
 
     #[test]

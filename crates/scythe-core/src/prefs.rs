@@ -15,13 +15,61 @@ pub struct Preferences {
     pub metronome_default_output: i64,
     /// `csurf_cnt` and `csurf_<i>`: the control surfaces.
     pub surfaces: Vec<Surface>,
+    /// MIDI device settings, each a mask over device numbers 0-63 stored as two 32-bit words
+    /// (`<key>` and `<key>_h`).
+    pub midi: MidiPrefs,
+}
+
+/// Which MIDI devices are enabled and which outputs get clock, as reaper.ini keeps them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MidiPrefs {
+    /// `midiins`: enabled inputs; `None` (no key) enables every input.
+    pub inputs: Option<u64>,
+    /// `midiouts`: enabled outputs; `None` enables every output.
+    pub outputs: Option<u64>,
+    /// `midiouts_clock`: outputs that get MIDI clock.
+    pub clock: u64,
+    /// `midiouts_clock_nospp`: clock outputs that get no song position pointer.
+    pub clock_no_spp: u64,
+    /// `midiouts_noreset`: outputs spared the reset messages at play.
+    pub no_reset: u64,
+}
+
+impl MidiPrefs {
+    pub fn input_enabled(&self, n: u8) -> bool {
+        n >= 64 || self.inputs.is_none_or(|m| m >> n & 1 != 0)
+    }
+
+    pub fn output_enabled(&self, n: u8) -> bool {
+        n >= 64 || self.outputs.is_none_or(|m| m >> n & 1 != 0)
+    }
+
+    pub fn bit(mask: u64, n: u8) -> bool {
+        n < 64 && mask >> n & 1 != 0
+    }
+
+    pub fn with(mask: u64, n: u8, on: bool) -> u64 {
+        if n >= 64 {
+            return mask;
+        }
+        if on { mask | 1 << n } else { mask & !(1 << n) }
+    }
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { preroll: 0, preroll_measures: 2.0, metronome_default_output: -1, surfaces: Vec::new() }
+        Self {
+            preroll: 0,
+            preroll_measures: 2.0,
+            metronome_default_output: -1,
+            surfaces: Vec::new(),
+            midi: MidiPrefs::default(),
+        }
     }
 }
+
+/// The reaper.ini keys of the MIDI masks, low word first.
+const MIDI_KEYS: [&str; 5] = ["midiins", "midiouts", "midiouts_clock", "midiouts_clock_nospp", "midiouts_noreset"];
 
 const SECTION: &str = "[REAPER]";
 
@@ -61,6 +109,20 @@ impl Preferences {
                 key => {
                     if let Some(i) = surface_index(key) {
                         surfaces.push((i, Surface::parse(value)));
+                        continue;
+                    }
+                    let (base, high) = key.strip_suffix("_h").map_or((key, false), |b| (b, true));
+                    let Some(i) = MIDI_KEYS.iter().position(|k| *k == base) else { continue };
+                    let Ok(word) = value.parse::<i64>() else { continue };
+                    let word = (word as u32 as u64) << if high { 32 } else { 0 };
+                    let keep = if high { 0xffff_ffff } else { 0xffff_ffff << 32 };
+                    let m = &mut prefs.midi;
+                    match i {
+                        0 => m.inputs = Some(m.inputs.unwrap_or(0) & keep | word),
+                        1 => m.outputs = Some(m.outputs.unwrap_or(0) & keep | word),
+                        2 => m.clock = m.clock & keep | word,
+                        3 => m.clock_no_spp = m.clock_no_spp & keep | word,
+                        _ => m.no_reset = m.no_reset & keep | word,
                     }
                 }
             }
@@ -83,6 +145,19 @@ impl Preferences {
         }
         values.extend(self.surfaces.iter().enumerate().map(|(i, s)| (format!("csurf_{i}"), s.line())));
         let stale = |key: &str| surface_index(key).is_some_and(|i| i >= self.surfaces.len());
+        let m = &self.midi;
+        let masks = [Some(m.inputs), Some(m.outputs), None, None, None];
+        let plain = [0, 0, m.clock, m.clock_no_spp, m.no_reset];
+        for (i, key) in MIDI_KEYS.iter().enumerate() {
+            let mask = match masks[i] {
+                Some(None) => continue,
+                Some(Some(v)) => v,
+                None if plain[i] == 0 && !text.contains(key) => continue,
+                None => plain[i],
+            };
+            values.push((key.to_string(), (mask as u32 as i32).to_string()));
+            values.push((format!("{key}_h"), ((mask >> 32) as u32 as i32).to_string()));
+        }
         let mut written = vec![false; values.len()];
         let mut out = Vec::new();
         let mut in_section = false;
@@ -178,5 +253,21 @@ mod tests {
         let none = Preferences { surfaces: Vec::new(), ..fewer }.write_into(&written);
         assert!(none.contains("csurf_cnt=0") && !none.contains("csurf_0"), "{none}");
         assert!(Preferences::parse("[REAPER]\ncsurf_0=MCU 0 0 0 0 0\n").surfaces.is_empty());
+    }
+
+    #[test]
+    fn midi_device_masks() {
+        let text = "[REAPER]\nmidiins=5\nmidiins_h=1\nmidiouts_clock=2\n";
+        let p = Preferences::parse(text);
+        assert_eq!(p.midi.inputs, Some(5 | 1 << 32));
+        assert!(p.midi.input_enabled(0) && !p.midi.input_enabled(1) && p.midi.input_enabled(32));
+        assert!(p.midi.output_enabled(9), "no midiouts key enables every output");
+        assert_eq!(p.midi.clock, 2);
+        let mut q = p.clone();
+        q.midi.inputs = Some(u64::MAX);
+        let written = q.write_into(text);
+        assert!(written.contains("midiins=-1\nmidiins_h=-1\n"), "{written}");
+        assert_eq!(Preferences::parse(&written).midi, q.midi);
+        assert!(!Preferences::default().write_into("").contains("midi"));
     }
 }

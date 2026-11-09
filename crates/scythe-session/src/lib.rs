@@ -8,6 +8,7 @@ mod files;
 mod health;
 mod live;
 mod media;
+mod midi;
 mod transport;
 
 pub mod access;
@@ -65,6 +66,8 @@ pub struct Session {
     pub prefs: Preferences,
     /// Where [`Session::change_preferences`] saves them; tests leave it unset.
     prefs_file: Option<PathBuf>,
+    /// The MIDI devices REAPER-style: stable numbers, names, aliases, which are plugged in.
+    pub midi_devices: scythe_engine::midi_io::MidiDevices,
     pub dirty: bool,
     pub saved_at: Option<Instant>,
     pub busy: Option<String>,
@@ -117,6 +120,7 @@ impl Session {
             no_input: false,
             prefs: Preferences::default(),
             prefs_file: None,
+            midi_devices: Default::default(),
             dirty: false,
             saved_at: None,
             busy: None,
@@ -323,7 +327,7 @@ impl Session {
         }
         self.prefs_file = Some(path);
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
-        self.sync();
+        self.rescan_midi_devices();
     }
 
     /// Changes the preferences and saves them, keeping whatever else their file holds.
@@ -354,16 +358,27 @@ impl Session {
         self.revision += 1;
         self.engine.sync(&self.project);
         let is_midi = |t: &scythe_core::Track| midi_input_channel(t.rec_input).is_some();
-        let monitor = !self.no_input && self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t));
+        let wants_midi = self.project.tracks.iter().any(|t| t.midi_out.is_some() || (t.armed && is_midi(t)))
+            || self.project.timecode_sync.enabled();
+        if wants_midi && self.midi_devices.inputs.is_empty() && self.midi_devices.outputs.is_empty() {
+            self.midi_devices
+                .merge_present(&scythe_engine::midi_io::input_names(), &scythe_engine::midi_io::output_names());
+            scythe_engine::midi_io::share_devices(&self.midi_devices);
+        }
+        let sync = self.sync_config();
+        let ltc = matches!(sync.chase.map(|c| c.source), Some(scythe_engine::midi_sync::ChaseSource::Ltc { .. }));
+        let monitor =
+            !self.no_input && (ltc || self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t)));
         if let Err(e) = self.engine.set_monitoring(monitor) {
             self.notify(format!("Input monitoring unavailable: {e}"));
         }
-        let outputs = self.project.tracks.iter().any(|t| t.midi_out.is_some());
-        if let Err(e) = self.engine.set_midi_outputs(outputs) {
+        let outputs = self.midi_outputs_needed();
+        if let Err(e) = self.engine.set_midi_output_devices(&outputs) {
             self.notify(format!("MIDI output unavailable: {e}"));
         }
-        let midi = !self.no_input && self.project.tracks.iter().any(|t| t.armed && is_midi(t));
-        match self.engine.set_midi_input(midi) {
+        self.engine.set_sync(self.sync_config());
+        let inputs = if self.no_input { Vec::new() } else { self.midi_inputs_needed() };
+        match self.engine.set_midi_input_devices(&inputs) {
             Err(e) if self.midi_error.as_deref() != Some(e.as_str()) => {
                 self.notify(format!("MIDI input unavailable: {e}"));
                 self.midi_error = Some(e);

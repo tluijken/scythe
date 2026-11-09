@@ -205,7 +205,8 @@ or `none`, with `reason` saying why.
 | `track.dual_pan` | `track`, `left`, `right` (-1 to 1) | the track: where dual pan puts each channel |
 | `track.arm` | `track`, `armed?` | the track; record-arm groups follow |
 | `track.monitor` | `track`, `monitor?` | input monitoring: an armed track with monitoring on plays its input through its FX |
-| `track.input` | `track`, `input` | record input in REAPER's `I_RECINPUT` numbering, inputs counted from 0: mono input *n* is *n*, the stereo pair from *n* is 1024 + *n*, MIDI is 4096 + device × 32 + channel (device 63 = all, channel 0 = all), -1 is none |
+| `track.input` | `track`, `input` | record input in REAPER's `I_RECINPUT` numbering, inputs counted from 0: mono input *n* is *n*, the stereo pair from *n* is 1024 + *n*, MIDI is 4096 + device × 32 + channel (device 63 = all, 62 = the virtual keyboard, channel 0 = all), -1 is none |
+| `track.midi_input` | `track`, `device?` (`"all"`, `"keyboard"` or a device number from `midi.devices`; all when left out), `channel?` (1-16, 0 or left out for all) | the track, its input set to that MIDI device and channel |
 | `track.color` (or `track.colour`) | `track`, `color` (`"#rrggbb"` or `null`) | the track |
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
 
@@ -239,6 +240,7 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 | `send.pan` | `track`, `send`, `pan` | the send |
 | `send.mute` | `track`, `send`, `muted?` | the send |
 | `send.mode` | `track`, `send`, `mode?` (`post_fader`, `pre_fx`, `post_fx`), `mono?`, `phase?` | the send |
+| `send.midi` | `track`, `send`, any of `enabled`, `audio` (false makes a MIDI-only send), `src_channel`, `dst_channel`, `src_bus`, `dst_bus` (1-16; 0 is all for sources and unchanged for destinations), `faders` | the send; its `midi` field (null without MIDI) and `audio` show the same, stored as REAPER's `I_MIDIFLAGS` |
 | `send.hw_list` | `track` (or `"master"`) | the hardware outputs |
 | `send.hw_add` | `track`, `output?` (device output from 0; the next free one when left out), `mono?` | the new output |
 | `send.hw_remove` | `track`, `hw` | the remaining outputs |
@@ -354,7 +356,7 @@ running session opens, closes and reopens the devices. Admin only.
 | `surface.add` | `surface` | the list |
 | `surface.set` | `index`, `surface` | the list |
 | `surface.remove` | `index` | the list |
-| `surface.devices` | | `{"inputs", "outputs"}`: MIDI port names, numbered as `input` and `output` take them |
+| `surface.devices` | | `{"inputs", "outputs"}`: MIDI port names indexed by the stable device numbers `input` and `output` take (as `midi.devices` numbers them; empty where no device is present) |
 | `surface.action_list` | | `[{"id", "name"}]`: REAPER command ids and Scythe's named commands a surface can run |
 | `surface.run_action` | `action` (`"40364"`, `"_SCYTHE_SETLIST_NEXT"`) | `{}` |
 
@@ -367,6 +369,22 @@ A `surface` is one of:
   `hui`, `faderport` or `faderport2` (the FaderPorts are kept but not driven yet); `offset`
   moves the first strip on by that many tracks (8 for an extender right of an MCU).
 - `{"type": "line", "line": "MCU 0 0 2 3 0"}`: a line copied from REAPER's reaper.ini.
+
+### MIDI devices and synchronization
+
+Devices keep stable numbers, as REAPER's `reaper-midihw-linux.ini` keeps them beside
+reaper.ini; tracks name their MIDI inputs and outputs by these numbers. Enabling a device and
+the clock settings are reaper.ini's `midiins`, `midiouts`, `midiouts_clock`,
+`midiouts_clock_nospp` and `midiouts_noreset` masks; aliases are the cache's `ia`/`oa` lines.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `midi.devices` | | `{"inputs": [...], "outputs": [...]}`, each `{"number", "name", "alias", "present", "enabled"}`, outputs also `clock`, `spp`, `reset` |
+| `midi.rescan` | | the devices, after looking for ports again |
+| `midi.device` | `kind` (`input`, `output`), `number`, any of `enabled`, `alias` (empty clears it), and for outputs `clock`, `spp`, `reset` | the devices |
+| `midi.keyboard` | `note`, `velocity` (0 releases), `channel?` (1-16) | `null`; plays the virtual MIDI keyboard (device 62) |
+| `sync.get` | | `{"enabled", "source" ("mtc", "ltc", "clock"), "device", "channel", "offset", "resync_ms", "freewheel_ms", "frame_rate", "clock_outputs"}` |
+| `sync.set` | any of `enabled`, `source`, `device` (63 for all inputs), `channel` (LTC audio input from 0), `offset` (seconds subtracted from the timecode), `resync_ms`, `freewheel_ms`, `frame_rate` (24, 25, 29.97, 30) | the synchronization; chasing MTC or LTC is the project's `SMPTESYNC` line, chasing MIDI clock (Scythe's own) a project extension state |
 
 ### Access links
 

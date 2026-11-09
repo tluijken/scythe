@@ -295,11 +295,40 @@ Working:
   through their MIDI mapping.
 - **MIDI files and input**: `.mid` files import (dialog or drag-and-drop) as in-project MIDI
   items, and "Item: Export MIDI item to file" writes one back out. A track whose record input
-  is MIDI (all inputs, optionally one channel) plays its instrument live while armed with
-  monitoring on, and records an in-project MIDI item; recording around a loop layers the passes
-  into one take, as REAPER's MIDI overdub. A track can also send its MIDI (items and monitored
-  input, optionally forced to one channel) to a hardware output (Sends tab), timed to sound
-  with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
+  is MIDI plays its instrument live while armed with monitoring on, and records an in-project
+  MIDI item; recording around a loop layers the passes into one take, as REAPER's MIDI
+  overdub. The input is one device or all of them (and one channel or all), numbered as REAPER
+  numbers them: devices keep their number in `reaper-midihw-linux.ini` beside the preferences
+  while unplugged, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
+  virtual keyboard as 30, ports from 30 up two higher), so a project listens only to its
+  keyboard or pad. A track can also send its MIDI (items, monitored input and what it receives,
+  after its effects, optionally forced to one channel) to a hardware output (Sends tab), timed
+  to sound with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
+- **MIDI routing**: sends carry MIDI as REAPER's `AUXRECV` MIDI field (`I_MIDIFLAGS`) says:
+  all or one source channel, moved to a destination channel, from one MIDI bus or all, onto
+  another bus; audio and MIDI or MIDI only. Post-fader and post-FX sends carry what leaves the
+  source's effects, pre-FX sends what enters them; a muted send or source sends none, and
+  routing works between any two tracks in the same block whatever their order; solo routing gates MIDI sends as it gates audio. MIDI buses
+  1-16 travel through every chain: JSFX with `ext_midi_bus` read and write them (`midi_bus`),
+  other effects and instruments hear the normal bus only and pass the others on, as in REAPER.
+  The Sends tab's MIDI pill switches a send between no MIDI, audio and MIDI, and MIDI only
+  (right-click: destination channel).
+- **MIDI devices, clock and timecode**: "View: MIDI devices" enables inputs and outputs (REAPER's
+  `midiins`/`midiouts` masks), shows aliases (`ia`/`oa` in the device cache) and picks the
+  outputs that get MIDI clock and song position (`midiouts_clock`, `midiouts_clock_nospp`),
+  sent as REAPER sends them: ticks on the 1/24 quarter-note grid while playing, Start from the
+  project start and Continue elsewhere, Stop and a song position pointer when stopping or
+  moving, and its reset (all sound and notes off, pitch bend centred, sustain off) at play
+  unless `midiouts_noreset`. Control surfaces open their MIDI ports by the same device numbers. The timecode generator item (`<SOURCE LTC`, "Insert timecode
+  generator") plays LTC audio at -10 dBFS or, with `SEND 2`, MTC to its track's MIDI output (a
+  full frame where playback starts or jumps, then quarter frames). External timecode
+  synchronization (the project's `SMPTESYNC`, "Toggle external timecode synchronization")
+  chases MTC from one input or all, LTC on an audio input, or MIDI clock with song position:
+  the transport starts where the timecode is (minus the offset), jumps back in line past the
+  resync threshold and stops when the timecode has been gone for the freewheel time.
+- **Virtual MIDI keyboard** ("View: Show virtual MIDI keyboard", `Alt+B`): three octaves to
+  click, with octave, channel and velocity; it is device 62, so tracks armed with it as their
+  input play and record it, and `midi.keyboard` plays it from the control API.
 - **Marker actions**: a marker named `!` plus command ids runs them when the play cursor
   crosses it (REAPER's SWS "marker actions": `!1016` stops, `!1016 40042` stops and goes to the
   start, `!_SWS_…` names a custom/extension command). Sample-accurate on the audio thread:
@@ -645,6 +674,11 @@ compare with scythe's output sample by sample:
 | EEL2 against REAPER: number literals (20 forms), `min`/`max` with NaN in 41 contexts, subnormal results of `exp`, `pow`, `^` and the rest | same values; the same sections fail to compile |
 | System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
 | JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
+| MIDI sends (`AUXRECV` MIDI fields) into JSFX probe synths and the workspace's CLAP test synth: all channels, one source channel, a destination channel, MIDI off, post-fader and post-FX (a transposing JSFX in the source), pre-FX, audio plus MIDI, a muted send, a muted source, a send from a later track merged with the destination's own items, a chain through a track without effects, destination bus 3 into bus-aware and plain JSFX and the CLAP synth, source bus filters, a bus passing a plain JSFX untouched, and solo (destination soloed, source soloed, a third track soloed) | exact (25 renders) |
+| MIDI record input: `I_RECINPUT` device numbers 0-127 set through the API against the `REC` field REAPER saved, and `REC` fields 0-129 read back through the API | same mapping (34 pairs) |
+| MIDI device settings with REAPER on a private JACK dummy server: `midiins` enabling devices by bit, aliases from `ia<n>`/`oa<n>` in `[mididevcache]`, `GetMIDIInputName`/`GetMIDIOutputName` | same names and enabled ports |
+| MIDI clock and MTC out, captured from REAPER's JACK MIDI ports with `jack_midi_dump`: play from the start, stop, move while stopped, play elsewhere, move while playing, pause; the timecode generator at 25 fps with a jump | Scythe sends the same messages in the same order (the captured sequence is a unit test); ticks 1000 frames apart at 120 BPM on the beat grid, timing checked on a virtual ALSA port |
+| Timecode generator (`<SOURCE LTC`) at 24, 25 and 30 fps, with an hour offset, from a later item position with a source offset | exact (5 renders); 23.976 and 29.97 (drop and non-drop) are a fraction of a sample to a few samples off REAPER's phase |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
 | FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
@@ -694,6 +728,17 @@ compares the two files.
   project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
   into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
   as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
+- MIDI sync: REAPER's routing-window defaults for new sends are not measured; Scythe's new sends
+  carry no MIDI (`CreateTrackSend` from a script carries all, as REAPER's does). The meaning of
+  `SMPTESYNC`'s input field was not measured (REAPER's sync dialog needs a screen): Scythe reads
+  it as `I_RECINPUT`-style (4096 + device × 32 for MTC, else an audio channel for LTC); the
+  skip and look-ahead fields are kept but not used. Chasing MIDI clock is Scythe's own (REAPER
+  does not chase clock) and follows song position, not tempo. LTC chase reads 24/25/30 fps and
+  needs the audio input open. REAPER's first MTC quarter-frame run after a start carries a
+  stale seconds nibble; Scythe's does not. NTSC LTC rates are not sample-exact. Input
+  quantize, MIDI learn and the "faders send MIDI volume/pan" flag (kept, not acted on) are not
+  there.
+
 - Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
   not advance playback without an audio device and the test setup has no SWS, so neither when
   SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other

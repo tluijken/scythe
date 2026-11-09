@@ -8,6 +8,7 @@ pub mod history;
 pub mod marker_action;
 pub mod metronome;
 pub mod midi;
+pub mod midi_route;
 pub mod model;
 pub mod monitor;
 pub mod prefs;

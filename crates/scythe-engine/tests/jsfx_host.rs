@@ -137,3 +137,104 @@ fn serialized_state_is_saved_and_restored_like_reaper() {
     assert_eq!((l[0], r[0]), (4.0, 10.5));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// Renders a source track's MIDI item (key 64, 0.5 s to 1 s at 1000 Hz) sent to a second
+/// track whose JSFX `chain` plays it; `flags` is the send's `I_MIDIFLAGS`, `src_fx` the
+/// source's own chain.
+fn render_midi_send(scripts: &[(&str, &str)], src_fx: &[&str], chain: &[&str], flags: i64, mode: i64) -> Vec<f32> {
+    use scythe_core::rpp::project_from_rpp;
+    use scythe_engine::MediaPool;
+    use scythe_engine::render::{MeterRegistry, RenderGraph, RenderScratch};
+
+    let dir = std::env::temp_dir().join(format!(
+        "scythe-midi-send-{}-{flags}-{mode}-{}",
+        std::process::id(),
+        chain.join("-")
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, src) in scripts {
+        std::fs::write(dir.join(name), src).unwrap();
+    }
+    let slots = |names: &[&str]| -> String {
+        names.iter().map(|n| format!("      BYPASS 0 0 0\n      <JS {n} \"\"\n      >\n      WAK 0 0\n")).collect()
+    };
+    let text = format!(
+        "<REAPER_PROJECT 0.1 \"7.73\" 0\n  TEMPO 120 4 4\n  <TRACK\n    MAINSEND 0 0\n    <FXCHAIN\n{}    >\n    <ITEM\n      POSITION 0\n      LENGTH 2\n      <SOURCE MIDI\n        HASDATA 1 960 QN\n        E 960 91 40 64\n        E 960 81 40 00\n        E 1920 b0 7b 00\n      >\n    >\n  >\n  <TRACK\n    AUXRECV 0 {mode} 1 0 0 0 0 -1 0 -1:U {flags} -1 ''\n    <FXCHAIN\n{}    >\n  >\n>\n",
+        slots(src_fx),
+        slots(chain)
+    );
+    let project = project_from_rpp(&text).unwrap();
+    let mut fx = FxRegistry::new(1000);
+    fx.set_jsfx_paths(vec![dir.clone()]);
+    let graph = RenderGraph::build(&project, &MediaPool::default(), &mut MeterRegistry::default(), &mut fx, 1000);
+    let (mut l, mut r) = (vec![0.0f32; 1500], vec![0.0f32; 1500]);
+    graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
+    std::fs::remove_dir_all(&dir).unwrap();
+    l
+}
+
+/// Plays the last note's key and channel as a level, and its bus when it reads buses.
+const BUS_LEVEL: &str = "desc:Note, channel and bus\n@init\next_midi_bus = 1;\nfrom = 0;\nlvl = 1000;\n@block\nn = 0;\nwhile (midirecv(offset, msg1, msg2, msg3)) (\n  from[n] = offset;\n  lvl[n] = (msg1 & 0xF0) == 0x90 && msg3 > 0 ? msg2 / 128 + (msg1 & 15) / 4096 + midi_bus / 64 : 0;\n  n += 1;\n);\nnext = 0;\npos = 0;\n@sample\nwhile (next < n && from[next] <= pos) (\n  level = lvl[next];\n  next += 1;\n);\npos += 1;\nspl0 = level;\nspl1 = level;\n";
+const TO_BUS_3: &str = "desc:To bus 3\n@init\next_midi_bus = 1;\n@block\nwhile (midirecv(o, a, b, c)) ( midi_bus = 2; midisend(o, a, b, c); );\n";
+
+/// REAPER 7.73 renders of the same routing (`AUXRECV` MIDI fields) set these levels.
+#[test]
+fn midi_sends_route_channels_and_buses_like_reaper() {
+    let scripts = [("level", LEVEL), ("bus_level", BUS_LEVEL), ("transpose", TRANSPOSE), ("to_bus_3", TO_BUS_3)];
+    let at = |l: &[f32]| l[700];
+    let key = 64.0 / 128.0;
+    assert_eq!(at(&render_midi_send(&scripts, &[], &["level"], 0, 0)), key, "all channels");
+    assert_eq!(at(&render_midi_send(&scripts, &[], &["level"], 1, 0)), 0.0, "only channel 1; the note is on 2");
+    assert_eq!(at(&render_midi_send(&scripts, &[], &["level"], 2, 0)), key, "only channel 2");
+    assert_eq!(at(&render_midi_send(&scripts, &[], &["level"], 31 | 255 << 14, 0)), 0.0, "MIDI off");
+    let moved = at(&render_midi_send(&scripts, &[], &["bus_level"], 5 << 5, 0));
+    assert!((moved - (key + 4.0 / 4096.0)).abs() < 1e-6, "to channel 5: {moved}");
+    let transposed = at(&render_midi_send(&scripts, &["transpose"], &["level"], 0, 0));
+    assert_eq!(transposed, 76.0 / 128.0, "post-fader sends carry the chain's output");
+    assert_eq!(at(&render_midi_send(&scripts, &["transpose"], &["level"], 0, 1)), key, "pre-FX sends the input");
+    let bus = at(&render_midi_send(&scripts, &[], &["bus_level"], 3 << 22, 0));
+    assert!((bus - (key + 1.0 / 4096.0 + 2.0 / 64.0)).abs() < 1e-6, "to bus 3: {bus}");
+    assert_eq!(at(&render_midi_send(&scripts, &[], &["level"], 3 << 22, 0)), 0.0, "a plain JSFX hears bus 1 only");
+    let passed = at(&render_midi_send(&scripts, &[], &["transpose", "bus_level"], 3 << 22, 0));
+    assert!((passed - bus).abs() < 1e-6, "bus 3 passes a plain JSFX untouched: {passed}");
+    assert_eq!(at(&render_midi_send(&scripts, &["to_bus_3"], &["level"], 1 << 14, 0)), 0.0, "only source bus 1");
+    let from3 = at(&render_midi_send(&scripts, &["to_bus_3"], &["bus_level"], 3 << 14, 0));
+    assert!((from3 - bus).abs() < 1e-6, "only source bus 3: {from3}");
+}
+
+/// A track listening to one MIDI device (the virtual keyboard here) hears only that device.
+#[test]
+fn live_midi_follows_the_input_device() {
+    use scythe_core::rpp::project_from_rpp;
+    use scythe_engine::MediaPool;
+    use scythe_engine::midi_io::LiveMidi;
+    use scythe_engine::render::{LiveInput, MeterRegistry, RenderGraph, RenderScratch};
+
+    let dir = std::env::temp_dir().join(format!("scythe-live-device-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("level"), LEVEL).unwrap();
+    // REC 1 5056 1: armed, the virtual keyboard (stored as device 30), monitored.
+    let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  <TRACK\n    REC 1 5056 1 0 0 0 0 0\n    <FXCHAIN\n      BYPASS 0 0 0\n      <JS level \"\"\n      >\n      WAK 0 0\n    >\n  >\n>\n";
+    let project = project_from_rpp(text).unwrap();
+    assert_eq!(project.tracks[0].rec_input, 4096 + (62 << 5));
+    let mut fx = FxRegistry::new(1000);
+    fx.set_jsfx_paths(vec![dir.clone()]);
+    let graph = RenderGraph::build(&project, &MediaPool::default(), &mut MeterRegistry::default(), &mut fx, 1000);
+    let mut scratch = RenderScratch::new(4);
+    let mut render = |midi: &[LiveMidi]| {
+        let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+        graph.render_with(
+            0,
+            &mut l,
+            &mut r,
+            &mut scratch,
+            &LiveInput { midi, play_items: false, ..LiveInput::default() },
+        );
+        l[63]
+    };
+    let note = |device: u8, on: bool| LiveMidi::new([if on { 0x90 } else { 0x80 }, 64, 100], 3).from_device(device);
+    assert_eq!(render(&[note(3, true)]), 0.0, "device 3 is not the track's input");
+    assert_eq!(render(&[note(62, true)]), 0.5, "the virtual keyboard is");
+    assert_eq!(render(&[note(62, false)]), 0.0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

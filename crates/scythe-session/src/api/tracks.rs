@@ -136,6 +136,18 @@ pub enum TrackCommand {
         /// 4096 + device * 32 + channel (device 63 = all, channel 0 = all), -1 is none.
         input: i64,
     },
+    /// Makes the record input MIDI: a device (`"all"`, `"keyboard"` for the virtual MIDI
+    /// keyboard, or a device number from `midi.devices`) and a channel.
+    #[serde(rename = "track.midi_input")]
+    MidiInput {
+        track: TrackRef,
+        /// `"all"`, `"keyboard"` or a device number; all when left out.
+        #[serde(default)]
+        device: Option<MidiDeviceRef>,
+        /// 1-16 listens to one channel; 0 or left out to all.
+        #[serde(default)]
+        channel: Option<u8>,
+    },
     /// Sets the track colour.
     #[serde(rename = "track.color", alias = "track.colour")]
     Color {
@@ -350,6 +362,28 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
             track.track(&session.project)?;
             set(session, &track, "Toggle input monitoring", |t| t.monitor = flag(monitor, t.monitor))
         }
+        TrackCommand::MidiInput { track, device, channel } => {
+            let channel = channel.unwrap_or(0);
+            if channel > 16 {
+                return Err(ApiError::invalid("channels run from 1 to 16, 0 for all"));
+            }
+            let device = match device {
+                None | Some(MidiDeviceRef::Name(MidiDeviceName::All)) => scythe_core::midi_route::MidiDevice::All,
+                Some(MidiDeviceRef::Name(MidiDeviceName::Keyboard)) => {
+                    scythe_core::midi_route::MidiDevice::VirtualKeyboard
+                }
+                Some(MidiDeviceRef::Number(n)) if n < 62 || (64..=127).contains(&n) => {
+                    scythe_core::midi_route::MidiDevice::Port(n)
+                }
+                Some(MidiDeviceRef::Number(_)) => {
+                    return Err(ApiError::invalid(
+                        "device numbers run from 0 to 127; 62 and 63 are \"keyboard\" and \"all\"",
+                    ));
+                }
+            };
+            let input = scythe_core::midi_route::MidiInput { device, channel: channel.checked_sub(1) };
+            set(session, &track, "Set record input", |t| t.rec_input = input.rec_input())
+        }
         TrackCommand::Input { track, input } => {
             track.track(&session.project)?;
             set(session, &track, "Set record input", |t| t.rec_input = input)
@@ -372,4 +406,19 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
             set(session, &track, "Toggle master/parent send", |t| t.main_send = on.unwrap_or(!t.main_send))
         }
     }
+}
+
+/// A MIDI input device: `"all"`, `"keyboard"` or a device number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum MidiDeviceRef {
+    Name(MidiDeviceName),
+    Number(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiDeviceName {
+    All,
+    Keyboard,
 }

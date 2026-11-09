@@ -186,7 +186,8 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             let Some(t) = track(&mut s.project, a.get(0).track()) else { return Some(ret(Val::Int(-1))) };
             let n = match dest {
                 Some(dest) => {
-                    t.sends.push(Send::new(dest));
+                    // REAPER's CreateTrackSend carries all MIDI (I_MIDIFLAGS 0).
+                    t.sends.push(Send { midi_flags: 0, ..Send::new(dest) });
                     t.sends.len()
                 }
                 None => {
@@ -232,6 +233,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                         "D_VOL" => v(send.volume),
                         "D_PAN" => v(send.pan),
                         "I_SRCCHAN" => v(send.src_channels as f64),
+                        "I_MIDIFLAGS" => v(send.midi_flags as f64),
                         "I_DSTCHAN" => v(send.dst_channels as f64),
                         "I_SENDMODE" => v(send.mode.code() as f64),
                         "B_MONO" => v(send.mono as u8 as f64),
@@ -274,6 +276,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                         "D_VOL" => send.volume = v.max(0.0),
                         "D_PAN" => send.pan = v.clamp(-1.0, 1.0),
                         "I_SRCCHAN" => send.src_channels = v as i64,
+                        "I_MIDIFLAGS" => send.midi_flags = v as i64,
                         "I_DSTCHAN" => send.dst_channels = v as i64,
                         "I_SENDMODE" => send.mode = SendMode::from_code(v as i64),
                         "B_MONO" => send.mono = v != 0.0,

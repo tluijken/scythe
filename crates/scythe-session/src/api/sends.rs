@@ -73,6 +73,35 @@ pub enum SendCommand {
         #[serde(default)]
         phase: Option<bool>,
     },
+    /// What MIDI the send carries (REAPER's `I_MIDIFLAGS`); fields left out stay. Channels and
+    /// buses count from 1; 0 means all (for sources) or unchanged (for destinations).
+    #[serde(rename = "send.midi")]
+    Midi {
+        track: TrackRef,
+        /// The send's index in `send.list`, from 0.
+        send: usize,
+        /// Carry MIDI at all.
+        #[serde(default)]
+        enabled: Option<bool>,
+        /// Audio too: false makes it a MIDI-only send, true restores channels 1/2.
+        #[serde(default)]
+        audio: Option<bool>,
+        /// Only this channel (1-16); 0 for all.
+        #[serde(default)]
+        src_channel: Option<u8>,
+        /// Move every message to this channel (1-16); 0 keeps each message's own.
+        #[serde(default)]
+        dst_channel: Option<u8>,
+        /// Only this MIDI bus (1-16); 0 for all.
+        #[serde(default)]
+        src_bus: Option<u8>,
+        /// Arrive on this MIDI bus (1-16); 0 keeps each message's own.
+        #[serde(default)]
+        dst_bus: Option<u8>,
+        /// Send fader moves as MIDI volume and pan.
+        #[serde(default)]
+        faders: Option<bool>,
+    },
     /// The audio hardware outputs of a track or `"master"`.
     #[serde(rename = "send.hw_list")]
     HwList { track: TrackRef },
@@ -231,6 +260,34 @@ pub fn execute(session: &mut Session, command: SendCommand) -> Result<Value, Api
                     s.mode = mode.map_or(s.mode, SendMode::from);
                     s.mono = mono.unwrap_or(s.mono);
                     s.phase = phase.unwrap_or(s.phase);
+                });
+            });
+            Ok(send_info(session, id, send))
+        }
+        SendCommand::Midi { track, send, enabled, audio, src_channel, dst_channel, src_bus, dst_bus, faders } => {
+            let id = existing(session, &track, send)?;
+            for v in [src_channel, dst_channel, src_bus, dst_bus].into_iter().flatten() {
+                if v > 16 {
+                    return Err(ApiError::invalid("channels and buses run from 1 to 16, 0 for all"));
+                }
+            }
+            let pick = |v: Option<u8>, old: Option<u8>| v.map_or(old, |v| v.checked_sub(1));
+            session.edit("Set send MIDI", |p| {
+                with_send(p.track_mut(id), send, |s| {
+                    let old = s.midi();
+                    s.set_midi(scythe_core::midi_route::SendMidi {
+                        enabled: enabled.unwrap_or(old.enabled),
+                        src_channel: pick(src_channel, old.src_channel),
+                        dst_channel: pick(dst_channel, old.dst_channel),
+                        src_bus: pick(src_bus, old.src_bus),
+                        dst_bus: pick(dst_bus, old.dst_bus),
+                        faders: faders.unwrap_or(old.faders),
+                    });
+                    match audio {
+                        Some(false) => s.src_channels = -1,
+                        Some(true) if s.src_channels < 0 => s.src_channels = 0,
+                        _ => {}
+                    }
                 });
             });
             Ok(send_info(session, id, send))

@@ -9,6 +9,7 @@ pub mod fx;
 pub mod groups;
 pub mod items;
 pub mod markers;
+pub mod midi;
 pub mod mix;
 pub mod project;
 pub mod sends;
@@ -45,6 +46,7 @@ pub enum Command {
     Setlist(setlist::SetlistCommand),
     Tempo(tempo::TempoCommand),
     Surface(surface::SurfaceCommand),
+    Midi(midi::MidiCommand),
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -67,6 +69,7 @@ impl<'de> Deserialize<'de> for Command {
             "setlist" => serde_json::from_value(value).map(Command::Setlist),
             "tempo" => serde_json::from_value(value).map(Command::Tempo),
             "surface" => serde_json::from_value(value).map(Command::Surface),
+            "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -88,6 +91,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Setlist(c) => setlist::execute(session, c),
         Command::Tempo(c) => tempo::execute(session, c),
         Command::Surface(c) => surface::execute(session, c),
+        Command::Midi(c) => midi::execute(session, c),
     }
 }
 

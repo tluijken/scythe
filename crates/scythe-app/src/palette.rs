@@ -93,6 +93,9 @@ pub enum Action {
     SetlistNext,
     SetlistPrevious,
     ToggleMarkerActions,
+    ShowVirtualKeyboard,
+    MidiDevices,
+    ToggleTimecodeSync,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -189,6 +192,9 @@ impl Action {
         Action::SetlistNext,
         Action::SetlistPrevious,
         Action::ToggleMarkerActions,
+        Action::ShowVirtualKeyboard,
+        Action::MidiDevices,
+        Action::ToggleTimecodeSync,
     ];
 
     pub fn label(self) -> &'static str {
@@ -281,6 +287,9 @@ impl Action {
             Action::SetlistNext => "Setlist: Next song",
             Action::SetlistPrevious => "Setlist: Previous song",
             Action::ToggleMarkerActions => "Options: Toggle marker actions (run !markers during playback)",
+            Action::ShowVirtualKeyboard => "View: Show virtual MIDI keyboard",
+            Action::MidiDevices => "View: MIDI devices and external timecode synchronization",
+            Action::ToggleTimecodeSync => "Transport: Toggle external timecode synchronization",
         }
     }
 
@@ -305,6 +314,9 @@ impl Action {
             40012 | 40757 => Action::SplitItem,
             40061 => Action::SplitAtSelection,
             40078 => Action::ToggleMixer,
+            40377 => Action::ShowVirtualKeyboard,
+            40619 => Action::MidiDevices,
+            40620 => Action::ToggleTimecodeSync,
             40125 => Action::NextTake,
             40153 => Action::OpenMidiEditor,
             40172 => Action::PreviousMarker,
@@ -416,6 +428,8 @@ impl Action {
             Action::SetlistNext => k(Modifiers::NONE, Key::N),
             Action::SetlistPrevious => k(Modifiers::NONE, Key::P),
             Action::ToggleMarkerActions => None,
+            Action::ShowVirtualKeyboard => k(Modifiers::ALT, Key::B),
+            Action::MidiDevices | Action::ToggleTimecodeSync => None,
         }
     }
 
@@ -693,6 +707,13 @@ impl Action {
             Action::SetlistPlay => app.setlist_play(),
             Action::SetlistNext => app.setlist_step(true),
             Action::SetlistPrevious => app.setlist_step(false),
+            Action::ShowVirtualKeyboard => app.view.keyboard_open = !app.view.keyboard_open,
+            Action::MidiDevices => app.view.midi_devices_open = !app.view.midi_devices_open,
+            Action::ToggleTimecodeSync => {
+                let on = !app.project.timecode_sync.enabled();
+                app.edit("Toggle external timecode synchronization", |p| p.timecode_sync.set_enabled(on));
+                app.notify(if on { "Chasing external timecode" } else { "External timecode synchronization off" });
+            }
             Action::ToggleMarkerActions => {
                 let on = !app.engine.marker_actions();
                 app.engine.set_marker_actions(on);

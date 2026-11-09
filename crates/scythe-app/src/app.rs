@@ -56,6 +56,9 @@ pub struct ViewState {
     pub groups: Option<usize>,
     /// The control surfaces window, while open.
     pub surfaces: Option<crate::ui::surfaces::SurfacesWindow>,
+    pub keyboard_open: bool,
+    pub keyboard: crate::ui::midi_devices::KeyboardState,
+    pub midi_devices_open: bool,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -89,8 +92,6 @@ pub struct ScytheApp {
     pub razor: Vec<(TrackId, TimeRange)>,
     /// Where the copied material starts, so a paste keeps space before the first item.
     clipboard_origin: f64,
-    /// Hardware MIDI outputs, listed once.
-    midi_out_names: Option<Vec<String>>,
     pub last_script: Option<PathBuf>,
     /// What the last script printed (`ShowConsoleMsg`) or its error, until closed.
     pub script_console: Option<String>,
@@ -194,13 +195,15 @@ impl ScytheApp {
                 setlist: false,
                 groups: None,
                 surfaces: None,
+                keyboard_open: false,
+                keyboard: Default::default(),
+                midi_devices_open: false,
             },
             palette: None,
             clipboard: Vec::new(),
             multi: HashSet::new(),
             razor: Vec::new(),
             clipboard_origin: 0.0,
-            midi_out_names: None,
             last_script: None,
             script_console: None,
             running_script: None,
@@ -1367,10 +1370,6 @@ impl ScytheApp {
             }
         });
         self.sel = Selection { track: Some(first), item: None };
-    }
-
-    pub fn midi_output_names(&mut self) -> &[String] {
-        self.midi_out_names.get_or_insert_with(scythe_engine::midi_io::output_names)
     }
 
     pub fn split_selected_item(&mut self) {

@@ -371,7 +371,11 @@ mod tests {
 
         // MIDI an earlier effect sent replaces the track's notes, and voices carry on into the
         // next block.
-        let chain = crate::fx::MidiBlock { short: vec![(3, [0x99, 36, 100]), (4, [0x99, 38, 100])], long: Vec::new() };
+        let chain = crate::fx::MidiBlock {
+            short: vec![(3, [0x99, 36, 100]), (4, [0x99, 38, 100])],
+            long: Vec::new(),
+            bused: Vec::new(),
+        };
         let (mut l, mut r) = (vec![0.0; 6], vec![0.0; 6]);
         s.process(&mut l, &mut r, &ProcessContext { midi: Some(&chain), ..ctx });
         assert_eq!(l, [0.0, 0.0, 0.0, 1.0, 2.0, 3.0]);

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use scythe_core::recording::{RecordPass, place_midi_recording, place_recording};
 use scythe_core::{Item, TimeRange, TrackId};
-use scythe_engine::midi_io::{LiveMidi, midi_input_channel};
+use scythe_engine::midi_io::{LiveMidi, RecInput, midi_input_channel};
 use scythe_engine::record::{RecordTarget, Recording};
 
 use crate::{Selection, Session};
@@ -16,7 +16,7 @@ pub struct ActiveRecording {
     /// Tracks recording audio, in the order of the session's levels.
     pub(crate) audio_tracks: Vec<TrackId>,
     /// Tracks recording MIDI, with the channel they listen to (`None` for all).
-    pub(crate) midi_tracks: Vec<(TrackId, Option<u8>)>,
+    pub(crate) midi_tracks: Vec<(TrackId, RecInput)>,
     /// MIDI received so far, with the project frame it arrived at.
     pub(crate) midi: Vec<(i64, LiveMidi)>,
     /// Seconds recorded before the playhead reached the start: count-in and pre-roll.
@@ -88,8 +88,13 @@ impl Session {
             }
         };
         if !midi_armed.is_empty() {
-            if let Err(e) = self.engine.set_midi_input(true) {
-                self.notify(format!("Cannot record MIDI: {e}"));
+            self.sync();
+            let keyboard_only = midi_armed.iter().all(|t| {
+                RecInput::from_rec_input(t.rec_input)
+                    .is_some_and(|i| i.device == scythe_core::midi_route::MidiDevice::VirtualKeyboard)
+            });
+            if self.engine.midi_input_names().is_empty() && !keyboard_only {
+                self.notify("Cannot record MIDI: no MIDI input is open");
                 if session.is_none() {
                     return;
                 }
@@ -128,7 +133,10 @@ impl Session {
             pass,
             tracks: armed.iter().map(|t| t.id).collect(),
             audio_tracks: audio_armed.iter().map(|t| t.id).collect(),
-            midi_tracks: midi_armed.iter().map(|t| (t.id, midi_input_channel(t.rec_input).flatten())).collect(),
+            midi_tracks: midi_armed
+                .iter()
+                .filter_map(|t| Some((t.id, RecInput::from_rec_input(t.rec_input)?)))
+                .collect(),
             midi: Vec::new(),
             lead_in,
             preroll_from,
@@ -152,11 +160,11 @@ impl Session {
         let sr = self.engine.sample_rate() as f64;
         let timeline = self.project.tempo.timeline();
         let mut items: Vec<(TrackId, Item)> = Vec::new();
-        for &(track, channel) in &rec.midi_tracks {
+        for &(track, input) in &rec.midi_tracks {
             let events: Vec<(f64, [u8; 3], u8)> = rec
                 .midi
                 .iter()
-                .filter(|(_, m)| channel.is_none_or(|c| m.channel() == c))
+                .filter(|(_, m)| input.hears(m.device, m.channel()))
                 .map(|(frame, m)| (*frame as f64 / sr, m.bytes, m.len))
                 .collect();
             if let Some(item) = place_midi_recording(&events, rec.pass, stop, &timeline) {

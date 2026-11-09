@@ -296,8 +296,8 @@ pub fn execute(session: &mut Session, command: SurfaceCommand) -> Result<Value, 
             Ok(json(list(session)))
         }
         SurfaceCommand::Devices => Ok(serde_json::json!({
-            "inputs": scythe_engine::midi_io::input_names(),
-            "outputs": scythe_engine::midi_io::output_names(),
+            "inputs": scythe_engine::midi_io::names_by_number(&scythe_engine::midi_io::current_devices().inputs),
+            "outputs": scythe_engine::midi_io::names_by_number(&scythe_engine::midi_io::current_devices().outputs),
         })),
         SurfaceCommand::ActionList => {
             let commands =

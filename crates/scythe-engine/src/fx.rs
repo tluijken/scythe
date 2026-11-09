@@ -43,17 +43,50 @@ pub struct ProcessContext<'a> {
 }
 
 /// The MIDI an effect passes down the chain in a block, as frame offsets from its start:
-/// channel messages, and system exclusive or meta messages kept whole.
+/// channel messages, and system exclusive or meta messages kept whole. Those are on the
+/// normal bus (bus 0); channel messages on buses 1-15 travel in `bused`, which only effects
+/// that ask for buses see and which the others pass on untouched, as in REAPER.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MidiBlock {
     pub short: Vec<(usize, [u8; 3])>,
     pub long: Vec<(usize, Vec<u8>)>,
+    pub bused: Vec<(usize, u8, [u8; 3])>,
 }
 
 impl MidiBlock {
     pub fn clear(&mut self) {
         self.short.clear();
         self.long.clear();
+        self.bused.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.short.is_empty() && self.long.is_empty() && self.bused.is_empty()
+    }
+
+    /// Replaces the contents with `other`'s, reusing the buffers.
+    pub fn copy_from(&mut self, other: &MidiBlock) {
+        self.short.clear();
+        self.short.extend_from_slice(&other.short);
+        self.long.clone_from(&other.long);
+        self.bused.clear();
+        self.bused.extend_from_slice(&other.bused);
+    }
+
+    /// Puts every list in frame order, keeping the order of messages at the same frame.
+    pub fn sort(&mut self) {
+        self.short.sort_by_key(|e| e.0);
+        self.long.sort_by_key(|e| e.0);
+        self.bused.sort_by_key(|e| e.0);
+    }
+
+    /// Adds a channel message on `bus`.
+    pub fn push(&mut self, at: usize, bus: u8, bytes: [u8; 3]) {
+        if bus == 0 {
+            self.short.push((at, bytes));
+        } else {
+            self.bused.push((at, bus, bytes));
+        }
     }
 }
 
@@ -168,6 +201,12 @@ pub trait Effect: Send {
     /// Moves the MIDI the effect passed on since the last call into `out`, as offsets from the
     /// chain's block; false when the effect leaves the chain's MIDI as it is.
     fn take_midi(&mut self, _out: &mut MidiBlock) -> bool {
+        false
+    }
+
+    /// Whether the effect reads and writes MIDI buses other than the normal one itself (a JSFX
+    /// with `ext_midi_bus`); for the others the chain carries those buses past them.
+    fn midi_buses(&self) -> bool {
         false
     }
 
@@ -392,13 +431,14 @@ fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64,
 pub struct FxInstance {
     effect: Mutex<Box<dyn Effect>>,
     pub instrument: bool,
+    pub midi_buses: bool,
     /// Audio input and output pins.
     pub pins: (usize, usize),
 }
 
 impl FxInstance {
     pub fn new(fx: Box<dyn Effect>) -> Self {
-        Self { instrument: fx.is_instrument(), pins: fx.pins(), effect: Mutex::new(fx) }
+        Self { instrument: fx.is_instrument(), midi_buses: fx.midi_buses(), pins: fx.pins(), effect: Mutex::new(fx) }
     }
 
     /// Runs the effect with its parameter envelopes applied at time `t` (seconds). A bypass

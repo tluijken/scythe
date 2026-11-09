@@ -1035,9 +1035,12 @@ pub struct Machine {
     /// `spl0` … `spl63` and `slider1` … `slider64`, for `spl()` and `slider()`.
     pub spl_slots: [usize; 64],
     pub slider_slots: [usize; 64],
-    /// The block's incoming messages and whether a `midirecv` took each; the rest pass on.
-    pub midi_in: Vec<(f64, MidiMsg, bool)>,
-    pub midi_out: Vec<(f64, MidiMsg)>,
+    /// The block's incoming messages, whether a `midirecv` took each (the rest pass on) and
+    /// the bus each is on.
+    pub midi_in: Vec<(f64, MidiMsg, bool, u8)>,
+    pub midi_out: Vec<(f64, MidiMsg, u8)>,
+    /// `ext_midi_bus` and `midi_bus`.
+    bus_slots: (usize, usize),
     midi_read: usize,
     /// What `printf` wrote.
     pub output: String,
@@ -1096,7 +1099,9 @@ impl Machine {
         let spl_slots = std::array::from_fn(|i| vars.slot(&format!("spl{i}")));
         let slider_slots = std::array::from_fn(|i| vars.slot(&format!("slider{}", i + 1)));
         let gfx = gfx::Link::new(&mut vars);
+        let bus_slots = (vars.slot("ext_midi_bus"), vars.slot("midi_bus"));
         Self {
+            bus_slots,
             vars,
             mem: Arc::new(Cells::new(MEM_SHIFT, MEM_SIZE)),
             rng: 0x2545_f491_4f6c_dd1d,
@@ -1124,6 +1129,7 @@ impl Machine {
             rng: self.rng,
             spl_slots: self.spl_slots,
             slider_slots: self.slider_slots,
+            bus_slots: self.bus_slots,
             midi_in: Vec::new(),
             midi_out: Vec::new(),
             midi_read: 0,
@@ -1238,8 +1244,13 @@ impl Machine {
     /// Clears what MIDI the previous block left and queues `events` for `midirecv`, in frame
     /// order (channel messages before long ones at the same frame).
     pub fn set_midi(&mut self, events: impl Iterator<Item = (f64, MidiMsg)>) {
+        self.set_midi_on_buses(events.map(|(o, m)| (o, m, 0)));
+    }
+
+    /// Like `set_midi`, with each message's bus.
+    pub fn set_midi_on_buses(&mut self, events: impl Iterator<Item = (f64, MidiMsg, u8)>) {
         self.midi_in.clear();
-        self.midi_in.extend(events.map(|(o, m)| (o, m, false)));
+        self.midi_in.extend(events.map(|(o, m, bus)| (o, m, false, bus)));
         self.midi_in.sort_by(|a, b| {
             a.0.total_cmp(&b.0).then((matches!(a.1, MidiMsg::Long(_))).cmp(&matches!(b.1, MidiMsg::Long(_))))
         });
@@ -1253,22 +1264,45 @@ impl Machine {
         let (from_short, from_long) = (out.short.len(), out.long.len());
         let last = n.saturating_sub(1) as f64;
         let at = |offset: f64| base + offset.clamp(0.0, last) as usize;
-        let kept = self.midi_in.drain(..).filter(|e| !e.2).map(|(o, m, _)| (o, m));
-        for (o, m) in kept.chain(self.midi_out.drain(..)) {
+        let from_bused = out.bused.len();
+        let kept = self.midi_in.drain(..).filter(|e| !e.2).map(|(o, m, _, bus)| (o, m, bus));
+        for (o, m, bus) in kept.chain(self.midi_out.drain(..)) {
             match m {
-                MidiMsg::Short(b) => out.short.push((at(o), b)),
-                MidiMsg::Long(d) => out.long.push((at(o), d)),
+                MidiMsg::Short(b) => out.push(at(o), bus, b),
+                MidiMsg::Long(d) if bus == 0 => out.long.push((at(o), d)),
+                MidiMsg::Long(_) => {}
             }
         }
         out.short[from_short..].sort_by_key(|e| e.0);
         out.long[from_long..].sort_by_key(|e| e.0);
+        out.bused[from_bused..].sort_by_key(|e| e.0);
         self.midi_read = 0;
     }
 
     /// The next message `midirecv` (channel messages only) or `midirecv_buf` (any) takes.
+    /// Without `ext_midi_bus` only the normal bus is read; the others pass by.
     fn next_midi(&self, long_too: bool) -> Option<usize> {
-        (self.midi_read..self.midi_in.len())
-            .find(|&i| !self.midi_in[i].2 && (long_too || matches!(self.midi_in[i].1, MidiMsg::Short(_))))
+        let all_buses = self.vars.at(self.bus_slots.0) != 0.0;
+        (self.midi_read..self.midi_in.len()).find(|&i| {
+            let (_, m, taken, bus) = &self.midi_in[i];
+            !taken && (all_buses || *bus == 0) && (long_too || matches!(m, MidiMsg::Short(_)))
+        })
+    }
+
+    /// Marks message `i` taken and sets `midi_bus` to its bus.
+    fn take_midi(&mut self, i: usize) {
+        self.midi_in[i].2 = true;
+        self.midi_read = i + 1;
+        let bus = if self.vars.at(self.bus_slots.0) != 0.0 { self.midi_in[i].3 as f64 } else { 0.0 };
+        self.vars.put(self.bus_slots.1, bus);
+    }
+
+    /// The bus a message sent now goes to.
+    fn send_bus(&self) -> u8 {
+        if self.vars.at(self.bus_slots.0) == 0.0 {
+            return 0;
+        }
+        self.vars.at(self.bus_slots.1).clamp(0.0, 15.0) as u8
     }
 
     fn file_slot(&mut self, handle: f64) -> Option<&mut Option<files::OpenFile>> {
@@ -1445,9 +1479,8 @@ impl Machine {
             }
             MidiRecv => {
                 let Some(i) = self.next_midi(false) else { return 0.0 };
-                let (offset, MidiMsg::Short(msg), _) = self.midi_in[i] else { return 0.0 };
-                self.midi_in[i].2 = true;
-                self.midi_read = i + 1;
+                let (offset, MidiMsg::Short(msg), ..) = self.midi_in[i] else { return 0.0 };
+                self.take_midi(i);
                 let targets: &[f64] = if args.len() == 3 {
                     &[offset, msg[0] as f64, msg[1] as f64 + msg[2] as f64 * 256.0]
                 } else {
@@ -1461,21 +1494,21 @@ impl Machine {
             MidiSend => {
                 let (offset, a, b) = (arg(self, 0), arg(self, 1), arg(self, 2));
                 let (b, c) = if args.len() == 3 { (b % 256.0, (b / 256.0).floor()) } else { (b, arg(self, 3)) };
-                self.midi_out.push((offset, MidiMsg::Short([a as u8, b as u8, c as u8])));
+                let bus = self.send_bus();
+                self.midi_out.push((offset, MidiMsg::Short([a as u8, b as u8, c as u8]), bus));
                 a
             }
             MidiRecvBuf => {
                 let (at, max) = (arg(self, 1), arg(self, 2));
                 let Some(i) = self.next_midi(true) else { return 0.0 };
                 let (offset, bytes) = match &self.midi_in[i] {
-                    (o, MidiMsg::Short(m), _) => (*o, m[..midi_len(m[0])].to_vec()),
-                    (o, MidiMsg::Long(d), _) => (*o, d.clone()),
+                    (o, MidiMsg::Short(m), ..) => (*o, m[..midi_len(m[0])].to_vec()),
+                    (o, MidiMsg::Long(d), ..) => (*o, d.clone()),
                 };
                 if (bytes.len() as f64) > max {
                     return 0.0;
                 }
-                self.midi_in[i].2 = true;
-                self.midi_read = i + 1;
+                self.take_midi(i);
                 if let Some(t) = args.first() {
                     self.store(t, offset);
                 }
@@ -1507,7 +1540,8 @@ impl Machine {
                 } else {
                     MidiMsg::Long(bytes)
                 };
-                self.midi_out.push((offset, msg));
+                let bus = self.send_bus();
+                self.midi_out.push((offset, msg, bus));
                 len as f64
             }
             FileOpen => {
@@ -2306,7 +2340,32 @@ mod tests {
         m.set_midi([(4.0, MidiMsg::Short([0x90, 60, 100])), (5.0, MidiMsg::Short([0xc0, 3, 0]))].into_iter());
         m.run(&code);
         assert_eq!((var(&m, "n"), var(&m, "at"), var(&m, "c")), (3.0, 4.0, 0.0), "a 2-byte message does not fit 1");
-        assert_eq!(m.midi_out, [(5.0, MidiMsg::Short([0x90, 60, 100]))]);
+        assert_eq!(m.midi_out, [(5.0, MidiMsg::Short([0x90, 60, 100]), 0)]);
+    }
+
+    #[test]
+    fn midi_buses_need_ext_midi_bus() {
+        let mut m = run("");
+        let code = compile(
+            "n = 0; while (midirecv(o, a, b, c)) ( n += 1; got = b; bus = midi_bus; midi_bus = 4; midisend(o, a, b, c); );",
+            &mut m.vars,
+            &mut HashMap::new(),
+        )
+        .unwrap();
+        let events = [(1.0, MidiMsg::Short([0x90, 60, 100]), 2), (2.0, MidiMsg::Short([0x90, 62, 100]), 0)];
+        m.set_midi_on_buses(events.clone().into_iter());
+        m.run(&code);
+        assert_eq!((var(&m, "n"), var(&m, "got")), (1.0, 62.0));
+        assert_eq!(m.midi_out, [(2.0, MidiMsg::Short([0x90, 62, 100]), 0)]);
+        let mut block = crate::fx::MidiBlock::default();
+        m.drain_midi(10, 0, &mut block);
+        assert_eq!(block.bused, [(1, 2, [0x90, 60, 100])], "untaken buses pass on");
+        let ext = compile("ext_midi_bus = 1;", &mut m.vars, &mut HashMap::new()).unwrap();
+        m.run(&ext);
+        m.set_midi_on_buses(events.into_iter());
+        m.run(&code);
+        assert_eq!((var(&m, "n"), var(&m, "bus")), (2.0, 0.0));
+        assert_eq!(m.midi_out[0], (1.0, MidiMsg::Short([0x90, 60, 100]), 4));
     }
 
     #[test]

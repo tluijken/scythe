@@ -1,8 +1,8 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
+use scythe_core::midi_route::{MidiDevice, MidiInput, SendMidi};
 use scythe_core::units::format_db;
 use scythe_core::{EnvelopeKind, HwOut, Send, SendMode, TrackId};
 use scythe_engine::fx::FxStatus;
-use scythe_engine::midi_io::{ALL_MIDI_INPUTS, midi_input_channel};
 
 use crate::app::{InspectorTab, PresetSource, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
@@ -34,14 +34,36 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let mut name = track.name.clone();
     let name_rect =
         Rect::from_min_size(pos2(badge.right() + 12.0, badge.top() + 2.0), vec2(inner.width() - 56.0 - 76.0, 24.0));
-    // Record input: cycles through mono inputs 1-4, stereo pairs 1/2, 3/4 and all MIDI inputs.
-    const INPUTS: [i64; 7] = [0, 1, 2, 3, 1024, 1026, ALL_MIDI_INPUTS];
-    let input_label = match (track.rec_input, midi_input_channel(track.rec_input)) {
+    // Record input: cycles through mono inputs 1-4, stereo pairs 1/2, 3/4, all MIDI inputs, the
+    // virtual keyboard and each MIDI device; right-click picks the MIDI channel.
+    let midi_input = MidiInput::from_rec_input(track.rec_input);
+    let keep_channel =
+        |device: MidiDevice| MidiInput { device, channel: midi_input.and_then(|i| i.channel) }.rec_input();
+    let mut inputs: Vec<i64> =
+        vec![0, 1, 2, 3, 1024, 1026, keep_channel(MidiDevice::All), keep_channel(MidiDevice::VirtualKeyboard)];
+    inputs
+        .extend(app.midi_devices.inputs.iter().filter(|p| p.present).map(|p| keep_channel(MidiDevice::Port(p.number))));
+    let input_label = match (track.rec_input, midi_input) {
         (v, _) if v < 0 => "No input".to_owned(),
-        (_, Some(None)) => "MIDI".to_owned(),
-        (_, Some(Some(ch))) => format!("MIDI {}", ch + 1),
+        (_, Some(i)) => {
+            let device = match i.device {
+                MidiDevice::All => "MIDI".to_owned(),
+                MidiDevice::VirtualKeyboard => "VKB".to_owned(),
+                MidiDevice::Port(n) => format!("MIDI·{}", n + 1),
+            };
+            i.channel.map_or(device.clone(), |c| format!("{device} {}", c + 1))
+        }
         (v, None) if v & 1024 != 0 => format!("In {}/{}", (v & 511) + 1, (v & 511) + 2),
         (v, None) => format!("In {}", (v & 511) + 1),
+    };
+    let input_hover = match midi_input {
+        Some(i) => format!(
+            "{}, {} (click to change the input, right-click for the next MIDI channel)",
+            app.midi_devices.input_label(i.device),
+            i.channel.map_or("all channels".to_owned(), |c| format!("channel {}", c + 1))
+        ),
+        None => "Record input (click to change). MIDI plays the track's instrument while armed with monitoring on"
+            .to_owned(),
     };
     let input_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 2.0), vec2(70.0, 24.0));
     let mon_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 28.0), vec2(70.0, 18.0));
@@ -67,13 +89,29 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             t.monitor = !t.monitor;
         });
     }
-    if text_pill(ui, input_pill, &input_label, theme::mono(11.0), BG, if track.armed { theme::PINK } else { TEXT_DIM })
-        .on_hover_text(
-            "Record input (click to change). MIDI plays the track's instrument while armed with monitoring on",
-        )
-        .clicked()
+    let input_label = widgets::truncate(ui, &input_label, &theme::mono(11.0), input_pill.width() - 10.0);
+    let resp = text_pill(
+        ui,
+        input_pill,
+        &input_label,
+        theme::mono(11.0),
+        BG,
+        if track.armed { theme::PINK } else { TEXT_DIM },
+    )
+    .on_hover_text(input_hover);
+    if resp.clicked() {
+        let next = inputs[(inputs.iter().position(|&v| v == track.rec_input).map_or(0, |i| i + 1)) % inputs.len()];
+        app.edit("Set record input", |p| p.track_mut(track_id).unwrap().rec_input = next);
+    }
+    if resp.secondary_clicked()
+        && let Some(i) = midi_input
     {
-        let next = INPUTS[(INPUTS.iter().position(|&v| v == track.rec_input).map_or(0, |i| i + 1)) % INPUTS.len()];
+        let channel = match i.channel {
+            None => Some(0),
+            Some(15) => None,
+            Some(c) => Some(c + 1),
+        };
+        let next = MidiInput { channel, ..i }.rec_input();
         app.edit("Set record input", |p| p.track_mut(track_id).unwrap().rec_input = next);
     }
     let edit = egui::TextEdit::singleline(&mut name)
@@ -615,10 +653,12 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
     let track = app.project.track(track_id).unwrap().clone();
     // Hardware MIDI output: click cycles through none and every output port.
     painter.text(pos2(inner.left(), *y + 12.0), Align2::LEFT_CENTER, "MIDI out", theme::semibold(12.0), TEXT_DIM);
-    let names = app.midi_output_names().to_vec();
+    let outputs: Vec<u8> = app.midi_devices.outputs.iter().filter(|p| p.present).map(|p| p.number).collect();
     let label = match track.midi_out {
         None => "None".to_owned(),
-        Some((dev, _)) => names.get(dev as usize).cloned().unwrap_or_else(|| format!("Device {}", dev + 1)),
+        Some((dev, _)) => {
+            app.midi_devices.output(dev).map_or_else(|| format!("Device {}", dev + 1), |p| p.label().to_owned())
+        }
     };
     let pill = Rect::from_min_size(pos2(inner.right() - 170.0, *y), vec2(170.0, 24.0));
     let label = widgets::truncate(ui, &label, &theme::mono(10.0), pill.width() - 16.0);
@@ -626,9 +666,10 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         .on_hover_text("Where this track's MIDI goes besides its instrument (click to change)")
         .clicked()
     {
-        let next = match track.midi_out {
-            None if !names.is_empty() => Some((0, 0)),
-            Some((dev, ch)) if (dev as usize + 1) < names.len() => Some((dev + 1, ch)),
+        let at = track.midi_out.and_then(|(dev, _)| outputs.iter().position(|&n| n == dev));
+        let next = match (track.midi_out, at) {
+            (None, _) => outputs.first().map(|&n| (n, 0)),
+            (Some((_, ch)), Some(i)) if i + 1 < outputs.len() => Some((outputs[i + 1], ch)),
             _ => None,
         };
         app.edit("Set MIDI hardware output", |p| p.track_mut(track_id).unwrap().midi_out = next);
@@ -669,6 +710,43 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         if mode_pill(ui, painter, mode, s.mode, ("send-mode", track_id, i)) {
             let next = next_mode(s.mode);
             app.edit("Set send mode", |p| p.track_mut(track_id).unwrap().sends[i].mode = next);
+        }
+        // MIDI: off, audio and MIDI, MIDI only; right-click moves it to the next channel.
+        let midi = s.midi();
+        let midi_label = match (midi.enabled, s.src_channels >= 0) {
+            (false, _) => "No MIDI".to_owned(),
+            (true, audio) => {
+                let ch = midi.dst_channel.map_or(String::new(), |c| format!("→{}", c + 1));
+                format!("{}{ch}", if audio { "+MIDI" } else { "MIDI" })
+            }
+        };
+        let midi_pill = Rect::from_min_size(pos2(r.left() + 124.0, r.center().y + 2.0), vec2(64.0, 16.0));
+        let resp =
+            text_pill(ui, midi_pill, &midi_label, theme::mono(9.0), BG, if midi.enabled { ACCENT } else { TEXT_DIM })
+                .on_hover_text(
+                    "MIDI this send carries (click: none, audio and MIDI, MIDI only; right-click: destination channel)",
+                );
+        if resp.clicked() {
+            let (enabled, src) = match (midi.enabled, s.src_channels >= 0) {
+                (false, _) => (true, s.src_channels.max(0)),
+                (true, true) => (true, -1),
+                (true, false) => (false, 0),
+            };
+            app.edit("Set send MIDI", |p| {
+                let send = &mut p.track_mut(track_id).unwrap().sends[i];
+                send.set_midi(SendMidi { enabled, ..if midi.enabled { midi } else { SendMidi::ALL } });
+                send.src_channels = src;
+            });
+        }
+        if resp.secondary_clicked() && midi.enabled {
+            let dst_channel = match midi.dst_channel {
+                None => Some(0),
+                Some(15) => None,
+                Some(c) => Some(c + 1),
+            };
+            app.edit("Set send MIDI", |p| {
+                p.track_mut(track_id).unwrap().sends[i].set_midi(SendMidi { dst_channel, ..midi })
+            });
         }
         // Channels: source pair → destination pair.
         let dest_channels = app.project.track(s.dest).map_or(2, |t| t.channels);

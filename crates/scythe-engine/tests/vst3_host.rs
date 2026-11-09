@@ -156,11 +156,11 @@ fn live_midi_plays_an_armed_vst3_instrument() {
         graph.render_with(0, &mut l, &mut r, scratch, &input);
         l[63]
     };
-    let on = |ch: u8| LiveMidi { bytes: [0x90 | ch, 64, 100], len: 3 };
+    let on = |ch: u8| LiveMidi::new([0x90 | ch, 64, 100], 3);
     assert_eq!(render(&[on(0)], &mut scratch), 0.0, "channel 1 is not the track's input channel 2");
     assert_eq!(render(&[on(1)], &mut scratch), 0.5, "note held from the live input");
     assert_eq!(render(&[], &mut scratch), 0.5, "and still held in the next block");
-    assert_eq!(render(&[LiveMidi { bytes: [0x81, 64, 0], len: 3 }], &mut scratch), 0.0);
+    assert_eq!(render(&[LiveMidi::new([0x81, 64, 0], 3)], &mut scratch), 0.0);
     std::fs::remove_dir_all(root).ok();
 }
 

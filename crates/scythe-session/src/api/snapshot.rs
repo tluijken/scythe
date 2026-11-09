@@ -206,6 +206,21 @@ pub struct SendInfo {
     pub mono: bool,
     /// Polarity inverted.
     pub phase: bool,
+    /// Carries audio (false for a MIDI-only send).
+    pub audio: bool,
+    /// The MIDI it carries, when any.
+    pub midi: Option<SendMidiInfo>,
+}
+
+/// The MIDI half of a send. Channels and buses count from 1; 0 means all (sources) or
+/// unchanged (destinations).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SendMidiInfo {
+    pub src_channel: u8,
+    pub dst_channel: u8,
+    pub src_bus: u8,
+    pub dst_bus: u8,
+    pub faders: bool,
 }
 
 /// Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).
@@ -438,6 +453,17 @@ pub fn send_list(t: &Track) -> Vec<SendInfo> {
             mode: s.mode.into(),
             mono: s.mono,
             phase: s.phase,
+            audio: s.src_channels >= 0,
+            midi: Some(s.midi()).filter(|m| m.enabled).map(|m| {
+                let n = |v: Option<u8>| v.map_or(0, |v| v + 1);
+                SendMidiInfo {
+                    src_channel: n(m.src_channel),
+                    dst_channel: n(m.dst_channel),
+                    src_bus: n(m.src_bus),
+                    dst_bus: n(m.dst_bus),
+                    faders: m.faders,
+                }
+            }),
         })
         .collect()
 }

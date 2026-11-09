@@ -6,10 +6,8 @@ license.workspace = true
 
 [dependencies]
 scythe-core.workspace = true
+scythe-engine.workspace = true
 scythe-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 midir.workspace = true
-
-[dev-dependencies]
-scythe-engine.workspace = true

@@ -37,7 +37,7 @@ fn main() {
         engine.stop();
         std::thread::sleep(Duration::from_millis(200));
         for (name, ring) in inputs.names.iter().zip(&mut rings) {
-            while let Ok(m) = ring.pop() {
+            while let Ok(m) = ring.midi.pop() {
                 println!("{:>5} ms {name}: {:02x?}", started.elapsed().as_millis(), &m.bytes[..m.len as usize]);
             }
         }
@@ -50,7 +50,7 @@ fn main() {
     out.send(&[0x82, 60, 0]).unwrap();
     std::thread::sleep(Duration::from_millis(200));
     for (name, ring) in inputs.names.iter().zip(&mut rings) {
-        while let Ok(m) = ring.pop() {
+        while let Ok(m) = ring.midi.pop() {
             println!("{name}: {:02x?}", &m.bytes[..m.len as usize]);
         }
     }

@@ -19,6 +19,7 @@ pub mod lv2;
 pub mod media;
 pub mod meter;
 pub mod midi_io;
+pub mod midi_sync;
 pub mod mix;
 pub mod nam;
 pub mod normalized;

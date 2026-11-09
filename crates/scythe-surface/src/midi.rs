@@ -1,6 +1,5 @@
-//! MIDI ports for hardware surfaces. Devices are numbered as in REAPER's control surface
-//! settings: the system's input (or output) ports in order, counted from 0, leaving out
-//! Scythe's own.
+//! MIDI ports for hardware surfaces. Devices are numbered as in REAPER: by the stable device
+//! numbers of the shared device map (`scythe_engine::midi_io`), leaving out Scythe's own ports.
 
 use std::sync::mpsc::{Receiver, channel};
 
@@ -12,16 +11,19 @@ fn foreign(name: &str) -> bool {
     !name.contains("scythe")
 }
 
-/// The MIDI input ports, by device number.
+/// The MIDI input ports, indexed by device number (empty where none is present).
 pub fn input_names() -> Vec<String> {
-    let Ok(input) = MidiInput::new("scythe-surface") else { return Vec::new() };
-    input.ports().iter().filter_map(|p| input.port_name(p).ok()).filter(|n| foreign(n)).collect()
+    scythe_engine::midi_io::names_by_number(&scythe_engine::midi_io::current_devices().inputs)
 }
 
-/// The MIDI output ports, by device number.
+/// The MIDI output ports, indexed by device number (empty where none is present).
 pub fn output_names() -> Vec<String> {
-    let Ok(output) = MidiOutput::new("scythe-surface") else { return Vec::new() };
-    output.ports().iter().filter_map(|p| output.port_name(p).ok()).filter(|n| foreign(n)).collect()
+    scythe_engine::midi_io::names_by_number(&scythe_engine::midi_io::current_devices().outputs)
+}
+
+/// Whether the system's port `full` is the device named `name` in the map.
+fn is_port(full: &str, name: &str) -> bool {
+    foreign(full) && (full == name || scythe_engine::midi_io::stable_name(full) == name)
 }
 
 /// An open input and output: messages from the device arrive on `rx`.
@@ -39,9 +41,13 @@ impl MidiPorts {
         let mut names = (None, None);
         let input_conn = if input >= 0 {
             let midi = MidiInput::new("scythe-surface").map_err(|e| e.to_string())?;
-            let ports: Vec<_> =
-                midi.ports().into_iter().filter(|p| midi.port_name(p).is_ok_and(|n| foreign(&n))).collect();
-            let port = ports.get(input as usize).ok_or_else(|| format!("no MIDI input device {input}"))?.clone();
+            let name = input_names().get(input as usize).cloned().filter(|n| !n.is_empty());
+            let name = name.ok_or_else(|| format!("no MIDI input device {input}"))?;
+            let port = midi
+                .ports()
+                .into_iter()
+                .find(|p| midi.port_name(p).is_ok_and(|n| is_port(&n, &name)))
+                .ok_or_else(|| format!("no MIDI input device {input}"))?;
             names.0 = midi.port_name(&port).ok();
             let conn = midi
                 .connect(
@@ -61,9 +67,13 @@ impl MidiPorts {
         };
         let output_conn = if output >= 0 {
             let midi = MidiOutput::new("scythe-surface").map_err(|e| e.to_string())?;
-            let ports: Vec<_> =
-                midi.ports().into_iter().filter(|p| midi.port_name(p).is_ok_and(|n| foreign(&n))).collect();
-            let port = ports.get(output as usize).ok_or_else(|| format!("no MIDI output device {output}"))?.clone();
+            let name = output_names().get(output as usize).cloned().filter(|n| !n.is_empty());
+            let name = name.ok_or_else(|| format!("no MIDI output device {output}"))?;
+            let port = midi
+                .ports()
+                .into_iter()
+                .find(|p| midi.port_name(p).is_ok_and(|n| is_port(&n, &name)))
+                .ok_or_else(|| format!("no MIDI output device {output}"))?;
             names.1 = midi.port_name(&port).ok();
             Some(midi.connect(&port, "scythe-surface-out").map_err(|e| e.to_string())?)
         } else {

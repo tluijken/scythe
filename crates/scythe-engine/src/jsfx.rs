@@ -568,9 +568,12 @@ impl JsfxEffect {
         if self.uses_midi {
             ctx.block_midi(n, &mut self.midi_in);
             ctx.block_long(n, &mut self.long_in);
-            let short = self.midi_in.iter().map(|&(at, m)| (at as f64, crate::eel::MidiMsg::Short(m)));
-            let long = self.long_in.drain(..).map(|(at, d)| (at as f64, crate::eel::MidiMsg::Long(d)));
-            self.machine.set_midi(short.chain(long));
+            let short = self.midi_in.iter().map(|&(at, m)| (at as f64, crate::eel::MidiMsg::Short(m), 0));
+            let long = self.long_in.drain(..).map(|(at, d)| (at as f64, crate::eel::MidiMsg::Long(d), 0));
+            let from = ctx.midi_from;
+            let bused = ctx.midi.into_iter().flat_map(|m| &m.bused).filter(|e| (from..from + n).contains(&e.0));
+            let bused = bused.map(|&(at, bus, m)| ((at - from) as f64, crate::eel::MidiMsg::Short(m), bus));
+            self.machine.set_midi_on_buses(short.chain(long).chain(bused));
         }
     }
 
@@ -666,7 +669,12 @@ impl Effect for JsfxEffect {
         }
         out.short.append(&mut self.midi_sent.short);
         out.long.append(&mut self.midi_sent.long);
+        out.bused.append(&mut self.midi_sent.bused);
         true
+    }
+
+    fn midi_buses(&self) -> bool {
+        self.uses_midi
     }
 
     fn reset(&mut self) {

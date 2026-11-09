@@ -449,8 +449,10 @@ pub struct Send {
     pub src_channels: i64,
     /// Destination as `I_DSTCHAN`: the first channel, plus 1024 to mix down to mono.
     pub dst_channels: i64,
-    /// Tokens of the original `AUXRECV` line, so channel mapping, MIDI flags and the rest
-    /// survive a save when only volume, pan or mute changed.
+    /// The MIDI half of the send as REAPER's `I_MIDIFLAGS` (see `midi_route::SendMidi`).
+    pub midi_flags: i64,
+    /// Tokens of the original `AUXRECV` line, so the fields Scythe does not model survive a
+    /// save.
     pub raw: Option<Vec<String>>,
 }
 
@@ -467,8 +469,17 @@ impl Send {
             envelopes: Vec::new(),
             src_channels: 0,
             dst_channels: 0,
+            midi_flags: crate::midi_route::SEND_MIDI_OFF,
             raw: None,
         }
+    }
+
+    pub fn midi(&self) -> crate::midi_route::SendMidi {
+        crate::midi_route::SendMidi::from_flags(self.midi_flags)
+    }
+
+    pub fn set_midi(&mut self, midi: crate::midi_route::SendMidi) {
+        self.midi_flags = midi.flags();
     }
 }
 
@@ -668,8 +679,9 @@ pub struct Track {
     /// Track group memberships (`GROUP_FLAGS`, `GROUP_FLAGS_HIGH`).
     pub groups: GroupFlags,
     pub armed: bool,
-    /// Record input in REAPER's `I_RECINPUT` encoding (`REC` field 2): hardware channel in the
-    /// low bits, +1024 for a stereo pair, negative for none.
+    /// Record input in REAPER's `I_RECINPUT` encoding: hardware channel in the low bits, +1024
+    /// for a stereo pair, negative for none; MIDI inputs as `midi_route::MidiInput`. The `REC`
+    /// line stores MIDI device numbers differently (`midi_route::rec_input_to_rpp`).
     pub rec_input: i64,
     /// Hear the record input through the track while armed (`REC` field 3).
     pub monitor: bool,
@@ -860,6 +872,8 @@ pub struct Project {
     pub loop_enabled: bool,
     pub cursor: f64,
     pub metronome: crate::metronome::Metronome,
+    /// External timecode synchronization (`SMPTESYNC`).
+    pub timecode_sync: crate::midi_route::TimecodeSync,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
@@ -881,6 +895,7 @@ impl Default for Project {
             loop_enabled: false,
             cursor: 0.0,
             metronome: Default::default(),
+            timecode_sync: Default::default(),
             lines: LineMemo::new(),
             extra: Vec::new(),
         }

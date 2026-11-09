@@ -1071,3 +1071,84 @@ fn control_surfaces_are_kept_as_reaper_ini_lines() {
     let err = execute_json(&mut s, json!({"cmd": "surface.run_action", "action": "99999"})).unwrap_err();
     assert_eq!(err.kind, ErrorKind::NotFound);
 }
+
+#[test]
+fn midi_routing_and_sync_through_the_api() {
+    let mut s = session();
+    let keys = add_track(&mut s, "Keys");
+    let synth = add_track(&mut s, "Synth");
+    let t = ok(&mut s, json!({"cmd": "track.midi_input", "track": keys, "device": "keyboard", "channel": 2}));
+    assert_eq!(t["input"], 4096 + (62 << 5) + 2);
+    let t = ok(&mut s, json!({"cmd": "track.midi_input", "track": keys, "device": 5}));
+    assert_eq!(t["input"], 4096 + (5 << 5));
+    let bad = execute_json(&mut s, json!({"cmd": "track.midi_input", "track": keys, "device": 63}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+
+    ok(&mut s, json!({"cmd": "send.add", "track": keys, "dest": synth}));
+    let list = ok(&mut s, json!({"cmd": "send.list", "track": keys}));
+    assert!(list[0]["midi"].is_null(), "a new send carries no MIDI");
+    let send = ok(
+        &mut s,
+        json!({"cmd": "send.midi", "track": keys, "send": 0, "enabled": true, "audio": false, "dst_channel": 10, "dst_bus": 2}),
+    );
+    assert_eq!(send["audio"], false);
+    assert_eq!(send["midi"]["dst_channel"], 10);
+    assert_eq!(send["midi"]["dst_bus"], 2);
+    assert_eq!(send["midi"]["src_channel"], 0);
+    let flags = s.project.tracks[0].sends[0].midi_flags;
+    assert_eq!(flags, 10 << 5 | 2 << 22);
+    assert!(scythe_core::rpp::project_to_rpp(&s.project).contains(&format!("-1:U {flags} ")));
+
+    let sync = ok(&mut s, json!({"cmd": "sync.set", "enabled": true, "source": "mtc", "device": 3, "offset": 3600.0}));
+    assert_eq!(
+        (sync["enabled"].as_bool(), sync["source"].as_str(), sync["device"].as_u64()),
+        (Some(true), Some("mtc"), Some(3))
+    );
+    assert_eq!(s.project.timecode_sync.input, 4096 + (3 << 5));
+    let sync = ok(&mut s, json!({"cmd": "sync.set", "source": "clock", "device": 63}));
+    assert_eq!((sync["source"].as_str(), sync["device"].as_u64()), (Some("clock"), None));
+    let sync = ok(&mut s, json!({"cmd": "sync.set", "source": "ltc", "channel": 2, "frame_rate": 25.0}));
+    assert_eq!((sync["source"].as_str(), sync["channel"].as_u64()), (Some("ltc"), Some(2)));
+    assert!(execute_json(&mut s, json!({"cmd": "sync.set", "frame_rate": 31.0})).is_err());
+    assert_eq!(ok(&mut s, json!({"cmd": "sync.get"}))["frame_rate"], 25.0);
+    ok(&mut s, json!({"cmd": "midi.keyboard", "note": 60, "velocity": 100}));
+    assert!(execute_json(&mut s, json!({"cmd": "midi.keyboard", "note": 60, "velocity": 0, "channel": 17})).is_err());
+    let devices = ok(&mut s, json!({"cmd": "midi.devices"}));
+    assert!(devices["inputs"].is_array() && devices["outputs"].is_array());
+    let missing = execute_json(&mut s, json!({"cmd": "midi.device", "kind": "output", "number": 120, "clock": true}));
+    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn midi_device_settings_are_kept_in_the_preferences() {
+    let dir = std::env::temp_dir().join(format!("scythe-midi-prefs-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("reaper.ini");
+    std::fs::write(dir.join("reaper-midihw-linux.ini"), "[mididevcache]\not0=1\non0=Synth Out\nit0=1\nin0=Keys In\n")
+        .unwrap();
+    let mut s = session();
+    s.load_preferences(file.clone());
+    assert_eq!(s.midi_devices.output(0).map(|p| p.name.as_str()), Some("Synth Out"));
+    ok(
+        &mut s,
+        json!({"cmd": "midi.device", "kind": "output", "number": 0, "clock": true, "spp": false, "alias": "Modular"}),
+    );
+    ok(&mut s, json!({"cmd": "midi.device", "kind": "input", "number": 0, "enabled": false}));
+    let ini = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        ini.contains("midiouts_clock=1\n") && ini.contains("midiouts_clock_nospp=1\n") && ini.contains("midiins=-2\n"),
+        "{ini}"
+    );
+    let cache = std::fs::read_to_string(dir.join("reaper-midihw-linux.ini")).unwrap();
+    assert!(cache.contains("oa0=Modular"), "{cache}");
+    let mut again = session();
+    again.load_preferences(file);
+    let devices = ok(&mut again, json!({"cmd": "midi.devices"}));
+    assert_eq!(devices["outputs"][0]["alias"], "Modular");
+    assert_eq!(
+        (devices["outputs"][0]["clock"].as_bool(), devices["outputs"][0]["spp"].as_bool()),
+        (Some(true), Some(false))
+    );
+    assert_eq!(devices["inputs"][0]["enabled"], false);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
