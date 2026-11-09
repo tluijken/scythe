@@ -4,6 +4,7 @@ mod inspector;
 pub mod midi_editor;
 mod mixer;
 mod nam;
+pub mod monitor;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
@@ -32,7 +33,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
 
     let body = Rect::from_min_max(pos2(area.left(), header.bottom() + GAP), area.max);
     let show_inspector = body.width() > 980.0;
-    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 * 2.0 + 6.0 * 48.0 + 9.0));
+    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 * 2.0 + 7.0 * 48.0 + 9.0));
     nav_rail(app, ui, rail);
 
     let main_right = if show_inspector { body.right() - INSPECTOR_W - GAP } else { body.right() };
@@ -48,11 +49,15 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     } else {
         (main, None)
     };
-    arrange::show(app, ui, arrange_rect);
-    match (mixer_rect, editor) {
-        (Some(r), Some(item)) => midi_editor::show(app, ui, r, item),
-        (Some(r), None) => mixer::show(app, ui, r),
-        _ => {}
+    if app.view.monitor_page {
+        monitor::show(app, ui, main);
+    } else {
+        arrange::show(app, ui, arrange_rect);
+        match (mixer_rect, editor) {
+            (Some(r), Some(item)) => midi_editor::show(app, ui, r, item),
+            (Some(r), None) => mixer::show(app, ui, r),
+            _ => {}
+        }
     }
     if show_inspector {
         let r = Rect::from_min_max(pos2(body.right() - INSPECTOR_W, body.top()), body.max);
@@ -64,6 +69,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);
+    monitor::wizards(app, ui);
     palette::show(app, ui);
 }
 
@@ -276,9 +282,16 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         y += h + 4.0;
         r
     };
-    rail_button(ui, next(44.0), Icon::Arrange, true, ACCENT, "Arrange");
-    if rail_button(ui, next(44.0), Icon::Mixer, app.view.show_mixer, ACCENT, "Mixer (Ctrl+M)").clicked() {
-        app.view.show_mixer = !app.view.show_mixer;
+    let monitors = app.view.monitor_page;
+    if rail_button(ui, next(44.0), Icon::Arrange, !monitors, ACCENT, "Arrange").clicked() {
+        app.view.monitor_page = false;
+    }
+    if rail_button(ui, next(44.0), Icon::Mixer, app.view.show_mixer && !monitors, ACCENT, "Mixer (Ctrl+M)").clicked() {
+        app.view.monitor_page = false;
+        app.view.show_mixer = !app.view.show_mixer || monitors;
+    }
+    if rail_button(ui, next(44.0), Icon::Headphones, monitors, ACCENT, "Monitor mixes (in-ear)").clicked() {
+        app.view.monitor_page = !monitors;
     }
     if rail_button(ui, next(44.0), Icon::Folder, false, ACCENT, "Insert media files (Insert)").clicked() {
         app.import_dialog();

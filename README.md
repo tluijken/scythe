@@ -86,6 +86,26 @@ Working:
 - **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
   meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
   REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
+- **Send modes and hardware outputs**: sends tap post-fader, pre-FX or pre-fader (post-FX),
+  with polarity and mono downmix (`AUXRECV` fields 2, 6 and 7). Track and master audio
+  hardware outputs (`HWOUT`, `MASTERHWOUT`: device output with the mono flag, send mode,
+  volume, pan, mute, polarity, source channels, pan law) play into the device's outputs, with
+  the same pan law and mono averaging as sends, line up with the master through plugin delay
+  compensation, and follow the track's own output (muting silences them; a track that is only
+  heard because it feeds a soloed bus keeps its sends but not its main or hardware outputs, as
+  in REAPER). The device opens with as many channels as the outputs reach. Edited in the
+  inspector's Sends tab.
+- **Monitor mixes** for in-ear monitoring (the headphone rail button, "View: Toggle monitor
+  mixes"): one card per musician with a fader, pan, mute and "me" toggle per source, a "more
+  me" knob that raises the musician's own sources against the rest, the mix level and meter,
+  the device output (a pair or mono) and a safety limiter. A wizard creates a mix from all or
+  some tracks (or copies one), and "SWS: Create cue buss from track selection…" makes SWS's
+  cue bus with its options (send type, volumes and pans from the tracks, hardware output,
+  track template). A monitor mix is an ordinary REAPER track: "MON <name>", pre-fader receives,
+  master send off, a hardware output, marked with `P_EXT` values (`scythe_monitor`,
+  `scythe_monitor_own`, `scythe_monitor_more_me`); "more me" changes the receive volumes
+  themselves, so REAPER plays the mixes the same. The operations are plain functions on the
+  project (`scythe_core::monitor`) for a control surface to call.
 - **Fades** with REAPER's shapes and curvature, drawn on the items.
 - **Track envelopes** (volume, pre-FX volume, trim, pan, mute) with all point shapes, shown
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
@@ -470,6 +490,8 @@ compare with scythe's output sample by sample:
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
 | FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
+| Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | 22/26 within 1e-3; the 4 others differ by Scythe's reading of volume envelopes written with `ScaleToEnvelopeMode` (also post-fader, so not the taps) |
+| Hardware outputs and monitor mixes written by Scythe (stereo and mono outputs, send modes, levels, pans, mutes, `P_EXT` values with spaces, a SWS-style pre-FX cue bus, a master output to 11/12) read back in REAPER through `GetTrackSendInfo_Value` and `P_EXT` | identical (33 lines) |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
@@ -480,7 +502,15 @@ compares the two files.
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: master channels go to the audio device's outputs in order, as many as the
-  device offers; channels beyond that reach only multichannel renders.
+  device offers; channels beyond that reach only multichannel renders. That is REAPER's
+  default master output for a stereo master; a master with more channels and REAPER's default
+  `MASTERHWOUT 0 …` plays only 1/2 in REAPER. Once the master's outputs differ from the
+  default they are followed exactly.
+- Hardware outputs cannot be rendered by REAPER, so their mixing is checked against sends
+  (which null) and unit tests; their envelopes, `B_MONO` (REAPER does not save it) and
+  ReaRoute (`I_DSTCHAN & 512`) are not played. A pre-FX tap is not delayed for the latency of
+  the track's own effects. The monitor-mix limiter is REAPER's stock JSFX Master Limiter, which
+  needs REAPER's effects folder.
 - FX presets: VST 3 `.vstpreset` files are looked for only where REAPER 7.73 lists them
   (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER counts a CLAP
   plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name

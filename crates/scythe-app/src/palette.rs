@@ -82,6 +82,9 @@ pub enum Action {
     NamSnapshotB,
     NamSnapshotC,
     NamSnapshotD,
+    ShowMonitorMixes,
+    NewMonitorMix,
+    CreateCueBus,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -167,6 +170,9 @@ impl Action {
         Action::NamSnapshotB,
         Action::NamSnapshotC,
         Action::NamSnapshotD,
+        Action::ShowMonitorMixes,
+        Action::NewMonitorMix,
+        Action::CreateCueBus,
     ];
 
     pub fn label(self) -> &'static str {
@@ -248,6 +254,9 @@ impl Action {
             Action::NamSnapshotB => "NAM: Switch to snapshot B",
             Action::NamSnapshotC => "NAM: Switch to snapshot C",
             Action::NamSnapshotD => "NAM: Switch to snapshot D",
+            Action::ShowMonitorMixes => "View: Toggle monitor mixes (in-ear)",
+            Action::NewMonitorMix => "Monitor: New monitor mix for a musician…",
+            Action::CreateCueBus => "SWS: Create cue buss from track selection…",
         }
     }
 
@@ -371,6 +380,7 @@ impl Action {
             Action::NamSnapshotB => k(Modifiers::ALT, Key::Num2),
             Action::NamSnapshotC => k(Modifiers::ALT, Key::Num3),
             Action::NamSnapshotD => k(Modifiers::ALT, Key::Num4),
+            Action::ShowMonitorMixes | Action::NewMonitorMix | Action::CreateCueBus => None,
         }
     }
 
@@ -580,6 +590,13 @@ impl Action {
             Action::RenderProjectSettings => app.render(crate::app::RenderKind::ProjectSettings),
             Action::LoadDemo => app.load_demo(),
             Action::ToggleMixer => app.view.show_mixer = !app.view.show_mixer,
+            Action::ShowMonitorMixes => app.view.monitor_page = !app.view.monitor_page,
+            Action::NewMonitorMix => {
+                app.view.monitor_wizard = Some(crate::ui::monitor::Wizard::monitor(&app.project));
+            }
+            Action::CreateCueBus => {
+                app.view.cue_dialog = Some(crate::ui::monitor::Wizard::cue_bus(&app.project, app.sel.track));
+            }
             Action::ToggleSnap => {
                 app.view.snap = !app.view.snap;
                 let state = if app.view.snap { "on" } else { "off" };

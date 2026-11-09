@@ -46,6 +46,10 @@ pub struct ViewState {
     pub snap: bool,
     /// Range to zoom the arrange view to on the next frame, once its width is known.
     pub fit: Option<TimeRange>,
+    /// The monitor mixes page replaces the arrange view and mixer.
+    pub monitor_page: bool,
+    pub monitor_wizard: Option<crate::ui::monitor::Wizard>,
+    pub cue_dialog: Option<crate::ui::monitor::Wizard>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -175,6 +179,9 @@ impl ScytheApp {
                 midi_state: Default::default(),
                 snap: true,
                 fit: None,
+                monitor_page: false,
+                monitor_wizard: None,
+                cue_dialog: None,
             },
             palette: None,
             clipboard: Vec::new(),
@@ -1400,7 +1407,7 @@ fn reaper_resource_dir() -> Option<PathBuf> {
 
 /// A file dialog starting in REAPER's resource folder `sub` (`FXChains`, `TrackTemplates`)
 /// when it exists, so files are shared with REAPER.
-fn resource_dialog(sub: &str) -> rfd::FileDialog {
+pub(crate) fn resource_dialog(sub: &str) -> rfd::FileDialog {
     let dir = reaper_resource_dir().map(|d| d.join(sub)).filter(|d| d.is_dir());
     match dir {
         Some(d) => rfd::FileDialog::new().set_directory(d),

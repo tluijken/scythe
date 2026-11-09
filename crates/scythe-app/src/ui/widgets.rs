@@ -23,6 +23,7 @@ pub enum Icon {
     Star,
     Previous,
     Next,
+    Headphones,
 }
 
 /// Maps the 24×24 SVG coordinate space of the mockup's icons into `rect`.
@@ -184,6 +185,22 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
         }
         Icon::Previous => line(&[(15.0, 5.0), (8.0, 12.0), (15.0, 19.0)]),
         Icon::Next => line(&[(9.0, 5.0), (16.0, 12.0), (9.0, 19.0)]),
+        Icon::Headphones => {
+            line(&[
+                (4.0, 15.0),
+                (4.0, 12.0),
+                (5.2, 7.8),
+                (8.2, 4.8),
+                (12.0, 4.0),
+                (15.8, 4.8),
+                (18.8, 7.8),
+                (20.0, 12.0),
+                (20.0, 15.0),
+            ]);
+            let r = CornerRadius::same((2.0 * c.scale) as u8);
+            painter.rect_filled(Rect::from_min_max(c.p(3.0, 13.0), c.p(8.0, 20.0)), r, color);
+            painter.rect_filled(Rect::from_min_max(c.p(16.0, 13.0), c.p(21.0, 20.0)), r, color);
+        }
     }
 }
 
