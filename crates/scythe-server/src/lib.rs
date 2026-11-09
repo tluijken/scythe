@@ -6,6 +6,7 @@ pub mod config;
 pub mod files;
 pub mod headless;
 pub mod server;
+pub mod service;
 pub mod web;
 
 pub use server::{ControlServer, ServerConfig};

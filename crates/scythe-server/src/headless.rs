@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scythe_core::render_settings::ResampleMode;
 use scythe_engine::{Engine, MediaPool};
@@ -42,7 +42,17 @@ pub fn main_with_args(args: &[String]) -> i32 {
             return 2;
         }
     };
-    match run(options) {
+    if options.install_service {
+        return report(crate::service::install(args, &options));
+    }
+    if options.status {
+        return report(crate::service::status(&options));
+    }
+    report(run(options))
+}
+
+fn report(result: Result<(), String>) -> i32 {
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("{e}");
@@ -102,8 +112,10 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     eprintln!("running; stop with Ctrl+C or SIGTERM");
 
+    let mut xruns = XrunLog::default();
     while !STOP.load(Ordering::SeqCst) {
         session.poll();
+        xruns.check(&session);
         session.update_meters();
         session.tick_automation();
         match &mut control {
@@ -125,4 +137,38 @@ pub fn run(options: Options) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Reports new xruns on standard error (the service's journal), at most every few seconds.
+struct XrunLog {
+    seen: (u64, u64),
+    at: Instant,
+}
+
+impl Default for XrunLog {
+    fn default() -> Self {
+        Self { seen: (0, 0), at: Instant::now() }
+    }
+}
+
+impl XrunLog {
+    const INTERVAL: Duration = Duration::from_secs(10);
+
+    fn check(&mut self, session: &Session) {
+        if self.at.elapsed() < Self::INTERVAL {
+            return;
+        }
+        let h = session.health();
+        let now = (h.xruns, h.overloads);
+        if now != self.seen {
+            eprintln!(
+                "audio: {} new xrun(s), {} new overload(s); cpu peak {:.0}%",
+                now.0 - self.seen.0,
+                now.1 - self.seen.1,
+                h.load_peak * 100.0
+            );
+            self.seen = now;
+        }
+        self.at = Instant::now();
+    }
 }

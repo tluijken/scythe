@@ -67,6 +67,10 @@ pub struct Options {
     pub devices: DeviceRequest,
     pub null_audio: bool,
     pub list_devices: bool,
+    /// Write a systemd user unit running with these options instead of running.
+    pub install_service: bool,
+    /// Ask the running session how it is doing instead of running.
+    pub status: bool,
 }
 
 /// `$XDG_CONFIG_HOME/scythe/headless.toml`.
@@ -99,7 +103,24 @@ usage: scythe-server [project.RPP] [options]
   --null-audio           open no audio device at all
   --no-input             never open an audio or MIDI input
   --list-devices         print the audio devices and exit
+  --install-service      write a systemd user unit that runs with these options, and exit
+  --status               show how the running session is doing (device, xruns, clients)
 ";
+
+/// Flags followed by a value.
+pub const VALUED: [&str; 11] = [
+    "--config",
+    "--control",
+    "--token",
+    "--folder",
+    "--access-file",
+    "--audio-host",
+    "--output-device",
+    "--input-device",
+    "--sample-rate",
+    "--buffer-size",
+    "--output-channels",
+];
 
 /// Combines the settings file with `args` (the arguments after the program name, `--headless`
 /// already taken out).
@@ -107,19 +128,6 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     let mut flags: Vec<(String, Option<String>)> = Vec::new();
     let mut positional: Vec<String> = Vec::new();
     let mut it = args.iter();
-    const VALUED: [&str; 11] = [
-        "--config",
-        "--control",
-        "--token",
-        "--folder",
-        "--access-file",
-        "--audio-host",
-        "--output-device",
-        "--input-device",
-        "--sample-rate",
-        "--buffer-size",
-        "--output-channels",
-    ];
     while let Some(arg) = it.next() {
         if let Some((name, value)) = arg.split_once('=').filter(|(n, _)| n.starts_with("--")) {
             flags.push((name.to_owned(), Some(value.to_owned())));
@@ -147,7 +155,8 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     };
     for (name, _) in &flags {
         let known = VALUED.contains(&name.as_str())
-            || ["--null-audio", "--no-input", "--list-devices", "--headless"].contains(&name.as_str());
+            || ["--null-audio", "--no-input", "--list-devices", "--headless", "--install-service", "--status"]
+                .contains(&name.as_str());
         if !known {
             return Err(format!("unknown option {name}"));
         }
@@ -192,6 +201,8 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         devices,
         null_audio: flag("--null-audio").is_some() || audio.null,
         list_devices: flag("--list-devices").is_some(),
+        install_service: flag("--install-service").is_some(),
+        status: flag("--status").is_some(),
     })
 }
 

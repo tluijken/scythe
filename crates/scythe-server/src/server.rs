@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -85,6 +86,8 @@ struct AppState {
     folders: Arc<Vec<PathBuf>>,
     addr: SocketAddr,
     mcp: McpServer,
+    /// WebSocket clients connected now.
+    clients: Arc<AtomicUsize>,
 }
 
 impl ControlServer {
@@ -111,8 +114,15 @@ impl ControlServer {
         } else {
             config.folders
         };
-        let state =
-            AppState { control: handle, events, access: Arc::new(access), folders: Arc::new(folders), addr, mcp };
+        let state = AppState {
+            control: handle,
+            events,
+            access: Arc::new(access),
+            folders: Arc::new(folders),
+            addr,
+            mcp,
+            clients: Arc::default(),
+        };
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("scythe-control")
@@ -192,7 +202,13 @@ async fn authorize(State(state): State<AppState>, mut request: Request, next: Ne
 }
 
 async fn health(State(state): State<AppState>) -> Json<Value> {
-    Json(json!({"ok": true, "name": "scythe", "protocol": PROTOCOL, "token": state.access.has_admin_token()}))
+    Json(json!({
+        "ok": true,
+        "name": "scythe",
+        "protocol": PROTOCOL,
+        "token": state.access.has_admin_token(),
+        "clients": state.clients.load(Ordering::Relaxed),
+    }))
 }
 
 /// Queues a command for a client with `scope` and waits for its answer.
@@ -403,9 +419,20 @@ fn ws_reply(id: &Value, answer: Result<Value, ApiError>) -> String {
     .to_string()
 }
 
+/// Counts a WebSocket client for as long as it is connected.
+struct Connected(Arc<AtomicUsize>);
+
+impl Drop for Connected {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// One WebSocket client: commands in (answered in the order sent), replies and the events its
 /// scope may hear out.
 async fn serve_socket(socket: WebSocket, state: AppState, scope: Scope) {
+    state.clients.fetch_add(1, Ordering::Relaxed);
+    let _connected = Connected(state.clients.clone());
     let (mut sink, mut stream) = socket.split();
     let (replies, mut pending) = mpsc::unbounded_channel::<String>();
     let mut events = state.events.subscribe();
