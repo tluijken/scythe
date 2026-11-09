@@ -98,8 +98,8 @@ pub struct ItemPeaks {
     pub to: f64,
     pub state: PeaksState,
     /// One per column, empty unless `state` is `ready`; gain from -1 to 1.
-    pub min: Vec<f32>,
-    pub max: Vec<f32>,
+    pub min: Vec<f64>,
+    pub max: Vec<f64>,
 }
 
 fn find(session: &Session, item: u64) -> Result<(TrackId, ItemId), ApiError> {
@@ -114,8 +114,8 @@ fn info(session: &Session, id: ItemId) -> Value {
 }
 
 /// Three decimals are finer than any screen draws and keep the answer small.
-fn rounded(v: f32) -> f32 {
-    (v * 1000.0).round() / 1000.0
+fn rounded(v: f32) -> f64 {
+    (f64::from(v) * 1000.0).round() / 1000.0
 }
 
 fn peaks(session: &Session, item: u64, from: Option<f64>, to: Option<f64>, width: usize) -> Result<Value, ApiError> {
