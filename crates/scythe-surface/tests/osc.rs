@@ -183,6 +183,9 @@ fn device_selection_banks_and_actions() {
     d.run(&mut host, &mut s, 100);
     assert!(s.is_playing());
     assert_eq!(d.float("/play"), 1.0);
+    assert_eq!(d.text("/setlist/song/name"), "Verse");
+    assert_eq!(d.text("/setlist/song/number/str"), "1");
+    assert_eq!(d.text("/setlist/next/name"), "Chorus");
     d.send("/action/1016", vec![]);
     d.run(&mut host, &mut s, 100);
     assert!(!s.is_playing());

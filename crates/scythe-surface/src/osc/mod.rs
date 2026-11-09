@@ -13,13 +13,13 @@ use std::time::{Duration, Instant};
 
 use scythe_core::surface::{OSC_RECEIVE, OSC_SEND, OscSurface as OscConfig};
 use scythe_core::tempo::format_time;
-use scythe_session::Session;
+use scythe_session::{AutoTarget, Session};
 use serde_json::json;
 
 use scythe_core::TrackId;
 
 use crate::view::{self, TrackView, View};
-use crate::{Waker, exec, run_action};
+use crate::{Waker, exec, run_action, set_pan, set_volume};
 use codec::{Arg, Message};
 use pattern::{Flag, PatternFile};
 
@@ -185,28 +185,27 @@ impl OscSurface {
             }
         };
         let view = View::read(session);
-        let target = |n: usize| view.track(n).map(|t| track_ref(t));
         match action.as_str() {
             "TRACK_VOLUME" | "MASTER_VOLUME" => {
-                let Some(t) = track(self).and_then(target) else { return };
-                let Some(v) = num else { return };
+                let (Some(t), Some(v)) = (track(self).and_then(|n| view.track(n)), num) else { return };
                 let gain = match pattern.flag {
                     Flag::Normalized => view::fader_to_gain(v),
                     Flag::Float => scythe_core::units::db_to_gain(v),
                     _ => return,
                 };
-                let _ = exec(
-                    session,
-                    json!({ "cmd": "track.volume", "track": t, "volume": gain.min(scythe_core::units::db_to_gain(24.0)) }),
-                );
+                set_volume(session, t.id, gain);
             }
             "TRACK_PAN" | "MASTER_PAN" => {
-                let (Some(t), Some(v)) = (track(self).and_then(target), num) else { return };
+                let (Some(t), Some(v)) = (track(self).and_then(|n| view.track(n)), num) else { return };
                 if pattern.flag == Flag::Normalized {
-                    let _ = exec(
-                        session,
-                        json!({ "cmd": "track.pan", "track": t, "pan": (v * 2.0 - 1.0).clamp(-1.0, 1.0) }),
-                    );
+                    set_pan(session, t.id, v * 2.0 - 1.0);
+                }
+            }
+            "TRACK_VOLUME_TOUCH" | "TRACK_PAN_TOUCH" => {
+                let Some(id) = track(self).and_then(|n| view.track(n)).and_then(|t| t.id) else { return };
+                if !on {
+                    let target = if action == "TRACK_VOLUME_TOUCH" { AutoTarget::Volume } else { AutoTarget::Pan };
+                    session.release_automation(id, target);
                 }
             }
             "TRACK_MUTE" | "TRACK_SOLO" | "TRACK_REC_ARM" | "TRACK_MONITOR" => {
@@ -464,11 +463,8 @@ impl OscSurface {
         let s = &view.setlist;
         put("SETLIST_NAME", &[], Value::Text(s.name.clone().unwrap_or_default()));
         let song = s.current.as_ref();
-        put(
-            "SETLIST_SONG",
-            &[],
-            Value::Number { normalized: 0.0, raw: 0.0, text: song.map(|e| e.name.clone()).unwrap_or_default() },
-        );
+        put("SETLIST_SONG", &[], Value::Text(song.map(|e| e.name.clone()).unwrap_or_default()));
+        put("SETLIST_SONG_NUMBER", &[], Value::Text(song.map(|e| (e.entry + 1).to_string()).unwrap_or_default()));
         put("SETLIST_NEXT_SONG", &[], Value::Text(s.next.as_ref().map(|e| e.name.clone()).unwrap_or_default()));
         out
     }

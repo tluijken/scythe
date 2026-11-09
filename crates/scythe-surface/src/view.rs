@@ -139,10 +139,7 @@ impl View {
 
     /// The region the position is in.
     pub fn current_region(&self) -> Option<&MarkerView> {
-        self.regions
-            .iter()
-            .filter(|r| r.position <= self.position + 1e-9 && r.end.is_some_and(|e| self.position < e))
-            .last()
+        self.regions.iter().rfind(|r| r.position <= self.position + 1e-9 && r.end.is_some_and(|e| self.position < e))
     }
 }
 
