@@ -4,8 +4,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ApiError, json, snapshot};
+use super::{ApiError, json, snapshot, time};
 use crate::Session;
+
+const MIN_BPM: f64 = 20.0;
+const MAX_BPM: f64 = 400.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
@@ -35,6 +38,14 @@ pub enum ProjectCommand {
     /// Redoes the last undone change.
     #[serde(rename = "project.redo")]
     Redo,
+    /// Sets the tempo in effect at `at` (the edit cursor when left out), as dragging the tempo
+    /// field does.
+    #[serde(rename = "project.tempo")]
+    Tempo {
+        bpm: f64,
+        #[serde(default)]
+        at: Option<f64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,6 +103,17 @@ pub fn execute(session: &mut Session, command: ProjectCommand) -> Result<Value, 
             }
             session.redo();
             Ok(history(session, label))
+        }
+        ProjectCommand::Tempo { bpm, at } => {
+            if !(MIN_BPM..=MAX_BPM).contains(&bpm) {
+                return Err(ApiError::invalid(format!("tempo runs from {MIN_BPM} to {MAX_BPM} bpm")));
+            }
+            let at = match at {
+                Some(t) => time(t, "at")?,
+                None => session.project.cursor,
+            };
+            session.edit_merging("Change tempo", "tempo", |p| p.tempo.set_bpm_at(at, bpm));
+            Ok(serde_json::json!({"bpm": session.project.tempo.bpm_at(at)}))
         }
     }
 }

@@ -1,7 +1,7 @@
 //! The project as clients see it: plain JSON-friendly copies of what the model holds.
 
 use scythe_core::units::gain_to_db;
-use scythe_core::{Color, HwOut, Item, Marker, SendMode, Track};
+use scythe_core::{Color, HwOut, Item, Marker, Project, SendMode, Track};
 use scythe_engine::fx::FxStatus;
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,8 @@ pub struct ProjectSnapshot {
     pub length: f64,
     pub bpm: f64,
     pub time_signature: (u32, u32),
+    /// Where each bar starts, from bar 1, in seconds: to a little past the end of the project.
+    pub bars: Vec<f64>,
     pub undo: Option<String>,
     pub redo: Option<String>,
     pub transport: TransportState,
@@ -35,6 +37,8 @@ pub struct TransportState {
     pub recording: bool,
     /// The play position while playing, else the edit cursor, in seconds.
     pub position: f64,
+    /// `position` as REAPER shows it: `bar.beat.hundredths`.
+    pub bar_beat: String,
     pub cursor: f64,
     pub loop_enabled: bool,
     /// The time selection the loop repeats, `[start, end]` in seconds.
@@ -200,6 +204,7 @@ pub fn snapshot(session: &Session) -> ProjectSnapshot {
         length: p.length(),
         bpm: p.tempo.bpm_at(0.0),
         time_signature: p.tempo.time_sig_at(0.0),
+        bars: bars(p),
         undo: session.history.undo_label().map(Into::into),
         redo: session.history.redo_label().map(Into::into),
         transport: transport(session),
@@ -210,12 +215,21 @@ pub fn snapshot(session: &Session) -> ProjectSnapshot {
     }
 }
 
+/// Bar starts up to a minute past the project end, so an empty project still has a grid.
+fn bars(p: &Project) -> Vec<f64> {
+    const MAX_BARS: i64 = 20_000;
+    let end = p.length() + 60.0;
+    let timeline = p.tempo.timeline();
+    (1..=MAX_BARS).map(|bar| timeline.bar_start(bar)).take_while(|&t| t <= end).collect()
+}
+
 pub fn transport(session: &Session) -> TransportState {
     let p = &session.project;
     TransportState {
         playing: session.is_playing(),
         recording: session.is_recording(),
         position: session.position(),
+        bar_beat: p.tempo.format_bar_beat(session.position()),
         cursor: p.cursor,
         loop_enabled: p.loop_enabled,
         loop_range: p.time_selection.filter(|r| !r.is_empty()).map(|r| (r.start, r.end)),

@@ -70,6 +70,37 @@ to a running Scythe (`--url`, `--token`) or running a session of its own (`--hea
 song.RPP`). Tool schemas are generated from the API's command types; deleting, opening,
 starting a new project and saving are marked destructive for clients to confirm.
 
+### Web UI (browser, tablet, phone)
+
+The control API serves a web UI on the same address, embedded in the binary (no internet
+needed on stage, no Node toolchain to build it):
+
+| Page | For |
+|---|---|
+| `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with items (move, split, delete) and markers and regions, track headers, mixer with meters, sends, effects with their parameters, undo and redo, open and save |
+| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, the mix's meter; nothing else of the session |
+| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap |
+
+The monitor and setlist pages appear once the server offers monitor mixes (`mix.*`) and
+setlists (`setlist.*`); against an older server they say so instead.
+
+To open it from a phone or tablet on the band's network, listen on the LAN with a token:
+
+```sh
+scythe-server --control 0.0.0.0:8770 --token stage-secret set.RPP
+```
+
+then browse to `http://<the machine's IP>:8770/` and enter the token once (each device
+remembers it), or hand out a link that logs in by itself, for example as a QR code:
+`http://192.168.1.20:8770/monitor?token=stage-secret`. `/monitor?mix=Bass&lock=1` pins a
+device to one mix and hides the mix switcher. The token gives full control of the session (the
+monitor page only *shows* one mix), so keep it to the band's own network. Pages reconnect by
+themselves when the wifi drops or Scythe restarts, and grey out while they are offline.
+
+`SCYTHE_WEB_DIR=crates/scythe-server/web` serves the files from disk instead, for working on
+the UI without rebuilding. Its logic tests run with `node crates/scythe-server/web/test/run.mjs`
+(part of `devbox run test`) or in any browser at `/test/`.
+
 ## Layout
 
 | Crate | Contents |
@@ -78,7 +109,7 @@ starting a new project and saving are marked destructive for clients to confirm.
 | `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia, with REAPER's MP3 framing) and REAPER's resample modes, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
-| `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the headless runner and its config, the `scythe-server` binary |
+| `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |
 | `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts; the `scythe-mcp` stdio binary |
 | `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), plugin editor windows, ReaScript, demo generator |
 

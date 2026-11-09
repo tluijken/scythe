@@ -131,6 +131,7 @@ fn router(state: AppState) -> Router {
         .route("/mcp", post(mcp).get(mcp_stream).delete(mcp_stream))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .route("/api/health", get(health))
+        .fallback(crate::web::serve)
         .with_state(state)
 }
 
@@ -154,8 +155,8 @@ async fn authorize(State(state): State<AppState>, request: Request, next: Next) 
     (StatusCode::UNAUTHORIZED, Json(body)).into_response()
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"ok": true, "name": "scythe", "protocol": PROTOCOL}))
+async fn health(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({"ok": true, "name": "scythe", "protocol": PROTOCOL, "token": state.token.is_some()}))
 }
 
 /// Queues a command and waits for its answer.

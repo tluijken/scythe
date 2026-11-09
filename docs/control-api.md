@@ -26,11 +26,12 @@ files. There is no TLS; put a reverse proxy in front for anything beyond a trust
 
 | Method | Path | |
 |---|---|---|
-| `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1}`, no token needed |
+| `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1, "token": true}` (`token`: whether the others need one), no token needed |
 | `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}` |
 | `GET` | `/api/snapshot` | the same as the `snapshot` command |
 | `GET` | `/api/ws` | WebSocket: commands in, replies and events out |
 | `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md) |
+| `GET` | `/`, `/monitor`, `/setlist`, … | the web UI (see the README), no token needed to load it |
 
 Errors answer `{"ok": false, "error": {"kind": …, "message": …}}` with HTTP status 400 for
 `invalid` (malformed, unknown command, value out of range), 404 for `not_found` (a track, send,
@@ -92,6 +93,7 @@ Every transport command answers with the transport state (see `transport` events
 | `project.save` | `path?` (the project's own file when left out) | history state |
 | `project.new` | | snapshot |
 | `project.undo`, `project.redo` | | `{"revision", "dirty", "label", "undo", "redo"}`; `failed` when there is nothing to undo or redo |
+| `project.tempo` | `bpm` (20 to 400), `at?` (the edit cursor) | `{"bpm"}`: sets the tempo in effect at `at`, one undo step while it keeps changing |
 
 ### Tracks
 
@@ -255,8 +257,9 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 {
   "revision": 42, "name": "monitors", "path": "/home/band/live/monitors.RPP", "dirty": false,
   "sample_rate": 48000, "length": 213.5, "bpm": 120.0, "time_signature": [4, 4],
+  "bars": [0.0, 2.0, 4.0, …],
   "undo": "Track volume", "redo": null,
-  "transport": {"playing": false, "recording": false, "position": 0.0, "cursor": 0.0,
+  "transport": {"playing": false, "recording": false, "position": 0.0, "bar_beat": "1.1.00", "cursor": 0.0,
                 "loop_enabled": false, "loop_range": null, "metronome": false},
   "master": { "id": 0, "index": null, …same fields as a track… },
   "tracks": [{
@@ -278,7 +281,9 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 }
 ```
 
-`level` is how deep in folders a track sits (0 at the top). Ids are stable while the session
+`bars` holds where each bar starts (bar 1 first), following tempo and time signature changes, to
+a minute past the end of the project; `bar_beat` is the position as REAPER shows it. `level` is
+how deep in folders a track sits (0 at the top). Ids are stable while the session
 runs (also across undo) but not across opening the project again; names and GUIDs are.
 
 ## Events
@@ -306,3 +311,8 @@ The server side is `crates/scythe-server`: `ControlServer::start` binds, runs ax
 and tokio runtime of its own, and returns a `ControlPump` that the thread owning the session
 calls (`pump` every frame, or `wait` in a loop) to run commands and publish events. The same
 server answers MCP at `/mcp` with `scythe-mcp`'s `McpServer`.
+
+The web UI is in `crates/scythe-server/web` (plain ES modules, no build step), embedded by
+`crates/scythe-server/src/web.rs`, whose file list a test keeps in step with the directory.
+Its client for the monitor-mix and setlist domains keeps their command and field names in
+`web/js/domains.js`.

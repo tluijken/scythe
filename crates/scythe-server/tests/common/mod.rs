@@ -49,3 +49,24 @@ fn dechunk(mut rest: &str) -> String {
     }
     out
 }
+
+/// A GET with extra request headers: the status, the response head (lower-cased) and the body.
+#[allow(dead_code, reason = "each test binary uses only some of the helpers")]
+pub fn get_raw(addr: SocketAddr, path: &str, headers: &str) -> (u16, String, Vec<u8>) {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\n{headers}Connection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    let split = response.windows(4).position(|w| w == b"\r\n\r\n").expect("an HTTP response");
+    let head = String::from_utf8_lossy(&response[..split]).to_ascii_lowercase();
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).expect("a status code");
+    let body = response[split + 4..].to_vec();
+    let body = if head.contains("transfer-encoding: chunked") {
+        dechunk(&String::from_utf8_lossy(&body)).into_bytes()
+    } else {
+        body
+    };
+    (status, head, body)
+}

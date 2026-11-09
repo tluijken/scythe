@@ -499,3 +499,26 @@ fn setlist_changes_are_published() {
         .collect();
     assert_eq!(statuses, [None, Some("Opener".into()), Some("Ballad".into())]);
 }
+
+#[test]
+fn tempo_changes_and_bars_follow() {
+    let mut s = session();
+    let snap = ok(&mut s, json!({"cmd": "snapshot"}));
+    assert_eq!(snap["bpm"], 120.0);
+    assert_eq!(snap["transport"]["bar_beat"], "1.1.00");
+    let bars = snap["bars"].as_array().unwrap();
+    assert_eq!(bars[0], 0.0);
+    assert!((bars[1].as_f64().unwrap() - 2.0).abs() < 1e-9);
+
+    let answer = ok(&mut s, json!({"cmd": "project.tempo", "bpm": 60.0}));
+    assert_eq!(answer["bpm"], 60.0);
+    let snap = ok(&mut s, json!({"cmd": "snapshot"}));
+    assert!((snap["bars"][1].as_f64().unwrap() - 4.0).abs() < 1e-9);
+    ok(&mut s, json!({"cmd": "transport.seek", "position": 5.0}));
+    assert_eq!(ok(&mut s, json!({"cmd": "transport.state"}))["bar_beat"], "2.2.00");
+
+    let err = execute_json(&mut s, json!({"cmd": "project.tempo", "bpm": 1000.0})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert_eq!(ok(&mut s, json!({"cmd": "project.undo"}))["label"], "Change tempo");
+    assert_eq!(s.project.tempo.bpm_at(0.0), 120.0);
+}

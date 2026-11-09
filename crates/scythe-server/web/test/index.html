@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scythe web UI tests</title>
+<style>
+body { background: #1a1b18; color: #f8f8f2; font: 14px/1.5 ui-monospace, monospace; padding: 16px; }
+.ok { color: #a6e22e; } .fail { color: #f92672; }
+</style>
+</head>
+<body>
+<h1 id="summary">Running…</h1>
+<ul id="results"></ul>
+<script type="module">
+import { run } from "./harness.js";
+import "./format.test.js";
+import "./api.test.js";
+import "./domains.test.js";
+
+const list = document.getElementById("results");
+const results = await run((r) => {
+  const li = document.createElement("li");
+  li.className = r.ok ? "ok" : "fail";
+  li.textContent = `${r.ok ? "ok" : "FAIL"} ${r.name}${r.ok ? "" : `: ${r.error}`}`;
+  list.append(li);
+});
+const failed = results.filter((r) => !r.ok).length;
+const summary = `${failed ? "FAIL" : "PASS"}: ${results.length - failed} passed, ${failed} failed`;
+document.getElementById("summary").textContent = summary;
+document.title = summary;
+</script>
+</body>
+</html>
