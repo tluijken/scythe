@@ -7,7 +7,9 @@ use crate::fade::Fade;
 use crate::fader::PanMode;
 use crate::groups::GroupFlags;
 use crate::rpp::{Chunk, Node};
+use crate::stretch::StretchMarker;
 use crate::tempo::TempoMap;
+use crate::timebase::{PlayRate, Timebase};
 use crate::units::PanLaw;
 
 /// Original tokens of each modelled RPP line, keyed by its keyword. Writing starts from these
@@ -180,13 +182,104 @@ pub struct Take {
     pub pitch: f64,
     pub volume: f64,
     pub pan: f64,
-    /// Take volume, pan and mute envelopes, in seconds from the item start.
+    /// Take volume, pan, mute and pitch envelopes, in seconds from the item start.
     pub envelopes: Vec<Envelope>,
+    /// Which source channels play (RPP `CHANMODE`).
+    pub channel_mode: ChannelMode,
+    /// Stretch markers in take time; when there are any they place the source instead of
+    /// `source_offset`.
+    pub stretch_markers: Vec<StretchMarker>,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
 
+/// A take's channel mode (`I_CHANMODE`). Codes 3 to 66 play one source channel (3 is the
+/// first) on both sides and 67 up play a pair starting at channel `code - 66`, silent past the
+/// source's channels; a mono source counts as two equal channels. Measured from REAPER renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChannelMode {
+    #[default]
+    Normal,
+    ReverseStereo,
+    /// The first two channels averaged.
+    Downmix,
+    /// One channel (0-based) on both sides.
+    Mono(u8),
+    /// The pair starting at a channel (0-based).
+    Stereo(u8),
+}
+
+impl ChannelMode {
+    pub fn from_code(code: i64) -> Self {
+        match code {
+            1 => Self::ReverseStereo,
+            2 => Self::Downmix,
+            3..=66 => Self::Mono((code - 3) as u8),
+            67.. => Self::Stereo((code - 67).min(255) as u8),
+            _ => Self::Normal,
+        }
+    }
+
+    pub fn code(self) -> i64 {
+        match self {
+            Self::Normal => 0,
+            Self::ReverseStereo => 1,
+            Self::Downmix => 2,
+            Self::Mono(c) => 3 + c as i64,
+            Self::Stereo(c) => 67 + c as i64,
+        }
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Normal => "Normal".into(),
+            Self::ReverseStereo => "Reverse stereo".into(),
+            Self::Downmix => "Mono (mix L+R)".into(),
+            Self::Mono(0) => "Mono (left)".into(),
+            Self::Mono(1) => "Mono (right)".into(),
+            Self::Mono(c) => format!("Mono (channel {})", c + 1),
+            Self::Stereo(c) => format!("Stereo (channels {}/{})", c + 1, c + 2),
+        }
+    }
+}
+
 impl Take {
+    /// Where item time `rel` plays in the source, before section, loop and reverse: from the
+    /// stretch markers when there are any, otherwise from the offset and play rate.
+    pub fn source_pos(&self, rel: f64) -> f64 {
+        if self.stretch_markers.is_empty() {
+            self.source_offset + rel * self.playrate
+        } else {
+            crate::stretch::source_at(&self.stretch_markers, rel * self.playrate)
+        }
+    }
+
+    /// Source seconds per item second at item time `rel`.
+    pub fn speed_at(&self, rel: f64) -> f64 {
+        if self.stretch_markers.is_empty() {
+            self.playrate
+        } else {
+            self.playrate * crate::stretch::rate_at(&self.stretch_markers, rel * self.playrate)
+        }
+    }
+
+    /// Moves the stretch markers by `delta` seconds of take time, as when the item's left edge
+    /// moves.
+    pub fn shift_markers(&mut self, delta: f64) {
+        self.stretch_markers.iter_mut().for_each(|m| m.pos += delta);
+    }
+
+    /// Whether the source plays at a rate or pitch that changes over the item: stretch markers or
+    /// a pitch envelope.
+    pub fn is_warped(&self) -> bool {
+        !self.stretch_markers.is_empty() || self.pitch_envelope().is_some()
+    }
+
+    /// The pitch envelope, when it plays and has points.
+    pub fn pitch_envelope(&self) -> Option<&Envelope> {
+        self.envelopes.iter().find(|e| e.kind == EnvelopeKind::Pitch && e.active && !e.points.is_empty())
+    }
+
     /// Maps a time relative to the item start onto the underlying media file, following the
     /// section, reverse and loop settings. `None` where the item plays silence.
     pub fn source_time(&self, rel: f64, looped: bool, media_len: f64) -> Option<f64> {
@@ -201,7 +294,7 @@ impl Take {
         if len <= 0.0 {
             return None;
         }
-        let mut pos = self.source_offset + rel * self.playrate;
+        let mut pos = self.source_pos(rel);
         if looped {
             pos = pos.rem_euclid(len);
         }
@@ -214,8 +307,12 @@ impl Take {
     /// How the source is processed before playback, when it is: a rate change that keeps the
     /// pitch stretches the time axis by `1 / playrate`, a pitch shift scales the frequencies,
     /// and a rate change without `preserve_pitch` resamples by `playrate`. `default_mode` is the
-    /// project's pitch shifter (`Project::default_pitch_mode`).
+    /// project's pitch shifter (`Project::default_pitch_mode`). Takes with stretch markers or a
+    /// pitch envelope are not processed as a whole (see `Take::is_warped`).
     pub fn processing(&self, default_mode: i32) -> Option<Processing> {
+        if self.is_warped() {
+            return None;
+        }
         let changed = self.playrate > 0.0 && (self.playrate - 1.0).abs() > 1e-9;
         let time = if self.preserve_pitch && changed { 1.0 / self.playrate } else { 1.0 };
         let rate = if !self.preserve_pitch && changed { self.playrate } else { 1.0 };
@@ -242,6 +339,8 @@ impl Take {
             volume: 1.0,
             pan: 0.0,
             envelopes: Vec::new(),
+            channel_mode: ChannelMode::Normal,
+            stretch_markers: Vec::new(),
             lines: LineMemo::new(),
             extra: Vec::new(),
         }
@@ -265,6 +364,8 @@ pub struct Item {
     /// Vertical placement within the track as (top, height) fractions (RPP `YPOS`), used by
     /// fixed lanes and free item positioning.
     pub ypos: Option<(f64, f64)>,
+    /// What the item follows when the tempo changes (`BEAT`); `None` takes the track's.
+    pub timebase: Option<Timebase>,
     pub takes: Vec<Take>,
     pub active_take: usize,
     pub lines: LineMemo,
@@ -284,6 +385,7 @@ impl Item {
             muted: false,
             looped: false,
             ypos: None,
+            timebase: None,
             takes: vec![take],
             active_take: 0,
             lines: LineMemo::new(),
@@ -301,6 +403,7 @@ impl Item {
         let delta = start - self.position;
         for take in &mut self.takes {
             take.source_offset += delta * take.playrate;
+            take.shift_markers(-delta * take.playrate);
         }
         self.position = start;
         self.length -= delta;
@@ -328,6 +431,7 @@ impl Item {
         let mut right = self.duplicate();
         for take in &mut right.takes {
             take.source_offset += cut * take.playrate;
+            take.shift_markers(-cut * take.playrate);
         }
         right.position = at;
         right.length = self.length - cut;
@@ -705,6 +809,8 @@ pub struct Track {
     pub fixed_lanes: bool,
     /// Fixed lanes that play (`LANESOLO`): a bitmask per 32 lanes; `None` plays every lane.
     pub lane_solo: Option<Vec<u32>>,
+    /// The timebase of the track's items (`BEAT`); `None` takes the project's.
+    pub timebase: Option<Timebase>,
     pub items: Vec<Item>,
     pub fx: Vec<FxSlot>,
     /// FX-chain level lines (window state and such) that precede the first plugin.
@@ -806,6 +912,7 @@ impl Track {
             main_send_offset: 0,
             fixed_lanes: false,
             lane_solo: None,
+            timebase: None,
             items: Vec::new(),
             fx: Vec::new(),
             fx_chain_prelude: Vec::new(),
@@ -865,6 +972,12 @@ pub struct Project {
     pub group_names: BTreeMap<usize, String>,
     /// The pitch shifter of takes that do not pick one (`DEFPITCHMODE`, as `Take::pitch_mode`).
     pub default_pitch_mode: i32,
+    /// What items, envelopes and markers follow when the tempo changes (`TIMELOCKMODE`).
+    pub timebase: Timebase,
+    /// Tempo markers keep their beat when an earlier one changes (`TEMPOENVLOCKMODE 1`).
+    pub tempo_follows_beats: bool,
+    /// The project play rate (`PLAYRATE`).
+    pub playrate: PlayRate,
     pub master: Track,
     pub tracks: Vec<Track>,
     pub markers: Vec<Marker>,
@@ -888,6 +1001,9 @@ impl Default for Project {
             pan_mode: PanMode::default(),
             group_names: BTreeMap::new(),
             default_pitch_mode: Processing::DEFAULT_MODE,
+            timebase: Timebase::Beats,
+            tempo_follows_beats: true,
+            playrate: PlayRate::default(),
             master: Track { hw_outs: vec![HwOut::default()], ..Track::new("Master") },
             tracks: Vec::new(),
             markers: Vec::new(),

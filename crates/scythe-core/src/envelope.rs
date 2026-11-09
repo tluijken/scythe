@@ -21,6 +21,8 @@ pub enum EnvelopeKind {
     DualPanLeft,
     /// `DUALPANENV2`: dual pan of the right channel, stored like `Pan` and added to it.
     DualPanRight,
+    /// `PITCHENV`, takes only: semitones added to the take's pitch.
+    Pitch,
 }
 
 impl EnvelopeKind {
@@ -50,6 +52,7 @@ impl EnvelopeKind {
             Self::Width => "WIDTHENV2",
             Self::DualPanLeft => "DUALPANENVL2",
             Self::DualPanRight => "DUALPANENV2",
+            Self::Pitch => "PITCHENV",
         }
     }
 
@@ -72,10 +75,10 @@ impl EnvelopeKind {
         }
     }
 
-    /// A take's envelopes (`VOLENV`, `PANENV`, `MUTEENV` after its source) use the volume, pan
-    /// and mute kinds.
+    /// A take's envelopes (`VOLENV`, `PANENV`, `MUTEENV`, `PITCHENV` after its source) use the
+    /// volume, pan, mute and pitch kinds.
     pub fn from_take_chunk_name(name: &str) -> Option<Self> {
-        [Self::Volume, Self::Pan, Self::Mute].into_iter().find(|k| k.take_chunk_name() == Some(name))
+        [Self::Volume, Self::Pan, Self::Mute, Self::Pitch].into_iter().find(|k| k.take_chunk_name() == Some(name))
     }
 
     pub fn take_chunk_name(self) -> Option<&'static str> {
@@ -83,6 +86,7 @@ impl EnvelopeKind {
             Self::Volume => Some("VOLENV"),
             Self::Pan => Some("PANENV"),
             Self::Mute => Some("MUTEENV"),
+            Self::Pitch => Some("PITCHENV"),
             _ => None,
         }
     }
@@ -97,6 +101,7 @@ impl EnvelopeKind {
             Self::Width => "Width",
             Self::DualPanLeft => "Pan (left)",
             Self::DualPanRight => "Pan (right)",
+            Self::Pitch => "Pitch",
         }
     }
 
@@ -106,13 +111,14 @@ impl EnvelopeKind {
             Self::Volume | Self::VolumePreFx | Self::Trim => (0.0, 2.0),
             Self::Pan | Self::Width | Self::DualPanLeft | Self::DualPanRight => (-1.0, 1.0),
             Self::Mute => (0.0, 1.0),
+            Self::Pitch => (-24.0, 24.0),
         }
     }
 
     /// Value of a new envelope that leaves the track as it is.
     pub fn neutral(self) -> f64 {
         match self {
-            Self::Pan | Self::DualPanLeft | Self::DualPanRight => 0.0,
+            Self::Pan | Self::DualPanLeft | Self::DualPanRight | Self::Pitch => 0.0,
             _ => 1.0,
         }
     }

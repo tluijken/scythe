@@ -6,6 +6,7 @@ use scythe_core::model::MIN_ITEM_LENGTH;
 use scythe_core::rpp::resolve_media_path;
 use scythe_core::smf::read_smf;
 use scythe_core::{Item, ItemId, Source, Take, TimeRange, TrackId};
+use scythe_engine::warp::Warp;
 use scythe_engine::{Media, MediaState};
 
 use crate::{Selection, Session};
@@ -35,8 +36,21 @@ pub enum RenderedItems {
     NewTake { item: ItemId },
 }
 
-/// A file and the `Processing::key` of a processed copy.
-pub(crate) type StretchKey = (PathBuf, (u64, u64, u64, i32));
+/// A file and a hash of how a copy of it is processed.
+pub(crate) type StretchKey = (PathBuf, u64);
+
+/// A processed copy of a file being prepared.
+enum Stretch {
+    Processed(scythe_core::Processing),
+    Warped(Warp),
+}
+
+fn hash(value: &impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::hash::DefaultHasher::new();
+    value.hash(&mut h);
+    h.finish()
+}
 
 /// Files waiting to load, in the order they are wanted, and the threads loading them.
 #[derive(Default)]
@@ -99,28 +113,44 @@ impl Session {
                 self.spawn_load(path, None);
             }
         }
-        let default_mode = self.project.default_pitch_mode;
-        let stretches: Vec<(PathBuf, scythe_core::Processing)> = self
-            .project
-            .tracks
-            .iter()
-            .flat_map(|t| &t.items)
-            .flat_map(|i| &i.takes)
-            .filter_map(|t| Some((resolve_media_path(&self.project, t.source.file()?), t.processing(default_mode)?)))
-            .collect();
-        for (path, processing) in stretches {
-            let key = (path.clone(), processing.key());
+        // The engine plays the project at its play rate, which changes how takes are processed.
+        let played = self.project.at_playrate();
+        let default_mode = played.default_pitch_mode;
+        let mut jobs: Vec<(PathBuf, Stretch)> = Vec::new();
+        for item in played.tracks.iter().flat_map(|t| &t.items) {
+            for take in &item.takes {
+                let Some(file) = take.source.file() else { continue };
+                let path = resolve_media_path(&played, file);
+                if let Some(p) = take.processing(default_mode) {
+                    jobs.push((path.clone(), Stretch::Processed(p)));
+                }
+                if let Some(w) = Warp::of(item, take, default_mode) {
+                    jobs.push((path, Stretch::Warped(w)));
+                }
+            }
+        }
+        for (path, job) in jobs {
             let pool = self.engine.pool().clone();
-            if pool.ready(&path).is_none()
-                || pool.processed(&path, &processing).is_some()
-                || !self.pending_stretch.insert(key.clone())
-            {
+            let (key, done) = match &job {
+                Stretch::Processed(p) => {
+                    ((path.clone(), hash(&("processed", p.key()))), pool.processed(&path, p).is_some())
+                }
+                Stretch::Warped(w) => ((path.clone(), hash(&("warped", w.key()))), pool.warped(&path, w).is_some()),
+            };
+            if pool.ready(&path).is_none() || done || !self.pending_stretch.insert(key.clone()) {
                 continue;
             }
             let tx = self.loader_tx.clone();
             let wake = self.waker.clone();
             std::thread::spawn(move || {
-                pool.prepare_processed(&path, &processing);
+                match &job {
+                    Stretch::Processed(p) => {
+                        pool.prepare_processed(&path, p);
+                    }
+                    Stretch::Warped(w) => {
+                        pool.prepare_warped(&path, w);
+                    }
+                }
                 let _ = tx.send(LoaderMsg::Stretched(key));
                 wake();
             });

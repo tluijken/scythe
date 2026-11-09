@@ -241,6 +241,11 @@ pub fn bounce_finished(
     progress: impl FnMut(f32),
 ) -> Result<(), BounceError> {
     let metadata = RenderSettings::from_project(project).metadata;
+    // The project play rate speeds the whole render up, its length included.
+    let rate = if project.playrate.is_normal() { 1.0 } else { project.playrate.rate };
+    let played = project.at_playrate();
+    let project = played.as_ref();
+    let range = TimeRange { start: range.start / rate, end: range.end / rate };
     let file = match encoding {
         Encoding::Wav(depth, options) => Some((
             depth,

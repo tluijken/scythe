@@ -64,6 +64,9 @@ pub struct Transport {
     lost: AtomicBool,
     /// Frames the device asked for in its last callback.
     block_frames: AtomicU32,
+    /// The project play rate as `f64` bits: the graph runs on the sped-up time axis and
+    /// positions in project seconds are that many times its frames.
+    play_rate: AtomicU64,
 }
 
 impl Transport {
@@ -95,7 +98,12 @@ impl Transport {
             callbacks: AtomicU64::new(0),
             lost: AtomicBool::new(false),
             block_frames: AtomicU32::new(0),
+            play_rate: AtomicU64::new(1f64.to_bits()),
         }
+    }
+
+    fn play_rate(&self) -> f64 {
+        f64::from_bits(self.play_rate.load(Ordering::Relaxed))
     }
 
     /// How long rendered audio takes to reach the speakers, as the device reports it.
@@ -110,7 +118,7 @@ impl Transport {
     pub fn position_seconds(&self) -> f64 {
         let pending = self.seek.load(Ordering::Relaxed);
         let frames = if pending != NO_SEEK { pending } else { self.position.load(Ordering::Relaxed) };
-        frames as f64 / self.sample_rate as f64
+        frames as f64 / self.sample_rate as f64 * self.play_rate()
     }
 
     pub fn load(&self) -> f32 {
@@ -1024,6 +1032,16 @@ impl Engine {
 
     /// Rebuilds the render graph from `project` and hands it to the audio thread.
     pub fn sync(&mut self, project: &Project) {
+        let played = project.at_playrate();
+        let rate = project.playrate.rate;
+        let rate = if project.playrate.is_normal() { 1.0 } else { rate };
+        let old_rate = self.transport.play_rate();
+        if rate != old_rate {
+            let at = self.transport.position.load(Ordering::Relaxed) as f64 * old_rate / rate;
+            self.transport.position.store(at.round() as i64, Ordering::Relaxed);
+            self.transport.play_rate.store(rate.to_bits(), Ordering::Relaxed);
+        }
+        let project = played.as_ref();
         self.meters.retain(project);
         self.fx.retain(project);
         self.fx.project_dir = project.path.as_deref().and_then(std::path::Path::parent).map(Into::into);
@@ -1258,7 +1276,7 @@ impl Engine {
     }
 
     pub fn seek(&self, seconds: f64) {
-        let frames = (seconds.max(0.0) * self.info.sample_rate as f64).round() as i64;
+        let frames = (seconds.max(0.0) * self.info.sample_rate as f64 / self.transport.play_rate()).round() as i64;
         self.transport.seek.store(frames, Ordering::Relaxed);
     }
 

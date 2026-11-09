@@ -713,7 +713,7 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
     Some(match name {
         "Master_GetTempo" => ret(Val::Num(s.project.tempo.bpm_at(0.0))),
         "SetCurrentBPM" => {
-            s.project.tempo.set_base_bpm(a.num(1).clamp(1.0, 960.0));
+            s.project.change_tempo(|t| t.set_base_bpm(a.num(1).clamp(1.0, 960.0)));
             s.changed = true;
             ret(Val::Nil)
         }
@@ -830,36 +830,39 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                     time = tl.bar_start(bb.bar + 1);
                 }
             }
-            let tempo = &mut s.project.tempo;
             let point = scythe_core::tempo::TempoPoint {
                 linear,
                 time_sig: sig,
                 ..scythe_core::tempo::TempoPoint::new(time.max(0.0), bpm.max(1.0))
             };
-            if i < 0 {
-                if tempo.points.is_empty() && time > 0.0 {
-                    tempo.points.push(scythe_core::tempo::TempoPoint {
-                        time_sig: Some((tempo.beats_per_bar, tempo.beat_unit)),
-                        ..scythe_core::tempo::TempoPoint::new(0.0, tempo.bpm)
-                    });
-                }
-                tempo.points.push(point);
-            } else if let Some(k) = index(tempo.points.len(), i) {
+            let Some(k) = (i >= 0).then(|| index(s.project.tempo.points.len(), i)) else {
+                s.project.change_tempo(|tempo| {
+                    if tempo.points.is_empty() && time > 0.0 {
+                        tempo.points.push(scythe_core::tempo::TempoPoint {
+                            time_sig: Some((tempo.beats_per_bar, tempo.beat_unit)),
+                            ..scythe_core::tempo::TempoPoint::new(0.0, tempo.bpm)
+                        });
+                    }
+                    tempo.points.push(point);
+                    settle_tempo(tempo);
+                });
+                s.changed = true;
+                return Some(ret(Val::Bool(true)));
+            };
+            let Some(k) = k else { return Some(ret(Val::Bool(false))) };
+            s.project.change_tempo(|tempo| {
                 let raw = std::mem::take(&mut tempo.points[k].raw);
                 tempo.points[k] = scythe_core::tempo::TempoPoint { raw, ..point };
-            } else {
-                return Some(ret(Val::Bool(false)));
-            }
-            tempo.points.sort_by(|x, y| x.time.total_cmp(&y.time));
-            if let Some(first) = tempo.points.first().filter(|p| p.time <= 0.0) {
-                tempo.bpm = first.bpm;
-            }
+                settle_tempo(tempo);
+            });
             s.changed = true;
             ret(Val::Bool(true))
         }
         "DeleteTempoTimeSigMarker" => match index(s.project.tempo.points.len(), a.int(1)) {
             Some(i) => {
-                s.project.tempo.points.remove(i);
+                s.project.change_tempo(|tempo| {
+                    tempo.points.remove(i);
+                });
                 s.changed = true;
                 ret(Val::Bool(true))
             }
@@ -867,6 +870,14 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         },
         _ => return None,
     })
+}
+
+/// Keeps the tempo markers in time order and the base tempo in step with a marker at the start.
+fn settle_tempo(tempo: &mut scythe_core::TempoMap) {
+    tempo.points.sort_by(|x, y| x.time.total_cmp(&y.time));
+    if let Some(first) = tempo.points.first().filter(|p| p.time <= 0.0) {
+        tempo.bpm = first.bpm;
+    }
 }
 
 // ---- markers and regions -------------------------------------------------------------------

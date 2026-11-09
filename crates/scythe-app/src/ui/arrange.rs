@@ -1048,6 +1048,7 @@ fn envelope_color(kind: EnvelopeKind) -> Color32 {
         EnvelopeKind::Pan | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => theme::ORANGE,
         EnvelopeKind::Width => theme::YELLOW,
         EnvelopeKind::Mute => theme::PINK,
+        EnvelopeKind::Pitch => theme::TEXT_MID,
     }
 }
 
@@ -1061,6 +1062,7 @@ fn envelope_y_fraction(kind: EnvelopeKind, value: f64) -> f32 {
             ((value + 1.0) * 0.5) as f32
         }
         EnvelopeKind::Mute => value as f32,
+        EnvelopeKind::Pitch => ((value + 24.0) / 48.0) as f32,
     }
 }
 
@@ -1072,6 +1074,7 @@ fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
             (f as f64 * 2.0 - 1.0).clamp(-1.0, 1.0)
         }
         EnvelopeKind::Mute => (f >= 0.5) as u8 as f64,
+        EnvelopeKind::Pitch => f as f64 * 48.0 - 24.0,
     }
 }
 
@@ -1083,6 +1086,7 @@ fn format_envelope_value(kind: EnvelopeKind, value: f64) -> String {
         }
         EnvelopeKind::Width => format!("{:.0}%", value * 100.0),
         EnvelopeKind::Mute => if value >= 0.5 { "on" } else { "muted" }.to_owned(),
+        EnvelopeKind::Pitch => format!("{value:+.2} st"),
     }
 }
 

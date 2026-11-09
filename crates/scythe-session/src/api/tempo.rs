@@ -134,8 +134,7 @@ fn bar_line(tempo: &TempoMap, t: f64) -> f64 {
 
 /// Keeps the points in time order and the base tempo and signature (the RPP `TEMPO` line) in
 /// step with a point at the start.
-fn settle(p: &mut Project) {
-    let tempo = &mut p.tempo;
+fn settle(tempo: &mut TempoMap) {
     tempo.points.sort_by(|a, b| a.time.total_cmp(&b.time));
     if let Some(first) = tempo.points.first().filter(|pt| pt.time <= 0.0) {
         tempo.bpm = first.bpm;
@@ -164,15 +163,16 @@ pub fn execute(session: &mut Session, command: TempoCommand) -> Result<Value, Ap
                 return Err(ApiError::invalid("there is a tempo marker there already"));
             }
             session.edit("Insert tempo marker", |p| {
-                let tempo_map = &mut p.tempo;
-                if tempo_map.points.is_empty() && at > 0.0 {
-                    tempo_map.points.push(TempoPoint {
-                        time_sig: Some((tempo_map.beats_per_bar, tempo_map.beat_unit)),
-                        ..TempoPoint::new(0.0, tempo_map.bpm)
-                    });
-                }
-                tempo_map.points.push(TempoPoint { linear, time_sig: sig, ..TempoPoint::new(at, tempo) });
-                settle(p);
+                p.change_tempo(|tempo_map| {
+                    if tempo_map.points.is_empty() && at > 0.0 {
+                        tempo_map.points.push(TempoPoint {
+                            time_sig: Some((tempo_map.beats_per_bar, tempo_map.beat_unit)),
+                            ..TempoPoint::new(0.0, tempo_map.bpm)
+                        });
+                    }
+                    tempo_map.points.push(TempoPoint { linear, time_sig: sig, ..TempoPoint::new(at, tempo) });
+                    settle(tempo_map);
+                })
             });
             Ok(info(&session.project))
         }
@@ -195,26 +195,30 @@ pub fn execute(session: &mut Session, command: TempoCommand) -> Result<Value, Ap
                 return Err(ApiError::invalid("there is a tempo marker there already"));
             }
             session.edit_merging("Edit tempo marker", &format!("tempo:{index}"), |p| {
-                let pt = &mut p.tempo.points[index];
-                pt.time = at;
-                if let Some(b) = tempo {
-                    pt.bpm = b;
-                }
-                if let Some(s) = sig {
-                    pt.time_sig = s;
-                }
-                if let Some(l) = linear {
-                    pt.linear = l;
-                }
-                settle(p);
+                p.change_tempo(|map| {
+                    let pt = &mut map.points[index];
+                    pt.time = at;
+                    if let Some(b) = tempo {
+                        pt.bpm = b;
+                    }
+                    if let Some(s) = sig {
+                        pt.time_sig = s;
+                    }
+                    if let Some(l) = linear {
+                        pt.linear = l;
+                    }
+                    settle(map);
+                })
             });
             Ok(info(&session.project))
         }
         TempoCommand::Delete { index } => {
             point(session, index)?;
             session.edit("Remove tempo marker", |p| {
-                p.tempo.points.remove(index);
-                settle(p);
+                p.change_tempo(|tempo| {
+                    tempo.points.remove(index);
+                    settle(tempo);
+                })
             });
             Ok(info(&session.project))
         }

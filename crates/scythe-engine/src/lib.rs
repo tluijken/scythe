@@ -39,6 +39,7 @@ pub mod turtle;
 pub mod video;
 pub mod vst2;
 pub mod vst3_host;
+pub mod warp;
 pub mod wavcodec;
 
 pub use cues::MarkerAction;

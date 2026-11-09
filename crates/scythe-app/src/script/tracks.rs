@@ -726,6 +726,7 @@ fn env_name(kind: EnvelopeKind) -> &'static str {
         EnvelopeKind::Width => "Width",
         EnvelopeKind::DualPanLeft => "Pan (Left)",
         EnvelopeKind::DualPanRight => "Pan (Right)",
+        EnvelopeKind::Pitch => "Pitch",
     }
 }
 

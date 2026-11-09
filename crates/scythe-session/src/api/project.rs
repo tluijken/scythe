@@ -114,7 +114,7 @@ pub fn execute(session: &mut Session, command: ProjectCommand) -> Result<Value, 
                 Some(t) => time(t, "at")?,
                 None => session.project.cursor,
             };
-            session.edit_merging("Change tempo", "tempo", |p| p.tempo.set_bpm_at(at, bpm));
+            session.edit_merging("Change tempo", "tempo", |p| p.change_tempo(|t| t.set_bpm_at(at, bpm)));
             Ok(serde_json::json!({"bpm": session.project.tempo.bpm_at(at)}))
         }
     }

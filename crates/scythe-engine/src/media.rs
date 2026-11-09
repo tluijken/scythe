@@ -387,7 +387,7 @@ fn lowpass(x: &mut [f64], w: f64) {
 /// off at the input's Nyquist frequency or 1/1.03 of the output's. The 16-, 64- and 192-point
 /// kernels are read from a table of 32 steps per input frame with linear interpolation; the
 /// longer ones are computed exactly.
-struct SincKernel {
+pub(crate) struct SincKernel {
     half: usize,
     cutoff: f64,
     /// The kernel from its centre outwards, `OVERSAMPLE` steps per input frame.
@@ -398,7 +398,7 @@ impl SincKernel {
     const OVERSAMPLE: usize = 32;
 
     /// A kernel for reading the input `step` frames apart.
-    fn new(step: f64, half: usize, tabled: bool) -> Self {
+    pub(crate) fn new(step: f64, half: usize, tabled: bool) -> Self {
         let cutoff = if step > 1.0 { 1.0 / (step * 1.03) } else { 1.0 };
         let mut kernel = Self { half, cutoff, table: None };
         if tabled {
@@ -439,7 +439,7 @@ impl SincKernel {
         weights.extend((1 - self.half as i64..=self.half as i64).map(|k| self.tap(frac - k as f64)));
     }
 
-    fn sample(&self, input: &[f32], pos: f64) -> f32 {
+    pub(crate) fn sample(&self, input: &[f32], pos: f64) -> f32 {
         let base = pos.floor() as i64;
         let first = (base - self.half as i64 + 1).max(0);
         let last = (base + self.half as i64).min(input.len() as i64 - 1);
@@ -698,6 +698,9 @@ pub struct MediaPool {
     entries: Mutex<HashMap<PathBuf, MediaState>>,
     /// Stretched, pitch-shifted or rate-changed copies, keyed by file and `Processing::key`.
     processed: Mutex<HashMap<ProcessedKey, Arc<AudioData>>>,
+    /// Takes with stretch markers or a pitch envelope, rendered for their item, keyed by file
+    /// and `Warp::key`.
+    warped: Mutex<HashMap<(PathBuf, u64), Arc<AudioData>>>,
     /// How files at another rate are converted to the engine's, and how takes play at another
     /// rate without keeping their pitch.
     resample: ResampleMode,
@@ -750,11 +753,38 @@ impl MediaPool {
         Some(audio)
     }
 
+    /// The take rendered as `warp` says, once prepared.
+    pub fn warped(&self, path: &Path, warp: &crate::warp::Warp) -> Option<Arc<AudioData>> {
+        self.warped.lock().unwrap().get(&(path.to_owned(), warp.key())).cloned()
+    }
+
+    /// Renders a warped take (slow; for worker threads). `None` until the file is loaded.
+    pub fn prepare_warped(&self, path: &Path, warp: &crate::warp::Warp) -> Option<Arc<AudioData>> {
+        if let Some(done) = self.warped(path, warp) {
+            return Some(done);
+        }
+        let base = self.ready(path)?;
+        let audio = Arc::new(media_threads().install(|| crate::warp::render(&base.audio, warp, self.resample)));
+        self.warped.lock().unwrap().insert((path.to_owned(), warp.key()), audio.clone());
+        Some(audio)
+    }
+
     /// Prepares every processed copy the project's takes need; their files must be loaded.
     pub fn prepare_project(&self, project: &scythe_core::Project) {
-        for take in project.tracks.iter().flat_map(|t| &t.items).flat_map(|i| &i.takes) {
-            if let (Some(file), Some(processing)) = (take.source.file(), take.processing(project.default_pitch_mode)) {
-                self.prepare_processed(&scythe_core::rpp::resolve_media_path(project, file), &processing);
+        // Renders play the project at its play rate, which changes how takes are processed.
+        let played = project.at_playrate();
+        for project in [project, played.as_ref()] {
+            for item in project.tracks.iter().flat_map(|t| &t.items) {
+                for take in &item.takes {
+                    let Some(file) = take.source.file() else { continue };
+                    let path = scythe_core::rpp::resolve_media_path(project, file);
+                    if let Some(processing) = take.processing(project.default_pitch_mode) {
+                        self.prepare_processed(&path, &processing);
+                    }
+                    if let Some(warp) = crate::warp::Warp::of(item, take, project.default_pitch_mode) {
+                        self.prepare_warped(&path, &warp);
+                    }
+                }
             }
         }
     }
@@ -791,6 +821,7 @@ impl MediaPool {
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
         self.processed.lock().unwrap().clear();
+        self.warped.lock().unwrap().clear();
     }
 }
 

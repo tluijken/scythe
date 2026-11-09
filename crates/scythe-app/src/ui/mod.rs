@@ -286,13 +286,13 @@ fn tempo_drag(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     {
         let start: f64 = ui.data(|d| d.get_temp(start_id)).unwrap_or(120.0);
         let bpm = (start + (origin.y - now.y) as f64 * 0.25).round().clamp(20.0, 400.0);
-        app.gesture("Change tempo", |p| p.tempo.set_bpm_at(at, bpm));
+        app.gesture("Change tempo", |p| p.change_tempo(|t| t.set_bpm_at(at, bpm)));
     }
     if resp.drag_stopped() {
         app.end_gesture();
     }
     if resp.double_clicked() {
-        app.edit("Change tempo", |p| p.tempo.set_bpm_at(at, 120.0));
+        app.edit("Change tempo", |p| p.change_tempo(|t| t.set_bpm_at(at, 120.0)));
     }
 }
 

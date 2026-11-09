@@ -19,13 +19,15 @@ pub mod setlist;
 pub mod smf;
 pub mod solo;
 pub mod surface;
+pub mod stretch;
 pub mod tempo;
+pub mod timebase;
 pub mod units;
 
 pub use envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 pub use fade::Fade;
 pub use model::{
-    AutoMode, Color, FxSlot, HwOut, Item, ItemId, LineMemo, Marker, Processing, Project, Section, Send, SendMode,
-    SoloMode, Source, Take, TimeRange, Track, TrackId,
+    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, ItemId, LineMemo, Marker, Processing, Project, Section, Send,
+    SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId,
 };
 pub use tempo::TempoMap;

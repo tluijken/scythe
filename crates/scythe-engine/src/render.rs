@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
-use scythe_core::{Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
+use scythe_core::{ChannelMode, Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
 
 use crate::fx::{FxInstance, FxRegistry, ParamAutomation, PinMap, ProcessContext, pin_map};
 use crate::media::{AudioData, MediaPool};
@@ -34,6 +34,8 @@ pub struct RenderItem {
     pub section_start: f64,
     pub section_len: f64,
     pub reverse: bool,
+    /// Which source channels play.
+    pub channel_mode: ChannelMode,
     pub audio: ItemAudio,
     /// Take envelopes, in seconds from the item start; they replace `gain_l` and `gain_r`.
     pub automation: Option<Arc<GainAutomation>>,
@@ -739,10 +741,12 @@ impl RenderGraph {
                     .filter(|it| t.lane_plays(it.lane()))
                     .filter_map(|it| {
                         let take = it.take()?;
-                        let (section_start, section_len, reverse) = match &take.source {
+                        let (mut section_start, mut section_len, mut reverse) = match &take.source {
                             Source::Section(s) => (s.start, s.length.max(0.0), s.reverse),
                             _ => (0.0, 0.0, false),
                         };
+                        let (mut source_offset, mut playrate, mut looped) =
+                            (take.source_pos(0.0), take.playrate, it.looped);
                         // A processed copy runs on its own time axis, `time` times the source's.
                         let mut time = 1.0;
                         let audio = match &take.source {
@@ -756,16 +760,25 @@ impl RenderGraph {
                             source => {
                                 let path = scythe_core::rpp::resolve_media_path(project, source.file()?);
                                 let base = pool.ready(&path)?;
-                                // Until the processed copy is ready the take plays resampled.
-                                let processed = take
-                                    .processing(project.default_pitch_mode)
-                                    .and_then(|p| Some((p.length_ratio(), pool.processed(&path, &p)?)));
-                                match processed {
-                                    Some((t, copy)) => {
-                                        time = t;
-                                        ItemAudio::Media(copy)
+                                // A warped take was rendered for the item and plays straight through.
+                                let warped = crate::warp::Warp::of(it, take, project.default_pitch_mode)
+                                    .and_then(|w| pool.warped(&path, &w));
+                                if let Some(audio) = warped {
+                                    (section_start, section_len, reverse) = (0.0, 0.0, false);
+                                    (source_offset, playrate, looped) = (0.0, 1.0, false);
+                                    ItemAudio::Media(audio)
+                                } else {
+                                    // Until the processed copy is ready the take plays resampled.
+                                    let processed = take
+                                        .processing(project.default_pitch_mode)
+                                        .and_then(|p| Some((p.length_ratio(), pool.processed(&path, &p)?)));
+                                    match processed {
+                                        Some((t, copy)) => {
+                                            time = t;
+                                            ItemAudio::Media(copy)
+                                        }
+                                        None => ItemAudio::Media(base.audio.clone()),
                                     }
-                                    None => ItemAudio::Media(base.audio.clone()),
                                 }
                             }
                         };
@@ -776,8 +789,8 @@ impl RenderGraph {
                         Some(RenderItem {
                             start: (it.position * sr).round() as i64,
                             length: (it.length * sr).round() as i64,
-                            source_offset: take.source_offset * src_sr,
-                            playrate: take.playrate * time,
+                            source_offset: source_offset * src_sr,
+                            playrate: playrate * time,
                             gain_l: g * tl as f32,
                             gain_r: g * tr as f32,
                             fade_in: ((it.fade_in.effective_length() * sr).round() as i64, it.fade_in),
@@ -789,7 +802,8 @@ impl RenderGraph {
                                 &take.envelopes,
                             )
                             .map(Arc::new),
-                            looped: it.looped,
+                            looped,
+                            channel_mode: take.channel_mode,
                             section_start: section_start * src_sr,
                             section_len: section_len * src_sr,
                             reverse,
@@ -1279,6 +1293,7 @@ impl RenderGraph {
                     mix_item(item, audio, read, self.sample_rate as f64, tl, tr);
                     // Source channels beyond the first pair play into the track's further channels.
                     if audio.channels.len() > 2
+                        && item.channel_mode == ChannelMode::Normal
                         && let Some(aux) = aux.as_deref_mut()
                     {
                         for (c, out) in aux.iter_mut().enumerate().take(audio.channels.len() - 2) {
@@ -2050,8 +2065,24 @@ fn mix_item(
     if sec_len <= 0.0 {
         return;
     }
-    let left = &audio.channels[0];
-    let right = audio.channels.get(1).unwrap_or(left);
+    // A mono file counts as two equal channels.
+    let channel = |c: usize| {
+        let mono = audio.channels.len() == 1 && c == 1;
+        audio.channels.get(if mono { 0 } else { c }).map(Vec::as_slice)
+    };
+    let (left, right, mix) = match item.channel_mode {
+        ChannelMode::Normal => (channel(0), channel(1), false),
+        ChannelMode::ReverseStereo => (channel(1), channel(0), false),
+        ChannelMode::Downmix => (channel(0), channel(1), true),
+        ChannelMode::Mono(c) => (channel(c as usize), channel(c as usize), false),
+        ChannelMode::Stereo(c) => (channel(c as usize), channel(c as usize + 1), false),
+    };
+    if left.is_none() && right.is_none() {
+        return;
+    }
+    let read = |ch: Option<&[f32]>, i: usize, next: usize, frac: f32| {
+        ch.map_or(0.0, |c| if frac == 0.0 { c[i] } else { c[i] + (c[next] - c[i]) * frac })
+    };
     for t in from..to {
         let rel = t - item.start;
         let mut pos = item.source_offset + rel as f64 * item.playrate;
@@ -2065,11 +2096,11 @@ fn mix_item(
         let i = pos as usize;
         let frac = (pos - i as f64) as f32;
         let next = (i + 1).min(audio.frames() - 1);
-        let (sl, sr) = if frac == 0.0 {
-            (left[i], right[i])
-        } else {
-            (left[i] + (left[next] - left[i]) * frac, right[i] + (right[next] - right[i]) * frac)
-        };
+        let (mut sl, mut sr) = (read(left, i, next, frac), read(right, i, next, frac));
+        if mix {
+            let m = 0.5 * (sl + sr);
+            (sl, sr) = (m, m);
+        }
         let fade = fade_gain(rel, item.length, &item.fade_in, &item.fade_out);
         let (gl, gr) = match &item.automation {
             Some(auto) => auto.gains_at(rel as f64 / sample_rate),
@@ -2271,6 +2302,7 @@ mod tests {
                     section_start: 0.0,
                     section_len: 0.0,
                     reverse: false,
+                    channel_mode: ChannelMode::Normal,
                     audio: ItemAudio::Media(audio.clone()),
                     automation: None,
                 })

@@ -6,10 +6,11 @@ use crate::fade::Fade;
 use crate::fader::PanMode;
 use crate::groups::GroupFlags;
 use crate::model::{
-    AutoMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode, SoloMode,
-    Source, Take, TimeRange, Track, TrackId, new_guid,
+    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode,
+    SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
 };
 use crate::tempo::TempoPoint;
+use crate::timebase::{PlayRate, Timebase};
 use crate::units::PanTaper;
 
 const PROJECT_VERSION: &str = "0.1";
@@ -220,6 +221,18 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         if (0.0..crate::groups::GROUP_COUNT as f64).contains(&group) {
                             p.group_names.insert(group as usize, t.get(2).cloned().unwrap_or_default());
                         }
+                    }
+                    "TIMELOCKMODE" => {
+                        p.timebase = Timebase::from_rpp(num(&t, 1, 1.0) as i64).unwrap_or_default();
+                        p.extra.push(node.clone());
+                    }
+                    "TEMPOENVLOCKMODE" => {
+                        p.tempo_follows_beats = flag(&t, 1);
+                        p.extra.push(node.clone());
+                    }
+                    "PLAYRATE" => {
+                        p.playrate = PlayRate { rate: num(&t, 1, 1.0), preserve_pitch: flag(&t, 2) };
+                        p.extra.push(node.clone());
                     }
                     "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
                     "SMPTESYNC" => {
@@ -445,6 +458,10 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                     }
                     "FREEMODE" => {
                         track.fixed_lanes = num(&t, 1, 0.0) as i64 == 2;
+                        track.extra.push(node.clone());
+                    }
+                    "BEAT" => {
+                        track.timebase = Timebase::from_rpp(num(&t, 1, -1.0) as i64);
                         track.extra.push(node.clone());
                     }
                     "LANESOLO" => {
@@ -676,7 +693,7 @@ fn parse_fx_chain(c: &Chunk) -> (Vec<FxSlot>, Vec<Node>) {
     (fx, prelude)
 }
 
-const TAKE_KEYS: &[&str] = &["NAME", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "CHANMODE", "GUID", "TAKECOLOR"];
+const TAKE_KEYS: &[&str] = &["NAME", "TAKEVOLPAN", "SOFFS", "PLAYRATE", "CHANMODE", "GUID", "TAKECOLOR", "SM"];
 
 fn parse_item(c: &Chunk) -> Item {
     let mut item = Item::new(0.0, 0.0, empty_take());
@@ -718,6 +735,15 @@ fn parse_item(c: &Chunk) -> Item {
                             tk.pitch = num(&t, 3, 0.0);
                             tk.pitch_mode = num(&t, 4, -1.0) as i32;
                         }
+                        // Kept in place in `extra` and rewritten from the model on save.
+                        "CHANMODE" => {
+                            tk.channel_mode = ChannelMode::from_code(num(&t, 1, 0.0) as i64);
+                            tk.extra.push(node.clone());
+                        }
+                        "SM" => {
+                            tk.stretch_markers = crate::stretch::parse_markers(&t[1..]);
+                            tk.extra.push(node.clone());
+                        }
                         _ => tk.extra.push(node.clone()),
                     }
                     continue;
@@ -741,6 +767,10 @@ fn parse_item(c: &Chunk) -> Item {
                     }
                     "YPOS" => item.ypos = Some((num(&t, 1, 0.0), num(&t, 2, 1.0))),
                     "IGUID" => item.guid = t.get(1).cloned().unwrap_or_default(),
+                    "BEAT" => {
+                        item.timebase = Timebase::from_rpp(num(&t, 1, -1.0) as i64);
+                        item.extra.push(node.clone());
+                    }
                     _ => match take.as_mut() {
                         Some(tk) => tk.extra.push(node.clone()),
                         None => item.extra.push(node.clone()),
@@ -818,6 +848,8 @@ fn empty_take() -> Take {
         volume: 1.0,
         pan: 0.0,
         envelopes: Vec::new(),
+        channel_mode: ChannelMode::Normal,
+        stretch_markers: Vec::new(),
         lines: LineMemo::new(),
         extra: Vec::new(),
     }
@@ -954,6 +986,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     let (mut wrote_pan_mode, mut wrote_group_names) = (false, false);
     let mut wrote_metronome = false;
     let mut wrote_sync = false;
+    let (mut wrote_timebase, mut wrote_tempo_lock, mut wrote_playrate) = (false, false, false);
     for node in &p.extra {
         match node {
             Node::Line(l) if line_key(l) == "MASTERHWOUT" => {
@@ -1013,6 +1046,22 @@ pub fn project_to_rpp(p: &Project) -> String {
                 }
                 wrote_metronome = true;
             }
+            Node::Line(l) if line_key(l) == "TIMELOCKMODE" => {
+                root.line(["TIMELOCKMODE".to_owned(), p.timebase.rpp_code().to_string()]);
+                wrote_timebase = true;
+            }
+            Node::Line(l) if line_key(l) == "TEMPOENVLOCKMODE" => {
+                root.line(["TEMPOENVLOCKMODE".to_owned(), bit(p.tempo_follows_beats)]);
+                wrote_tempo_lock = true;
+            }
+            Node::Line(l) if line_key(l) == "PLAYRATE" => {
+                let mut toks = tokenize(l);
+                toks.resize(toks.len().max(3), "0".to_owned());
+                toks[1] = fmt_num(p.playrate.rate);
+                toks[2] = bit(p.playrate.preserve_pitch);
+                root.line(toks);
+                wrote_playrate = true;
+            }
             _ => root.children.push(node.clone()),
         }
     }
@@ -1043,6 +1092,21 @@ pub fn project_to_rpp(p: &Project) -> String {
     }
     if !wrote_group_names {
         write_group_names(&mut root, p);
+    }
+    if !wrote_timebase && p.timebase != Timebase::default() {
+        root.line(["TIMELOCKMODE".to_owned(), p.timebase.rpp_code().to_string()]);
+    }
+    if !wrote_tempo_lock && !p.tempo_follows_beats {
+        root.line(["TEMPOENVLOCKMODE", "0"]);
+    }
+    if !wrote_playrate && p.playrate != PlayRate::default() {
+        root.line(vec![
+            "PLAYRATE".to_owned(),
+            fmt_num(p.playrate.rate),
+            bit(p.playrate.preserve_pitch),
+            "0.25".to_owned(),
+            "4".to_owned(),
+        ]);
     }
 
     for m in &p.markers {
@@ -1145,6 +1209,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     let mut wrote_nchan = false;
     let mut wrote_envs = Vec::new();
     let (mut wrote_phase, mut wrote_pan_mode, mut wrote_width, mut wrote_groups) = (false, false, false, false);
+    let mut wrote_beat = false;
     for node in &t.extra {
         match node {
             Node::Chunk(ch) if let Some(kind) = EnvelopeKind::from_chunk_name(ch.name()) => {
@@ -1203,6 +1268,10 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 c.line(["WIDTH".to_owned(), fmt_num(t.width)]);
                 wrote_width = true;
             }
+            Node::Line(l) if line_key(l) == "BEAT" => {
+                c.line(["BEAT".to_owned(), t.timebase.map_or(-1, |b| b.rpp_code()).to_string()]);
+                wrote_beat = true;
+            }
             Node::Line(l) if matches!(line_key(l), "GROUP_FLAGS" | "GROUP_FLAGS_HIGH") => {
                 if !wrote_groups {
                     write_group_flags(&mut c, &t.groups);
@@ -1235,6 +1304,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     }
     if !wrote_width && t.width != 1.0 {
         c.line(["WIDTH".to_owned(), fmt_num(t.width)]);
+    }
+    if let (false, Some(b)) = (wrote_beat, t.timebase) {
+        c.line(["BEAT".to_owned(), b.rpp_code().to_string()]);
     }
     if !wrote_groups {
         write_group_flags(&mut c, &t.groups);
@@ -1339,7 +1411,19 @@ fn write_item(it: &Item) -> Chunk {
     if let Some((top, height)) = it.ypos {
         c.line(line_from(l, "YPOS", &["YPOS", "0", "1", "2"], &[(1, fmt_num(top)), (2, fmt_num(height))]));
     }
-    c.children.extend(it.extra.iter().cloned());
+    let mut wrote_beat = false;
+    for node in &it.extra {
+        match node {
+            Node::Line(l) if line_key(l) == "BEAT" => {
+                c.line(["BEAT".to_owned(), it.timebase.map_or(-1, |b| b.rpp_code()).to_string()]);
+                wrote_beat = true;
+            }
+            _ => c.children.push(node.clone()),
+        }
+    }
+    if let (false, Some(b)) = (wrote_beat, it.timebase) {
+        c.line(["BEAT".to_owned(), b.rpp_code().to_string()]);
+    }
 
     for (i, tk) in it.takes.iter().enumerate() {
         let l = &tk.lines;
@@ -1379,7 +1463,7 @@ fn write_item(it: &Item) -> Chunk {
                 (4, tk.pitch_mode.to_string()),
             ],
         ));
-        c.children.extend(tk.extra.iter().cloned());
+        write_take_extra(&mut c, tk);
         c.push_chunk(write_source(&tk.source, l));
         for env in &tk.envelopes {
             if let Some(name) = env.kind.take_chunk_name() {
@@ -1388,6 +1472,30 @@ fn write_item(it: &Item) -> Chunk {
         }
     }
     c
+}
+
+/// The take's other lines, with `CHANMODE` and `SM` rewritten where they were and added after
+/// `PLAYRATE` and at the end when new.
+fn write_take_extra(c: &mut Chunk, tk: &Take) {
+    let chanmode = || vec!["CHANMODE".to_owned(), tk.channel_mode.code().to_string()];
+    let had = |key: &str| tk.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == key));
+    if !had("CHANMODE") && tk.channel_mode != ChannelMode::Normal {
+        c.line(chanmode());
+    }
+    for node in &tk.extra {
+        match node {
+            Node::Line(l) if line_key(l) == "CHANMODE" => c.line(chanmode()),
+            Node::Line(l) if line_key(l) == "SM" => {
+                if !tk.stretch_markers.is_empty() {
+                    c.line(crate::stretch::write_markers(&tk.stretch_markers, fmt_num));
+                }
+            }
+            _ => c.children.push(node.clone()),
+        }
+    }
+    if !had("SM") && !tk.stretch_markers.is_empty() {
+        c.line(crate::stretch::write_markers(&tk.stretch_markers, fmt_num));
+    }
 }
 
 fn write_source(source: &Source, l: &LineMemo) -> Chunk {
