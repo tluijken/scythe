@@ -20,6 +20,8 @@ pub(crate) enum Unit {
     Switch,
     /// A choice among `n` steps of the full range (ReaComp's legacy options, MIDI note).
     Steps(f64),
+    /// From `lo` to `hi` over the full range, shown with this many decimals.
+    Linear(f64, f64, usize),
 }
 
 /// A parameter: its index in REAPER's order, name, unit and the raw range `TrackFX_GetParam`
@@ -67,6 +69,10 @@ impl Spec {
                 let v = (raw * n).round();
                 (v, format!("{v}"))
             }
+            Unit::Linear(lo, hi, decimals) => {
+                let v = lo + raw * (hi - lo);
+                (v, format!("{v:.decimals$}"))
+            }
         }
     }
 
@@ -92,6 +98,7 @@ impl Spec {
             Unit::Knee => v / 24.0,
             Unit::Switch => (v >= 0.5) as u8 as f64,
             Unit::Steps(n) => v.round() / n,
+            Unit::Linear(lo, hi, _) => (v - lo) / (hi - lo),
         }) as f32
     }
 
@@ -104,6 +111,7 @@ impl Spec {
             Unit::Knee => (0.0, 24.0, false),
             Unit::Switch => (0.0, 1.0, false),
             Unit::Steps(n) => (0.0, n, false),
+            Unit::Linear(lo, hi, _) => (lo, hi, false),
         };
         param(self.index, self.name, lo, hi, self.display(default).0.clamp(lo, hi), log)
     }

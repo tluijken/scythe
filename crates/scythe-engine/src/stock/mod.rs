@@ -6,6 +6,7 @@ pub(crate) mod params;
 pub mod reacomp;
 pub mod reagate;
 pub mod realimit;
+pub mod reaverbate;
 pub mod reaxcomp;
 
 use std::path::Path;
@@ -139,6 +140,14 @@ pub static PLUGINS: &[StockPlugin] = &[
             verb.chunk = chunk.to_vec();
             Ok(Box::new(verb))
         }
+    ),
+    stock!(
+        "ReaVerbate",
+        "reaverbate.vst.so",
+        1920361016,
+        "56535472766238726561766572626174",
+        "ReaVerbate-compatible reverb",
+        |chunk, cx| boxed(reaverbate::Reverb::from_reaverbate(chunk, cx.sample_rate), "ReaVerbate")
     ),
 ];
 

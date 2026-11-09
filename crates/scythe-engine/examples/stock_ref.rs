@@ -394,6 +394,26 @@ fn cases() -> Vec<String> {
         add(&format!("xcomp_{name}"), "ReaXcomp", "main", &format!("{t} {spec}"));
     }
     add("xcomp_output", "ReaXcomp", "main", &format!("chunk={}", reaxcomp_chunk(0.5)));
+    // ReaVerbate: one parameter at a time on the impulse and on the program material.
+    for (name, spec) in [
+        ("base", ""),
+        ("room0", "p2=0"),
+        ("room1", "p2=1"),
+        ("room0.73", "p2=0.73"),
+        ("damp0", "p3=0"),
+        ("damp1", "p3=1"),
+        ("width0", "p4=0"),
+        ("width0.3", "p4=0.3"),
+        ("delay", "p5=0.12345"),
+        ("lowpass", "p6=0.23"),
+        ("highpass", "p7=0.05"),
+        ("band", "p6=0.4 p7=0.01"),
+        ("wet", "p0=1.7 p1=0.3"),
+        ("combo", "p0=0.8 p1=0.6 p2=0.9 p3=0.2 p4=0.65 p5=0.031 p6=0.6 p7=0.004"),
+    ] {
+        add(&format!("verbate_{name}"), "ReaVerbate", "main", spec);
+        add(&format!("verbate_imp_{name}"), "ReaVerbate", "imp", spec);
+    }
     c
 }
 
