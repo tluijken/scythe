@@ -418,6 +418,40 @@ spreads its stretch markers), `beats_position` moves only its start, `time` leav
 
 These are admin commands.
 
+### Envelopes and automation items
+
+Track, send and FX parameter envelopes, their points and shapes, automation items and their
+pools, automation modes and the global override. An envelope is named by `track`, `envelope`
+(`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,
+`dual_pan_right`, or `fx:<effect>:<parameter>` with REAPER's parameter order) and, for a send's
+`volume`, `pan` or `mute`, `send` (its index in `send.list`). Editing an envelope that does not
+exist creates it (an FX parameter envelope over the parameter's own range). Points are
+`{"time", "value", "shape"?, "tension"?}` in seconds and the envelope's own units (volume as
+gain, pan with REAPER's sign: positive is left); shapes are `linear`, `square`,
+`slow_start_end`, `fast_start`, `fast_end` and `bezier`. Pool points are in quarter notes from
+the pool's start with values 0..1 of the envelope's range. Edits are undo steps. Admin only.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `envelope.list` | `track` | every envelope of the track, its sends' and its effects': `[{"envelope", "send"?, "label", "active", "visible", "in_lane", "armed", "range", "fader_scaled", "points", "items"}]` |
+| `envelope.get` | envelope | the envelope as in `envelope.list` |
+| `envelope.set` | envelope, `active?`, `visible?`, `in_lane?`, `armed?` | the envelope |
+| `envelope.remove` | envelope | `{}` |
+| `envelope.point_add` | envelope, point | the envelope |
+| `envelope.point_edit` | envelope, `index`, `time?`, `value?`, `shape?`, `tension?` | the envelope |
+| `envelope.point_delete` | envelope, `index` | the envelope |
+| `envelope.shape` | envelope, `shape`, `tension?`, `from?`, `to?` (seconds; all points when left out) | the envelope |
+| `envelope.evaluate` | envelope, `time` | `{"value"}`, automation items included |
+| `envelope.item_add` | envelope, `position`, `length`, `pool?` (a pooled copy), `lfo?` `{shape: sine\|triangle\|square\|saw_up\|saw_down, cycles, phase?}` | the envelope; without `pool` or `lfo` the new pool holds the envelope as it is there |
+| `envelope.item_edit` | envelope, `index`, `position?`, `length?`, `start_offset?`, `rate?`, `baseline?` (0..1), `amplitude?` (-1..1), `looped?`, `transition?` (seconds), `selected?` | the envelope |
+| `envelope.item_delete` | envelope, `index`, `keep_points?` | the envelope |
+| `envelope.item_duplicate` | envelope, `index`, `pooled?` | the envelope, the copy right after the item |
+| `envelope.item_unpool` | envelope, `index` | the envelope |
+| `envelope.pool` | `pool`, `points?`, `lfo?`, `length_qn?`, `name?` | `{"pool", "name", "length_qn", "lfo", "points", "items"}`; every pooled item follows |
+| `envelope.mode` | `track?` (every track when left out), `mode?` (`trim_read`, `read`, `touch`, `write`, `latch`, `latch_preview`) | `[{"track", "mode", "effective"}]` |
+| `envelope.latch_preview_apply` | `span` (`time_selection`, `to_end`, `to_start`) | `{"written"}`: the values the last latch preview pass remembered |
+| `envelope.global_override` | `mode?` (`none`, the modes above, or `bypass`) | `{"mode"}` |
+
 ### Parameter modulation and learn
 
 Parameter modulation, links and MIDI/OSC learn of effect parameters, stored beside the plugin as

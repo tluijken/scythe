@@ -222,8 +222,29 @@ Working:
   shapes, volume envelopes in REAPER's fader scaling (`VOLTYPE 1`: they move linearly in fader
   position, `gain = 10^0.6 / 2 * x * (1 + x)` with `x` the cube of the position), shown
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
-  envelopes stored in projects play back: bypass for every effect, wet/dry for ReaVerb and
-  ReaDelay, and ReaDelay's per-tap enable, volume and feedback.
+  envelopes play back: bypass for every effect, wet/dry for ReaVerb and ReaDelay, and
+  ReaDelay's per-tap enable, volume and feedback, every hosted plugin's parameters; they follow
+  the project play rate and, like track envelopes and their automation items, tempo edits in a
+  beats timebase.
+- **Envelope lanes** (the envelope button on the left rail): the selected track's envelopes,
+  its sends' and its effects' parameters one lane each on the arrange time axis. Points drag,
+  double-click adds and a right-click sets the shape (linear, square, slow start/end, fast
+  start, fast end, bezier with its tension); a lane's Shape menu sets every point (in the time
+  selection). Arm, bypass and show over the track per envelope, "+ Envelope" for any kind or
+  any FX parameter, and the global override buttons. API: `envelope.*`.
+- **Automation items** (`<POOLEDENV` pools and `POOLEDENVINST` instances), played as REAPER
+  7.73 renders them: pool points sit in quarter notes on the tempo map (a tempo ramp bends an
+  item piecewise between them), the start offset and play rate move through the pool, looped
+  items wrap from the last point to the first, unlooped ones hold, baseline and amplitude scale
+  around the middle of the range (unclamped), overlapping items multiply on volume and add on
+  the others, and each edge ramps linearly over the item's transition time (12 ms) from the
+  envelope without the item to the envelope with it, except on FX parameters. Insert them from
+  the envelope, as LFO shapes (sine, triangle, square, saw up/down over a number of cycles) or as
+  pooled copies; drag the strip to move, the right edge to resize; loop, baseline, amplitude,
+  duplicate (pooled or not), unpool, delete (keeping the points or not) from the right-click
+  menu; the pool's points show and edit inside the item, and every pooled copy follows.
+- **Global automation override** (`GLOBAL_AUTO`): one mode for every track, or every envelope
+  bypassed (FX parameter envelopes too).
 - **Control surfaces**, set up as REAPER keeps them in reaper.ini (`csurf_cnt`,
   `csurf_<i>=OSC "name" flags port "ip" port …` and `MCU offset size in out flags`) under
   Settings or with the control API's `surface.*`, run by the app and by `scythe-server`. OSC
@@ -266,8 +287,12 @@ Working:
   Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
   zoom. API: `action.*`, `toolbar.*`, `mouse.*`.
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
-  preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
-  write mode are recorded into the volume and pan envelopes.
+  preview), cycled from the inspector or set with `envelope.mode`. While playing, moves in
+  touch, latch and write mode are recorded into armed envelopes (missing ones are created):
+  fader, pan, width, mute (square points), send volume, pan and mute, and FX parameters (an
+  envelope over the parameter's own range); write mode records every armed envelope. Latch
+  preview remembers the moved values; "Write preview values" in the envelope lanes (or
+  `envelope.latch_preview_apply`) writes them over the time selection or from or to the cursor.
 - **Multichannel tracks** (`NCHAN`, up to 32 in the inspector's Sends tab): items with more
   channels play into channels 3 and up, sends take any channel pair (or one channel) to any
   pair of the destination (`AUXRECV` source and destination channels), folders carry every
@@ -437,7 +462,10 @@ Working:
     `ScaleTo/FromEnvelopeMode`, `CountEnvelopePoints(Ex)`, `Get/Set/InsertEnvelopePoint(Ex)`,
     `DeleteEnvelopePointEx`, `DeleteEnvelopePointRange(Ex)`, `GetEnvelopePointByTime(Ex)`,
     `Envelope_Evaluate`, `Envelope_SortPoints(Ex)`; volume envelopes give fader-scaled values,
-    as REAPER's API does;
+    as REAPER's API does; automation items: `CountAutomationItems`, `InsertAutomationItem`,
+    `GetSetAutomationItemInfo(_String)` and the `…Ex` point calls on an item (every pass of
+    its pool inside the item, baseline and amplitude applied, as REAPER gives them);
+    `Get/SetGlobalAutomationOverride`;
   - items, takes and sources: `CountMediaItems`, `GetMediaItem`, `Count/GetTrackMediaItem`,
     `GetMediaItem(_)Track`, `AddMediaItemToTrack`, `CreateNewMIDIItemInProj`, `SplitMediaItem`,
     `DeleteTrackMediaItem`, `MoveMediaItemToTrack`, `Get/SetMediaItemInfo_Value` (position,
@@ -748,6 +776,9 @@ compare with scythe's output sample by sample:
 | Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), all three tapers at every law, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
 | Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
 | Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
+| Automation items: 42 REAPER 7.73 renders of a DC source through volume (linear and fader-scaled), pan and JSFX parameter envelopes: pooled copies, looped and unlooped, start offset and play rate, baseline and amplitude (inverted too), overlapping, adjacent and contained items, every point shape inside an item, transitions of 0, 12 and 200 ms, a stepped and a ramped tempo, an empty pool, project play rate 1.5 (FX envelopes and items), the global override (bypass, read) and read mode | 39/42 within 1e-4, 25/42 within 1e-5 (the others differ on an item's first frame only, where REAPER sometimes leaves out the ramp); a bezier at a loop's wrap within 0.022, an empty pool's end ramp off |
+| Automation items through ReaScript: one Lua script (`InsertAutomationItem` from the envelope and pooled, the `…Ex` point calls on a looped, rate-shifted copy with baseline and amplitude, `GetSetAutomationItemInfo(_String)`, `Envelope_Evaluate` over items on pan and fader-scaled volume, the global override) run in REAPER 7.73 and in Scythe | same 56 lines, but for three evaluations on a bezier at a loop's wrap (within 0.022) |
+| RPP round trip of automation items made in REAPER (named pools with bezier points, LFO settings, instances with rate, offset, baseline and amplitude, `GLOBAL_AUTO`) | unchanged but for the header line |
 | Reversed sections | exact |
 | ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate); the alternative band, whose width grows with its gain (the stock "Basic 11 band Kick" preset) | exact (35/35 cases, 10 high-frequency cases, 7 alternative-band cases) |
 | Sample-rate conversion of media: impulses at 44.1, 88.2 and 96 kHz in a 48 kHz project, as items and through the sampler (a Blackman-Harris sinc over 96 input frames each side, cut off at 1/1.03 of the output's Nyquist when going down, read from a 32-step table) | exact |
@@ -861,6 +892,15 @@ compares the two files.
 
 ### Not there yet
 
+- Envelopes and automation items: a bezier point at the wrap of a looped item (the last pool
+  point bending into the next pass) takes other tangents in REAPER (renders differ by up to
+  0.02-0.04, `Envelope_Evaluate` by 0.01-0.02); an empty pool's end ramp, REAPER's options to
+  connect items to the underlying envelope or bypass it outside items (`POOLEDENVATTACH`, kept)
+  and muted items are not followed; at an item's very first frame REAPER sometimes leaves the
+  ramp out (1e-5). LFO shapes are Scythe's own points: REAPER keeps only the dialog settings
+  (`LFO`) and the points it generated, so its generator could not be compared. Take envelope
+  and tempo envelope lanes, razor edits on envelopes and per-envelope automation modes are not
+  there; the lanes dock under the arrange view rather than under each track.
 - Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
   only between the first and last message played (REAPER's CC timeout is not modelled). The
   MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
@@ -980,8 +1020,8 @@ compares the two files.
   are Scythe's own (`scythe-screensets.ini`), not REAPER's window layouts. No `.ReaperTheme`
   colours, and no extension SDK (`reaper_plugin.h` C ABI), so SWS and other extensions do not
   load. Python was not cross-checked for the action and chunk calls.
-- ReaScript covers part of the API (above); Python needs `python3` on the PATH. Automation
-  items, FX containers, take FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
+- ReaScript covers part of the API (above); Python needs `python3` on the PATH. FX
+  containers, take FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
   returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
   windows do not show menus (`gfx_showmenu` returns 0) or dock. MIDI events are kept
   in time order, so `noSort` changes nothing. Effect parameters are those of running effects, set live as the inspector does; their presets come from
