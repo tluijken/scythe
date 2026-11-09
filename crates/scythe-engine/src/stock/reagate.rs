@@ -1,100 +1,195 @@
-//! ReaGate, from the parameters it stores.
+//! ReaGate, from the parameters it stores. Detector, filters, RMS, timing, hysteresis, pre-open,
+//! wet/dry and invert follow REAPER 7.73 renders sample for sample (`examples/stock_ref.rs`);
+//! the noise is white like REAPER's but from its own generator.
 
-use super::{Lookahead, db_value, marked_chunk, marked_params, ms_value, param, samples, DetectorInput};
+use super::params::{Params, Spec, Unit, spec};
+use super::{DetectorFilter, DetectorInput, Lookahead, Rms, marked_params};
 use crate::clap_host::ParamInfo;
-use crate::fx::{Effect, ProcessContext};
+use crate::fx::{Effect, MidiBlock, ProcessContext};
+
+const SPECS: &[Spec] = &[
+    spec(0, "Threshold", Unit::Gain, 2.0),
+    spec(1, "Attack (ms)", Unit::Ms(500.0), 1.0),
+    spec(2, "Release (ms)", Unit::Ms(5000.0), 1.0),
+    spec(3, "Pre-open (ms)", Unit::Ms(250.0), 1.0),
+    spec(4, "Hold (ms)", Unit::Ms(1000.0), 1.0),
+    spec(5, "Detector lowpass (Hz)", Unit::Hz, 1.0),
+    spec(6, "Detector highpass (Hz)", Unit::Hz, 1.0),
+    spec(9, "Dry", Unit::Gain, 2.0),
+    spec(10, "Wet", Unit::Gain, 2.0),
+    spec(11, "Noise", Unit::Gain, 2.0),
+    spec(12, "Hysteresis", Unit::Gain, 2.0),
+    spec(13, "Preview filter", Unit::Switch, 1.0),
+    spec(14, "RMS size (ms)", Unit::Ms(100.0), 10.0),
+    spec(15, "Send MIDI", Unit::Switch, 1.0),
+    spec(16, "MIDI note", Unit::Steps(127.0), 1.0),
+    spec(17, "MIDI channel", Unit::Steps(15.0), 1.0),
+    spec(18, "Invert wet", Unit::Steps(2.0), 2.0),
+];
+
+/// A fresh ReaGate's parameters as REAPER 7.73 stores them.
+const DEFAULTS: [f32; 21] = [
+    3.162_277_6e-8,
+    0.006,
+    0.02,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    3.162_277_6e-8,
+    1.0,
+    3.162_277_6e-8,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    0.543_307_1,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+];
+
+#[derive(Clone, Copy, PartialEq)]
+enum Invert {
+    Off,
+    /// "Legacy mode": the wet path flips polarity.
+    Legacy,
+    /// The wet path passes what the gate takes away.
+    On,
+}
 
 pub struct Gate {
-    params: Vec<f32>,
+    params: Params,
     sample_rate: u32,
-    threshold: f32,
-    close_threshold: f32,
+    threshold: f64,
+    close_threshold: f64,
     /// Frames the gain takes to open or close fully (linear ramps).
     attack: f64,
     release: f64,
-    /// Frames below the threshold before the gate starts closing.
+    /// Frames below the closing threshold before the gate starts closing.
     close_after: usize,
-    lookahead: Lookahead,
     dry: f32,
     wet: f32,
+    noise: f32,
+    invert: Invert,
+    preview: bool,
+    midi: Option<(u8, u8)>,
+    input: DetectorInput,
+    filter: DetectorFilter,
+    rms: Rms,
+    window: usize,
+    lookahead: Lookahead,
     gain: f64,
     below: usize,
     open: bool,
+    note_on: bool,
+    rng: u32,
+    /// The MIDI passed on in this block (the chain's and the gate's notes), by frame.
+    notes: Vec<(usize, [u8; 3])>,
 }
 
 impl Gate {
-    /// Parameters 0..: threshold, attack, release, pre-open, hold, lowpass, hipass, …, dry (9),
-    /// wet (10), noise (11), hysteresis (12). Gains are amplitudes; times are fractions of
-    /// 500 ms (attack), 5 s (release), 250 ms (pre-open) and 1 s (hold).
+    /// Parameters 0..=20: threshold, attack, release, pre-open, hold, lowpass, highpass,
+    /// detector input, audio input, dry, wet, noise, hysteresis, filter preview, RMS size,
+    /// send MIDI, MIDI note, MIDI channel, invert wet, multichannel mode, metering index.
     pub fn from_reagate(chunk: &[u8], sample_rate: u32) -> Option<Self> {
-        let p = marked_params(chunk)?;
-        let get = |i: usize, d: f32| p.get(i).copied().unwrap_or(d);
-        let threshold = get(0, 0.0);
-        let attack = samples(get(1, 0.006), 500.0, sample_rate);
-        let pre = samples(get(3, 0.0), 250.0, sample_rate) as usize;
-        let hold = samples(get(4, 0.0), 1000.0, sample_rate) as usize;
-        Some(Self {
-            params: p.clone(),
+        let params = Params::new(marked_params(chunk)?, SPECS, &DEFAULTS);
+        let mut gate = Self {
+            params,
             sample_rate,
-            threshold,
-            close_threshold: threshold * get(12, 1.0),
-            attack,
-            release: samples(get(2, 0.02), 5000.0, sample_rate),
-            close_after: hold + attack as usize + pre,
-            lookahead: Lookahead::new(pre),
-            dry: get(9, 0.0),
-            wet: get(10, 1.0),
+            threshold: 0.0,
+            close_threshold: 0.0,
+            attack: 0.0,
+            release: 0.0,
+            close_after: 0,
+            dry: 0.0,
+            wet: 1.0,
+            noise: 0.0,
+            invert: Invert::Off,
+            preview: false,
+            midi: None,
+            input: DetectorInput::new(0.0),
+            filter: DetectorFilter::new(1.0, 0.0, sample_rate),
+            rms: Rms::new(1),
+            window: 1,
+            lookahead: Lookahead::new(0),
             gain: 0.0,
             below: 0,
             open: false,
-        })
+            note_on: false,
+            rng: 0x2545_f491,
+            notes: Vec::new(),
+        };
+        gate.configure(true);
+        Some(gate)
+    }
+
+    fn configure(&mut self, fresh: bool) {
+        let p = &self.params;
+        let sr = self.sample_rate as f64;
+        let frames = |raw: f32, full_ms: f64| raw as f64 * full_ms * 0.001 * sr;
+        self.threshold = p.get(0) as f64;
+        self.close_threshold = self.threshold * p.get(12) as f64;
+        self.attack = frames(p.get(1), 500.0);
+        self.release = frames(p.get(2), 5000.0);
+        let pre = frames(p.get(3), 250.0) as usize;
+        self.close_after = frames(p.get(4), 1000.0) as usize + self.attack as usize + pre;
+        self.dry = p.get(9);
+        self.wet = p.get(10);
+        self.noise = p.get(11);
+        self.invert = match p.get(18) {
+            v if v >= 1.5 => Invert::On,
+            v if v >= 0.5 => Invert::Legacy,
+            _ => Invert::Off,
+        };
+        self.preview = p.get(13) >= 0.5;
+        self.midi = (p.get(15) >= 0.5)
+            .then(|| ((p.get(16) * 127.0).round().clamp(0.0, 127.0) as u8, (p.get(17) * 15.0).round().clamp(0.0, 15.0) as u8));
+        self.input = DetectorInput::new(p.get(7));
+        self.filter = DetectorFilter::new(p.get(5), p.get(6), self.sample_rate);
+        let window = (frames(p.get(14), 100.0) as usize).max(1);
+        if fresh || window != self.window {
+            self.window = window;
+            self.rms = Rms::new(window);
+        }
+        if fresh || pre != self.lookahead.l.len() {
+            self.lookahead = Lookahead::new(pre);
+        }
+    }
+
+    /// Uniform white noise in -1..1.
+    fn noise_sample(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
     }
 }
 
 impl Effect for Gate {
     fn params(&mut self) -> Vec<ParamInfo> {
-        vec![
-            param(0, "Threshold (dB)", -90.0, 0.0, -90.0, false),
-            param(1, "Attack (ms)", 0.1, 500.0, 3.0, true),
-            param(2, "Release (ms)", 1.0, 5000.0, 100.0, true),
-            param(12, "Hysteresis (dB)", -24.0, 0.0, 0.0, false),
-        ]
+        self.params.infos()
     }
 
     fn param(&mut self, id: u32) -> Option<(f64, String)> {
-        let raw = *self.params.get(id as usize)? as f64;
-        Some(match id {
-            0 | 12 => db_value(raw),
-            1 => ms_value(raw * 500.0),
-            _ => ms_value(raw * 5000.0),
-        })
+        self.params.display(id)
     }
 
     fn set_param(&mut self, id: u32, value: f64) {
-        let raw = match id {
-            0 | 12 => 10f64.powf(value / 20.0),
-            1 => value / 500.0,
-            2 => value / 5000.0,
-            _ => return,
-        };
-        if let Some(slot) = self.params.get_mut(id as usize) {
-            *slot = raw as f32;
-            if let Some(fresh) = Gate::from_reagate(&marked_chunk(&self.params), self.sample_rate) {
-                let lookahead = std::mem::replace(&mut self.lookahead, Lookahead::new(0));
-                *self = Gate { gain: self.gain, open: self.open, below: self.below, lookahead, ..fresh };
-            }
+        if self.params.set(id, value) {
+            self.configure(false);
         }
     }
 
     fn set_normalized(&mut self, index: usize, v: f64) -> bool {
-        use crate::normalized::{amp2_db, linear};
-        match index {
-            0 | 12 => self.set_param(index as u32, amp2_db(v)),
-            1 => self.set_param(1, linear(v, 0.0, 500.0)),
-            2 => self.set_param(2, linear(v, 0.0, 5000.0)),
-            _ => return false,
+        let set = self.params.set_normalized(index, v);
+        if set {
+            self.configure(false);
         }
-        true
+        set
     }
 
     fn latency(&mut self) -> usize {
@@ -102,20 +197,35 @@ impl Effect for Gate {
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
-        Some(marked_chunk(&self.params))
+        Some(self.params.chunk())
+    }
+
+    fn take_midi(&mut self, out: &mut MidiBlock) -> bool {
+        if self.midi.is_none() {
+            return false;
+        }
+        self.notes.sort_by_key(|n| n.0);
+        out.short.append(&mut self.notes);
+        true
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        let input = DetectorInput::new(self.params.get(7).copied().unwrap_or(0.0));
+        if self.midi.is_some()
+            && let Some(incoming) = ctx.chain_midi(left.len())
+        {
+            self.notes.extend(incoming.map(|(at, msg)| (ctx.midi_from + at, msg)));
+        }
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
-            // The detector sees the incoming signal (or the sidechain); with pre-open the audio
-            // is delayed so the gate is already open when a hit arrives.
-            let (kl, kr) = input.frame(i, *l, *r, ctx);
-            let level = kl.abs().max(kr.abs());
-            if level >= self.threshold {
+            let (kl, kr) = self.input.frame(i, *l, *r, ctx);
+            let (fl, fr) = self.filter.run(kl as f64, kr as f64);
+            let level = self.rms.run(fl, fr);
+            // While the gate is open or still closing, the hysteresis moves the threshold
+            // towards the closing one in proportion to the gain.
+            let threshold = self.threshold + (self.close_threshold - self.threshold) * self.gain;
+            if level >= threshold {
                 self.open = true;
                 self.below = 0;
-            } else if self.open && level < self.close_threshold {
+            } else if self.open {
                 self.below += 1;
                 if self.below >= self.close_after {
                     self.open = false;
@@ -128,10 +238,33 @@ impl Effect for Gate {
             } else {
                 (self.gain - 1.0 / self.release).max(0.0)
             };
+            // The note starts when the gate opens and ends once it has closed completely.
+            if let Some((note, channel)) = self.midi
+                && self.note_on != (self.open || self.gain > 0.0)
+            {
+                self.note_on = !self.note_on;
+                let msg = if self.note_on { [0x90 | channel, note, 127] } else { [0x80 | channel, note, 0] };
+                self.notes.push((ctx.midi_from + i, msg));
+            }
             let (dl, dr) = self.lookahead.swap(*l, *r);
-            let g = self.dry + self.wet * self.gain as f32;
-            *l = dl * g;
-            *r = dr * g;
+            if self.preview {
+                *l = fl as f32;
+                *r = fr as f32;
+                continue;
+            }
+            let g = self.gain as f32;
+            let gain = match self.invert {
+                Invert::Off => self.dry + self.wet * g,
+                Invert::Legacy => self.dry - self.wet * g,
+                Invert::On => self.dry + self.wet * (1.0 - g),
+            };
+            *l = dl * gain;
+            *r = dr * gain;
+            if self.noise > 0.0 && g > 0.0 {
+                let a = self.noise * g;
+                *l += a * self.noise_sample();
+                *r += a * self.noise_sample();
+            }
         }
     }
 
@@ -139,6 +272,8 @@ impl Effect for Gate {
         self.gain = 0.0;
         self.open = false;
         self.below = 0;
+        self.rms.reset();
+        self.filter.reset();
         self.lookahead = Lookahead::new(self.lookahead.l.len());
     }
 }
@@ -151,7 +286,7 @@ mod tests {
     #[test]
     fn gate_matches_reaper() {
         // Attack 10 ms, release 100 ms, then the same with 100 ms hold.
-        let mut params = vec![0.0; 24];
+        let mut params = DEFAULTS.to_vec();
         (params[0], params[1], params[2], params[10], params[12]) = (0.2512, 0.02, 0.02, 1.0, 1.0);
         let gain = run(&mut Gate::from_reagate(&chunk(&params), 48000).unwrap());
         check(

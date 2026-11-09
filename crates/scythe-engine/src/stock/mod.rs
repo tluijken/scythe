@@ -176,12 +176,6 @@ pub(crate) fn ms_value(ms: f64) -> (f64, String) {
     (ms, if ms >= 1000.0 { format!("{:.2} s", ms / 1000.0) } else { format!("{ms:.1} ms") })
 }
 
-/// A stored time (normalised parameter × full scale in ms) in samples, kept fractional for
-/// ramps; REAPER counts whole samples from the f32 value it stores.
-pub(crate) fn samples(raw: f32, full_ms: f64, sample_rate: u32) -> f64 {
-    raw as f64 * full_ms * 0.001 * sample_rate as f64
-}
-
 /// A delay of the stereo signal by a fixed number of frames (lookahead).
 pub(crate) struct Lookahead {
     pub(crate) l: Vec<f32>,
@@ -283,8 +277,8 @@ impl DetectorFilter {
     pub fn new(lowpass: f32, hipass: f32, sample_rate: u32) -> Self {
         let (lp, hp) = (lowpass as f64 * 20000.0, hipass as f64 * 20000.0);
         let mut stages = Vec::new();
-        if lp < 20000.0 {
-            stages.push([Biquad::lowpass(lp.max(1.0), 1.0, sample_rate); 2]);
+        if lp > 0.0 && lp < 20000.0 {
+            stages.push([Biquad::lowpass(lp, 1.0, sample_rate); 2]);
         }
         if hp > 0.0 {
             stages.push([Biquad::highpass(hp, 1.0, sample_rate); 2]);
