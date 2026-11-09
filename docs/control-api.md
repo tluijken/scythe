@@ -295,7 +295,7 @@ Effects are numbered from 0 per chain; `track` may be `"master"`.
 |---|---|---|
 | `fx.list` | `track` | `[{"index", "name", "enabled", "running"}]` (`running`: processing audio, not passed through) |
 | `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case) | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
-| `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`, or exact name), `index?` | the chain |
+| `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`; the built-ins are `equalizer`, `gate`, `compressor`, `delay`, `convolution-reverb`, `limiter` and `multiband-compressor`; or an exact name), `index?` | the chain |
 | `fx.remove` | `track`, `index` | the chain |
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |
 | `fx.params` | `track`, `index` | `[{"id", "name", "value", "text", "min", "max", "default"}]` of a hosted plugin |
