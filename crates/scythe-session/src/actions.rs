@@ -743,4 +743,3 @@ mod tests {
         assert_eq!(measured.lines().count(), numeric);
     }
 }
-
