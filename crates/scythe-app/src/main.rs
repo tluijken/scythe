@@ -19,12 +19,20 @@ struct Shell {
     app: app::ScytheApp,
     /// The control API, when `--control` serves it; dropped (and stopped) with the window.
     control: Option<(scythe_server::ControlServer, scythe_session::control::ControlPump)>,
+    /// ReaScripts from the command line, run once the window has drawn: a dialog they open
+    /// blocks the window until answered.
+    scripts: Vec<PathBuf>,
 }
 
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.app.poll();
+        if ctx.cumulative_frame_nr() > 0 {
+            for script in std::mem::take(&mut self.scripts) {
+                self.app.run_script(&script);
+            }
+        }
         self.app.update_meters();
         self.app.tick_editors();
         self.app.tick_automation();
@@ -150,6 +158,12 @@ fn control_config(args: &[String]) -> Result<Option<scythe_server::ServerConfig>
     Ok(Some(config))
 }
 
+fn is_script(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| ["lua", "eel", "py"].iter().any(|s| e.eq_ignore_ascii_case(s)))
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--script-dialog") {
@@ -172,8 +186,14 @@ fn main() -> eframe::Result {
         }
     };
     let valued = |i: usize| i > 0 && matches!(args[i - 1].as_str(), "--control" | "--control-token");
-    let open: Option<PathBuf> =
-        args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && !valued(*i)).map(|(_, a)| PathBuf::from(a));
+    // Like REAPER, a ReaScript on the command line runs once the project is open.
+    let (scripts, positional): (Vec<PathBuf>, Vec<PathBuf>) = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| !a.starts_with("--") && !valued(*i))
+        .map(|(_, a)| PathBuf::from(a))
+        .partition(|p| is_script(p));
+    let open = positional.into_iter().next();
     let demo = args.iter().any(|a| a == "--demo") || open.is_none();
     let play = args.iter().any(|a| a == "--play");
     let no_input = args.iter().any(|a| a == "--no-input");
@@ -260,7 +280,7 @@ fn main() -> eframe::Result {
                     }
                 }
             });
-            Ok(Box::new(Shell { app, control }))
+            Ok(Box::new(Shell { app, control, scripts }))
         }),
     )
 }

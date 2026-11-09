@@ -55,7 +55,8 @@ impl Dialog {
         let ctx = ui.ctx().clone();
         let kind = self.request["kind"].as_i64().unwrap_or(0);
         let inputs = self.request["type"] == "inputs";
-        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+        egui::Frame::central_panel(ui.style()).fill(crate::theme::PANEL).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
             if inputs {
                 let captions: Vec<String> = self.request["captions"]
                     .as_array()

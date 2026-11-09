@@ -22,6 +22,7 @@ Flags: `--demo` (open the demo song), `--play` (start playback on launch), `--re
 `--no-input` (never
 open the audio input for monitoring), `--view=START-END`
 (open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).
+A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
 `scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
 `SCYTHE_UI_SCALE=0.75` scales the UI (0.5–3).
 
