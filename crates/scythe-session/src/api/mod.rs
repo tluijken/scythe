@@ -16,6 +16,7 @@ pub mod snapshot;
 pub mod tracks;
 pub mod transport;
 
+use schemars::JsonSchema;
 use scythe_core::units::db_to_gain;
 use scythe_core::{Project, Track, TrackId};
 use serde::de::Error as _;
@@ -124,7 +125,7 @@ impl std::fmt::Display for ApiError {
 impl std::error::Error for ApiError {}
 
 /// A track by id (a number from a snapshot), by exact name, or `"master"`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum TrackRef {
     Id(u64),

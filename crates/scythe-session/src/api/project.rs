@@ -1,30 +1,38 @@
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ApiError, json, snapshot};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum ProjectCommand {
     /// The whole project: transport, tracks with their FX, sends and items, markers.
     #[serde(rename = "snapshot", alias = "project.snapshot")]
     Snapshot,
+    /// Opens an .RPP project, dropping unsaved changes to the current one.
     #[serde(rename = "project.open")]
-    Open { path: PathBuf },
-    /// Saves to `path`, or to the project's own file.
+    Open {
+        /// A path on the machine running Scythe.
+        path: PathBuf,
+    },
+    /// Saves to `path`, or to the project's own file; an existing file is overwritten.
     #[serde(rename = "project.save")]
     Save {
+        /// A path on the machine running Scythe.
         #[serde(default)]
         path: Option<PathBuf>,
     },
     /// Starts an empty project; unsaved changes are dropped.
     #[serde(rename = "project.new")]
     New,
+    /// Undoes the last change, from any client or the UI.
     #[serde(rename = "project.undo")]
     Undo,
+    /// Redoes the last undone change.
     #[serde(rename = "project.redo")]
     Redo,
 }

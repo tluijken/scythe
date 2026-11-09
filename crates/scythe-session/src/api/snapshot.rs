@@ -104,7 +104,7 @@ pub struct SendInfo {
 }
 
 /// Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Tap {
     /// After the fader and pan.

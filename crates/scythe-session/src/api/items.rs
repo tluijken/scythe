@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use scythe_core::{ItemId, TrackId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -5,7 +6,7 @@ use serde_json::Value;
 use super::{ApiError, TrackRef, json, level, snapshot, time};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum ItemCommand {
     /// The items of `track`, or of every track.
@@ -17,6 +18,7 @@ pub enum ItemCommand {
     /// Moves the item to `position` (seconds) and/or onto `track`.
     #[serde(rename = "item.move")]
     Move {
+        /// The item's id.
         item: u64,
         #[serde(default)]
         position: Option<f64>,
@@ -25,19 +27,34 @@ pub enum ItemCommand {
     },
     /// Splits the item at `at` (seconds) and answers with both halves.
     #[serde(rename = "item.split")]
-    Split { item: u64, at: f64 },
+    Split {
+        /// The item's id.
+        item: u64,
+        /// Project time in seconds, inside the item.
+        at: f64,
+    },
+    /// Deletes the item.
     #[serde(rename = "item.delete")]
-    Delete { item: u64 },
+    Delete {
+        /// The item's id.
+        item: u64,
+    },
+    /// Sets the item's gain, as gain (`volume`) or in dB (`db`).
     #[serde(rename = "item.volume")]
     Volume {
+        /// The item's id.
         item: u64,
+        /// Gain: 1.0 is 0 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
     },
+    /// Mutes the item, or toggles it when `muted` is left out.
     #[serde(rename = "item.mute")]
     Mute {
+        /// The item's id.
         item: u64,
         #[serde(default)]
         muted: Option<bool>,

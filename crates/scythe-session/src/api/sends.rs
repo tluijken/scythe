@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use scythe_core::{HwOut, Send, SendMode, Track, TrackId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -6,7 +7,7 @@ use super::snapshot::Tap;
 use super::{ApiError, Target, TrackRef, json, level, pan, snapshot};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum SendCommand {
     /// The sends of `track`.
@@ -14,24 +15,44 @@ pub enum SendCommand {
     List { track: TrackRef },
     /// Sends `track` to `dest` and answers with the new send.
     #[serde(rename = "send.add")]
-    Add { track: TrackRef, dest: TrackRef },
+    Add {
+        track: TrackRef,
+        /// The track receiving the send.
+        dest: TrackRef,
+    },
     /// Removes send number `send` (its index in `send.list`).
     #[serde(rename = "send.remove")]
-    Remove { track: TrackRef, send: usize },
+    Remove {
+        track: TrackRef,
+        /// The send's index in `send.list`, from 0.
+        send: usize,
+    },
+    /// Sets the send level, as gain (`volume`) or in dB (`db`).
     #[serde(rename = "send.volume")]
     Volume {
         track: TrackRef,
+        /// The send's index in `send.list`, from 0.
         send: usize,
+        /// Gain: 1.0 is 0 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
     },
     #[serde(rename = "send.pan")]
-    Pan { track: TrackRef, send: usize, pan: f64 },
+    Pan {
+        track: TrackRef,
+        /// The send's index in `send.list`, from 0.
+        send: usize,
+        /// From -1 (left) to 1 (right).
+        pan: f64,
+    },
+    /// Mutes the send, or toggles it when `muted` is left out.
     #[serde(rename = "send.mute")]
     Mute {
         track: TrackRef,
+        /// The send's index in `send.list`, from 0.
         send: usize,
         #[serde(default)]
         muted: Option<bool>,
@@ -41,11 +62,14 @@ pub enum SendCommand {
     #[serde(rename = "send.mode")]
     Mode {
         track: TrackRef,
+        /// The send's index in `send.list`, from 0.
         send: usize,
         #[serde(default)]
         mode: Option<Tap>,
+        /// Mix down to mono before panning.
         #[serde(default)]
         mono: Option<bool>,
+        /// Invert the polarity.
         #[serde(default)]
         phase: Option<bool>,
     },
@@ -57,28 +81,39 @@ pub enum SendCommand {
     #[serde(rename = "send.hw_add")]
     HwAdd {
         track: TrackRef,
+        /// The first device output, from 0.
         #[serde(default)]
         output: Option<usize>,
         #[serde(default)]
         mono: bool,
     },
+    /// Removes hardware output number `hw`.
     #[serde(rename = "send.hw_remove")]
-    HwRemove { track: TrackRef, hw: usize },
+    HwRemove {
+        track: TrackRef,
+        /// The hardware output's index in `send.hw_list`, from 0.
+        hw: usize,
+    },
     /// Changes hardware output number `hw`; fields left out stay.
     #[serde(rename = "send.hw_set")]
     HwSet {
         track: TrackRef,
+        /// The hardware output's index in `send.hw_list`, from 0.
         hw: usize,
+        /// The first device output, from 0.
         #[serde(default)]
         output: Option<usize>,
         #[serde(default)]
         mono: Option<bool>,
         #[serde(default)]
         mode: Option<Tap>,
+        /// Gain: 1.0 is 0 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
+        /// From -1 (left) to 1 (right).
         #[serde(default)]
         pan: Option<f64>,
         #[serde(default)]

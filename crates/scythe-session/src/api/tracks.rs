@@ -1,41 +1,58 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{ApiError, Target, TrackRef, json, level, pan, snapshot};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum TrackCommand {
+    /// Every track with its level, pan, flags, effects, sends and items.
     #[serde(rename = "track.list")]
     List,
+    /// One track, or the master.
     #[serde(rename = "track.get")]
     Get { track: TrackRef },
     /// Adds a track at `index` (at the end when left out) and answers with it.
     #[serde(rename = "track.add")]
     Add {
+        /// "Track N" when left out.
         #[serde(default)]
         name: Option<String>,
+        /// Position from the top, counted from 0.
         #[serde(default)]
         index: Option<usize>,
     },
+    /// Deletes the track with its items, effects and sends.
     #[serde(rename = "track.delete")]
     Delete { track: TrackRef },
     #[serde(rename = "track.rename")]
     Rename { track: TrackRef, name: String },
     /// Moves the track to position `index` from the top.
     #[serde(rename = "track.move")]
-    Move { track: TrackRef, index: usize },
+    Move {
+        track: TrackRef,
+        /// The new position, counted from 0.
+        index: usize,
+    },
+    /// Sets the fader, as gain (`volume`) or in dB (`db`); capped at +24 dB.
     #[serde(rename = "track.volume")]
     Volume {
         track: TrackRef,
+        /// Gain: 1.0 is 0 dB, 0.5 about -6 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
     },
     #[serde(rename = "track.pan")]
-    Pan { track: TrackRef, pan: f64 },
+    Pan {
+        track: TrackRef,
+        /// From -1 (left) through 0 (centre) to 1 (right).
+        pan: f64,
+    },
     /// Sets mute, or toggles it when `muted` is left out.
     #[serde(rename = "track.mute")]
     Mute {
@@ -43,12 +60,14 @@ pub enum TrackCommand {
         #[serde(default)]
         muted: Option<bool>,
     },
+    /// Sets solo, or toggles it when `solo` is left out.
     #[serde(rename = "track.solo")]
     Solo {
         track: TrackRef,
         #[serde(default)]
         solo: Option<bool>,
     },
+    /// Arms the track for recording, or toggles it when `armed` is left out.
     #[serde(rename = "track.arm")]
     Arm {
         track: TrackRef,
@@ -56,6 +75,7 @@ pub enum TrackCommand {
         armed: Option<bool>,
     },
     /// Input monitoring: an armed track with monitoring on plays its input through its FX.
+    /// Toggles when `monitor` is left out.
     #[serde(rename = "track.monitor")]
     Monitor {
         track: TrackRef,
@@ -64,10 +84,19 @@ pub enum TrackCommand {
     },
     /// The record input, in REAPER's `I_RECINPUT` numbering (see `TrackInfo::input`).
     #[serde(rename = "track.input")]
-    Input { track: TrackRef, input: i64 },
-    /// `#rrggbb`, or `null` for no colour.
+    Input {
+        track: TrackRef,
+        /// Inputs counted from 0: mono input n is n, the stereo pair from n is 1024 + n, MIDI is
+        /// 4096 + device * 32 + channel (device 63 = all, channel 0 = all), -1 is none.
+        input: i64,
+    },
+    /// Sets the track colour.
     #[serde(rename = "track.color", alias = "track.colour")]
-    Color { track: TrackRef, color: Option<String> },
+    Color {
+        track: TrackRef,
+        /// `#rrggbb`, or `null` for no colour.
+        color: Option<String>,
+    },
     /// REAPER's folder depth change (`I_FOLDERDEPTH`): 1 makes the track a folder holding the
     /// tracks below it, -n makes it the last track of n folders, 0 a plain track.
     #[serde(rename = "track.folder")]

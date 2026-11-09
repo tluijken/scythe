@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use scythe_core::FxSlot;
 use scythe_engine::builtin::Builtin;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,7 @@ use serde_json::Value;
 use super::{ApiError, Target, TrackRef, json, snapshot};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum FxCommand {
     /// The effects on `track` (`"master"` for the master).
@@ -15,32 +16,56 @@ pub enum FxCommand {
     /// Effects that `fx.add` can add: the built-in ones and the installed CLAP, LV2 and VST 3
     /// plugins.
     #[serde(rename = "fx.catalog")]
-    Catalog,
+    Catalog {
+        /// Only entries whose name, id or format contain this, ignoring case.
+        #[serde(default)]
+        query: Option<String>,
+    },
     /// Adds the effect `plugin` names (a catalog `id` or exact `name`) at `index`, at the end
     /// of the chain when left out.
     #[serde(rename = "fx.add")]
     Add {
         track: TrackRef,
+        /// A catalog id such as `builtin:compressor`, or an exact name.
         plugin: String,
+        /// Position in the chain, from 0.
         #[serde(default)]
         index: Option<usize>,
     },
+    /// Removes the effect at `index` in the chain.
     #[serde(rename = "fx.remove")]
-    Remove { track: TrackRef, index: usize },
+    Remove {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+    },
     /// Bypasses the effect, or lets it process again; toggles when `bypassed` is left out.
     #[serde(rename = "fx.bypass")]
     Bypass {
         track: TrackRef,
+        /// Position in the chain, from 0.
         index: usize,
         #[serde(default)]
         bypassed: Option<bool>,
     },
     /// The parameters of a running effect with their values.
     #[serde(rename = "fx.params")]
-    Params { track: TrackRef, index: usize },
+    Params {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+    },
     /// Sets parameter `param` (an id from `fx.params`) to `value`, within its range.
     #[serde(rename = "fx.param")]
-    SetParam { track: TrackRef, index: usize, param: u32, value: f64 },
+    SetParam {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        /// A parameter id from `fx.params`.
+        param: u32,
+        /// Clamped to the parameter's range.
+        value: f64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -155,7 +180,15 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
             let target = track.resolve(&session.project)?;
             Ok(list(session, target))
         }
-        FxCommand::Catalog => Ok(json(catalog(session).into_iter().map(|(e, _)| e).collect::<Vec<_>>())),
+        FxCommand::Catalog { query } => {
+            let query = query.map(|q| q.to_lowercase());
+            let matches = |e: &CatalogEntry| {
+                query
+                    .as_deref()
+                    .is_none_or(|q| [&e.name, &e.id, &e.format].iter().any(|field| field.to_lowercase().contains(q)))
+            };
+            Ok(json(catalog(session).into_iter().map(|(e, _)| e).filter(matches).collect::<Vec<_>>()))
+        }
         FxCommand::Add { track, plugin, index } => {
             let target = track.resolve(&session.project)?;
             let count = target.get(&session.project).map_or(0, |t| t.fx.len());

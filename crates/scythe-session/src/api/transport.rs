@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use scythe_core::TimeRange;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -5,7 +6,7 @@ use serde_json::Value;
 use super::{ApiError, json, snapshot, time};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum TransportCommand {
     /// Starts playback from the edit cursor; nothing happens while playing.
@@ -22,19 +23,26 @@ pub enum TransportCommand {
     Record,
     /// Moves the edit cursor, and the playhead while playing.
     #[serde(rename = "transport.seek")]
-    Seek { position: f64 },
+    Seek {
+        /// Seconds from the start of the project.
+        position: f64,
+    },
     /// Turns repeat on or off and/or sets the range it repeats.
     #[serde(rename = "transport.loop")]
     Loop {
         #[serde(default)]
         enabled: Option<bool>,
+        /// Seconds; give `end` with it.
         #[serde(default)]
         start: Option<f64>,
+        /// Seconds; give `start` with it.
         #[serde(default)]
         end: Option<f64>,
     },
+    /// Turns the metronome (click) on or off.
     #[serde(rename = "transport.metronome")]
     Metronome { enabled: bool },
+    /// Play state, playhead and edit cursor, loop and metronome.
     #[serde(rename = "transport.state")]
     State,
 }

@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use scythe_core::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -7,49 +8,63 @@ use crate::Session;
 
 /// Markers and regions are named by their number; `region` tells a marker and a region with
 /// the same number apart (REAPER numbers them separately).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum MarkerCommand {
+    /// All markers and regions, by position.
     #[serde(rename = "marker.list")]
     List,
     /// Adds a marker at `position` (the edit cursor when left out), or a region when `end` is
     /// given, and answers with it.
     #[serde(rename = "marker.add")]
     Add {
+        /// Seconds; the edit cursor when left out.
         #[serde(default)]
         position: Option<f64>,
+        /// Seconds; makes it a region ending here.
         #[serde(default)]
         end: Option<f64>,
         #[serde(default)]
         name: Option<String>,
+        /// `#rrggbb`.
         #[serde(default)]
         color: Option<String>,
     },
     /// Changes what is given; the rest stays.
     #[serde(rename = "marker.edit")]
     Edit {
+        /// The marker's or region's number.
         marker: u32,
+        /// Picks the region (true) or the marker (false) when both use the number.
         #[serde(default)]
         region: Option<bool>,
+        /// Seconds.
         #[serde(default)]
         position: Option<f64>,
+        /// Seconds; regions only.
         #[serde(default)]
         end: Option<f64>,
         #[serde(default)]
         name: Option<String>,
+        /// `#rrggbb`.
         #[serde(default)]
         color: Option<String>,
     },
+    /// Deletes the marker or region.
     #[serde(rename = "marker.delete")]
     Delete {
+        /// The marker's or region's number.
         marker: u32,
+        /// Picks the region (true) or the marker (false) when both use the number.
         #[serde(default)]
         region: Option<bool>,
     },
     /// Moves the edit cursor (and the playhead while playing) to the marker or region start.
     #[serde(rename = "marker.goto")]
     Goto {
+        /// The marker's or region's number.
         marker: u32,
+        /// Picks the region (true) or the marker (false) when both use the number.
         #[serde(default)]
         region: Option<bool>,
     },
