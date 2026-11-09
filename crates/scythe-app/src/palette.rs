@@ -44,6 +44,9 @@ pub enum Action {
     RemoveTempoMarker,
     ToggleMuteTrack,
     ToggleSoloTrack,
+    TogglePolarity,
+    ToggleSoloDefeat,
+    TrackGrouping,
     PreviousTrack,
     NextTrack,
     MoveTrackUp,
@@ -137,6 +140,9 @@ impl Action {
         Action::RemoveTempoMarker,
         Action::ToggleMuteTrack,
         Action::ToggleSoloTrack,
+        Action::TogglePolarity,
+        Action::ToggleSoloDefeat,
+        Action::TrackGrouping,
         Action::PreviousTrack,
         Action::NextTrack,
         Action::MoveTrackUp,
@@ -226,6 +232,9 @@ impl Action {
             Action::RemoveTempoMarker => "Tempo: Remove tempo marker nearest the cursor",
             Action::ToggleMuteTrack => "Track: Toggle mute for selected track",
             Action::ToggleSoloTrack => "Track: Toggle solo for selected track",
+            Action::TogglePolarity => "Track: Invert polarity of selected track",
+            Action::ToggleSoloDefeat => "Track: Toggle solo defeat for selected track",
+            Action::TrackGrouping => "Track: Show track grouping matrix",
             Action::PreviousTrack => "Track: Select previous track",
             Action::NextTrack => "Track: Select next track",
             Action::MoveTrackUp => "Track: Move selected track up",
@@ -365,6 +374,7 @@ impl Action {
             Action::RemoveTempoMarker => None,
             Action::ToggleMuteTrack => k(Modifiers::ALT, Key::M),
             Action::ToggleSoloTrack => k(Modifiers::ALT, Key::S),
+            Action::TogglePolarity | Action::ToggleSoloDefeat | Action::TrackGrouping => None,
             Action::PreviousTrack => k(Modifiers::NONE, Key::ArrowUp),
             Action::NextTrack => k(Modifiers::NONE, Key::ArrowDown),
             Action::MoveTrackUp => k(CMD, Key::ArrowUp),
@@ -433,11 +443,7 @@ impl Action {
             }
             Action::ToggleArm => {
                 if let Some(t) = app.sel.track {
-                    app.edit("Toggle record arm", |p| {
-                        if let Some(t) = p.track_mut(t) {
-                            t.armed = !t.armed;
-                        }
-                    });
+                    crate::ui::groups::toggle(app, t, scythe_core::groups::GroupedControl::RecArm);
                 }
             }
             Action::AddTrack => app.add_track(),
@@ -565,24 +571,27 @@ impl Action {
                     });
                 }
             }
-            Action::ToggleMuteTrack => {
+            Action::ToggleMuteTrack | Action::ToggleSoloTrack | Action::TogglePolarity => {
+                use scythe_core::groups::GroupedControl;
+                let control = match self {
+                    Action::ToggleMuteTrack => GroupedControl::Mute,
+                    Action::ToggleSoloTrack => GroupedControl::Solo,
+                    _ => GroupedControl::Polarity,
+                };
                 if let Some(t) = app.sel.track {
-                    app.edit("Toggle mute", |p| {
+                    crate::ui::groups::toggle(app, t, control);
+                }
+            }
+            Action::ToggleSoloDefeat => {
+                if let Some(t) = app.sel.track {
+                    app.edit("Toggle solo defeat", |p| {
                         if let Some(t) = p.track_mut(t) {
-                            t.muted = !t.muted;
+                            t.solo_defeat = !t.solo_defeat;
                         }
                     });
                 }
             }
-            Action::ToggleSoloTrack => {
-                if let Some(t) = app.sel.track {
-                    app.edit("Toggle solo", |p| {
-                        if let Some(t) = p.track_mut(t) {
-                            t.solo = !t.solo;
-                        }
-                    });
-                }
-            }
+            Action::TrackGrouping => app.view.groups = Some(app.view.groups.unwrap_or(0)),
             Action::PreviousTrack | Action::NextTrack => {
                 let n = app.project.tracks.len();
                 if n > 0 {

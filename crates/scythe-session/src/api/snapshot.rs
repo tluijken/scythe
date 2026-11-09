@@ -122,6 +122,27 @@ pub struct TrackInfo {
     pub pan: f64,
     pub muted: bool,
     pub solo: bool,
+    /// How it solos: "in_place" (heard through its sends too) or "ignore_routing".
+    #[serde(default)]
+    pub solo_mode: String,
+    /// Solo defeat: stays heard while other tracks are soloed (monitor mixes have it).
+    #[serde(default)]
+    pub solo_defeat: bool,
+    /// Polarity inverted.
+    #[serde(default)]
+    pub phase: bool,
+    /// Pan mode: "balance", "classic", "stereo" or "dual"; `None` follows the project.
+    #[serde(default)]
+    pub pan_mode: Option<String>,
+    /// Stereo width, -1..1 (1 = unchanged).
+    #[serde(default)]
+    pub width: f64,
+    /// Left and right channel positions in dual pan.
+    #[serde(default)]
+    pub dual_pan: [f64; 2],
+    /// Track groups the track belongs to, with its roles in each.
+    #[serde(default)]
+    pub groups: Vec<GroupRole>,
     pub armed: bool,
     pub monitor: bool,
     /// REAPER's record input (`I_RECINPUT`), inputs from 0: mono input n is n, stereo pair from n is
@@ -139,6 +160,27 @@ pub struct TrackInfo {
     /// Audio hardware outputs (the master's included).
     pub hw_outs: Vec<HwOutInfo>,
     pub items: Vec<ItemInfo>,
+}
+
+/// A track's part in one group.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GroupRole {
+    /// Group number, 1-64.
+    pub group: usize,
+    /// REAPER's names of the grouped parameters (`VOLUME_LEAD`, `VOLUME_VCA_FOLLOW`, ...).
+    pub params: Vec<String>,
+}
+
+/// A track's group roles, by group.
+pub fn group_roles(t: &Track) -> Vec<GroupRole> {
+    use scythe_core::groups::{GROUP_COUNT, GroupParam};
+    (0..GROUP_COUNT)
+        .filter_map(|g| {
+            let params: Vec<String> =
+                GroupParam::ALL.iter().filter(|p| t.groups.has(**p, g)).map(|p| p.name().to_owned()).collect();
+            (!params.is_empty()).then_some(GroupRole { group: g + 1, params })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -341,6 +383,17 @@ pub fn track(session: &Session, t: &Track, index: Option<usize>, level: usize) -
         pan: t.pan,
         muted: t.muted,
         solo: t.solo,
+        solo_mode: match t.solo_mode {
+            scythe_core::SoloMode::InPlace => "in_place",
+            scythe_core::SoloMode::IgnoreRouting => "ignore_routing",
+        }
+        .into(),
+        solo_defeat: t.solo_defeat,
+        phase: t.phase,
+        pan_mode: t.pan_mode.map(|m| m.name().to_owned()),
+        width: t.width,
+        dual_pan: t.dual_pan,
+        groups: group_roles(t),
         armed: t.armed,
         monitor: t.monitor,
         input: t.rec_input,

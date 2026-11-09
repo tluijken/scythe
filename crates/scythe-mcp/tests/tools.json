@@ -796,9 +796,17 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Sets solo, or toggles it when `solo` is left out.\n\nControl API command `track.solo`.",
+    "description": "Sets solo, or toggles it when `solo` is left out. Followers in the track's solo groups\nfollow.\n\nControl API command `track.solo`.",
     "inputSchema": {
       "properties": {
+        "mode": {
+          "default": null,
+          "description": "\"in_place\" (default: the track is heard through its sends and the tracks they reach)\nor \"ignore_routing\" (only the track itself); kept when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "solo": {
           "default": null,
           "type": [
@@ -827,6 +835,205 @@
     },
     "name": "track_solo",
     "title": "Track solo"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Solo defeat: while other tracks are soloed the track stays heard (unless muted), so\nsoloing never silences a monitor mix. Toggles when `on` is left out.\n\nControl API command `track.solo_defeat`.",
+    "inputSchema": {
+      "properties": {
+        "on": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_solo_defeat",
+    "title": "Track solo defeat"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` is left out.\n\nControl API command `track.phase`.",
+    "inputSchema": {
+      "properties": {
+        "phase": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_phase",
+    "title": "Track phase"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The track's pan mode.\n\nControl API command `track.pan_mode`.",
+    "inputSchema": {
+      "properties": {
+        "mode": {
+          "description": "\"balance\" (stereo balance / mono pan), \"classic\" (REAPER 3.x balance), \"stereo\"\n(stereo pan with width) or \"dual\" (each channel panned on its own); `null` follows\nthe project default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_pan_mode",
+    "title": "Track pan mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stereo width (every pan mode but dual pan applies it). Width groups follow.\n\nControl API command `track.width`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "width": {
+          "description": "From -1 (swapped) through 0 (mono) to 1 (unchanged).",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "track",
+        "width"
+      ],
+      "type": "object"
+    },
+    "name": "track_width",
+    "title": "Track width"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Positions of the left and right channel in dual pan.\n\nControl API command `track.dual_pan`.",
+    "inputSchema": {
+      "properties": {
+        "left": {
+          "description": "-1 (left) to 1 (right).",
+          "format": "double",
+          "type": "number"
+        },
+        "right": {
+          "description": "-1 (left) to 1 (right).",
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "left",
+        "right"
+      ],
+      "type": "object"
+    },
+    "name": "track_dual_pan",
+    "title": "Track dual pan"
   },
   {
     "annotations": {
@@ -1917,6 +2124,127 @@
     },
     "name": "fx_param",
     "title": "FX param"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every track group in use: its name and which tracks lead or follow what. A lead's\nvolume, pan, width, mute, solo, arm, polarity or automation mode edits carry over to the\nfollowers of the same parameter; a VCA lead's level scales its followers instead.\n\nControl API command `group.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "group_list",
+    "title": "Group list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Names a group, or clears its name with `null`.\n\nControl API command `group.name`.",
+    "inputSchema": {
+      "properties": {
+        "group": {
+          "description": "Group number, 1-64.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "name": "group_name",
+    "title": "Group name"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a track to a group for some parameters, or takes it out (`on: false`).\n\nControl API command `group.set`.",
+    "inputSchema": {
+      "properties": {
+        "group": {
+          "description": "Group number, 1-64.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "on": {
+          "default": true,
+          "description": "False removes the track from the group for these parameters.",
+          "type": "boolean"
+        },
+        "params": {
+          "description": "REAPER's parameter names, case-insensitive: VOLUME_LEAD, VOLUME_FOLLOW, PAN_LEAD,\nPAN_FOLLOW, WIDTH_LEAD, WIDTH_FOLLOW, MUTE_LEAD, MUTE_FOLLOW, SOLO_LEAD, SOLO_FOLLOW,\nRECARM_LEAD, RECARM_FOLLOW, POLARITY_LEAD, POLARITY_FOLLOW, AUTOMODE_LEAD,\nAUTOMODE_FOLLOW, VOLUME_REVERSE, PAN_REVERSE, WIDTH_REVERSE, NO_LEAD_WHEN_FOLLOW,\nVOLUME_VCA_LEAD, VOLUME_VCA_FOLLOW, VOLUME_VCA_FOLLOW_ISPREFX, MEDIA_EDIT_LEAD,\nMEDIA_EDIT_FOLLOW.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "group",
+        "params"
+      ],
+      "type": "object"
+    },
+    "name": "group_set",
+    "title": "Group set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes every track from a group and forgets its name.\n\nControl API command `group.clear`.",
+    "inputSchema": {
+      "properties": {
+        "group": {
+          "description": "Group number, 1-64.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "group"
+      ],
+      "type": "object"
+    },
+    "name": "group_clear",
+    "title": "Group clear"
   },
   {
     "annotations": {

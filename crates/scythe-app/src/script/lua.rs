@@ -423,6 +423,45 @@ mod tests {
         assert_tidied(&out);
     }
 
+    // The same calls in REAPER 7.73 (agent probes): volume follows in dB, reversed the other
+    // way, pan by offset, mute as the same state; CSurf without gang moves only the track.
+    #[test]
+    fn group_leads_carry_edits_over() {
+        let script = r#"
+            reaper.InsertTrackAtIndex(2, false)
+            local lead, a, b = reaper.GetTrack(0, 0), reaper.GetTrack(0, 1), reaper.GetTrack(0, 2)
+            assert(reaper.GetSetTrackGroupMembership(lead, "VOLUME_LEAD", 1, 1) == 0)
+            reaper.GetSetTrackGroupMembership(lead, "MUTE_LEAD", 1, 1)
+            reaper.GetSetTrackGroupMembership(a, "VOLUME_FOLLOW", 1, 1)
+            reaper.GetSetTrackGroupMembership(a, "MUTE_FOLLOW", 1, 1)
+            reaper.GetSetTrackGroupMembershipHigh(b, "VOLUME_FOLLOW", 1, 1)
+            assert(reaper.GetSetTrackGroupMembershipEx(b, "VOLUME_FOLLOW", 32, 0, 0) == 1)
+            reaper.GetSetTrackGroupMembership(b, "VOLUME_FOLLOW", 1, 1)
+            reaper.GetSetTrackGroupMembership(b, "VOLUME_REVERSE", 1, 1)
+            reaper.SetMediaTrackInfo_Value(a, "D_VOL", 0.5)
+            reaper.SetMediaTrackInfo_Value(b, "D_VOL", 0.5)
+            assert(reaper.CSurf_OnVolumeChangeEx(lead, 0.5, false, true) == 0.5)
+            assert(reaper.GetMediaTrackInfo_Value(a, "D_VOL") == 0.25)
+            assert(math.abs(reaper.GetMediaTrackInfo_Value(b, "D_VOL") - 1) < 1e-12)
+            reaper.CSurf_OnVolumeChangeEx(lead, 1, false, false)
+            assert(reaper.GetMediaTrackInfo_Value(a, "D_VOL") == 0.25)
+            assert(math.abs(reaper.SetTrackUIVolume(a, 6, true, true, 0) - 0.25 * 10 ^ 0.3) < 1e-12)
+            assert(reaper.SetTrackUIMute(lead, -1, 0) == 1)
+            assert(reaper.GetMediaTrackInfo_Value(a, "B_MUTE") == 1)
+            assert(reaper.CSurf_OnSoloChangeEx(b, 1, false) == true)
+            assert(reaper.GetMediaTrackInfo_Value(b, "I_SOLO") == 2)
+            reaper.SetMediaTrackInfo_Value(b, "I_PANMODE", 5)
+            reaper.SetMediaTrackInfo_Value(b, "D_WIDTH", 0.5)
+            reaper.SetMediaTrackInfo_Value(b, "B_PHASE", 1)
+            assert(reaper.GetMediaTrackInfo_Value(b, "I_PANMODE") == 5 and reaper.GetMediaTrackInfo_Value(b, "D_WIDTH") == 0.5)
+            reaper.GetSetProjectInfo_String(0, "TRACK_GROUP_NAME:1", "Kit", true)
+        "#;
+        let (out, _) = run(script, "groups.lua", &project(), ScriptContext::default()).unwrap();
+        let p = out.project.unwrap();
+        assert_eq!(p.group_name(0), Some("Kit"));
+        assert!(p.tracks[2].phase && p.tracks[2].pan_mode == Some(scythe_core::fader::PanMode::Stereo));
+    }
+
     #[test]
     fn errors_name_the_line_and_change_nothing() {
         let err = run("reaper.ShowConsoleMsg('a')\nnot_a_function()", "x.lua", &project(), ScriptContext::default())

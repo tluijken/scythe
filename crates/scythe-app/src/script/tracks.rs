@@ -79,6 +79,84 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             Some(t) => (Val::Bool(true), vec![Val::Num(t.volume), Val::Num(t.pan)]),
             None => (Val::Bool(false), vec![Val::Nil, Val::Nil]),
         },
+        "GetSetTrackGroupMembership" | "GetSetTrackGroupMembershipHigh" | "GetSetTrackGroupMembershipEx" => {
+            let (offset, at) = match name {
+                "GetSetTrackGroupMembershipEx" => (a.int(2), 3),
+                "GetSetTrackGroupMembershipHigh" => (32, 2),
+                _ => (0, 2),
+            };
+            let (mask, value) = (a.int(at) as u32 as u64, a.int(at + 1) as u32 as u64);
+            let param = scythe_core::groups::GroupParam::from_name(&a.text(1));
+            let shift = if offset >= 32 { 32 } else { 0 };
+            let Some((t, param)) = track(&mut s.project, a.get(0).track()).zip(param) else {
+                return Some(ret(Val::Int(0)));
+            };
+            let m = &mut t.groups.0[param.index()];
+            let old = (*m >> shift) as u32;
+            let new = (*m & !(mask << shift)) | ((value & mask) << shift);
+            if new != *m {
+                *m = new;
+                s.changed = true;
+            }
+            ret(Val::Int(old as i64))
+        }
+        "CSurf_OnVolumeChange" | "CSurf_OnVolumeChangeEx" | "SetTrackUIVolume" => {
+            let gang = match name {
+                "CSurf_OnVolumeChangeEx" => a.bool(3),
+                "SetTrackUIVolume" => a.int(4) & 1 == 0,
+                _ => true,
+            };
+            ret(Val::Num(ui_level(s, a.get(0).track(), Level::Volume, a.num(1), a.bool(2), gang)))
+        }
+        "CSurf_OnPanChange" | "CSurf_OnPanChangeEx" | "SetTrackUIPan" => {
+            let gang = match name {
+                "CSurf_OnPanChangeEx" => a.bool(3),
+                "SetTrackUIPan" => a.int(4) & 1 == 0,
+                _ => true,
+            };
+            ret(Val::Num(ui_level(s, a.get(0).track(), Level::Pan, a.num(1), a.bool(2), gang)))
+        }
+        "CSurf_OnWidthChange" | "CSurf_OnWidthChangeEx" | "SetTrackUIWidth" => {
+            let gang = match name {
+                "CSurf_OnWidthChangeEx" => a.bool(3),
+                "SetTrackUIWidth" => a.int(4) & 1 == 0,
+                _ => true,
+            };
+            ret(Val::Num(ui_level(s, a.get(0).track(), Level::Width, a.num(1), a.bool(2), gang)))
+        }
+        "CSurf_OnMuteChange"
+        | "CSurf_OnMuteChangeEx"
+        | "CSurf_OnSoloChange"
+        | "CSurf_OnSoloChangeEx"
+        | "CSurf_OnRecArmChange"
+        | "CSurf_OnRecArmChangeEx" => {
+            let gang = !name.ends_with("Ex") || a.bool(2);
+            let kind = match name {
+                n if n.contains("Mute") => Switch::Mute,
+                n if n.contains("Solo") => Switch::Solo,
+                _ => Switch::Arm,
+            };
+            let on = ui_switch(s, a.get(0).track(), kind, a.int(1), gang);
+            ret(Val::Bool(on.unwrap_or(false)))
+        }
+        "SetTrackUIMute" | "SetTrackUISolo" | "SetTrackUIRecArm" | "SetTrackUIPolarity" => {
+            let kind = match name {
+                "SetTrackUIMute" => Switch::Mute,
+                "SetTrackUISolo" => Switch::Solo,
+                "SetTrackUIRecArm" => Switch::Arm,
+                _ => Switch::Polarity,
+            };
+            // REAPER 7.73 solos ignoring routing when given 2 here.
+            let (value, mode) = match (kind, a.int(1)) {
+                (Switch::Solo, 2) => (1, Some(scythe_core::SoloMode::IgnoreRouting)),
+                (_, v) => (v, None),
+            };
+            let on = ui_switch(s, a.get(0).track(), kind, value, a.int(2) & 1 == 0);
+            if let (Some(m), Some(t)) = (mode, track(&mut s.project, a.get(0).track())) {
+                t.solo_mode = m;
+            }
+            ret(Val::Int(on.unwrap_or(false) as i64))
+        }
         "CountSelectedTracks" => ret(Val::Int(selected_tracks(s, false).len() as i64)),
         "CountSelectedTracks2" => ret(Val::Int(selected_tracks(s, a.bool(1)).len() as i64)),
         "GetSelectedTrack" | "GetSelectedTrack2" => {
@@ -313,7 +391,19 @@ fn track_value(s: &mut State, t: Option<TrackId>, key: &str) -> Val {
         "D_VOL" => t.volume,
         "D_PAN" => t.pan,
         "B_MUTE" => t.muted as u8 as f64,
-        "I_SOLO" => t.solo as u8 as f64,
+        "I_SOLO" => {
+            if t.solo {
+                t.solo_mode.code(t.solo_safe) as f64
+            } else {
+                0.0
+            }
+        }
+        "B_SOLO_DEFEAT" => t.solo_defeat as u8 as f64,
+        "B_PHASE" => t.phase as u8 as f64,
+        "I_PANMODE" => t.pan_mode.map_or(-1.0, |m| m.code() as f64),
+        "D_WIDTH" => t.width,
+        "D_DUALPANL" => t.dual_pan[0],
+        "D_DUALPANR" => t.dual_pan[1],
         "I_RECARM" => t.armed as u8 as f64,
         "I_RECINPUT" => t.rec_input as f64,
         "I_RECMON" => t.monitor as u8 as f64,
@@ -352,7 +442,18 @@ fn set_track_value(s: &mut State, id: Option<TrackId>, key: &str, v: f64) -> boo
         "D_VOL" => t.volume = v.max(0.0),
         "D_PAN" => t.pan = v.clamp(-1.0, 1.0),
         "B_MUTE" => t.muted = v != 0.0,
-        "I_SOLO" => t.solo = v != 0.0,
+        // REAPER 7.73 takes 1 and 2 here; anything else, safe solo (5, 6) included, unsolos.
+        "I_SOLO" => match v as i64 {
+            1 => (t.solo, t.solo_mode) = (true, scythe_core::SoloMode::IgnoreRouting),
+            2 => (t.solo, t.solo_mode) = (true, scythe_core::SoloMode::InPlace),
+            _ => t.solo = false,
+        },
+        "B_SOLO_DEFEAT" => t.solo_defeat = v != 0.0,
+        "B_PHASE" => t.phase = v != 0.0,
+        "I_PANMODE" => t.pan_mode = (v >= 0.0).then(|| scythe_core::fader::PanMode::from_code(v as i64)),
+        "D_WIDTH" => t.width = v.clamp(-1.0, 1.0),
+        "D_DUALPANL" => t.dual_pan[0] = v.clamp(-1.0, 1.0),
+        "D_DUALPANR" => t.dual_pan[1] = v.clamp(-1.0, 1.0),
         "I_RECARM" => t.armed = v != 0.0,
         "I_RECINPUT" => t.rec_input = v as i64,
         "I_RECMON" => t.monitor = v != 0.0,
@@ -619,6 +720,9 @@ fn env_name(kind: EnvelopeKind) -> &'static str {
         EnvelopeKind::Trim => "Trim Volume",
         EnvelopeKind::Pan => "Pan",
         EnvelopeKind::Mute => "Mute",
+        EnvelopeKind::Width => "Width",
+        EnvelopeKind::DualPanLeft => "Pan (Left)",
+        EnvelopeKind::DualPanRight => "Pan (Right)",
     }
 }
 
@@ -638,32 +742,11 @@ fn envelope(p: &mut Project, e: Option<Env>) -> Option<&mut Envelope> {
     }
 }
 
-/// Volume envelopes in fader scaling (`VOLTYPE 1`, which Scythe writes for new ones) give
-/// scripts their values as fader positions, as REAPER's API does.
 fn fader_scaled(env: &Envelope) -> bool {
-    matches!(env.kind, EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim)
-        && env.raw.as_ref().is_none_or(|c| c.find_line("VOLTYPE").is_some_and(|t| t.get(1).is_some_and(|v| v == "1")))
+    env.fader_scaled
 }
 
-/// REAPER's fader scaling of amplitude: `amp = 10^0.6 / 2 * x * (1 + x)` with `x` the cube of
-/// the position over 1000 (fitted to `ScaleToEnvelopeMode` in REAPER 7.73).
-const FADER_A: f64 = 1.990_535_852_767_486;
-
-pub(super) fn scale_to_fader(amp: f64) -> f64 {
-    if amp <= 0.0 {
-        return 0.0;
-    }
-    let x = ((1.0 + 4.0 * amp / FADER_A).sqrt() - 1.0) / 2.0;
-    1000.0 * x.cbrt()
-}
-
-pub(super) fn scale_from_fader(pos: f64) -> f64 {
-    if pos <= 0.0 {
-        return 0.0;
-    }
-    let x = (pos / 1000.0).powi(3);
-    FADER_A * x * (1.0 + x)
-}
+pub(super) use scythe_core::fader::{envelope_gain as scale_from_fader, envelope_position as scale_to_fader};
 
 /// A point as the API sees it: (time, value, shape, tension, selected).
 fn point_out(env: &Envelope, p: &EnvPoint) -> (f64, f64, i64, f64, bool) {
@@ -837,6 +920,7 @@ fn envelopes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             let mut raw = env.clone();
             if fader_scaled(env) {
                 raw.points.iter_mut().for_each(|p| p.value = scale_to_fader(p.value));
+                raw.fader_scaled = false;
             }
             let neutral = if fader_scaled(env) { scale_to_fader(env.kind.neutral()) } else { env.kind.neutral() };
             let at = |t: f64| raw.value_at(t).unwrap_or(neutral);
@@ -1012,4 +1096,76 @@ mod tests {
         assert_eq!(ext_value(&mut extra, "mine", None), "c d");
         assert_eq!(extra.len(), 1);
     }
+}
+
+// ---- control surface style edits -----------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum Level {
+    Volume,
+    Pan,
+    Width,
+}
+
+/// Sets (or with `relative` moves: volume in dB, pan and width by the amount) a track's level
+/// the way a control surface does, carrying it over to group followers when `gang` is set.
+/// Answers the new value.
+fn ui_level(s: &mut State, id: Option<TrackId>, level: Level, value: f64, relative: bool, gang: bool) -> f64 {
+    let index = id.and_then(|t| s.project.track_index(t));
+    let Some(t) = track(&mut s.project, id) else { return 0.0 };
+    let new = match (level, relative) {
+        (Level::Volume, true) => t.volume * scythe_core::units::db_to_gain(value),
+        (Level::Volume, false) => value.max(0.0),
+        (Level::Pan, true) => (t.pan + value).clamp(-1.0, 1.0),
+        (Level::Pan, false) => value.clamp(-1.0, 1.0),
+        (Level::Width, true) => (t.width + value).clamp(-1.0, 1.0),
+        (Level::Width, false) => value.clamp(-1.0, 1.0),
+    };
+    match (index, gang, level) {
+        (Some(i), true, Level::Volume) => s.project.set_volume_grouped(i, new),
+        (Some(i), true, Level::Pan) => s.project.set_pan_grouped(i, new),
+        (Some(i), true, Level::Width) => s.project.set_width_grouped(i, new),
+        (_, _, Level::Volume) => t.volume = new,
+        (_, _, Level::Pan) => t.pan = new,
+        (_, _, Level::Width) => t.width = new,
+    }
+    s.changed = true;
+    new
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Switch {
+    Mute,
+    Solo,
+    Arm,
+    Polarity,
+}
+
+/// Sets a track switch (negative toggles), carrying it over to group followers when `gang` is
+/// set. Answers the new state, `None` without a track.
+fn ui_switch(s: &mut State, id: Option<TrackId>, kind: Switch, value: i64, gang: bool) -> Option<bool> {
+    let index = id.and_then(|t| s.project.track_index(t));
+    let t = track(&mut s.project, id)?;
+    let current = match kind {
+        Switch::Mute => t.muted,
+        Switch::Solo => t.solo,
+        Switch::Arm => t.armed,
+        Switch::Polarity => t.phase,
+    };
+    let on = if value < 0 { !current } else { value != 0 };
+    if kind == Switch::Solo && on {
+        t.solo_mode = scythe_core::SoloMode::InPlace;
+    }
+    match (index.filter(|_| gang), kind) {
+        (Some(i), Switch::Mute) => s.project.set_mute_grouped(i, on),
+        (Some(i), Switch::Solo) => s.project.set_solo_grouped(i, on),
+        (Some(i), Switch::Arm) => s.project.set_arm_grouped(i, on),
+        (Some(i), Switch::Polarity) => s.project.set_phase_grouped(i, on),
+        (None, Switch::Mute) => t.muted = on,
+        (None, Switch::Solo) => t.solo = on,
+        (None, Switch::Arm) => t.armed = on,
+        (None, Switch::Polarity) => t.phase = on,
+    }
+    s.changed = true;
+    Some(on)
 }

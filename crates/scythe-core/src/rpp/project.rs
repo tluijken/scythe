@@ -3,9 +3,11 @@ use std::path::{Path, PathBuf};
 use super::{Chunk, Node, ParseError, line_key, parse, quote_always, tokenize, write};
 use crate::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use crate::fade::Fade;
+use crate::fader::PanMode;
+use crate::groups::GroupFlags;
 use crate::model::{
-    AutoMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode, Source, Take,
-    TimeRange, Track, TrackId, new_guid,
+    AutoMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode, SoloMode,
+    Source, Take, TimeRange, Track, TrackId, new_guid,
 };
 use crate::tempo::TempoPoint;
 use crate::units::PanTaper;
@@ -206,6 +208,19 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         p.pan_law.taper = PanTaper::from_flags(num(&t, 1, 3.0) as i64);
                         p.extra.push(node.clone());
                     }
+                    "PANMODE" => {
+                        p.pan_mode = PanMode::from_code(num(&t, 1, 3.0) as i64);
+                        p.extra.push(node.clone());
+                    }
+                    "GROUP_NAME" => {
+                        if p.group_names.is_empty() {
+                            p.extra.push(Node::Line("GROUP_NAME".into()));
+                        }
+                        let group = num(&t, 1, -1.0);
+                        if (0.0..crate::groups::GROUP_COUNT as f64).contains(&group) {
+                            p.group_names.insert(group as usize, t.get(2).cloned().unwrap_or_default());
+                        }
+                    }
                     "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
                     _ => p.extra.push(node.clone()),
                 }
@@ -381,6 +396,7 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.volume = num(&t, 1, 1.0);
                         track.pan = num(&t, 2, 0.0);
                         track.pan_law = num(&t, 3, -1.0);
+                        track.dual_pan = [num(&t, 4, -1.0), num(&t, 5, 1.0)];
                     }
                     "ISBUS" => track.folder_depth = num(&t, 2, 0.0) as i32,
                     "MAINSEND" => {
@@ -394,13 +410,33 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                     }
                     "MUTESOLO" => {
                         track.muted = flag(&t, 1);
-                        track.solo = flag(&t, 2);
+                        let solo = SoloMode::from_code(num(&t, 2, 0.0) as i64);
+                        track.solo = solo.is_some();
+                        (track.solo_mode, track.solo_safe) = solo.unwrap_or((SoloMode::InPlace, false));
+                        track.solo_defeat = flag(&t, 3);
                     }
                     // REAPER writes `MIDIOUT device*32+channel`, -1 for none; earlier scythe
                     // versions wrote the same code as `MIDIHWOUT`.
                     "MIDIOUT" | "MIDIHWOUT" => {
                         let v = num(&t, 1, -1.0) as i64;
                         track.midi_out = (v >= 0).then_some(((v >> 5) as u8, (v & 31) as u8));
+                        track.extra.push(node.clone());
+                    }
+                    "IPHASE" => {
+                        track.phase = flag(&t, 1);
+                        track.extra.push(node.clone());
+                    }
+                    "PANMODE" => {
+                        let code = num(&t, 1, -1.0) as i64;
+                        track.pan_mode = (code >= 0).then(|| PanMode::from_code(code));
+                        track.extra.push(node.clone());
+                    }
+                    "WIDTH" => {
+                        track.width = num(&t, 1, 1.0);
+                        track.extra.push(node.clone());
+                    }
+                    "GROUP_FLAGS" | "GROUP_FLAGS_HIGH" => {
+                        track.groups.read_line(&t[1..], t[0] == "GROUP_FLAGS_HIGH");
                         track.extra.push(node.clone());
                     }
                     "FREEMODE" => {
@@ -541,6 +577,7 @@ fn parse_envelope(kind: EnvelopeKind, c: &Chunk) -> Envelope {
         match t[0].as_str() {
             "ACT" => env.active = flag(&t, 1),
             "VIS" => env.visible = flag(&t, 1),
+            "VOLTYPE" => env.fader_scaled = kind.is_volume() && num(&t, 1, 0.0) as i64 == 1,
             "PT" => env.points.push(EnvPoint {
                 time: num(&t, 1, 0.0),
                 value: num(&t, 2, 0.0),
@@ -570,7 +607,7 @@ fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
         c.line(["LANEHEIGHT", "0", "0"]);
         c.line(["ARM", "0"]);
         c.line(["DEFSHAPE", "0", "-1", "-1"]);
-        if matches!(env.kind, EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim) {
+        if env.fader_scaled {
             c.line(["VOLTYPE", "1"]);
         }
         c
@@ -909,6 +946,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     root.line(line_from(l, "MASTERMUTESOLO", &["MASTERMUTESOLO"], &[(1, bit(m.muted))]));
     let (mut wrote_law, mut wrote_flags, mut wrote_tempo, mut wrote_nch) = (false, false, false, false);
     let mut wrote_hw = false;
+    let (mut wrote_pan_mode, mut wrote_group_names) = (false, false);
     let mut wrote_metronome = false;
     for node in &p.extra {
         match node {
@@ -935,6 +973,19 @@ pub fn project_to_rpp(p: &Project) -> String {
             Node::Line(l) if line_key(l) == "PANLAWFLAGS" => {
                 root.line(["PANLAWFLAGS".to_owned(), p.pan_law.taper.flags().to_string()]);
                 wrote_flags = true;
+            }
+            Node::Line(l) if line_key(l) == "PANMODE" => {
+                let mut toks = tokenize(l);
+                toks.resize(toks.len().max(2), String::new());
+                if PanMode::from_code(num(&toks, 1, 3.0) as i64) != p.pan_mode {
+                    toks[1] = p.pan_mode.code().to_string();
+                }
+                root.line(toks);
+                wrote_pan_mode = true;
+            }
+            Node::Line(l) if line_key(l) == "GROUP_NAME" => {
+                write_group_names(&mut root, p);
+                wrote_group_names = true;
             }
             Node::Chunk(c) if c.name() == "TEMPOENVEX" => {
                 root.push_chunk(write_tempo_env(Some(c), &p.tempo.points));
@@ -967,6 +1018,12 @@ pub fn project_to_rpp(p: &Project) -> String {
     }
     if !wrote_flags && p.pan_law.taper != default_law.taper {
         root.line(["PANLAWFLAGS".to_owned(), p.pan_law.taper.flags().to_string()]);
+    }
+    if !wrote_pan_mode && p.pan_mode != PanMode::default() {
+        root.line(["PANMODE".to_owned(), p.pan_mode.code().to_string()]);
+    }
+    if !wrote_group_names {
+        write_group_names(&mut root, p);
     }
 
     for m in &p.markers {
@@ -1004,6 +1061,21 @@ pub fn project_to_rpp(p: &Project) -> String {
     write(&root)
 }
 
+fn write_group_flags(c: &mut Chunk, flags: &GroupFlags) {
+    for (key, high) in [("GROUP_FLAGS", false), ("GROUP_FLAGS_HIGH", true)] {
+        let values = flags.line_values(high);
+        if !values.is_empty() {
+            c.line(std::iter::once(key.to_owned()).chain(values).collect::<Vec<_>>());
+        }
+    }
+}
+
+fn write_group_names(root: &mut Chunk, p: &Project) {
+    for (g, name) in &p.group_names {
+        root.line(["GROUP_NAME".to_owned(), g.to_string(), name.clone()]);
+    }
+}
+
 fn write_track(p: &Project, t: &Track) -> Chunk {
     let guid = if t.guid.is_empty() { new_guid() } else { t.guid.clone() };
     let mut c = Chunk::new("TRACK", &[&guid]);
@@ -1015,12 +1087,21 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         l,
         "VOLPAN",
         &["VOLPAN", "1", "0", "-1", "-1", "1"],
-        &[(1, fmt_num(t.volume)), (2, fmt_num(t.pan)), (3, fmt_num(t.pan_law))],
+        &[
+            (1, fmt_num(t.volume)),
+            (2, fmt_num(t.pan)),
+            (3, fmt_num(t.pan_law)),
+            (4, fmt_num(t.dual_pan[0])),
+            (5, fmt_num(t.dual_pan[1])),
+        ],
     ));
-    // Keep a stored solo mode (in-place, safe solo) as long as the track stays soloed.
-    let old_solo = l.get("MUTESOLO").map(|t| t.get(2).cloned().unwrap_or_default()).filter(|s| s != "0");
-    let solo = if t.solo { old_solo.unwrap_or_else(|| "1".into()) } else { "0".into() };
-    c.line(line_from(l, "MUTESOLO", &["MUTESOLO", "0", "0", "0"], &[(1, bit(t.muted)), (2, solo)]));
+    let solo = if t.solo { t.solo_mode.code(t.solo_safe) } else { 0 };
+    c.line(line_from(
+        l,
+        "MUTESOLO",
+        &["MUTESOLO", "0", "0", "0"],
+        &[(1, bit(t.muted)), (2, solo.to_string()), (3, bit(t.solo_defeat))],
+    ));
     let state = match t.folder_depth {
         d if d > 0 => "1",
         d if d < 0 => "2",
@@ -1044,6 +1125,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     let mut wrote_midi_out = false;
     let mut wrote_nchan = false;
     let mut wrote_envs = Vec::new();
+    let (mut wrote_phase, mut wrote_pan_mode, mut wrote_width, mut wrote_groups) = (false, false, false, false);
     for node in &t.extra {
         match node {
             Node::Chunk(ch) if let Some(kind) = EnvelopeKind::from_chunk_name(ch.name()) => {
@@ -1083,6 +1165,31 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 c.line(["NCHAN".to_owned(), t.channels.to_string()]);
                 wrote_nchan = true;
             }
+            Node::Line(l) if line_key(l) == "IPHASE" => {
+                c.line(["IPHASE".to_owned(), bit(t.phase)]);
+                wrote_phase = true;
+            }
+            Node::Line(l) if line_key(l) == "PANMODE" => {
+                let toks = tokenize(l);
+                let code = num(&toks, 1, -1.0) as i64;
+                let stored = (code >= 0).then(|| PanMode::from_code(code));
+                match t.pan_mode {
+                    m if m == stored => c.line(toks),
+                    Some(m) => c.line(["PANMODE".to_owned(), m.code().to_string()]),
+                    None => {}
+                }
+                wrote_pan_mode = true;
+            }
+            Node::Line(l) if line_key(l) == "WIDTH" => {
+                c.line(["WIDTH".to_owned(), fmt_num(t.width)]);
+                wrote_width = true;
+            }
+            Node::Line(l) if matches!(line_key(l), "GROUP_FLAGS" | "GROUP_FLAGS_HIGH") => {
+                if !wrote_groups {
+                    write_group_flags(&mut c, &t.groups);
+                }
+                wrote_groups = true;
+            }
             Node::Line(l) if line_key(l) == "REC" => {
                 let mut toks = tokenize(l);
                 if toks.len() > 1 {
@@ -1100,6 +1207,18 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             }
             _ => c.children.push(node.clone()),
         }
+    }
+    if !wrote_phase && t.phase {
+        c.line(["IPHASE", "1"]);
+    }
+    if let (false, Some(m)) = (wrote_pan_mode, t.pan_mode) {
+        c.line(["PANMODE".to_owned(), m.code().to_string()]);
+    }
+    if !wrote_width && t.width != 1.0 {
+        c.line(["WIDTH".to_owned(), fmt_num(t.width)]);
+    }
+    if !wrote_groups {
+        write_group_flags(&mut c, &t.groups);
     }
     if !wrote_nchan && t.channels != 2 {
         c.line(["NCHAN".to_owned(), t.channels.to_string()]);
@@ -1469,6 +1588,64 @@ mod tests {
         assert!(text1.contains("ISBUS 2 -1"));
         assert!(text1.contains("MAINSEND 0 0"));
         assert_eq!(p2.tracks[2].folder_depth, -1);
+    }
+
+    // Lines as REAPER 7.73 saved them after setting the fields through ReaScript.
+    #[test]
+    fn track_mix_fields_round_trip() {
+        let rpp = "<REAPER_PROJECT 0.1 \"7.73/linux-x86_64\" 1
+  PANMODE 5
+  GROUP_NAME 0 Drums
+  GROUP_NAME 1 \"Vox VCA\"
+  <TRACK
+    PANMODE 6
+    VOLPAN 1 0 -1 -0.7 0.4
+    MUTESOLO 0 1 1
+    IPHASE 1
+    GROUP_FLAGS 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1
+    GROUP_FLAGS_HIGH 0 0 0 0 128
+  >
+  <TRACK
+    WIDTH 0.3
+    MUTESOLO 0 2 0
+    GROUP_FLAGS 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2 2
+  >
+>
+";
+        let p = project_from_rpp(rpp).unwrap();
+        assert_eq!(p.pan_mode, PanMode::Stereo);
+        assert_eq!(p.group_name(1), Some("Vox VCA"));
+        let (a, b) = (&p.tracks[0], &p.tracks[1]);
+        assert_eq!((a.pan_mode, a.dual_pan, a.phase), (Some(PanMode::Dual), [-0.7, 0.4], true));
+        assert!(a.solo && a.solo_mode == SoloMode::IgnoreRouting && a.solo_defeat);
+        assert!(a.groups.has(crate::groups::GroupParam::PanReverse, 0));
+        assert!(a.groups.has(crate::groups::GroupParam::MuteLead, 39));
+        assert_eq!((b.pan_mode, b.width, b.solo_mode), (None, 0.3, SoloMode::InPlace));
+        assert!(b.groups.has(crate::groups::GroupParam::VcaFollowPreFx, 1));
+        let text = project_to_rpp(&p);
+        for line in [
+            "PANMODE 5",
+            "GROUP_NAME 0 Drums",
+            "GROUP_NAME 1 \"Vox VCA\"",
+            "PANMODE 6",
+            "VOLPAN 1 0 -1 -0.7 0.4",
+            "MUTESOLO 0 1 1",
+            "IPHASE 1",
+            "GROUP_FLAGS 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1",
+            "GROUP_FLAGS_HIGH 0 0 0 0 128",
+            "WIDTH 0.3",
+            "MUTESOLO 0 2 0",
+        ] {
+            assert!(text.contains(line), "{line} missing from\n{text}");
+        }
+        let mut p2 = project_from_rpp(&text).unwrap();
+        assert_eq!(project_to_rpp(&p2).lines().skip(1).collect::<Vec<_>>(), text.lines().skip(1).collect::<Vec<_>>());
+        p2.tracks[0].groups = crate::groups::GroupFlags::default();
+        p2.tracks[0].phase = false;
+        p2.tracks[1].pan_mode = Some(PanMode::Classic);
+        let text = project_to_rpp(&p2);
+        assert!(!text.contains("GROUP_FLAGS 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1") && !text.contains("GROUP_FLAGS_HIGH"));
+        assert!(text.contains("IPHASE 0") && text.contains("PANMODE 0"));
     }
 
     #[test]

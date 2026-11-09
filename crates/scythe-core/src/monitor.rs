@@ -258,6 +258,8 @@ impl Project {
         let id = self.create_cue_bus(sources, &opts);
         let t = self.track_mut(id).unwrap();
         t.set_ext(EXT_MUSICIAN, Some(musician));
+        // Soloing in the studio must not take a musician's mix away.
+        t.solo_defeat = true;
         self.write_own(id, own);
         id
     }
@@ -512,6 +514,13 @@ mod tests {
         assert_eq!(p.track(drums).unwrap().name, "MON Drummer");
         assert_eq!(m.output, Some(MonitorOutput::Stereo(2)));
         assert_eq!(p.monitor_candidates(), ids, "monitor mixes are not sources");
+        // Soloing a source in the studio leaves the mix whole.
+        p.tracks[0].solo = true;
+        let mix = p.track_index(drums).unwrap();
+        let routing = p.solo_routing();
+        assert!(p.tracks[mix].solo_defeat && routing.hw_out[mix]);
+        assert!(ids.iter().all(|id| routing.content[p.track_index(*id).unwrap()]), "every source still plays into it");
+        p.tracks[0].solo = false;
 
         assert!(p.set_monitor_level(drums, ids[5], 0.25));
         assert!(p.set_monitor_pan(drums, ids[4], 0.5));

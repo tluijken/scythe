@@ -1,3 +1,4 @@
+use crate::fader::{envelope_gain, envelope_position};
 use crate::rpp::Chunk;
 
 /// Track envelope kinds that the engine applies, by RPP chunk name.
@@ -14,10 +15,30 @@ pub enum EnvelopeKind {
     Pan,
     /// `MUTEENV`: 0 mutes, 1 plays.
     Mute,
+    /// `WIDTHENV2`: stereo width, multiplied with the track width.
+    Width,
+    /// `DUALPANENVL2`: dual pan of the left channel, stored like `Pan` and added to it.
+    DualPanLeft,
+    /// `DUALPANENV2`: dual pan of the right channel, stored like `Pan` and added to it.
+    DualPanRight,
 }
 
 impl EnvelopeKind {
-    pub const ALL: [EnvelopeKind; 5] = [Self::Volume, Self::VolumePreFx, Self::Trim, Self::Pan, Self::Mute];
+    /// Volume, pre-FX volume and trim: the kinds REAPER can fader-scale.
+    pub fn is_volume(self) -> bool {
+        matches!(self, Self::Volume | Self::VolumePreFx | Self::Trim)
+    }
+
+    pub const ALL: [EnvelopeKind; 8] = [
+        Self::Volume,
+        Self::VolumePreFx,
+        Self::Trim,
+        Self::Pan,
+        Self::Mute,
+        Self::Width,
+        Self::DualPanLeft,
+        Self::DualPanRight,
+    ];
 
     pub fn chunk_name(self) -> &'static str {
         match self {
@@ -26,6 +47,9 @@ impl EnvelopeKind {
             Self::Trim => "VOLENV3",
             Self::Pan => "PANENV2",
             Self::Mute => "MUTEENV",
+            Self::Width => "WIDTHENV2",
+            Self::DualPanLeft => "DUALPANENVL2",
+            Self::DualPanRight => "DUALPANENV2",
         }
     }
 
@@ -70,6 +94,9 @@ impl EnvelopeKind {
             Self::Trim => "Trim volume",
             Self::Pan => "Pan",
             Self::Mute => "Mute",
+            Self::Width => "Width",
+            Self::DualPanLeft => "Pan (left)",
+            Self::DualPanRight => "Pan (right)",
         }
     }
 
@@ -77,7 +104,7 @@ impl EnvelopeKind {
     pub fn range(self) -> (f64, f64) {
         match self {
             Self::Volume | Self::VolumePreFx | Self::Trim => (0.0, 2.0),
-            Self::Pan => (-1.0, 1.0),
+            Self::Pan | Self::Width | Self::DualPanLeft | Self::DualPanRight => (-1.0, 1.0),
             Self::Mute => (0.0, 1.0),
         }
     }
@@ -85,7 +112,7 @@ impl EnvelopeKind {
     /// Value of a new envelope that leaves the track as it is.
     pub fn neutral(self) -> f64 {
         match self {
-            Self::Pan => 0.0,
+            Self::Pan | Self::DualPanLeft | Self::DualPanRight => 0.0,
             _ => 1.0,
         }
     }
@@ -209,13 +236,16 @@ pub struct Envelope {
     pub active: bool,
     pub visible: bool,
     pub points: Vec<EnvPoint>,
+    /// A volume envelope in fader scaling (`VOLTYPE 1`): it moves linearly in fader position
+    /// rather than in gain between points. REAPER makes new volume envelopes so.
+    pub fader_scaled: bool,
     /// The original chunk, so its other lines survive a save.
     pub raw: Option<Chunk>,
 }
 
 impl Envelope {
     pub fn new(kind: EnvelopeKind) -> Self {
-        Self { kind, active: true, visible: true, points: Vec::new(), raw: None }
+        Self { kind, active: true, visible: true, points: Vec::new(), fader_scaled: false, raw: None }
     }
 
     /// Envelope value at `t` seconds, or `None` when it has no points.
@@ -236,6 +266,10 @@ impl Envelope {
             Some(curve) => curve.value(x),
             None => p.shape.progress(x),
         };
+        if self.fader_scaled && k > 0.0 && k < 1.0 {
+            let (a, b) = (envelope_position(p.value), envelope_position(next.value));
+            return Some(envelope_gain(a + (b - a) * k));
+        }
         Some(p.value + (next.value - p.value) * k)
     }
 
@@ -288,6 +322,16 @@ mod tests {
         let mut e = Envelope::new(EnvelopeKind::Volume);
         e.points = points.iter().map(|&(t, v, s)| EnvPoint { shape: s, ..EnvPoint::new(t, v) }).collect();
         e
+    }
+
+    // A VOLTYPE 1 envelope from 0 dB to 0.25 halfway, as REAPER 7.73 renders it.
+    #[test]
+    fn fader_scaled_envelopes_move_in_fader_position() {
+        let mut e = env(&[(0.0, 1.0, PointShape::Linear), (1.0, 0.25, PointShape::Linear)]);
+        e.fader_scaled = true;
+        let at = |t: f64| e.value_at(t).unwrap();
+        assert!((at(24163.0 / 48000.0) - 0.519588).abs() < 1e-6 && (at(4123.0 / 48000.0) - 0.89839).abs() < 1e-5);
+        assert_eq!((at(0.0), at(1.0)), (1.0, 0.25));
     }
 
     #[test]

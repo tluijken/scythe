@@ -970,3 +970,62 @@ fn health_reports_the_device() {
     let events = events.lock().unwrap();
     assert!(events.iter().any(|e| matches!(e, Event::Health(h) if h.status == "silent" && h.cpu >= 0.0)));
 }
+
+#[test]
+fn groups_carry_edits_to_followers() {
+    let mut s = session();
+    let lead = add_track(&mut s, "Drums");
+    let kick = add_track(&mut s, "Kick");
+    let snare = add_track(&mut s, "Snare");
+    ok(&mut s, json!({"cmd": "group.name", "group": 1, "name": "Kit"}));
+    ok(
+        &mut s,
+        json!({"cmd": "group.set", "track": lead, "group": 1, "params": ["volume_lead", "mute_lead", "pan_lead"]}),
+    );
+    ok(&mut s, json!({"cmd": "group.set", "track": kick, "group": 1, "params": ["VOLUME_FOLLOW", "MUTE_FOLLOW"]}));
+    let groups = ok(
+        &mut s,
+        json!({"cmd": "group.set", "track": snare, "group": 1, "params": ["volume_follow", "volume_reverse", "pan_follow"]}),
+    );
+    assert_eq!(groups[0]["name"], "Kit");
+    assert_eq!(groups[0]["members"].as_array().map(Vec::len), Some(3));
+    ok(&mut s, json!({"cmd": "track.volume", "track": lead, "volume": 0.5}));
+    let get = |s: &mut Session, id: u64| ok(s, json!({"cmd": "track.get", "track": id}));
+    assert_eq!(get(&mut s, kick)["volume"], 0.5);
+    assert_eq!(get(&mut s, snare)["volume"], 2.0);
+    ok(&mut s, json!({"cmd": "track.mute", "track": lead, "muted": true}));
+    assert_eq!(get(&mut s, kick)["muted"], true);
+    assert_eq!(get(&mut s, snare)["muted"], false);
+    ok(&mut s, json!({"cmd": "track.pan", "track": lead, "pan": 0.25}));
+    assert_eq!(get(&mut s, snare)["pan"], 0.25);
+    assert_eq!(get(&mut s, kick)["pan"], 0.0);
+    assert_eq!(get(&mut s, kick)["groups"][0]["params"], json!(["VOLUME_FOLLOW", "MUTE_FOLLOW"]));
+    ok(&mut s, json!({"cmd": "group.clear", "group": 1}));
+    assert_eq!(ok(&mut s, json!({"cmd": "group.list"})), json!([]));
+    let err = execute_json(&mut s, json!({"cmd": "group.set", "track": lead, "group": 65, "params": ["pan_lead"]}));
+    assert_eq!(err.unwrap_err().kind, ErrorKind::Invalid);
+}
+
+#[test]
+fn polarity_pan_modes_and_solo_through_the_api() {
+    let mut s = session();
+    let t = add_track(&mut s, "Keys");
+    let info = ok(&mut s, json!({"cmd": "track.phase", "track": t}));
+    assert_eq!(info["phase"], true);
+    let info = ok(&mut s, json!({"cmd": "track.pan_mode", "track": t, "mode": "stereo"}));
+    assert_eq!(info["pan_mode"], "stereo");
+    let info = ok(&mut s, json!({"cmd": "track.width", "track": t, "width": 0.3}));
+    assert_eq!(info["width"], 0.3);
+    let info = ok(&mut s, json!({"cmd": "track.dual_pan", "track": t, "left": -0.5, "right": 0.25}));
+    assert_eq!(info["dual_pan"], json!([-0.5, 0.25]));
+    let info = ok(&mut s, json!({"cmd": "track.pan_mode", "track": t, "mode": null}));
+    assert_eq!(info["pan_mode"], Value::Null);
+    let info = ok(&mut s, json!({"cmd": "track.solo", "track": t, "solo": true, "mode": "ignore_routing"}));
+    assert_eq!((info["solo"].clone(), info["solo_mode"].clone()), (json!(true), json!("ignore_routing")));
+    let info = ok(&mut s, json!({"cmd": "track.solo_defeat", "track": t}));
+    assert_eq!(info["solo_defeat"], true);
+    let bad = execute_json(&mut s, json!({"cmd": "track.pan_mode", "track": t, "mode": "surround"}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+    let bad = execute_json(&mut s, json!({"cmd": "track.width", "track": t, "width": 2.0}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+}

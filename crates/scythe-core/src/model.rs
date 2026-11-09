@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::envelope::{Envelope, EnvelopeKind};
 use crate::fade::Fade;
+use crate::fader::PanMode;
+use crate::groups::GroupFlags;
 use crate::rpp::{Chunk, Node};
 use crate::tempo::TempoMap;
 use crate::units::PanLaw;
@@ -559,6 +561,38 @@ impl HwOut {
     }
 }
 
+/// How a soloed track is heard (`I_SOLO`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SoloMode {
+    /// Only the track itself (and its folder path) is heard; tracks it sends to stay silent.
+    IgnoreRouting,
+    /// The track is heard as in the mix: through its sends and the tracks they reach.
+    #[default]
+    InPlace,
+}
+
+impl SoloMode {
+    /// The `MUTESOLO` / `I_SOLO` value of a soloed track.
+    pub fn code(self, safe: bool) -> i64 {
+        let c = match self {
+            Self::IgnoreRouting => 1,
+            Self::InPlace => 2,
+        };
+        if safe { c + 4 } else { c }
+    }
+
+    /// Mode and safe flag of a soloed track's code; `None` when the code means not soloed.
+    pub fn from_code(code: i64) -> Option<(Self, bool)> {
+        match code {
+            1 => Some((Self::IgnoreRouting, false)),
+            5 => Some((Self::IgnoreRouting, true)),
+            6 => Some((Self::InPlace, true)),
+            c if c > 0 => Some((Self::InPlace, false)),
+            _ => None,
+        }
+    }
+}
+
 /// REAPER's track automation modes, in `AUTOMODE` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoMode {
@@ -616,6 +650,23 @@ pub struct Track {
     pub pan: f64,
     pub muted: bool,
     pub solo: bool,
+    /// How the track solos (`MUTESOLO` field 2: 1 ignores routing, 2 solos in place).
+    pub solo_mode: SoloMode,
+    /// Safe solo (`I_SOLO` 5 and 6), kept for REAPER.
+    pub solo_safe: bool,
+    /// Solo defeat (`B_SOLO_DEFEAT`): while anything else is soloed, the track acts soloed
+    /// unless muted. Monitor mixes have it so soloing never takes a musician's mix away.
+    pub solo_defeat: bool,
+    /// Polarity inverted (`IPHASE`), at the fader: pre-fader sends keep the original.
+    pub phase: bool,
+    /// Pan mode (`PANMODE`); `None` uses the project default.
+    pub pan_mode: Option<PanMode>,
+    /// Stereo width (`WIDTH`), -1..1; every pan mode but dual pan applies it.
+    pub width: f64,
+    /// Positions of the left and right channel in dual pan (`VOLPAN` fields 4 and 5).
+    pub dual_pan: [f64; 2],
+    /// Track group memberships (`GROUP_FLAGS`, `GROUP_FLAGS_HIGH`).
+    pub groups: GroupFlags,
     pub armed: bool,
     /// Record input in REAPER's `I_RECINPUT` encoding (`REC` field 2): hardware channel in the
     /// low bits, +1024 for a stereo pair, negative for none.
@@ -723,6 +774,14 @@ impl Track {
             pan: 0.0,
             muted: false,
             solo: false,
+            solo_mode: SoloMode::InPlace,
+            solo_safe: false,
+            solo_defeat: false,
+            phase: false,
+            pan_mode: None,
+            width: 1.0,
+            dual_pan: [-1.0, 1.0],
+            groups: GroupFlags::default(),
             armed: false,
             rec_input: 0,
             monitor: true,
@@ -762,7 +821,8 @@ impl Track {
         match self.envelopes.iter().position(|e| e.kind == kind) {
             Some(i) => &mut self.envelopes[i],
             None => {
-                self.envelopes.push(Envelope::new(kind));
+                // New volume envelopes are fader-scaled, as REAPER makes them (and Scythe saves them).
+                self.envelopes.push(Envelope { fader_scaled: kind.is_volume(), ..Envelope::new(kind) });
                 self.envelopes.last_mut().unwrap()
             }
         }
@@ -787,6 +847,10 @@ pub struct Project {
     pub sample_rate: Option<u32>,
     /// Default pan law for tracks that do not set their own (`PANLAW`, `PANLAWFLAGS`).
     pub pan_law: PanLaw,
+    /// Default pan mode of tracks that do not pick one (`PANMODE`).
+    pub pan_mode: PanMode,
+    /// Names of track groups, by 0-based group (`GROUP_NAME`).
+    pub group_names: BTreeMap<usize, String>,
     /// The pitch shifter of takes that do not pick one (`DEFPITCHMODE`, as `Take::pitch_mode`).
     pub default_pitch_mode: i32,
     pub master: Track,
@@ -807,6 +871,8 @@ impl Default for Project {
             tempo: TempoMap::default(),
             sample_rate: None,
             pan_law: PanLaw::default(),
+            pan_mode: PanMode::default(),
+            group_names: BTreeMap::new(),
             default_pitch_mode: Processing::DEFAULT_MODE,
             master: Track { hw_outs: vec![HwOut::default()], ..Track::new("Master") },
             tracks: Vec::new(),
@@ -936,60 +1002,20 @@ impl Project {
         self.tracks.iter().any(|t| t.solo)
     }
 
-    /// Whether a track is heard, taking mute and exclusive solo into account. Soloing a folder
-    /// solos its children, and soloing a child keeps its parent folders audible.
+    /// Whether a track is heard, taking mute and solo into account (see [`Project::solo_routing`]).
     pub fn is_audible(&self, track: &Track) -> bool {
-        let parents = self.folder_parents();
         let Some(idx) = self.track_index(track.id) else { return !track.muted };
-        let ancestors = || std::iter::successors(parents[idx], |&p| parents[p]);
-        if track.muted || ancestors().any(|p| self.tracks[p].muted) {
-            return false;
-        }
-        if !self.any_solo() || track.solo || ancestors().any(|p| self.tracks[p].solo) {
-            return true;
-        }
-        self.tracks
-            .iter()
-            .enumerate()
-            .any(|(i, t)| t.solo && std::iter::successors(parents[i], |&p| parents[p]).any(|p| p == idx))
+        self.solo_routing().heard(idx)
     }
 
-    /// Per track, whether it is not heard itself but sends (directly or through other sends)
-    /// into a track that is while others are soloed. REAPER keeps such a track playing into its
-    /// sends and silences only its own output, so soloing a bus still hears its sources.
-    pub fn solo_feeds(&self) -> Vec<bool> {
-        let n = self.tracks.len();
-        let mut feeds = vec![false; n];
-        if !self.any_solo() {
-            return feeds;
-        }
-        let parents = self.folder_parents();
-        let audible: Vec<bool> = self.tracks.iter().map(|t| self.is_audible(t)).collect();
-        let muted: Vec<bool> = (0..n)
-            .map(|i| std::iter::once(i).chain(std::iter::successors(parents[i], |&p| parents[p])))
-            .map(|mut chain| chain.any(|j| self.tracks[j].muted))
-            .collect();
-        let index: BTreeMap<TrackId, usize> = self.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
-        loop {
-            let mut changed = false;
-            for i in 0..n {
-                if audible[i] || muted[i] || feeds[i] {
-                    continue;
-                }
-                let reaches = self.tracks[i]
-                    .sends
-                    .iter()
-                    .filter(|s| !s.muted)
-                    .filter_map(|s| index.get(&s.dest))
-                    .any(|&d| audible[d] || feeds[d]);
-                if reaches {
-                    feeds[i] = true;
-                    changed = true;
-                }
-            }
-            if !changed {
-                return feeds;
-            }
+    /// The pan controls of a track under its pan law and mode.
+    pub fn panner_for(&self, track: &Track) -> crate::fader::Panner {
+        crate::fader::Panner {
+            mode: track.pan_mode.unwrap_or(self.pan_mode),
+            pan: track.pan,
+            width: track.width,
+            dual: track.dual_pan,
+            law: self.pan_law_for(track),
         }
     }
 

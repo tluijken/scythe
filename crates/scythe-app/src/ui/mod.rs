@@ -1,5 +1,6 @@
 mod arrange;
 pub mod gfx_view;
+pub mod groups;
 mod inspector;
 pub mod midi_editor;
 mod mixer;
@@ -83,6 +84,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     toast(app, ui, full);
     script_console(app, ui);
     monitor::wizards(app, ui);
+    groups::show(app, ui);
     palette::show(app, ui);
 }
 

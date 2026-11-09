@@ -6,6 +6,7 @@
 
 pub mod events;
 pub mod fx;
+pub mod groups;
 pub mod items;
 pub mod markers;
 pub mod mix;
@@ -36,6 +37,7 @@ pub enum Command {
     Track(tracks::TrackCommand),
     Send(sends::SendCommand),
     Fx(fx::FxCommand),
+    Group(groups::GroupCommand),
     Item(items::ItemCommand),
     Marker(markers::MarkerCommand),
     Mix(mix::MixCommand),
@@ -56,6 +58,7 @@ impl<'de> Deserialize<'de> for Command {
             "track" => serde_json::from_value(value).map(Command::Track),
             "send" => serde_json::from_value(value).map(Command::Send),
             "fx" => serde_json::from_value(value).map(Command::Fx),
+            "group" => serde_json::from_value(value).map(Command::Group),
             "item" => serde_json::from_value(value).map(Command::Item),
             "marker" => serde_json::from_value(value).map(Command::Marker),
             "mix" => serde_json::from_value(value).map(Command::Mix),
@@ -75,6 +78,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Track(c) => tracks::execute(session, c),
         Command::Send(c) => sends::execute(session, c),
         Command::Fx(c) => fx::execute(session, c),
+        Command::Group(c) => groups::execute(session, c),
         Command::Item(c) => items::execute(session, c),
         Command::Marker(c) => markers::execute(session, c),
         Command::Mix(c) => mix::execute(session, c),

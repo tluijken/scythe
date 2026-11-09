@@ -168,6 +168,27 @@ Working:
 - **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
   meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
   REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
+- **Pan modes, width and polarity** (`PANMODE`, `WIDTH`, `VOLPAN` dual pan fields, project
+  `PANMODE`): stereo balance / mono pan, REAPER 3.x balance, stereo pan with width, dual pan,
+  with width and dual pan envelopes (`WIDTHENV2`, `DUALPANENVL2`, `DUALPANENV2`). Right-click a
+  mixer strip's pan for the mode; stereo pan adds a width bar, dual pan two knobs. Polarity
+  (`IPHASE`, the strip's Ø) flips the track at its fader, as REAPER does: post-fader sends
+  follow it, pre-fader and pre-FX sends do not.
+- **Solo modes**: solo in place (REAPER's default: the soloed track is also heard through its
+  sends and the busses they reach), solo ignoring routing, and solo defeat (`MUTESOLO` fields 2
+  and 3), on the solo button's right-click. Soloing a track keeps the tracks feeding it playing
+  into it, passes its signal through its folder parents without their own material, and leaves
+  everything else silent (`scythe_core::solo`). Monitor mixes get solo defeat, so soloing in the
+  studio never takes a musician's in-ear mix away.
+- **Track groups** (`GROUP_FLAGS`, `GROUP_FLAGS_HIGH`, `GROUP_NAME`): 64 groups with lead and
+  follow per parameter (volume, pan, width, mute, solo, record arm, polarity, automation mode,
+  media edits), reverse flags and "no lead when following". A lead's edits carry over as REAPER
+  carries them: volume as a dB offset (capped at +12 dB), pan and width as an offset, switches
+  as the same state, through leads of other groups. VCA leads scale their followers instead
+  (fader, volume, trim and mute envelopes multiply; pan and pan envelopes offset; width
+  multiplies), nested VCAs included, and pre-FX followers take the level at their input. The
+  grouping matrix ("Track: Show track grouping matrix", or a group badge on a track header or
+  mixer strip) names groups and ticks memberships; the control API has `group.*`.
 - **Send modes and hardware outputs**: sends tap post-fader, pre-FX or pre-fader (post-FX),
   with polarity and mono downmix (`AUXRECV` fields 2, 6 and 7). Track and master audio
   hardware outputs (`HWOUT`, `MASTERHWOUT`: device output with the mono flag, send mode,
@@ -190,7 +211,9 @@ Working:
   project (`scythe_core::monitor`), served to remote clients as the control API's `mix.*`
   commands (hardware outputs as `send.hw_*`, per-mix meters in the `meters` event).
 - **Fades** with REAPER's shapes and curvature, drawn on the items.
-- **Track envelopes** (volume, pre-FX volume, trim, pan, mute) with all point shapes, shown
+- **Track envelopes** (volume, pre-FX volume, trim, pan, mute, width, dual pan) with all point
+  shapes, volume envelopes in REAPER's fader scaling (`VOLTYPE 1`: they move linearly in fader
+  position, `gain = 10^0.6 / 2 * x * (1 + x)` with `x` the cube of the position), shown
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
   envelopes stored in projects play back: bypass for every effect, wet/dry for ReaVerb and
   ReaDelay, and ReaDelay's per-tap enable, volume and feedback.
@@ -292,13 +315,17 @@ Working:
   and a `setlist` event; see `docs/control-api.md`).
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
   file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
-  output in a console window. 246 `reaper.*` functions:
+  output in a console window. 268 `reaper.*` functions:
   - tracks: `CountTracks`, `GetTrack`, `GetMasterTrack`, `InsertTrackAtIndex`, `DeleteTrack`,
     `GetTrackName`, `GetSetMediaTrackInfo_String` (`P_NAME`, `GUID`, `P_EXT:`),
-    `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo, arm, record input and monitoring,
-    main send and its channel offset, folder depth, automation mode, channels, track number,
-    selection, custom color, pan law, fixed lanes, MIDI hardware output, `P_PARTRACK`),
-    `Get/SetTrackColor`, `GetParentTrack`, `GetTrackDepth`, `GetTrackUIVolPan`, selection
+    `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo and its modes, solo defeat, polarity,
+    pan mode, width, dual pan, arm, record input and monitoring, main send and its channel
+    offset, folder depth, automation mode, channels, track number, selection, custom color, pan
+    law, fixed lanes, MIDI hardware output, `P_PARTRACK`), `Get/SetTrackColor`, `GetParentTrack`,
+    `GetTrackDepth`, `GetTrackUIVolPan`, track groups (`GetSetTrackGroupMembership`, `High`,
+    `Ex`; `TRACK_GROUP_NAME:n` in `GetSetProjectInfo_String`), control-surface edits that carry
+    over to group followers (`CSurf_OnVolume/Pan/Width/Mute/Solo/RecArmChange(Ex)`,
+    `SetTrackUIVolume/Pan/Width/Mute/Solo/RecArm/Polarity`), selection
     (`CountSelectedTracks(2)`, `GetSelectedTrack(2)`, `IsTrackSelected`, `SetTrackSelected`,
     `SetOnlyTrackSelected`);
   - sends and receives: `CreateTrackSend`, `RemoveTrackSend`, `GetTrackNumSends`,
@@ -607,7 +634,13 @@ compare with scythe's output sample by sample:
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
 | FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
-| Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | 22/26 within 1e-3; the 4 others differ by Scythe's reading of volume envelopes written with `ScaleToEnvelopeMode` (also post-fader, so not the taps) |
+| Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | exact (26/26 within 1e-5) |
+| Pan modes: balance, 3.x balance, stereo pan and dual pan at pans -1 to 1, widths -1 to 1 and pan laws 0 dB, -3 dB, -6 dB, -12 dB, +3 dB and +6 dB (a left-only then right-only source gives the gain matrix); the project default mode (3.x balance, stereo pan, dual pan); width and dual pan envelopes (width multiplies, dual pan adds) and a pan envelope in stereo pan | exact (144 cases) |
+| Polarity: a track's own output, post-fader, pre-fader and pre-FX sends from an inverted track, an inverted bus, an inverted folder parent and an inverted track in stereo pan | exact (7 cases) |
+| Solo: in place and ignoring routing, of a source sending to a bus, of the bus, of both, of the start and middle of a send chain, of a folder child (its parent sending to a bus) and of a folder parent (its child sending to a bus), pre-fader sends; solo defeat on a plain track, a bus, a source and a muted track | exact (24 cases) |
+| VCA groups: lead fader on a follower, a lead with its own item, lead volume, trim and mute envelopes (alone and with the follower's), nested VCAs, the lead's mute button, solo and polarity (no effect), pre-FX following with post-fader, pre-fader and pre-FX sends; lead pan and width on balance, stereo pan and dual pan followers, lead pan envelopes; a plain volume group (no effect on the render) | exact (15/24 cases); the 9 with a lead pan differ in the first 512 frames only (REAPER ramps from the follower's own pan into the lead's there) |
+| Fader-scaled volume envelopes (`VOLTYPE 1`): a ramp from 0 dB to -12 dB, `ScaleToEnvelopeMode` and `DB2SLIDER` from -150 to +24 dB | exact; the scaling formula within 1e-9 of `ScaleToEnvelopeMode` |
+| Track groups: membership through `GetSetTrackGroupMembership(High/Ex)` saved as `GROUP_FLAGS` (all 25 parameters), group names; edits through `CSurf_On*ChangeEx` and `SetTrackUI*` on leads read back from followers (volume and reverse, pan and reverse, width, mute, solo, arm, chains through leads of other groups, two leads in one group, VCA leads not moving faders); one Lua script run in both | same values and lines; the script passes in both |
 | Hardware outputs and monitor mixes written by Scythe (stereo and mono outputs, send modes, levels, pans, mutes, `P_EXT` values with spaces, a SWS-style pre-FX cue bus, a master output to 11/12) read back in REAPER through `GetTrackSendInfo_Value` and `P_EXT` | identical (33 lines) |
 | Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER (41818 and 41819 set `preroll` &1 and &2; a fresh reaper.ini has `preroll=0`, `prerollmeas=2`, `metronome_defout=-1`), saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
@@ -617,6 +650,14 @@ compares the two files.
 
 ### Not there yet
 
+- Track groups: REAPER remembers where a follower would be past a limit (a pan pushed beyond
+  hard right comes back from there; a fader taken to -inf and back returns to where it was);
+  Scythe clamps each edit, so after hitting a limit followers keep their clamped offset.
+  Selected-track ganging (moving one selected track's fader moves the other selected tracks),
+  the global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
+  project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
+  into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
+  as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
 - Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
   not advance playback without an audio device and the test setup has no SWS, so neither when
   SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other

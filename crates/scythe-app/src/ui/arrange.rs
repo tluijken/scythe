@@ -1,4 +1,5 @@
 use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
+use scythe_core::groups::GroupedControl;
 use scythe_core::units::format_db;
 use scythe_core::{EnvelopeKind, ItemId, TimeRange, TrackId};
 use scythe_engine::MediaState;
@@ -388,6 +389,7 @@ fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: R
 fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip: &egui::Painter) {
     let levels = app.project.folder_levels();
     let any_solo = app.project.any_solo();
+    let routing = app.project.solo_routing();
     let grid = bar_lines(&app.project.tempo, axis, rows.right());
     let subs = if app.view.snap { sub_lines(app, axis, rows.right()) } else { Vec::new() };
     let n = app.project.tracks.len();
@@ -452,7 +454,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         let track = app.project.tracks[i].clone();
         let selected = app.sel.track == Some(track.id);
-        let audible = app.project.is_audible(&track);
+        let audible = routing.heard(i);
         let color = track_color(track.color);
 
         // Header.
@@ -477,10 +479,17 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         let db = format_db(track.volume);
         let db_w = widgets::text_width(ui, &db, theme::mono(11.0));
-        let name_max = HEADER_W - 44.0 - indent - db_w - 12.0;
+        let has_groups = track.groups.groups() != 0;
+        let name_max = HEADER_W - 44.0 - indent - db_w - 12.0 - if has_groups { 30.0 } else { 0.0 };
         let name = widgets::truncate(ui, &track.name, &theme::semibold(13.0), name_max);
         clip.text(pos2(dot.x + 13.0, dot.y), Align2::LEFT_CENTER, name, theme::semibold(13.0), TEXT);
         clip.text(pos2(head.right() - 12.0, dot.y), Align2::RIGHT_CENTER, db, theme::mono(11.0), TEXT_DIM);
+        if has_groups {
+            let badge = Rect::from_min_size(pos2(head.right() - 12.0 - db_w - 30.0, dot.y - 8.0), vec2(26.0, 16.0));
+            if rows.contains_rect(badge) {
+                crate::ui::groups::badge(app, ui, badge, &track);
+            }
+        }
 
         let by = head.bottom() - 22.0;
         let btn = |k: f32| Rect::from_min_size(pos2(head.left() + 12.0 + k * 32.0, by - 2.0), vec2(28.0, 24.0));
@@ -488,12 +497,10 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         if full && rows.contains_rect(btn(0.0)) {
             let (mbg, mfg) = if track.muted { (theme::YELLOW, BG) } else { (RAISED_HI, TEXT_MID) };
             if text_pill(ui, btn(0.0), "M", theme::semibold(11.0), mbg, mfg).on_hover_text("Mute").clicked() {
-                app.edit("Toggle mute", |p| p.track_mut(track.id).unwrap().muted ^= true);
+                crate::ui::groups::toggle(app, track.id, GroupedControl::Mute);
             }
-            let (sbg, sfg) = if track.solo { (theme::GREEN, BG) } else { (RAISED_HI, TEXT_MID) };
-            if text_pill(ui, btn(1.0), "S", theme::semibold(11.0), sbg, sfg).on_hover_text("Solo").clicked() {
-                app.edit("Toggle solo", |p| p.track_mut(track.id).unwrap().solo ^= true);
-            }
+            crate::ui::groups::solo_button(app, ui, btn(1.0), &track);
+
             let arm_bg = if track.armed { theme::ARM_BG } else { RAISED_HI };
             let arm = ui.allocate_rect(btn(2.0), Sense::click()).on_hover_text("Arm for recording");
             ui.painter().rect_filled(
@@ -503,7 +510,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             );
             ui.painter().circle_filled(btn(2.0).center(), 4.0, if track.armed { theme::PINK } else { theme::ARM_OFF });
             if arm.clicked() {
-                app.edit("Toggle record arm", |p| p.track_mut(track.id).unwrap().armed ^= true);
+                crate::ui::groups::toggle(app, track.id, GroupedControl::RecArm);
             }
         }
         let fx_label = format!("{} fx", track.fx.len());
@@ -1038,7 +1045,8 @@ fn envelope_color(kind: EnvelopeKind) -> Color32 {
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx => theme::GREEN,
         EnvelopeKind::Trim => theme::YELLOW,
-        EnvelopeKind::Pan => theme::ORANGE,
+        EnvelopeKind::Pan | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => theme::ORANGE,
+        EnvelopeKind::Width => theme::YELLOW,
         EnvelopeKind::Mute => theme::PINK,
     }
 }
@@ -1049,7 +1057,9 @@ fn envelope_y_fraction(kind: EnvelopeKind, value: f64) -> f32 {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => {
             crate::ui::mixer::fader_position(value)
         }
-        EnvelopeKind::Pan => ((value + 1.0) * 0.5) as f32,
+        EnvelopeKind::Pan | EnvelopeKind::Width | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => {
+            ((value + 1.0) * 0.5) as f32
+        }
         EnvelopeKind::Mute => value as f32,
     }
 }
@@ -1058,7 +1068,9 @@ fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
     let f = fraction.clamp(0.0, 1.0);
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => crate::ui::mixer::fader_gain(f),
-        EnvelopeKind::Pan => (f as f64 * 2.0 - 1.0).clamp(-1.0, 1.0),
+        EnvelopeKind::Pan | EnvelopeKind::Width | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => {
+            (f as f64 * 2.0 - 1.0).clamp(-1.0, 1.0)
+        }
         EnvelopeKind::Mute => (f >= 0.5) as u8 as f64,
     }
 }
@@ -1066,7 +1078,10 @@ fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
 fn format_envelope_value(kind: EnvelopeKind, value: f64) -> String {
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => format!("{} dB", format_db(value)),
-        EnvelopeKind::Pan => scythe_core::units::format_pan(-value),
+        EnvelopeKind::Pan | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => {
+            scythe_core::units::format_pan(-value)
+        }
+        EnvelopeKind::Width => format!("{:.0}%", value * 100.0),
         EnvelopeKind::Mute => if value >= 0.5 { "on" } else { "muted" }.to_owned(),
     }
 }

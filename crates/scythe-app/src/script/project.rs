@@ -409,6 +409,19 @@ fn project_info(s: &mut State, key: &str, set: Option<f64>) -> f64 {
 
 /// `GetSetProjectInfo_String` for the settings Scythe has; `None` for other keys.
 fn project_text(s: &mut State, key: &str, set: Option<String>) -> Option<String> {
+    if let Some(n) = key.strip_prefix("TRACK_GROUP_NAME:") {
+        let g = n.trim().parse::<usize>().ok().filter(|g| (1..=scythe_core::groups::GROUP_COUNT).contains(g))? - 1;
+        if let Some(v) = set {
+            if v.is_empty() {
+                s.project.group_names.remove(&g);
+            } else {
+                s.project.group_names.insert(g, v.clone());
+            }
+            s.changed = true;
+            return Some(v);
+        }
+        return Some(s.project.group_name(g).unwrap_or_default().to_owned());
+    }
     let line = match key {
         "PROJECT_TITLE" => "TITLE",
         "PROJECT_AUTHOR" => "AUTHOR",

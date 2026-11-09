@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use scythe_core::envelope::PointShape;
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
 use scythe_core::{Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
@@ -13,6 +12,7 @@ use rayon::prelude::*;
 use crate::loudness::Loudness;
 use crate::meter::Meter;
 use crate::midi_io::{LiveMidi, OutMessage, midi_input_channel};
+use crate::mix::{Automation, FaderStage, Matrix, PreFxGain};
 use crate::synth::{ControlEvent, NoteList, SynthNote};
 
 /// One item, pre-resolved to frames at the engine rate.
@@ -51,7 +51,7 @@ pub struct GainAutomation {
 
 /// A mute envelope's gain at `t`: REAPER does not switch at a point but crossfades over 4 ms
 /// with a raised cosine.
-fn mute_gain(env: &Envelope, t: f64) -> f64 {
+pub(crate) fn mute_gain(env: &Envelope, t: f64) -> f64 {
     const RAMP: f64 = 0.004;
     let plays = |v: f64| v >= 0.5;
     let i = env.points.partition_point(|p| p.time <= t);
@@ -228,15 +228,22 @@ impl MetronomeRouting {
 #[derive(Debug, Clone)]
 pub struct RenderTrack {
     pub id: TrackId,
-    pub gain_l: f32,
-    pub gain_r: f32,
-    /// The fader alone, for channels 3 and up: REAPER pans only the first pair.
+    /// The fader stage's gains on the first pair, without envelopes (see `crate::mix`).
+    pub matrix: Matrix,
+    /// The fader alone, polarity included, for channels 3 and up: REAPER pans only the first
+    /// pair.
     pub volume: f32,
-    /// Whether the track plays at all: it is heard, or it feeds a track heard while others are
-    /// soloed.
+    /// Whether the track plays at all: it is heard, or passes on or feeds what is heard while
+    /// others are soloed (see `scythe_core::solo`).
     pub audible: bool,
-    /// Whether its own output (to the parent or master, and its hardware outputs) is heard.
+    /// Whether its own material (items, live input, click) plays.
+    pub content: bool,
+    /// Whether its output to the parent or master is heard.
     pub main_out: bool,
+    /// Whether its hardware outputs play.
+    pub hw_out: bool,
+    /// Levels of VCA leads it follows pre-FX.
+    pub pre_fx_gain: Option<Arc<PreFxGain>>,
     pub items: Vec<RenderItem>,
     pub meter: Arc<Meter>,
     pub sends: Vec<RenderSend>,
@@ -515,95 +522,6 @@ impl<'a> LiveInput<'a> {
     }
 }
 
-/// Active track envelopes and what they modulate. Gains are evaluated every
-/// `Automation::STEP` frames and ramped in between.
-#[derive(Debug)]
-pub struct Automation {
-    pub volume: f64,
-    pub pan: f64,
-    pub pan_law: PanLaw,
-    /// Envelopes whose values multiply the volume (volume, pre-FX volume, trim).
-    pub gains: Vec<Envelope>,
-    pub pan_env: Option<Envelope>,
-    pub mute: Option<Envelope>,
-}
-
-impl Automation {
-    const STEP: i64 = 32;
-    /// REAPER evaluates pan envelopes once per 512-frame processing block and ramps the channel
-    /// gains linearly in between; a block cut short by the end of a render ramps to its end.
-    const PAN_GRID: i64 = 512;
-
-    /// The volume part alone (fader, volume envelopes, mute), for channels 3 and up.
-    fn volume_at(&self, t: f64) -> f32 {
-        if self.mute.as_ref().and_then(|e| e.value_at(t)).is_some_and(|v| v < 0.5) {
-            return 0.0;
-        }
-        self.gains.iter().fold(self.volume, |v, e| v * e.value_at(t).unwrap_or(1.0)) as f32
-    }
-
-    fn gains_at(&self, frame: i64, block_end: i64, sample_rate: f64) -> (f32, f32) {
-        let t = frame as f64 / sample_rate;
-        let mut vol = self.volume;
-        for e in &self.gains {
-            vol *= e.value_at(t).unwrap_or(1.0);
-        }
-        if self.mute.as_ref().and_then(|e| e.value_at(t)).is_some_and(|v| v < 0.5) {
-            vol = 0.0;
-        }
-        let pan_gains = |t: f64| {
-            let pan = self.pan - self.pan_env.as_ref().and_then(|e| e.value_at(t)).unwrap_or(0.0);
-            self.pan_law.gains(pan.clamp(-1.0, 1.0))
-        };
-        let (l, r) = if let Some(env) = &self.pan_env {
-            let block = (frame - frame.rem_euclid(Self::PAN_GRID)) as f64 / sample_rate;
-            let mut lo = block;
-            let mut hi =
-                ((frame - frame.rem_euclid(Self::PAN_GRID) + Self::PAN_GRID).min(block_end)) as f64 / sample_rate;
-            if let Some((v0, v1)) = env.bezier_step(t) {
-                lo = lo.max(v0);
-                hi = hi.min(v1);
-            }
-            if hi <= lo {
-                pan_gains(t)
-            } else {
-                let k = ((t - lo) / (hi - lo)).clamp(0.0, 1.0);
-                let (a, b) = (pan_gains(lo), pan_gains(hi));
-                (a.0 + (b.0 - a.0) * k, a.1 + (b.1 - a.1) * k)
-            }
-        } else {
-            pan_gains(t)
-        };
-        ((vol * l) as f32, (vol * r) as f32)
-    }
-
-    /// Whether `(t0, t1]` needs per-sample evaluation: an envelope has a point there, where
-    /// ramping would smear a step, or is inside a bezier segment, which can be nearly vertical.
-    fn exact_between(&self, t0: f64, t1: f64) -> bool {
-        self.gains.iter().chain(&self.pan_env).chain(&self.mute).any(|e| {
-            let i = e.points.partition_point(|p| p.time <= t0);
-            let in_bezier = i > 0 && i < e.points.len() && matches!(e.points[i - 1].shape, PointShape::Bezier(_));
-            in_bezier || e.points.get(i).is_some_and(|p| p.time <= t1)
-        })
-    }
-
-    fn from_track(t: &scythe_core::Track, pan_law: PanLaw) -> Option<Self> {
-        let active = |kind| {
-            t.envelope(kind).filter(|e| e.active && !e.points.is_empty()).map(|e| Envelope { raw: None, ..e.clone() })
-        };
-        let gains: Vec<Envelope> = [EnvelopeKind::Volume, EnvelopeKind::VolumePreFx, EnvelopeKind::Trim]
-            .into_iter()
-            .filter_map(active)
-            .collect();
-        let pan_env = active(EnvelopeKind::Pan);
-        let mute = active(EnvelopeKind::Mute);
-        if gains.is_empty() && pan_env.is_none() && mute.is_none() {
-            return None;
-        }
-        Some(Self { volume: t.volume, pan: t.pan, pan_law, gains, pan_env, mute })
-    }
-}
-
 /// Immutable snapshot of everything the audio thread needs. Rebuilt on the UI side whenever the
 /// project changes and swapped in atomically.
 #[derive(Debug, Clone)]
@@ -747,13 +665,13 @@ impl RenderGraph {
         let index: HashMap<TrackId, usize> = project.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let timeline = Arc::new(project.tempo.timeline());
         let parents = project.folder_parents();
-        let solo_feeds = project.solo_feeds();
+        let routing = project.solo_routing();
         let mut tracks = project
             .tracks
             .iter()
             .enumerate()
             .map(|(ti, t)| {
-                let (pl, pr) = project.pan_law_for(t).gains(t.pan);
+                let fader = FaderStage::new(project, ti);
                 let items = t
                     .items
                     .iter()
@@ -843,7 +761,9 @@ impl RenderGraph {
                 let (sends, send_automation): (Vec<_>, Vec<_>) = t
                     .sends
                     .iter()
-                    .filter(|s| !s.muted)
+                    .zip(&routing.sends[ti])
+                    .filter(|(s, on)| !s.muted && **on)
+                    .map(|(s, _)| s)
                     .filter_map(|s| {
                         let automation = GainAutomation::new(s.volume, s.pan, project.pan_law, &s.envelopes);
                         let send = RenderSend::new(
@@ -867,14 +787,15 @@ impl RenderGraph {
                     .envelope(EnvelopeKind::VolumePreFx)
                     .filter(|e| e.active && !e.points.is_empty())
                     .map(|e| Envelope { raw: None, ..e.clone() });
-                let main_out = project.is_audible(t);
                 RenderTrack {
                     id: t.id,
-                    gain_l: (t.volume * pl) as f32,
-                    gain_r: (t.volume * pr) as f32,
-                    volume: t.volume as f32,
-                    audible: main_out || solo_feeds[ti],
-                    main_out,
+                    matrix: fader.matrix,
+                    volume: fader.volume as f32,
+                    audible: routing.processes(ti),
+                    content: routing.content[ti],
+                    main_out: routing.main_out[ti],
+                    hw_out: routing.hw_out[ti],
+                    pre_fx_gain: fader.pre_fx.map(Arc::new),
                     items,
                     meter: meters.track(t.id),
                     taps: Taps::new(channels, sends.iter().chain(&hw_outs), pre_fx_env),
@@ -886,7 +807,7 @@ impl RenderGraph {
                     send_automation,
                     parent: parents[ti],
                     main_send: t.main_send,
-                    automation: Automation::from_track(t, project.pan_law_for(t)).map(Arc::new),
+                    automation: fader.automation.map(Arc::new),
                     fx: chain,
                     fx_automation,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
@@ -1240,7 +1161,7 @@ impl RenderGraph {
         if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
             self.send_midi(track, out, clock, start, n as i64, input);
         }
-        if let Some((cl, cr)) = track.monitor
+        if let Some((cl, cr)) = track.monitor.filter(|_| track.content)
             && let Some(left) = input.channels.get(cl).copied().flatten()
         {
             let right = cr.and_then(|c| input.channels.get(c).copied().flatten()).unwrap_or(left);
@@ -1251,7 +1172,7 @@ impl RenderGraph {
         }
         // Plugin latency downstream is compensated by reading this track's material early.
         let read = start + track.read_ahead;
-        let items: &[RenderItem] = if input.play_items { &track.items } else { &[] };
+        let items: &[RenderItem] = if input.play_items && track.content { &track.items } else { &[] };
         let mut aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
         for item in items {
             match &item.audio {
@@ -1274,13 +1195,23 @@ impl RenderGraph {
                 }
             }
         }
-        if track.click > 0.0 {
+        if track.click > 0.0 && track.content {
             self.each_click(input.clicks, read, n, |o, s| {
                 tl[o] += s * track.click;
                 tr[o] += s * track.click;
             });
         }
         let sr_f = self.sample_rate as f64;
+        if let Some(g) = &track.pre_fx_gain {
+            for i in 0..n {
+                let gain = g.at((read + i as i64) as f64 / sr_f);
+                tl[i] *= gain;
+                tr[i] *= gain;
+                for b in aux.iter_mut().flat_map(|a| a.iter_mut()) {
+                    b[i] *= gain;
+                }
+            }
+        }
         // A muted track's sends fall silent whatever they tap.
         if track.audible {
             track.taps.fill(track.taps.pre_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
@@ -1304,7 +1235,7 @@ impl RenderGraph {
                     playing: input.play_items,
                     aux: None,
                     // While stopped the position stands still; feeding notes would retrigger them.
-                    notes: if input.play_items { track.notes.as_deref() } else { None },
+                    notes: if input.play_items && track.content { track.notes.as_deref() } else { None },
                     live: if track.midi_input.is_some() { input.midi } else { &[] },
                     live_channel: track.midi_input.flatten(),
                     bpm: self.timeline.bpm_at(position as f64 / self.sample_rate as f64),
@@ -1437,10 +1368,16 @@ impl RenderGraph {
                 tl.fill(0.0);
                 tr.fill(0.0);
             }
+            (None, true) if crate::mix::is_diagonal(&track.matrix) => {
+                let [gl, _, _, gr] = track.matrix;
+                for (sl, sr) in tl.iter_mut().zip(tr.iter_mut()) {
+                    *sl *= gl;
+                    *sr *= gr;
+                }
+            }
             (None, true) => {
                 for (sl, sr) in tl.iter_mut().zip(tr.iter_mut()) {
-                    *sl *= track.gain_l;
-                    *sr *= track.gain_r;
+                    crate::mix::apply(&track.matrix, sl, sr);
                 }
             }
             (Some(auto), true) => {
@@ -1459,17 +1396,15 @@ impl RenderGraph {
                     if auto.exact_between(t0, t0 + len as f64 / sr_f) {
                         for i in 0..len {
                             let g = auto.gains_at(frame + i as i64, end, sr_f);
-                            tl[at + i] *= g.0;
-                            tr[at + i] *= g.1;
+                            crate::mix::apply(&g, &mut tl[at + i], &mut tr[at + i]);
                         }
                         g0 = g1;
                         at += len;
                         continue;
                     }
                     for i in 0..len {
-                        let k = i as f32 / len as f32;
-                        tl[at + i] *= g0.0 + (g1.0 - g0.0) * k;
-                        tr[at + i] *= g0.1 + (g1.1 - g0.1) * k;
+                        let g = crate::mix::lerp(&g0, &g1, i as f32 / len as f32);
+                        crate::mix::apply(&g, &mut tl[at + i], &mut tr[at + i]);
                     }
                     g0 = g1;
                     at += len;
@@ -1621,7 +1556,7 @@ impl RenderGraph {
         let sends = track.sends.iter().enumerate().map(|(si, s)| (s, Dest::Track(s.dest), si, &track.send_delays));
         // Hardware outputs follow the track's own output: off while it is only heard through a
         // send into a soloed track.
-        let hw = track.hw_outs.iter().enumerate().filter(|_| track.main_out);
+        let hw = track.hw_outs.iter().enumerate().filter(|_| track.hw_out);
         for (send, dest, si, delays) in sends.chain(hw.map(|(i, o)| (o, Dest::Device, i, &track.hw_delays))) {
             let auto = match dest {
                 Dest::Track(_) => track.send_automation.get(si).and_then(Option::as_ref),

@@ -60,12 +60,58 @@ pub enum TrackCommand {
         #[serde(default)]
         muted: Option<bool>,
     },
-    /// Sets solo, or toggles it when `solo` is left out.
+    /// Sets solo, or toggles it when `solo` is left out. Followers in the track's solo groups
+    /// follow.
     #[serde(rename = "track.solo")]
     Solo {
         track: TrackRef,
         #[serde(default)]
         solo: Option<bool>,
+        /// "in_place" (default: the track is heard through its sends and the tracks they reach)
+        /// or "ignore_routing" (only the track itself); kept when left out.
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    /// Solo defeat: while other tracks are soloed the track stays heard (unless muted), so
+    /// soloing never silences a monitor mix. Toggles when `on` is left out.
+    #[serde(rename = "track.solo_defeat")]
+    SoloDefeat {
+        track: TrackRef,
+        #[serde(default)]
+        on: Option<bool>,
+    },
+    /// Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles
+    /// when `phase` is left out.
+    #[serde(rename = "track.phase")]
+    Phase {
+        track: TrackRef,
+        #[serde(default)]
+        phase: Option<bool>,
+    },
+    /// The track's pan mode.
+    #[serde(rename = "track.pan_mode")]
+    PanMode {
+        track: TrackRef,
+        /// "balance" (stereo balance / mono pan), "classic" (REAPER 3.x balance), "stereo"
+        /// (stereo pan with width) or "dual" (each channel panned on its own); `null` follows
+        /// the project default.
+        mode: Option<String>,
+    },
+    /// Stereo width (every pan mode but dual pan applies it). Width groups follow.
+    #[serde(rename = "track.width")]
+    Width {
+        track: TrackRef,
+        /// From -1 (swapped) through 0 (mono) to 1 (unchanged).
+        width: f64,
+    },
+    /// Positions of the left and right channel in dual pan.
+    #[serde(rename = "track.dual_pan")]
+    DualPan {
+        track: TrackRef,
+        /// -1 (left) to 1 (right).
+        left: f64,
+        /// -1 (left) to 1 (right).
+        right: f64,
     },
     /// Arms the track for recording, or toggles it when `armed` is left out.
     #[serde(rename = "track.arm")]
@@ -143,6 +189,22 @@ fn set(
     Ok(info(session, target))
 }
 
+/// An edit of a track (not the master) that may carry over to its group followers.
+fn grouped(
+    session: &mut Session,
+    track: &TrackRef,
+    label: &str,
+    f: impl FnOnce(&mut scythe_core::Project, usize),
+) -> Result<Value, ApiError> {
+    let id = track.track(&session.project)?;
+    session.edit(label, |p| {
+        if let Some(i) = p.track_index(id) {
+            f(p, i);
+        }
+    });
+    Ok(info(session, Target::Track(id)))
+}
+
 pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, ApiError> {
     match command {
         TrackCommand::List => {
@@ -197,32 +259,93 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
         TrackCommand::Volume { track, volume, db } => {
             let gain = level(volume, db)?;
             let target = track.resolve(&session.project)?;
-            session.edit_merging("Track volume", &format!("volume:{}", target.key()), |p| {
-                if let Some(t) = target.get_mut(p) {
-                    t.volume = gain;
+            session.edit_merging("Track volume", &format!("volume:{}", target.key()), |p| match target {
+                Target::Track(id) => {
+                    if let Some(i) = p.track_index(id) {
+                        p.set_volume_grouped(i, gain);
+                    }
                 }
+                Target::Master => p.master.volume = gain,
             });
             Ok(info(session, target))
         }
         TrackCommand::Pan { track, pan: value } => {
             let value = pan(value)?;
             let target = track.resolve(&session.project)?;
-            session.edit_merging("Track pan", &format!("pan:{}", target.key()), |p| {
-                if let Some(t) = target.get_mut(p) {
-                    t.pan = value;
+            session.edit_merging("Track pan", &format!("pan:{}", target.key()), |p| match target {
+                Target::Track(id) => {
+                    if let Some(i) = p.track_index(id) {
+                        p.set_pan_grouped(i, value);
+                    }
+                }
+                Target::Master => p.master.pan = value,
+            });
+            Ok(info(session, target))
+        }
+        TrackCommand::Mute { track, muted } => match track.resolve(&session.project)? {
+            Target::Master => set(session, &track, "Toggle mute", |t| t.muted = flag(muted, t.muted)),
+            Target::Track(_) => grouped(session, &track, "Toggle mute", |p, i| {
+                let on = flag(muted, p.tracks[i].muted);
+                p.set_mute_grouped(i, on);
+            }),
+        },
+        TrackCommand::Solo { track, solo, mode } => {
+            let mode = match mode.as_deref() {
+                None => None,
+                Some("in_place") => Some(scythe_core::SoloMode::InPlace),
+                Some("ignore_routing") => Some(scythe_core::SoloMode::IgnoreRouting),
+                Some(m) => {
+                    return Err(ApiError::invalid(format!("solo mode \"{m}\" is not in_place or ignore_routing")));
+                }
+            };
+            grouped(session, &track, "Toggle solo", |p, i| {
+                let on = flag(solo, p.tracks[i].solo);
+                if let Some(m) = mode {
+                    p.tracks[i].solo_mode = m;
+                }
+                p.set_solo_grouped(i, on);
+            })
+        }
+        TrackCommand::SoloDefeat { track, on } => {
+            track.track(&session.project)?;
+            set(session, &track, "Toggle solo defeat", |t| t.solo_defeat = flag(on, t.solo_defeat))
+        }
+        TrackCommand::Phase { track, phase } => grouped(session, &track, "Toggle polarity", |p, i| {
+            let on = flag(phase, p.tracks[i].phase);
+            p.set_phase_grouped(i, on);
+        }),
+        TrackCommand::PanMode { track, mode } => {
+            let mode = match mode.as_deref() {
+                None => None,
+                Some(name) => Some(scythe_core::fader::PanMode::from_name(name).ok_or_else(|| {
+                    ApiError::invalid(format!("pan mode \"{name}\" is not balance, classic, stereo or dual"))
+                })?),
+            };
+            track.track(&session.project)?;
+            set(session, &track, "Set pan mode", |t| t.pan_mode = mode)
+        }
+        TrackCommand::Width { track, width } => {
+            if !(-1.0..=1.0).contains(&width) {
+                return Err(ApiError::invalid("width runs from -1 to 1"));
+            }
+            let target = track.resolve(&session.project)?;
+            let id = track.track(&session.project)?;
+            session.edit_merging("Track width", &format!("width:{}", target.key()), |p| {
+                if let Some(i) = p.track_index(id) {
+                    p.set_width_grouped(i, width);
                 }
             });
             Ok(info(session, target))
         }
-        TrackCommand::Mute { track, muted } => set(session, &track, "Toggle mute", |t| t.muted = flag(muted, t.muted)),
-        TrackCommand::Solo { track, solo } => {
+        TrackCommand::DualPan { track, left, right } => {
+            let (left, right) = (pan(left)?, pan(right)?);
             track.track(&session.project)?;
-            set(session, &track, "Toggle solo", |t| t.solo = flag(solo, t.solo))
+            set(session, &track, "Set dual pan", |t| t.dual_pan = [left, right])
         }
-        TrackCommand::Arm { track, armed } => {
-            track.track(&session.project)?;
-            set(session, &track, "Toggle record arm", |t| t.armed = flag(armed, t.armed))
-        }
+        TrackCommand::Arm { track, armed } => grouped(session, &track, "Toggle record arm", |p, i| {
+            let on = flag(armed, p.tracks[i].armed);
+            p.set_arm_grouped(i, on);
+        }),
         TrackCommand::Monitor { track, monitor } => {
             track.track(&session.project)?;
             set(session, &track, "Toggle input monitoring", |t| t.monitor = flag(monitor, t.monitor))

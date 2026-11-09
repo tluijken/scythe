@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
-    fx::FxCommand, items::ItemCommand, markers::MarkerCommand, mix::MixCommand, project::ProjectCommand,
-    sends::SendCommand, setlist::SetlistCommand, tempo::TempoCommand, tracks::TrackCommand,
+    fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, mix::MixCommand,
+    project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, tempo::TempoCommand, tracks::TrackCommand,
     transport::TransportCommand,
 };
 use serde::Deserialize;
@@ -88,6 +88,7 @@ fn domains() -> Vec<Value> {
         schema::<TrackCommand>(),
         schema::<SendCommand>(),
         schema::<FxCommand>(),
+        schema::<GroupCommand>(),
         schema::<ItemCommand>(),
         schema::<MarkerCommand>(),
         schema::<MixCommand>(),

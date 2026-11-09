@@ -194,15 +194,37 @@ or `none`, with `reason` saying why.
 | `track.delete` | `track` | `{}` |
 | `track.rename` | `track`, `name` | the track |
 | `track.move` | `track`, `index` | the track |
-| `track.volume` | `track`, `volume` or `db` | the track |
-| `track.pan` | `track`, `pan` | the track |
-| `track.mute` | `track`, `muted?` | the track |
-| `track.solo` | `track`, `solo?` | the track |
-| `track.arm` | `track`, `armed?` | the track |
+| `track.volume` | `track`, `volume` or `db` | the track; volume groups follow (a dB offset, reversed followers the other way) |
+| `track.pan` | `track`, `pan` | the track; pan groups follow (an offset) |
+| `track.mute` | `track`, `muted?` | the track; mute groups follow |
+| `track.solo` | `track`, `solo?`, `mode?` (`"in_place"`, the default, or `"ignore_routing"`) | the track; solo groups follow |
+| `track.solo_defeat` | `track`, `on?` | solo defeat: the track stays heard while others are soloed (monitor mixes have it) |
+| `track.phase` | `track`, `phase?` | polarity, inverted at the fader (post-fader sends follow, pre-fader and pre-FX sends do not); polarity groups follow |
+| `track.pan_mode` | `track`, `mode` (`"balance"`, `"classic"`, `"stereo"`, `"dual"` or `null` for the project default) | the track |
+| `track.width` | `track`, `width` (-1 to 1) | the track; width groups follow |
+| `track.dual_pan` | `track`, `left`, `right` (-1 to 1) | the track: where dual pan puts each channel |
+| `track.arm` | `track`, `armed?` | the track; record-arm groups follow |
 | `track.monitor` | `track`, `monitor?` | input monitoring: an armed track with monitoring on plays its input through its FX |
 | `track.input` | `track`, `input` | record input in REAPER's `I_RECINPUT` numbering, inputs counted from 0: mono input *n* is *n*, the stereo pair from *n* is 1024 + *n*, MIDI is 4096 + device × 32 + channel (device 63 = all, channel 0 = all), -1 is none |
 | `track.color` (or `track.colour`) | `track`, `color` (`"#rrggbb"` or `null`) | the track |
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
+
+### Track groups
+
+REAPER's 64 track groups. In each a track can lead or follow volume, pan, width, mute, solo,
+record arm, polarity, automation mode and media edits, with reverse flags; a lead's edits
+(through the API, the UI or scripts) carry over to the followers. A VCA lead (`VOLUME_VCA_LEAD`)
+scales its followers' level as they play instead of moving their faders.
+
+| Command | Fields | Answer |
+|---|---|---|
+| `group.list` | | every group in use: `group` (1-64), `name`, `members` (`track`, `name`, `params`) |
+| `group.name` | `group`, `name` (`null` clears it) | the groups |
+| `group.set` | `track`, `group`, `params` (REAPER's names: `VOLUME_LEAD`, `VOLUME_FOLLOW`, `VOLUME_VCA_LEAD`, `VOLUME_VCA_FOLLOW`, `VOLUME_VCA_FOLLOW_ISPREFX`, `PAN_LEAD`, …, case-insensitive), `on?` (default true) | the groups |
+| `group.clear` | `group` | the groups, without it |
+
+Track snapshots carry `groups` (`group`, `params`), `phase`, `pan_mode`, `width`, `dual_pan`,
+`solo_mode` and `solo_defeat`. The group commands are for admin tokens only.
 
 ### Sends
 

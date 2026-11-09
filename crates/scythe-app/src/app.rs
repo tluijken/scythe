@@ -52,6 +52,8 @@ pub struct ViewState {
     pub cue_dialog: Option<crate::ui::monitor::Wizard>,
     /// The setlist page replaces the arrange view.
     pub setlist: bool,
+    /// The track grouping matrix window is open, on this group (0-based).
+    pub groups: Option<usize>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -188,6 +190,7 @@ impl ScytheApp {
                 monitor_wizard: None,
                 cue_dialog: None,
                 setlist: false,
+                groups: None,
             },
             palette: None,
             clipboard: Vec::new(),
@@ -437,7 +440,7 @@ impl ScytheApp {
                 .map(|i| {
                     let mut p = self.project.clone();
                     for (j, t) in p.tracks.iter_mut().enumerate() {
-                        t.solo = i == j;
+                        (t.solo, t.solo_mode, t.solo_defeat) = (i == j, scythe_core::SoloMode::IgnoreRouting, false);
                     }
                     let track = &p.tracks[i];
                     let label = if track.name.is_empty() { format!("Track {}", i + 1) } else { track.name.clone() };
