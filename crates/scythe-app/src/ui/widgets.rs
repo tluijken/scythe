@@ -28,6 +28,7 @@ pub enum Icon {
     SkipForward,
     Close,
     Setlist,
+    Envelope,
 }
 
 /// Maps the 24×24 SVG coordinate space of the mockup's icons into `rect`.
@@ -150,6 +151,12 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
                 (6.0, 8.0),
             ]);
             line(&[(12.0, 18.0), (12.0, 22.0)]);
+        }
+        Icon::Envelope => {
+            line(&[(3.0, 17.0), (8.0, 8.0), (13.0, 14.0), (17.0, 6.0), (21.0, 10.0)]);
+            for (x, y) in [(8.0, 8.0), (13.0, 14.0), (17.0, 6.0)] {
+                painter.circle_filled(c.p(x, y), 1.8 * c.scale, stroke.color);
+            }
         }
         Icon::Routing => {
             for (x, y) in [(6.0, 6.0), (6.0, 18.0), (18.0, 12.0)] {

@@ -1,6 +1,7 @@
 pub mod actions;
 mod arrange;
 mod comp;
+mod envelope_lanes;
 pub mod gfx_view;
 pub mod groups;
 mod inspector;
@@ -32,6 +33,7 @@ const RAIL_W: f32 = 56.0;
 const INSPECTOR_W: f32 = 300.0;
 const MIXER_H: f32 = 236.0;
 const MIDI_H: f32 = 340.0;
+const ENVELOPES_H: f32 = 300.0;
 const SEARCH_W: f32 = 216.0;
 const TABS_H: f32 = 30.0;
 
@@ -56,7 +58,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let body = Rect::from_min_max(pos2(area.left(), top), area.max);
     let show_inspector = body.width() > 980.0;
-    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 + 8.0 * 48.0 + 1.0 + 8.0));
+    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 + 9.0 * 48.0 + 1.0 + 8.0));
     nav_rail(app, ui, rail);
 
     if app.view.setlist {
@@ -69,8 +71,16 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     let main_right = if show_inspector { body.right() - INSPECTOR_W - GAP } else { body.right() };
     let main = Rect::from_min_max(pos2(rail.right() + GAP, body.top()), pos2(main_right, body.bottom()));
     let editor = app.view.midi_editor;
-    let dock_h = if editor.is_some() { MIDI_H } else { MIXER_H };
-    let (arrange_rect, mixer_rect) = if (app.view.show_mixer || editor.is_some()) && main.height() > dock_h + 260.0 {
+    let envelopes = editor.is_none() && app.view.envelope_lanes;
+    let dock_h = if editor.is_some() {
+        MIDI_H
+    } else if envelopes {
+        ENVELOPES_H
+    } else {
+        MIXER_H
+    };
+    let docked = app.view.show_mixer || editor.is_some() || envelopes;
+    let (arrange_rect, mixer_rect) = if docked && main.height() > dock_h + 260.0 {
         let split = main.bottom() - dock_h;
         (
             Rect::from_min_max(main.min, pos2(main.right(), split - GAP)),
@@ -85,6 +95,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
         arrange::show(app, ui, arrange_rect);
         match (mixer_rect, editor) {
             (Some(r), Some(item)) => midi_editor::show(app, ui, r, item),
+            (Some(r), None) if envelopes => envelope_lanes::show(app, ui, r),
             (Some(r), None) => mixer::show(app, ui, r),
             _ => {}
         }
@@ -424,6 +435,12 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let mixer_shown = app.view.show_mixer && arrange;
     if rail_button(ui, next(44.0), Icon::Mixer, mixer_shown, ACCENT, "Mixer (Ctrl+M)").clicked() {
         app.view.show_mixer = !mixer_shown;
+        app.view.monitor_page = false;
+        app.view.setlist = false;
+    }
+    let lanes_shown = app.view.envelope_lanes && arrange;
+    if rail_button(ui, next(44.0), Icon::Envelope, lanes_shown, ACCENT, "Envelope lanes").clicked() {
+        app.view.envelope_lanes = !lanes_shown;
         app.view.monitor_page = false;
         app.view.setlist = false;
     }

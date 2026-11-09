@@ -13,6 +13,8 @@ use crate::Session;
 use crate::api::{self, ApiError};
 use scythe_core::keymap::{self, Line, SECTION_MAIN};
 use scythe_core::marker_action as ids;
+use scythe_core::model::GlobalAutomation;
+use scythe_core::AutoMode;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -147,6 +149,29 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("_SCYTHE_MASTER_FEWER_CHANNELS", "Master: Fewer channels", W),
     // View.
     ("40078", "View: Toggle mixer visible", W),
+    ("_SCYTHE_TOGGLE_ENVELOPE_LANES", "View: Toggle envelope lanes", W),
+    // Automation.
+    ("40876", "Global automation override: No override (set automation modes per track)", S),
+    ("40878", "Global automation override: All automation in trim/read mode", S),
+    ("40879", "Global automation override: All automation in read mode", S),
+    ("40880", "Global automation override: All automation in touch mode", S),
+    ("40881", "Global automation override: All automation in latch mode", S),
+    ("42022", "Global automation override: All automation in latch preview mode", S),
+    ("40882", "Global automation override: All automation in write mode", S),
+    ("40885", "Global automation override: Bypass all automation", S),
+    ("40908", "Global automation override: Toggle bypass all automation", S),
+    ("40400", "Automation: Set track automation mode to trim/read", S),
+    ("40401", "Automation: Set track automation mode to read", S),
+    ("40402", "Automation: Set track automation mode to touch", S),
+    ("40403", "Automation: Set track automation mode to write", S),
+    ("40404", "Automation: Set track automation mode to latch", S),
+    ("42023", "Automation: Set track automation mode to latch preview", S),
+    ("40088", "Automation: Set all tracks automation mode to trim/read", S),
+    ("40086", "Automation: Set all tracks automation mode to read", S),
+    ("40087", "Automation: Set all tracks automation mode to touch", S),
+    ("40090", "Automation: Set all tracks automation mode to write", S),
+    ("40266", "Automation: Set all tracks automation mode to latch", S),
+    ("42024", "Automation: Set all tracks automation mode to latch preview", S),
     ("1157", "Options: Toggle snapping", W),
     ("_SCYTHE_NEXT_GRID", "Grid: Next grid size", W),
     ("1012", "View: Zoom in horizontal", W),
@@ -357,6 +382,10 @@ impl Session {
                     == scythe_core::recording::ProjectRecordMode::TimeSelectionPunch
             }
             "_SCYTHE_TOGGLE_MARKER_ACTIONS" => self.engine.marker_actions(),
+            "40876" | "40878" | "40879" | "40880" | "40881" | "42022" | "40882" | "40885" => {
+                override_for(c).is_some_and(|o| o == self.project.global_automation)
+            }
+            "40908" => self.project.global_automation == Some(GlobalAutomation::Bypass),
             _ => return -1,
         };
         state as i32
@@ -469,6 +498,28 @@ pub(crate) fn run_here(session: &mut Session, c: &str) -> Option<Result<(), ApiE
             let on = !session.engine.marker_actions();
             session.engine.set_marker_actions(on);
             session.notify(if on { "Marker actions on" } else { "Marker actions off" });
+            Ok(())
+        }
+        "40908" => {
+            let on = session.project.global_automation == Some(GlobalAutomation::Bypass);
+            session.edit("Global automation override", |p| {
+                p.global_automation = (!on).then_some(GlobalAutomation::Bypass);
+            });
+            Ok(())
+        }
+        id if override_for(id).is_some() => {
+            let over = override_for(id).flatten();
+            session.edit("Global automation override", |p| p.global_automation = over);
+            Ok(())
+        }
+        id if track_mode_for(id).is_some() => {
+            let (mode, all) = track_mode_for(id).unwrap_or_default();
+            let sel = session.selected_track;
+            session.edit("Automation mode", |p| {
+                for t in p.tracks.iter_mut().filter(|t| all || Some(t.id) == sel) {
+                    t.auto_mode = mode;
+                }
+            });
             Ok(())
         }
         _ => return c.parse::<u32>().ok().and_then(|id| run_id(session, id)),
@@ -655,4 +706,40 @@ mod tests {
         let numeric = builtin().iter().filter(|a| a.command.parse::<u32>().is_ok()).count();
         assert_eq!(measured.lines().count(), numeric);
     }
+}
+
+/// The global override a REAPER override action sets (`Some(None)` for "no override").
+fn override_for(c: &str) -> Option<Option<GlobalAutomation>> {
+    let mode = |m| Some(Some(GlobalAutomation::Mode(m)));
+    match c {
+        "40876" => Some(None),
+        "40878" => mode(AutoMode::TrimRead),
+        "40879" => mode(AutoMode::Read),
+        "40880" => mode(AutoMode::Touch),
+        "40881" => mode(AutoMode::Latch),
+        "42022" => mode(AutoMode::LatchPreview),
+        "40882" => mode(AutoMode::Write),
+        "40885" => Some(Some(GlobalAutomation::Bypass)),
+        _ => None,
+    }
+}
+
+/// The mode a REAPER automation mode action sets, and whether on every track (else the
+/// selected one).
+fn track_mode_for(c: &str) -> Option<(AutoMode, bool)> {
+    Some(match c {
+        "40400" => (AutoMode::TrimRead, false),
+        "40401" => (AutoMode::Read, false),
+        "40402" => (AutoMode::Touch, false),
+        "40403" => (AutoMode::Write, false),
+        "40404" => (AutoMode::Latch, false),
+        "42023" => (AutoMode::LatchPreview, false),
+        "40088" => (AutoMode::TrimRead, true),
+        "40086" => (AutoMode::Read, true),
+        "40087" => (AutoMode::Touch, true),
+        "40090" => (AutoMode::Write, true),
+        "40266" => (AutoMode::Latch, true),
+        "42024" => (AutoMode::LatchPreview, true),
+        _ => return None,
+    })
 }

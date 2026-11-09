@@ -78,6 +78,8 @@ pub enum Action {
     RunRenderQueue,
     LoadDemo,
     ToggleMixer,
+    ToggleEnvelopeLanes,
+    ToggleBypassAutomation,
     ToggleSnap,
     CycleGrid,
     ZoomIn,
@@ -199,6 +201,8 @@ impl Action {
         Action::RunRenderQueue,
         Action::LoadDemo,
         Action::ToggleMixer,
+        Action::ToggleEnvelopeLanes,
+        Action::ToggleBypassAutomation,
         Action::ToggleSnap,
         Action::CycleGrid,
         Action::ZoomIn,
@@ -336,6 +340,8 @@ impl Action {
             Action::RunRenderQueue => id(41207),
             Action::LoadDemo => named("_SCYTHE_LOAD_DEMO"),
             Action::ToggleMixer => id(40078),
+            Action::ToggleEnvelopeLanes => named("_SCYTHE_TOGGLE_ENVELOPE_LANES"),
+            Action::ToggleBypassAutomation => id(40908),
             Action::ToggleSnap => id(1157),
             Action::CycleGrid => named("_SCYTHE_NEXT_GRID"),
             Action::ZoomIn => id(1012),
@@ -459,6 +465,8 @@ impl Action {
             Action::OpenInNewTab | Action::RegionManager | Action::RegionRenderMatrix => None,
             Action::LoadDemo => None,
             Action::ToggleMixer => k(CMD, Key::M),
+            Action::ToggleEnvelopeLanes => None,
+            Action::ToggleBypassAutomation => None,
             Action::ToggleSnap => k(Modifiers::ALT, Key::G),
             Action::CycleGrid => k(Modifiers::SHIFT, Key::G),
             Action::ZoomIn => k(Modifiers::NONE, Key::Equals),
@@ -755,6 +763,13 @@ impl Action {
             Action::RunRenderQueue => app.run_render_queue(),
             Action::LoadDemo => app.load_demo(),
             Action::ToggleMixer => app.view.show_mixer = !app.view.show_mixer,
+            Action::ToggleEnvelopeLanes => app.view.envelope_lanes = !app.view.envelope_lanes,
+            Action::ToggleBypassAutomation => {
+                let on = app.project.global_automation == Some(scythe_core::model::GlobalAutomation::Bypass);
+                app.session.edit("Bypass all automation", |p| {
+                    p.global_automation = (!on).then_some(scythe_core::model::GlobalAutomation::Bypass);
+                });
+            }
             Action::ShowMonitorMixes => {
                 app.view.monitor_page = !app.view.monitor_page;
                 app.view.setlist = false;

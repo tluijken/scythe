@@ -121,8 +121,8 @@ pub struct MidiState<'a> {
 pub struct WetDry {
     pub wet: f64,
     pub delta: bool,
-    pub wet_envelope: Option<Envelope>,
-    pub delta_envelope: Option<Envelope>,
+    pub wet_envelope: Option<Box<Envelope>>,
+    pub delta_envelope: Option<Box<Envelope>>,
     pub sample_accurate: bool,
 }
 
@@ -132,8 +132,8 @@ impl WetDry {
         let mut w = Self { wet, delta, sample_accurate: slot.sample_accurate_wet(), ..Self::default() };
         for a in parameter_envelopes(slot, ctx) {
             match a.target {
-                Target::Wet => w.wet_envelope = Some(a.envelope),
-                Target::Delta => w.delta_envelope = Some(a.envelope),
+                Target::Wet => w.wet_envelope = Some(Box::new(a.envelope)),
+                Target::Delta => w.delta_envelope = Some(Box::new(a.envelope)),
                 _ => {}
             }
         }

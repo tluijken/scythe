@@ -10,7 +10,7 @@ use crate::theme::{
 };
 use crate::ui::widgets::{self, Icon, text_pill};
 
-const HEADER_W: f32 = 236.0;
+pub(super) const HEADER_W: f32 = 236.0;
 const RULER_H: f32 = 52.0;
 /// Track header layout needs this much height for its button row.
 const FULL_ROW_H: f32 = 56.0;
@@ -1062,7 +1062,7 @@ fn track_under(app: &ScytheApp, ui: &Ui, p: Pos2) -> Option<TrackId> {
     })
 }
 
-fn envelope_color(kind: EnvelopeKind) -> Color32 {
+pub(super) fn envelope_color(kind: EnvelopeKind) -> Color32 {
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx => theme::GREEN,
         EnvelopeKind::Trim => theme::YELLOW,
@@ -1074,7 +1074,7 @@ fn envelope_color(kind: EnvelopeKind) -> Color32 {
 }
 
 /// Vertical position of an envelope value within the lane, 0 at the bottom and 1 at the top.
-fn envelope_y_fraction(kind: EnvelopeKind, value: f64) -> f32 {
+pub(super) fn envelope_y_fraction(kind: EnvelopeKind, value: f64) -> f32 {
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => {
             crate::ui::mixer::fader_position(value)
@@ -1087,7 +1087,7 @@ fn envelope_y_fraction(kind: EnvelopeKind, value: f64) -> f32 {
     }
 }
 
-fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
+pub(super) fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
     let f = fraction.clamp(0.0, 1.0);
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => crate::ui::mixer::fader_gain(f),
@@ -1099,7 +1099,7 @@ fn envelope_value(kind: EnvelopeKind, fraction: f32) -> f64 {
     }
 }
 
-fn format_envelope_value(kind: EnvelopeKind, value: f64) -> String {
+pub(super) fn format_envelope_value(kind: EnvelopeKind, value: f64) -> String {
     match kind {
         EnvelopeKind::Volume | EnvelopeKind::VolumePreFx | EnvelopeKind::Trim => format!("{} dB", format_db(value)),
         EnvelopeKind::Pan | EnvelopeKind::DualPanLeft | EnvelopeKind::DualPanRight => {

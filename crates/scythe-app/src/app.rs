@@ -38,6 +38,8 @@ pub struct ViewState {
     pub px_per_sec: f64,
     pub track_scroll: f32,
     pub show_mixer: bool,
+    /// The envelope lanes of the selected track are docked under the arrange view.
+    pub envelope_lanes: bool,
     pub inspector_tab: InspectorTab,
     pub plugin_browser: bool,
     /// Which chain the plugin browser adds to.
@@ -203,6 +205,7 @@ impl ScytheApp {
                 px_per_sec: 40.0,
                 track_scroll: 0.0,
                 show_mixer: true,
+                envelope_lanes: false,
                 inspector_tab: InspectorTab::Fx,
                 plugin_browser: false,
                 fx_target: FxTarget::Track,

@@ -353,7 +353,7 @@ fn lfo(spec: &LfoSpec) -> Result<Lfo, ApiError> {
 }
 
 /// The running effect's view of parameter `param`: name, range and current value.
-pub(crate) fn param_info(
+pub fn param_info(
     session: &Session,
     target: Target,
     fx: usize,
@@ -407,6 +407,24 @@ fn edit<R>(
     label: &str,
     f: impl FnOnce(&mut Envelope, &mut Project) -> Result<R, ApiError>,
 ) -> Result<R, ApiError> {
+    change(session, at, label, false, f)
+}
+
+/// The envelope `at` names as it plays (automation items resolved), or a new empty one when
+/// the track has none yet.
+pub fn envelope(project: &Project, at: &EnvRef) -> Result<Envelope, ApiError> {
+    read(project, at.track.resolve(project)?, at)
+}
+
+/// Runs `f` on the envelope `at` names (and the project, for its pools), creating it when
+/// missing: as one undo step, or as part of the gesture under way (a drag) when `gesture`.
+pub fn change<R>(
+    session: &mut Session,
+    at: &EnvRef,
+    label: &str,
+    gesture: bool,
+    f: impl FnOnce(&mut Envelope, &mut Project) -> Result<R, ApiError>,
+) -> Result<R, ApiError> {
     let target = at.track.resolve(&session.project)?;
     let which = which(at)?;
     let param = match which {
@@ -439,7 +457,11 @@ fn edit<R>(
         }
     }
     project.resolve_automation_items();
-    session.edit(label, |p| *p = project);
+    if gesture {
+        session.gesture(label, |p| *p = project);
+    } else {
+        session.edit(label, |p| *p = project);
+    }
     Ok(out)
 }
 

@@ -459,6 +459,43 @@ impl AutomationItem {
         self.source = Resolved(Some(Arc::new(ItemSource { curve, scale, multiply, transitions })));
     }
 
+    /// Every point of `pool` the item plays, pass by pass: (pool point index, project seconds,
+    /// normalised value with the baseline and amplitude applied).
+    pub fn visible_points(&self, pool: &AutomationPool, timeline: &Timeline) -> Vec<(usize, f64, f64)> {
+        let rate = if self.rate > 0.0 { self.rate } else { 1.0 };
+        let q0 = timeline.qn_at(self.position);
+        let offset = timeline.qn_at(self.position + self.start_offset) - q0;
+        let last = (timeline.qn_at(self.end()) - q0) * rate + offset;
+        let len = pool.length_qn;
+        let passes: Vec<f64> = if self.looped && len > 0.0 {
+            let (first, end) = ((offset / len).floor() as i64, (last / len).ceil() as i64);
+            (first..=end).take(10_000).map(|k| k as f64 * len).collect()
+        } else {
+            vec![0.0]
+        };
+        passes
+            .into_iter()
+            .flat_map(|base| pool.points.iter().enumerate().map(move |(i, p)| (i, base + p.time, p.value)))
+            .map(|(i, qn, n)| {
+                (i, timeline.time_at_qn(q0 + (qn - offset) / rate), self.baseline + self.amplitude * (n - 0.5))
+            })
+            .filter(|&(_, t, _)| t >= self.position - 1e-9 && t < self.end() - 1e-9)
+            .collect()
+    }
+
+    /// Where a point at project time `t` with the normalised value `shown` (baseline and
+    /// amplitude applied) goes in the pool: its quarter note in the pass under `t`, and the
+    /// value the pool stores.
+    pub fn to_pool(&self, t: f64, shown: f64, pool: &AutomationPool, timeline: &Timeline) -> (f64, f64) {
+        let rate = if self.rate > 0.0 { self.rate } else { 1.0 };
+        let q0 = timeline.qn_at(self.position);
+        let offset = timeline.qn_at(self.position + self.start_offset) - q0;
+        let qn = (timeline.qn_at(t) - q0) * rate + offset;
+        let qn = if self.looped && pool.length_qn > 0.0 { qn.rem_euclid(pool.length_qn) } else { qn };
+        let n = if self.amplitude.abs() > 1e-9 { 0.5 + (shown - self.baseline) / self.amplitude } else { 0.5 };
+        (qn, n)
+    }
+
     /// Times of the points the item plays, in project seconds, within the item.
     pub fn point_times(&self) -> impl Iterator<Item = f64> + '_ {
         let points = self.source.0.as_ref().map(|s| s.curve.points.as_slice()).unwrap_or_default();

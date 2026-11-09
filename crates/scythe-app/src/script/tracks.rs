@@ -962,7 +962,7 @@ fn envelopes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             let (pool, pos, len) = (a.int(1), a.num(2).max(0.0), a.num(3));
             let timeline = s.project.tempo.timeline();
             let Some(env) = envelope(&mut s.project, e) else { return Some(ret(Val::Int(-1))) };
-            if !(len > 0.0) {
+            if len.is_nan() || len <= 0.0 {
                 return Some(ret(Val::Int(-1)));
             }
             let (length_qn, points) = capture(env, pos, len, &timeline);
