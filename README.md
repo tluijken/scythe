@@ -149,7 +149,7 @@ the UI without rebuilding. Its logic tests run with `node crates/scythe-server/w
 | `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |
 | `scythe-surface` | Control surfaces on top of the control API: OSC with REAPER's `.ReaperOSC` pattern files, Mackie Control and extenders, HUI; run by the app and the server from the `csurf_<i>` preferences |
 | `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts; the `scythe-mcp` stdio binary |
-| `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), plugin editor windows, ReaScript, demo generator |
+| `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), Actions window, toolbars, plugin editor windows, ReaScript, demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back
 in memory and lists every line whose content changed. On 33 real REAPER projects
@@ -252,6 +252,22 @@ Working:
   markers) are kept in `reaper-kb.ini` as REAPER keeps them. The `~` button on an inspector
   parameter opens the modulation window with its Learn button; the settings window learns
   shortcuts. API: `fx.modulation.*`, `fx.learn.*`, `action.learn.*`.
+- **Actions, shortcuts, toolbars, mouse modifiers**: one action registry with REAPER's command
+  ids and names where REAPER has the action (151 of them, names checked against REAPER 7.73's
+  action list) and `_SCYTHE_…` named commands for Scythe's own; the palette (Ctrl+K), keys,
+  toolbars, mouse clicks, surfaces, learned controls, `!` markers and `Main_OnCommand` all run
+  through it, with toggle states. The Actions window (REAPER's "Show action list") searches,
+  runs, assigns and removes keyboard shortcuts (capturing the next key), makes custom actions
+  (macros of other actions, with "consolidate undo") and registers scripts as actions, and
+  imports and exports `.ReaperKeyMap` files. All of it is kept in `reaper-kb.ini` as REAPER
+  writes it (`KEY` with REAPER's key encoding and comments, `ACT`, `SCR`, MIDI shortcuts from
+  learn), so a REAPER keymap works in Scythe and back. Toolbars (`reaper-menu.ini`, `.ReaperMenu`
+  import and export): the main toolbar as a strip under the header and 32 floating toolbars,
+  with REAPER's toolbar icons when its `Data/toolbar_icons` is around, lit while their action is
+  on, and a toolbar editor. Mouse modifiers (`reaper-mouse.ini`): actions on clicks and double
+  clicks of items, track lanes, track headers and the ruler, per modifier keys, with an editor.
+  Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
+  zoom. API: `action.*`, `toolbar.*`, `mouse.*`.
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
   preview), cycled from the inspector. While playing, fader and pan moves in touch, latch and
   write mode are recorded into the volume and pan envelopes.
@@ -397,7 +413,7 @@ Working:
   and a `setlist` event; see `docs/control-api.md`).
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
   file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
-  output in a console window. 268 `reaper.*` functions:
+  output in a console window. 310 `reaper.*` functions:
   - tracks: `CountTracks`, `GetTrack`, `GetMasterTrack`, `InsertTrackAtIndex`, `DeleteTrack`,
     `GetTrackName`, `GetSetMediaTrackInfo_String` (`P_NAME`, `GUID`, `P_EXT:`),
     `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo and its modes, solo defeat, polarity,
@@ -458,8 +474,20 @@ Working:
     `reaper-extstate.ini` in Scythe's data folder), `Main_OnCommand` (REAPER's command ids for
     transport, track and item edits, selection, markers and the time selection run inside the
     script; undo, redo, file, render, glue, copy and paste, zoom and other actions Scythe has
-    run once the script's changes are in), `NamedCommandLookup`, `GetToggleCommandState`,
+    run once the script's changes are in; custom actions run their members), `Main_OnCommandEx`,
     `Undo_*` (`Undo_CanUndo2`, `Undo_DoUndo2` …), `MarkProjectDirty`, `IsProjectDirty`;
+  - actions: `NamedCommandLookup`, `ReverseNamedCommandLookup`, `kbd_getTextFromCmd`,
+    `SectionFromUniqueID`, `CountActionShortcuts`, `GetActionShortcutDesc`,
+    `GetToggleCommandState(Ex)` (a custom action's is its members' when they agree),
+    `SetToggleCommandState`, `RefreshToolbar(2)`, `AddRemoveReaScript`, `Get/SetMouseModifier`,
+    `get_action_context`;
+  - state chunks: `Get/SetTrackStateChunk`, `Get/SetItemStateChunk`,
+    `Get/SetEnvelopeStateChunk`, through the same RPP reader and writer as project files;
+  - general: `genGuid`, `guidToString`, `stringToGuid`, `GetTrackGUID`, `AnyTrackSolo`,
+    `SoloAllTracks`, `MuteAllTracks`, `ClearAllRecArmed`, `GetNumTracks`,
+    `GetLastTouchedTrack`, `IsTrackVisible`, `GetMasterMuteSoloFlags`, `file_exists`,
+    `RecursiveCreateDirectory`, `EnumerateFiles`, `EnumerateSubdirectories`, `SetEditCurPos2`,
+    `OnPauseButton`, `Main_SaveProject`, `GetPlayStateEx`, `MB`, `Undo_OnStateChangeEx(2)`;
   - dialogs and the rest: `ShowMessageBox` and `GetUserInputs` (modal windows; the script
     waits for the answer), `ValidatePtr(2)`, `DB2SLIDER`, `SLIDER2DB`, `mkvolstr`, `mkpanstr`,
     `GetAppVersion`, `GetOS`, `GetResourcePath`, `GetExePath`, `time_precise`, console and
@@ -760,6 +788,10 @@ compare with scythe's output sample by sample:
 | JSFX font 0: `gfx_texth` (0 before the first `@gfx`, then 8), `gfx_measurestr`/`gfx_measurechar` of every byte and of strings with spaces, tabs, `\r` and `\n`, multi-byte UTF-8, the empty string, and `gfx_x`/`gfx_y` after `gfx_drawstr`, `gfx_drawchar` and `gfx_drawnumber` (read back through `gmem` from REAPER's JSFX window) | same values (34 cases) |
 | Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
 | ReaScript API: one Lua script (sends, track colors and selection, markers and regions with colors, time selection, repeat, tempo and time signature markers and the time map, `format_timestr`, `mkvolstr`, fader scaling, a volume envelope's points and `Envelope_Evaluate`, MIDI notes and CCs with selection and mute, PPQ conversions, items, takes and sources, project and global extended state, project title and notes, `Main_OnCommand(40001)`), one EEL2 script (`eval`, `extension_api`, file functions, MIDI with optional arguments left out, `#retval` strings) and one Python script, run in REAPER and in Scythe with their outputs compared | same values (126 lines), but for beat positions REAPER gives as 1e-11 where Scythe gives 0; REAPER 7.73's Python module fails some calls (`RPR_MIDI_InsertNote`, `RPR_GetTakeName` of an unnamed take, `RPR_ValidatePtr`) and gives region names as empty strings, which Scythe does not copy |
+| Shortcut file: REAPER-written `reaper-kb.ini` files (made by REAPER rewriting probe files: `KEY` lines with every modifier, virtual-key and character codes, navigation and keypad keys, MIDI and mousewheel input, a disabled default; `ACT` custom actions, nested and in the MIDI editor section; `SCR` scripts in two sections) read and written back; each shortcut described as REAPER's `GetActionShortcutDesc` and comments describe it; custom action ids numbered as REAPER numbers them; consolidate-undo and toggle states of custom actions measured with `Undo_CanUndo2` and `GetToggleCommandState` | byte-identical round trips (CRLF and comments included); the descriptions of the 26 shortcuts in REAPER's comments and of 34 probed keys identical |
+| Mouse modifiers: `reaper-mouse.ini` REAPER wrote after `SetMouseModifier` calls (behaviours, command ids, custom actions) | byte-identical round trip; the same `GetMouseModifier` answers |
+| Action names: the 151 REAPER command ids Scythe registers, against REAPER 7.73's `kbd_enumerateActions` list | identical names |
+| ReaScript actions and state chunks: one Lua script (named command lookups both ways, action names, shortcut descriptions, toggle states of actions and custom actions as they change, custom actions run with `Main_OnCommand(Ex)`, `get_action_context`, track, item and envelope state chunks read, edited as text and written back, a broken chunk, mouse modifiers, `SetToggleCommandState`, `genGuid`, solo/mute/arm-all calls) and one EEL2 script (the same calls through `#string` outputs), run in REAPER with the same `reaper-kb.ini` and in Scythe (`crates/scythe-app/tests/fixtures/reascript`) | identical output (38 Lua and 14 EEL2 lines) |
 | WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
 | WAV, AIFF and CAF files of a ramp and a sine with markers and regions (forced project rate): every WAV bit depth code (u-law, the 16- and 24-bit fallbacks), each flag of the WAV sink (no `bext`, forced WAV, project file, markers/regions/`#` modes, ACID) and each large-file mode (Wave64, RF64, BW64, forced and automatic) with ADPCM, float and u-law, 1-8 channels, markers on the render's edges, at fractional positions and with UTF-8 names in custom ranges; AIFF and CAF bit depths, tempo and marker flags; render metadata in all three (BWF, iXML, XMP, axml, cart, ID3, INFO, IFF, CAFINFO, with and without `BWF:` tags); GIF and LCF of black frames at 640x360/30 fps and 320x240/25 fps, with transparency | byte-identical files apart from `bext`'s render date and time (326 files) |
 | WAV over 4 GB (16 channels, 64-bit float, 710 s) left room for RF64 and for Wave64, with markers | same RF64 and Wave64 headers and tail chunks, byte for byte apart from the date |
@@ -926,9 +958,20 @@ compares the two files.
   plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name
   (`TrackFX_SetPreset`), but not by index or by navigating, so where they sit in its preset
   menu is unverified; only plugin-internal presets were tested, not preset files.
-- ReaScript covers part of the API (above); Python needs `python3` on the PATH. Calls that
-  take or return chunks (`Get/SetTrackStateChunk` …), automation items, FX containers, take
-  FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
+- Actions and customisation: about 150 of REAPER's ~4300 main-section actions have a Scythe
+  counterpart; `KEY`, `ACT` and `SCR` lines of other sections (MIDI editor, Media Explorer) are
+  kept but only the main section's run. Custom actions are SWS-free macros; SWS cycle actions
+  are not there. Toolbar files follow REAPER's `item_N`/`icon_N`/`tbf_N`/`title` keys (from
+  REAPER's strings and shared toolbar files) but were not round-tripped through a REAPER-written
+  `reaper-menu.ini`, since REAPER writes one only from its customisation dialog; menus are not
+  customisable. Mouse modifiers run actions assigned to clicks and double clicks of items,
+  track lanes and headers and the ruler; REAPER's drag behaviours (`13 m` …) are kept but not
+  played, and `GetMouseModifier` answers nothing for contexts left at their defaults. Window sets
+  are Scythe's own (`scythe-screensets.ini`), not REAPER's window layouts. No `.ReaperTheme`
+  colours, and no extension SDK (`reaper_plugin.h` C ABI), so SWS and other extensions do not
+  load. Python was not cross-checked for the action and chunk calls.
+- ReaScript covers part of the API (above); Python needs `python3` on the PATH. Automation
+  items, FX containers, take FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
   returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
   windows do not show menus (`gfx_showmenu` returns 0) or dock. MIDI events are kept
   in time order, so `noSort` changes nothing. Effect parameters are those of running effects, set live as the inspector does; their presets come from

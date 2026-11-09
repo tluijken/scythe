@@ -442,6 +442,34 @@ order from 0 (a JSFX's sliders in order). Edits are undo steps. Admin only.
 A value is `baseline + LFO + audio follower + scale * (source + offset)` in the parameter's
 0..1 range, clamped; a parameter envelope stands in for the baseline.
 
+### Actions, shortcuts, toolbars and mouse modifiers
+
+One action registry serves the palette, keyboard shortcuts, toolbars, mouse modifiers,
+surfaces, learned controls, marker actions and ReaScript's `Main_OnCommand`. Actions are
+REAPER command ids (named as REAPER 7.73's action list names them) or named commands:
+Scythe's own (`_SCYTHE_SETLIST_NEXT`), custom actions (`_<id>`) and scripts registered as
+actions (`_RS…`). Shortcuts, custom actions and scripts live in `reaper-kb.ini`, toolbars in
+`reaper-menu.ini`, mouse modifiers in `reaper-mouse.ini`, beside the preferences and in
+REAPER's formats. Actions that need the window answer an error on a headless server.
+
+| Command | Fields | Answer |
+|---|---|---|
+| `action.list` | `query?` | `[{"command", "id", "name", "section", "runs": "session"\|"window", "kind": "builtin"\|"custom"\|"script", "shortcuts", "toggle"}]` |
+| `action.run` | `action` | `{"ok"}` |
+| `action.shortcut.add` | `key` ("Ctrl+Shift+A", "F5", "NumPad +"), `action` | `{"key", "action"}` |
+| `action.shortcut.remove` | `key`, `disable_default?` | `{"removed"}` |
+| `action.custom.set` | `id?`, `name`, `actions`, `consolidate_undo?` (default true) | `{"command", "id"}` |
+| `action.script.add` | `path` | `{"command", "id"}` |
+| `action.remove` | `action` (a custom or script action) | `{"ok"}` |
+| `action.keymap.export` | | `{"text"}`: the shortcut file as a `.ReaperKeyMap` |
+| `action.keymap.import` | `text` | `{"lines"}` |
+| `toolbar.get` | `toolbar` (`main` or 1-32) | `{"toolbar", "title", "customized", "buttons": [{"action", "text", "icon", "name", "toggle"}]}` |
+| `toolbar.set` | `toolbar`, `buttons: [{"action", "text?", "icon?"}]`, `title?` | as `toolbar.get` |
+| `toolbar.reset` | `toolbar` | `{"reset"}` |
+| `toolbar.import` | `text` (a `.ReaperMenu` or `.ReaperMenuSet`) | `{"sections"}` |
+| `mouse.get` | `context?` | `[{"context", "modifiers", "assignment"}]`: what differs from the defaults |
+| `mouse.set` | `context` (`MM_CTX_ITEM_DBLCLK`…), `modifiers` (1 Shift, 2 Ctrl, 4 Alt, 8 Logo), `action?` | the assignment; no `action` resets it |
+
 ### Control surfaces
 
 OSC devices, Mackie Control (and extenders) and HUI, kept in the preferences as REAPER keeps
@@ -455,7 +483,7 @@ running session opens, closes and reopens the devices. Admin only.
 | `surface.set` | `index`, `surface` | the list |
 | `surface.remove` | `index` | the list |
 | `surface.devices` | | `{"inputs", "outputs"}`: MIDI port names indexed by the stable device numbers `input` and `output` take (as `midi.devices` numbers them; empty where no device is present) |
-| `surface.action_list` | | `[{"id", "name"}]`: REAPER command ids and Scythe's named commands a surface can run |
+| `surface.action_list` | | `[{"id", "name", "runs"}]`: every action of the main section (see `action.list`) |
 | `surface.run_action` | `action` (`"40364"`, `"_SCYTHE_SETLIST_NEXT"`) | `{}` |
 
 A `surface` is one of:
