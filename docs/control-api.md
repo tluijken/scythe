@@ -216,6 +216,21 @@ or `none`, with `reason` saying why.
 | `track.color` (or `track.colour`) | `track`, `color` (`"#rrggbb"` or `null`) | the track |
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
 
+### Recording and lanes
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `track.record_mode` | `track`, `mode?`, `tap?`, `auto_arm?` | `{"track", "armed", "mode", "tap", "monitor", "monitor_items", "auto_arm"}`. `mode` is REAPER's per-track record mode: `"input"`, `"input_mono"`, `"input_stereo"`, `"input_multichannel"`, `"input_midi"`, `"output_stereo"`, `"output_mono"`, `"output_multichannel"` (each also `…_compensated`), `"midi_output"`, `"midi_overdub"`, `"midi_replace"`, `"midi_touch_replace"`, `"midi_latch_replace"` or `"disabled"` (monitor only); `tap` is where output recording listens: `"post_fader"`, `"pre_fx"` or `"post_fx"` |
+| `track.monitor_mode` | `track`, `mode?` (`"off"`, `"on"`, `"auto"`: tape style, not while playing back), `items?` (play the track's own items while it records) | as `track.record_mode` |
+| `record.options` | `mode?` (`"normal"`, `"time_selection_punch"`, `"item_punch"`: the selected items get the takes), `new_lanes?`, `loop_takes?`, `lanes_exclusive?` | the project record mode and the lane preferences (REAPER's `RECMODE` and `autoxfade` bits) |
+| `lanes.list` | `track` | `{"track", "fixed", "names", "playing", "comp_lane", "areas": [{"start", "end", "lane"}], "items"}` (items per lane) |
+| `lanes.fixed` | `track`, `on` | fixed item lanes on or off; the lanes as `lanes.list` |
+| `lanes.add` | `track` | an empty lane at the bottom |
+| `lanes.play` | `track`, `lanes` (from 0 at the top; empty for all) | which lanes play (`LANESOLO`) |
+| `lanes.comp` / `lanes.comp_off` | `track` | comp into a new empty lane at the top / stop comping (the lane stays) |
+| `lanes.swipe` | `track`, `lane`, `start`, `end` (seconds) | a comp area: the comp lane plays that lane there, overlapped areas cross-fade into it |
+| `lanes.remove_area` | `track`, `at` (seconds) | removes the comp area there |
+
 ### Track groups
 
 REAPER's 64 track groups. In each a track can lead or follow volume, pan, width, mute, solo,
@@ -534,7 +549,7 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
   "tracks": [{
     "id": 12, "index": 0, "guid": "{…}", "name": "Vox", "color": "#66d9ef",
     "volume": 0.6, "volume_db": -4.4, "pan": 0.0, "muted": false, "solo": false,
-    "armed": true, "monitor": true, "input": 1024, "folder_depth": 0, "level": 0, "channels": 2,
+    "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "channels": 2,
     "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
     "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
                "mode": "post_fader", "mono": false, "phase": false}],

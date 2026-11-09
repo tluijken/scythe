@@ -287,11 +287,28 @@ Working:
   level, **recording** of armed tracks (`Ctrl+R`, mono or stereo inputs per the
   track's REAPER input setting) and **input monitoring**: an armed track with monitoring on
   hears its input through its FX chain, also while stopped (play guitar through a NAM amp and
-  a cab IR live). Inspector: `In 1` picks the input, `Mon` toggles monitoring. Recording with
-  repeat on loops the time selection and makes every pass a take of one item (the last full
-  pass active; incomplete first and last passes are dropped once a full pass exists). Pressing
-  record while playing punches in at the playhead, and the "time selection auto-punch" record
-  mode keeps only what falls inside the time selection.
+  a cab IR live). Inspector: `In 1` picks the input, `Mon` cycles monitoring off, on and auto
+  (tape style: heard while stopped or recording, not during playback); right-click it or the
+  arm button for the **record mode menu**: REAPER's per-track record modes (input, input forced
+  to mono, stereo or multichannel, output stereo/mono/multichannel with or without latency
+  compensation tapped post-fader, pre-FX or post-FX, MIDI overdub, replace, touch-replace and
+  latch-replace into the MIDI item under the playhead, disable to only monitor), "monitor
+  track media when recording" (otherwise a recording track's own items fall silent, as in
+  REAPER), automatic record-arm on selection, the project record mode (normal, time selection
+  auto-punch, selected item auto-punch) and the lane options. Recordings are laid out as REAPER
+  7.73 lays them out: files named `01-Track-yymmdd_hhmm.wav` under the project's record path,
+  recording over items splits them at the recording's edges and adds the new take (with empty
+  takes where a pass did not reach), repeat makes every pass a take over the loop (incomplete
+  first and last passes kept, the last pass active) with what came before the loop start as an
+  item of its own, and on a fixed-lane track with "new recording adds lanes" each pass gets a
+  lane of its own (the newest playing, and swiped into the comp when there is a comp lane).
+  The file keeps what was played during pre-roll, ahead of the take as in REAPER. Pressing
+  record while playing punches in at the playhead.
+- **Fixed lanes and comping** (REAPER 7): lanes with names, playing lanes (`LANESOLO`), "comp
+  into new empty lane", and **swiping**: Ctrl+Shift+drag across a lane makes a comp area
+  (`LINKEDLANE`); the new area wins its range and the areas it overlaps cross-fade into it over
+  10 ms with REAPER's equal-power curve, and the comp lane's items are rebuilt from the areas as
+  REAPER rebuilds them.
 - **Editing**: move (snapped, across tracks), trim edges, fade handles, split, copy/cut/paste,
   duplicate, reverse, delete, markers, undo/redo. Several items: Ctrl+click or drag a marquee on
   empty lane space; moving, deleting, muting, copying (with track spacing) and duplicating then
@@ -777,6 +794,9 @@ compare with scythe's output sample by sample:
 | Hardware outputs and monitor mixes written by Scythe (stereo and mono outputs, send modes, levels, pans, mutes, `P_EXT` values with spaces, a SWS-style pre-FX cue bus, a master output to 11/12) read back in REAPER through `GetTrackSendInfo_Value` and `P_EXT` | identical (33 lines) |
 | Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER (41818 and 41819 set `preroll` &1 and &2; a fresh reaper.ini has `preroll=0`, `prerollmeas=2`, `metronome_defout=-1`), saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
+| Comping: three lanes, "comp into new empty lane" (42797) and four comp areas made from razor edits (42475), the last overlapping two others; REAPER's saved comp lane against Scythe's swipes of the same ranges (areas, pieces, offsets, fade lines); Scythe playing REAPER's comp project and a DC probe of the cross-fade; REAPER rendering Scythe's swiped project | same lines (`LINKEDLANE`, `LANEREC`, `LANENAME`, fades `1.1 0.01 0.01` between lanes, `0` within one); renders within 1e-5; REAPER's render of Scythe's comp identical to its own; the `1.1` cross-fade is a quartic through the quarter sine (within 4e-8) |
+| Record settings: `I_RECMODE` 0-16 (each action's code, forced input formats from the recorded files' channel counts), `I_RECMON`, `I_RECMONITEMS`, `I_RECMODE_FLAGS`, `B_AUTO_RECARM` and the project record mode actions (40252/40253/40076) read back from the saved `REC`, `AUTO_RECARM` and `RECMODE` lines; the lane options (43151-43153, 40114) found as `autoxfade` bits | same lines |
+| Recording (REAPER on a dummy JACK device, `Transport: Record` and "stop, save all recorded media" from Lua): linear, repeat from the loop start, from before it and from inside it, short last passes, fixed-lane tracks with and without "new recording adds lanes", item auto-punch, time selection auto-punch on a lane track, recording over an item, output stereo (post-fader and pre-FX) and mono, record mode none, forced input formats | Scythe's placement reproduces the saved items, takes, empty takes, offsets, lanes, `LANESOLO`/`LANEREC` and `RECPASS`; REAPER's output recordings equal the track's signal sample for sample (fader 0.5, pan hard left for mono: the average of both sides); Scythe's output recording on the null engine matches its input times the fader |
 
 Control surfaces were compared with REAPER 7.73 running the same project with the same
 surface (`crates/scythe-surface/tests`; REAPER on a dummy JACK server for MIDI, its MIDI ports
@@ -798,6 +818,20 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 compares the two files.
 
 ### Not there yet
+
+- Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
+  only between the first and last message played (REAPER's CC timeout is not modelled). The
+  MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
+  for comparison (that needs MIDI played into it live). A
+  track records one file per pass group; "start new files on loop", record formats other than
+  24-bit WAV (`<RECORD_CFG`) and the secondary record path are kept but not acted on. File
+  names use UTC. "New recording adds lanes in layers" plays like "exclusively" (REAPER saved
+  the same `LANESOLO` for both); "record into first available lane" versus at the bottom
+  follows `C_LANESETTINGS` &16 only. Comp areas cannot be moved or have their edges dragged,
+  and "delete comp area edge", "move comp area up/down" and the comp lane's own edits copied
+  back to sources are not there; touching swipes (no overlap) do not cross-fade, as in REAPER.
+  Take explode/implode/crop are not there yet. REAPER's project `AUTOXFADE` line is kept;
+  Scythe takes the lane options from the preferences (`autoxfade`).
 
 - Opus and WavPack items: an item that starts inside an Opus file (`SOFFS`, or playback started
   past its start) is decoded by REAPER from a fresh decoder 80 ms (3840 samples) before the
