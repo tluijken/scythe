@@ -189,13 +189,15 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         }
     }
 
+    // Escape closes an open menu first; only with none open does it close the editor.
+    let menu_open = egui::Popup::is_any_open(ui.ctx()) || ui.ctx().egui_wants_keyboard_input();
     let row1 = Rect::from_min_size(rect.min + vec2(16.0, 8.0), vec2(rect.width() - 32.0, 30.0));
     let row2 = row1.translate(vec2(0.0, 36.0));
     if header(app, ui, row1, &mut take, &mut state) {
         app.view.midi_editor = None;
         return;
     }
-    toolbar(app, ui, row2, &mut take, &mut state);
+    let row2 = toolbar(app, ui, row2, &mut take, &mut state);
     step_input(app, &mut take, &mut state);
 
     let body = Rect::from_min_max(
@@ -218,7 +220,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
     if state.hovered {
         shortcuts(app, ui, &take, &state);
     }
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if !menu_open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.view.midi_editor = None;
     }
     app.session.set_step_input(state.step && app.view.midi_editor.is_some());
@@ -228,7 +230,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
 /// Title, mode, grid and swing, close. Returns whether the editor closed.
 fn header(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, _state: &mut EditorState) -> bool {
     let painter = ui.painter().clone();
-    painter.text(row.left_center(), Align2::LEFT_CENTER, format!("MIDI · {}", take.name), theme::semibold(15.0), TEXT);
+    let title = if take.name.is_empty() { "MIDI".to_owned() } else { format!("MIDI · {}", take.name) };
+    painter.text(row.left_center(), Align2::LEFT_CENTER, title, theme::semibold(15.0), TEXT);
     let mut x = row.right() - 32.0;
     let close = Rect::from_min_size(pos2(x, row.top()), vec2(32.0, 30.0));
     if text_pill(ui, close, "×", theme::semibold(15.0), RAISED, TEXT_DIM).on_hover_text("Close (Esc)").clicked() {
@@ -309,15 +312,25 @@ fn pill(ui: &mut Ui, x: &mut f32, row: Rect, w: f32, label: &str, on: bool) -> e
     text_pill(ui, r, label, theme::regular(12.0), if on { RAISED_HI } else { RAISED }, if on { TEXT } else { TEXT_DIM })
 }
 
-/// The editing commands, key snap, channels, step input, tools and files.
-fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: &mut EditorState) {
+/// A toolbar pill that starts a new row when it would run past the right edge.
+fn wrapping_pill(ui: &mut Ui, x: &mut f32, row: &mut Rect, w: f32, label: &str, on: bool) -> egui::Response {
+    if *x + w > row.right() && *x > row.left() {
+        *x = row.left();
+        *row = row.translate(vec2(0.0, 34.0));
+    }
+    pill(ui, x, *row, w, label, on)
+}
+
+/// The editing commands, key snap, channels, step input, tools and files, wrapped over as many
+/// rows as the width needs. Returns the last row.
+fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, state: &mut EditorState) -> Rect {
     let mut x = row.left();
     let ppq = take.src.ticks_per_qn;
     let grid = Grid { qn: take.view.grid_qn, swing: take.view.swing.unwrap_or(0.0) };
     let mut notes = take.notes.clone();
     let mut label = None;
 
-    let q = pill(ui, &mut x, row, 78.0, "Quantize", false)
+    let q = wrapping_pill(ui, &mut x, &mut row, 78.0, "Quantize", false)
         .on_hover_text("Quantize the selected notes (all when none): click uses the settings, right-click sets them");
     if q.clicked() {
         let what = state.q_what;
@@ -338,7 +351,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
             ui.radio_value(&mut state.q_what, w, name);
         }
     });
-    let h = pill(ui, &mut x, row, 84.0, "Humanize", false)
+    let h = wrapping_pill(ui, &mut x, &mut row, 84.0, "Humanize", false)
         .on_hover_text("Random timing and velocity changes: click applies, right-click sets the amounts");
     if h.clicked() {
         let seed = ui.input(|i| i.time.to_bits());
@@ -358,24 +371,30 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
         ("−12", -12, "Down an octave"),
         ("+12", 12, "Up an octave"),
     ] {
-        if pill(ui, &mut x, row, 40.0, text, false).on_hover_text(tip).clicked() {
+        if wrapping_pill(ui, &mut x, &mut row, 40.0, text, false).on_hover_text(tip).clicked() {
             edit::transpose(&mut notes, semis, if semis.abs() == 1 { snap.as_ref() } else { None });
             label = Some("Transpose notes");
         }
     }
-    if pill(ui, &mut x, row, 64.0, "Legato", false).on_hover_text("End each note where the next begins").clicked() {
+    if wrapping_pill(ui, &mut x, &mut row, 64.0, "Legato", false)
+        .on_hover_text("End each note where the next begins")
+        .clicked()
+    {
         edit::legato(&mut notes);
         label = Some("Legato");
     }
-    if pill(ui, &mut x, row, 50.0, "Split", false).on_hover_text("Split notes on the grid").clicked() {
+    if wrapping_pill(ui, &mut x, &mut row, 50.0, "Split", false).on_hover_text("Split notes on the grid").clicked() {
         edit::split_on_grid(&mut notes, ppq, grid);
         label = Some("Split notes");
     }
-    if pill(ui, &mut x, row, 46.0, "Join", false).on_hover_text("Join notes of the same key").clicked() {
+    if wrapping_pill(ui, &mut x, &mut row, 46.0, "Join", false).on_hover_text("Join notes of the same key").clicked() {
         edit::join(&mut notes);
         label = Some("Join notes");
     }
-    if pill(ui, &mut x, row, 50.0, "Mute", false).on_hover_text("Toggle mute of the selected notes").clicked() {
+    if wrapping_pill(ui, &mut x, &mut row, 50.0, "Mute", false)
+        .on_hover_text("Toggle mute of the selected notes")
+        .clicked()
+    {
         edit::mute(&mut notes, None);
         label = Some("Mute notes");
     }
@@ -383,14 +402,14 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
 
     // Key snap: toggle, root, scale.
     let mut view = take.view.clone();
-    if pill(ui, &mut x, row, 74.0, "Key snap", view.key_snap)
+    if wrapping_pill(ui, &mut x, &mut row, 74.0, "Key snap", view.key_snap)
         .on_hover_text("Snap new and moved notes to the scale; transpose by scale steps")
         .clicked()
     {
         view.key_snap = !view.key_snap;
     }
     let scales = scale::builtin();
-    let root = pill(ui, &mut x, row, 34.0, ROOTS[state.key_root as usize % 12], view.key_snap);
+    let root = wrapping_pill(ui, &mut x, &mut row, 34.0, ROOTS[state.key_root as usize % 12], view.key_snap);
     egui::Popup::menu(&root).show(|ui| {
         for (i, r) in ROOTS.iter().enumerate() {
             if ui.selectable_label(state.key_root as usize == i, *r).clicked() {
@@ -398,7 +417,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
             }
         }
     });
-    let sc = pill(ui, &mut x, row, 110.0, &scales[state.scale.min(scales.len() - 1)].name, view.key_snap);
+    let sc = wrapping_pill(ui, &mut x, &mut row, 110.0, &scales[state.scale.min(scales.len() - 1)].name, view.key_snap);
     egui::Popup::menu(&sc).show(|ui| {
         for (i, s) in scales.iter().enumerate() {
             if ui.selectable_label(state.scale == i, &s.name).clicked() {
@@ -417,7 +436,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
     } else {
         format!("Ch {} · filter", view.channel + 1)
     };
-    let ch = pill(ui, &mut x, row, 96.0, &ch_label, view.channel_filter != 0)
+    let ch = wrapping_pill(ui, &mut x, &mut row, 96.0, &ch_label, view.channel_filter != 0)
         .on_hover_text("Channel for new notes and which channels show");
     egui::Popup::menu(&ch).show(|ui| {
         ui.label("New events on");
@@ -447,21 +466,28 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
         }
     });
     x += 8.0;
-    if pill(ui, &mut x, row, 52.0, "Step", state.step)
+    if wrapping_pill(ui, &mut x, &mut row, 52.0, "Step", state.step)
         .on_hover_text("Step input: notes played on a MIDI input or the virtual keyboard go in at the step cursor")
         .clicked()
     {
         state.step = !state.step;
         state.step_at = take.notes.iter().map(|n| n.end).max().unwrap_or(0);
     }
-    if pill(ui, &mut x, row, 48.0, "Draw", state.tool == Tool::Draw)
+    if wrapping_pill(ui, &mut x, &mut row, 48.0, "Draw", state.tool == Tool::Draw)
         .on_hover_text("Draw notes and controller values")
         .clicked()
     {
         state.tool = Tool::Draw;
     }
-    let line = pill(ui, &mut x, row, 64.0, &format!("Line {}", shape_glyph(state.shape)), state.tool == Tool::Line)
-        .on_hover_text("Drag in a lane for a line or curve; right-click picks the shape");
+    let line = wrapping_pill(
+        ui,
+        &mut x,
+        &mut row,
+        64.0,
+        &format!("Line {}", shape_glyph(state.shape)),
+        state.tool == Tool::Line,
+    )
+    .on_hover_text("Drag in a lane for a line or curve; right-click picks the shape");
     if line.clicked() {
         state.tool = Tool::Line;
     }
@@ -470,7 +496,8 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
             ui.radio_value(&mut state.shape, k, shape_name(k));
         }
     });
-    let files = pill(ui, &mut x, row, 60.0, "Files", false).on_hover_text("Note names and groove templates");
+    let files =
+        wrapping_pill(ui, &mut x, &mut row, 60.0, "Files", false).on_hover_text("Note names and groove templates");
     egui::Popup::menu(&files).show(|ui| {
         if ui.button("Load note names…").clicked()
             && let Some(path) = rfd::FileDialog::new().add_filter("Note names", &["txt"]).pick_file()
@@ -527,6 +554,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, row: Rect, take: &mut Take, state: 
         apply_notes(app, take.id, &notes, label, false);
         take.notes = notes;
     }
+    row
 }
 
 pub(crate) fn shape_name(k: ShapeKind) -> &'static str {

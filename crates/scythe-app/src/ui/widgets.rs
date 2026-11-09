@@ -438,3 +438,10 @@ pub fn truncate(ui: &Ui, text: &str, font: &egui::FontId, max: f32) -> String {
     }
     String::new()
 }
+
+/// Where a drag that just started was pressed. egui reports a drag only once the pointer has
+/// moved past a threshold, so the pointer's current position can already be off the thing it
+/// grabbed.
+pub fn drag_origin(ui: &Ui, resp: &egui::Response) -> Option<egui::Pos2> {
+    ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos())
+}

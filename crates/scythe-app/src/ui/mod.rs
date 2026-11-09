@@ -440,9 +440,14 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         app.view.setlist = !setlist;
         app.view.monitor_page = false;
     }
-    let mixer_shown = app.view.show_mixer && arrange;
+    let docked_other = app.view.envelope_lanes || app.view.midi_editor.is_some();
+    let mixer_shown = app.view.show_mixer && arrange && !docked_other;
     if rail_button(ui, next(44.0), Icon::Mixer, mixer_shown, ACCENT, "Mixer (Ctrl+M)").clicked() {
         app.view.show_mixer = !mixer_shown;
+        if app.view.show_mixer {
+            app.view.envelope_lanes = false;
+            app.view.midi_editor = None;
+        }
         app.view.monitor_page = false;
         app.view.setlist = false;
     }

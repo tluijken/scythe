@@ -7,6 +7,25 @@ use scythe_core::keymap::{Chord, EXTENDED, FLAG_ALT, FLAG_CTRL, FLAG_SHIFT, FLAG
 use crate::app::ScytheApp;
 use crate::palette::Action;
 
+/// Whether  is a modifier or lock key, which egui reports as a key press of its own
+/// before the key it modifies.
+pub fn is_modifier(key: Key) -> bool {
+    matches!(
+        key,
+        Key::ShiftLeft
+            | Key::ShiftRight
+            | Key::ControlLeft
+            | Key::ControlRight
+            | Key::AltLeft
+            | Key::AltRight
+            | Key::SuperLeft
+            | Key::SuperRight
+            | Key::CapsLock
+            | Key::NumLock
+            | Key::ScrollLock
+    )
+}
+
 /// A key as REAPER's `KEY` line has it: virtual-key codes for letters, digits, function and
 /// navigation keys, character codes for punctuation.
 pub fn chord(key: Key, mods: Modifiers) -> Option<Chord> {
@@ -126,6 +145,12 @@ pub fn keys_text(session: &scythe_session::Session, command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modifier_presses_are_not_keys_of_their_own() {
+        assert!(is_modifier(Key::ControlLeft) && is_modifier(Key::AltRight) && is_modifier(Key::ShiftLeft));
+        assert!(!is_modifier(Key::M) && !is_modifier(Key::F7));
+    }
 
     #[test]
     fn keys_encode_as_reaper_stores_them() {

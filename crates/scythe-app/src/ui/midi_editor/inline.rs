@@ -76,9 +76,9 @@ pub fn inline_editor(
     let hit = |p: egui::Pos2| take.notes.iter().rposition(|n| rect_of(n).contains(p));
     let drag_id = Id::unique(("inline-midi-drag", id));
     if resp.drag_started()
-        && let Some(i) = resp.interact_pointer_pos().and_then(hit)
+        && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
+        && let Some(i) = hit(p)
     {
-        let p = resp.interact_pointer_pos().unwrap_or_default();
         ui.data_mut(|d| d.insert_temp(drag_id, (i, x_tick(p.x) - take.notes[i].start as f64)));
     }
     if resp.dragged()

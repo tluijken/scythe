@@ -206,7 +206,7 @@ fn value_lane(
         }
         Tool::Line => {
             if resp.drag_started()
-                && let Some(p) = resp.interact_pointer_pos()
+                && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
             {
                 ui.data_mut(|d| d.insert_temp(line_id, (axis.tick(p.x), value_at(p.y))));
             }

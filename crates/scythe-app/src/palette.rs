@@ -917,10 +917,11 @@ pub fn shortcut_text(app: &ScytheApp, action: Action) -> String {
     crate::keys::keys_text(&app.session, &action.command())
 }
 
-/// Dispatches keyboard shortcuts unless a text field or a graphics window takes the keys: the
-/// shortcut file's bindings first, then Scythe's defaults.
+/// Dispatches keyboard shortcuts unless a text field, an open menu or a graphics window takes
+/// the keys: the shortcut file's bindings first, then Scythe's defaults.
 pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
-    if ctx.egui_wants_keyboard_input() || app.palette.is_some() || crate::ui::gfx_view::takes_keys(app) {
+    let menu_open = egui::Popup::is_any_open(ctx) || ctx.any_popup_open();
+    if ctx.egui_wants_keyboard_input() || menu_open || app.palette.is_some() || crate::ui::gfx_view::takes_keys(app) {
         return;
     }
     // The windowing layer turns the clipboard shortcuts into events instead of key presses.

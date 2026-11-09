@@ -1418,7 +1418,8 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
     let inner = rect.shrink(16.0);
     let Some((_, item)) = app.project.find_item(id) else { return };
     let item = item.clone();
-    let title = widgets::truncate(ui, &format!("Item · {}", item.name()), &theme::semibold(15.0), inner.width() - 70.0);
+    let title = if item.name().is_empty() { "Item".to_owned() } else { format!("Item · {}", item.name()) };
+    let title = widgets::truncate(ui, &title, &theme::semibold(15.0), inner.width() - 70.0);
     painter.text(inner.left_top() + vec2(0.0, 12.0), Align2::LEFT_CENTER, title, theme::semibold(15.0), TEXT);
     if item.takes.len() > 1 {
         painter.text(

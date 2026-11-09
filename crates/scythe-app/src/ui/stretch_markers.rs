@@ -68,7 +68,7 @@ pub fn show(
         }
         if resp.drag_started() {
             app.sel = Selection { track: Some(track), item: Some(id) };
-            let at = resp.interact_pointer_pos().map_or(0.0, |p| t(p.x));
+            let at = crate::ui::widgets::drag_origin(ui, &resp).map_or(0.0, |p| t(p.x));
             ui.data_mut(|d| d.insert_temp(Id::unique("stretch-grab"), Grab { pos: m.pos, src: m.src, at }));
         }
         if resp.dragged()

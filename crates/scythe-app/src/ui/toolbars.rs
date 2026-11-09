@@ -191,7 +191,8 @@ pub fn editor(app: &mut ScytheApp, ui: &mut Ui) {
                             if ui.small_button("x").on_hover_text("Remove").clicked() {
                                 remove = Some(i);
                             }
-                            if i > 0 && ui.small_button("^").on_hover_text("Move up").clicked() {
+                            if ui.add_enabled(i > 0, egui::Button::new("^").small()).on_hover_text("Move up").clicked()
+                            {
                                 up = Some(i);
                             }
                             let name = if b.is_separator() {

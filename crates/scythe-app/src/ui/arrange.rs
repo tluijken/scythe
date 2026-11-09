@@ -873,7 +873,7 @@ fn draw_item(
         app.sel = Selection { track: Some(track), item: Some(id) };
     }
     if resp.drag_started()
-        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
     {
         ui.data_mut(|d| d.insert_temp(Id::unique("item-grab"), axis.t(p.x) - item.position));
     }

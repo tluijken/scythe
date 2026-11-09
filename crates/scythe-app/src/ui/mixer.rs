@@ -333,7 +333,7 @@ fn pan_controls(
         .on_hover_text(hint);
     let grab_id = Id::unique(("pan-grab", salt));
     if pan_hit.drag_started() {
-        let part = match (mode, pan_hit.interact_pointer_pos()) {
+        let part = match (mode, crate::ui::widgets::drag_origin(ui, &pan_hit)) {
             (PanMode::Dual, Some(at)) => {
                 let near = |k: usize| (at.x - x_of(pan_rect, dual[k])).abs();
                 PanPart::Dual(if near(1) < near(0) { 1 } else { 0 })

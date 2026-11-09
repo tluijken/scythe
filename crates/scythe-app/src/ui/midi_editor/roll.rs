@@ -209,7 +209,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
     };
     let drag_id = Id::unique(("midi-drag", take.id));
     if resp.drag_started()
-        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
     {
         let drag = match hit(&notes, p) {
             Some((i, edge)) => {

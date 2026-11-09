@@ -17,6 +17,9 @@ pub struct ActionsWindow {
     /// Waiting for a key to bind to the selected action.
     pub capturing: bool,
     pub editor: Option<CustomEditor>,
+    /// The filter has had the keyboard since the window opened, so typing searches rather than
+    /// running shortcuts.
+    pub focused_once: bool,
 }
 
 /// A custom action being made or changed.
@@ -49,6 +52,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         .open(&mut open)
         .frame(frame)
         .default_size(vec2(780.0, 520.0))
+        .min_size(vec2(560.0, 320.0))
         .resizable(true)
         .show(&ctx, |ui| body(app, ui, &mut state));
     if let Some(mut editor) = state.editor.take() {
@@ -65,7 +69,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
 fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
     ui.horizontal(|ui| {
         ui.label("Filter");
-        ui.add(egui::TextEdit::singleline(&mut state.query).hint_text("name or command id").desired_width(260.0));
+        let filter =
+            ui.add(egui::TextEdit::singleline(&mut state.query).hint_text("name or command id").desired_width(260.0));
+        if !std::mem::replace(&mut state.focused_once, true) {
+            filter.request_focus();
+        }
         ui.separator();
         if ui.button("New custom action…").clicked() {
             state.editor = Some(CustomEditor { consolidate_undo: true, ..Default::default() });
@@ -174,7 +182,9 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
 fn capture_key(app: &mut ScytheApp, ctx: &egui::Context, state: &mut ActionsWindow) {
     let pressed = ctx.input_mut(|i| {
         let found = i.events.iter().find_map(|e| match e {
-            egui::Event::Key { key, pressed: true, modifiers, .. } => Some((*key, *modifiers)),
+            egui::Event::Key { key, pressed: true, modifiers, .. } if !crate::keys::is_modifier(*key) => {
+                Some((*key, *modifiers))
+            }
             _ => None,
         });
         if found.is_some() {
