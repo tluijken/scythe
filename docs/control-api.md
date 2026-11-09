@@ -547,6 +547,34 @@ the clock settings are reaper.ini's `midiins`, `midiouts`, `midiouts_clock`,
 | `sync.get` | | `{"enabled", "source" ("mtc", "ltc", "clock"), "device", "channel", "offset", "resync_ms", "freewheel_ms", "frame_rate", "clock_outputs"}` |
 | `sync.set` | any of `enabled`, `source`, `device` (63 for all inputs), `channel` (LTC audio input from 0), `offset` (seconds subtracted from the timecode), `resync_ms`, `freewheel_ms`, `frame_rate` (24, 25, 29.97, 30) | the synchronization; chasing MTC or LTC is the project's `SMPTESYNC` line, chasing MIDI clock (Scythe's own) a project extension state |
 
+### MIDI editing
+
+Times are quarter notes from the start of the item's active take; the note and lane commands
+work on the selected notes (all when none is selected) and answer with the item's notes or
+lane events.
+
+| Command | Fields | Answer |
+|---|---|---|
+| `midi.notes.list` | `item` | `[{"index", "start", "end", "key", "velocity", "channel", "selected", "muted", "name"?, "notation"?}]` |
+| `midi.notes.add` | `item`, `notes`: `[{"start", "end"? or "length"?, "key", "velocity"?, "channel"?, "muted"?}]` | the notes |
+| `midi.notes.set` | `item`, `indexes`, any of `start`, `end`, `key`, `velocity`, `channel`, `muted`, `selected` | the notes |
+| `midi.notes.delete`, `midi.notes.select` | `item`, `indexes` | the notes |
+| `midi.quantize` | `item`, `grid?` (the take's), `swing?` (-1 to 1), `strength?` (%), `what?` (`position`, `position_and_end`, `end`, `length`), `window_min?`, `window_max?` (% of the grid) | the notes |
+| `midi.humanize` | `item`, `timing?` (% of the grid), `velocity?` (%), `grid?`, `seed?` | the notes |
+| `midi.transpose` | `item`, `semitones`, `scale?`, `root?` (scale steps when a scale is given) | the notes |
+| `midi.edit` | `item`, `op` (`legato`, `split_grid`, `split`, `join`, `length`, `lengthen`, `move`, `velocity`, `channel`, `mute`, `unmute`, `toggle_mute`, `duplicate`, `force_key`, `select_all`, `select_none`), `value?`, `relative?`, `grid?`, `scale?` | the notes |
+| `midi.action` | `item`, `command` (a REAPER MIDI editor command id, such as 40469), `scale?`, `root?` | the notes |
+| `midi.actions`, `midi.scales` | (`files?` for scales: `.reascale` paths) | the actions with REAPER's names; the scales |
+| `midi.cc.list` | `item`, `lane?` (`cc0`-`cc127`, `cc14:0`-`cc14:31`, `pitch`, `program`, `pressure`, `poly`) | `[{"index", "lane", "at", "value", "channel", "key"?, "shape", "tension"?, "selected", "muted"}]` |
+| `midi.cc.set` | `item`, `lane`, `points`: `[{"at", "value", "channel"?, "key"?, "shape"?, "tension"?}]`, `from?`, `to?` | the lane |
+| `midi.cc.line` | `item`, `lane`, `from`, `to`, `start_value`, `end_value`, `shape?`, `tension?`, `channel?` | the lane: two events joined by a CC shape |
+| `midi.cc.shape`, `midi.cc.delete` | `item`, `lane`, `indexes` (`shape`, `tension?` for the first) | the lane |
+| `midi.sysex.list`, `midi.sysex.add`, `midi.sysex.delete` | `item`; `at` and `hex` or `text` with `kind` (1-15); `indexes` | `[{"index", "at", "kind", "text"?, "hex"}]` |
+| `midi.groove` | `items`, `file` or `groove` (`.rgt` text), `strength?`, `velocity_strength?`, `target?` (`notes`, `items`) | the notes, or the items' positions |
+| `midi.groove.extract` | `item`, `beats?`, `file?` | `{"groove"}`: the `.rgt` text |
+| `midi.editor.get`, `midi.editor.set` | `item`; `mode?` (`piano_roll`, `named_notes`, `event_list`), `grid?`, `swing?`, `key_snap?`, `channel?`, `show_channels?`, `lanes?` | the settings, stored in the take as REAPER stores them |
+| `midi.note_names.get`, `midi.note_names.set` | `track`; `names?` (`[{"key", "name", "channel"?}]`), `file?` (a note name file) | the track's note names |
+
 ### Access links
 
 Answered by the server, not the session; all but `access.whoami` need the admin token.

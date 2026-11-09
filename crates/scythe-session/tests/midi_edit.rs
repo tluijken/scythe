@@ -117,3 +117,33 @@ fn editor_actions_by_reaper_id() {
     assert!(list.as_array().unwrap().iter().any(|a| a["command"] == 40765));
     assert!(execute_json(&mut s, json!({"cmd": "midi.action", "item": item, "command": 1})).is_err());
 }
+
+/// Edits the first item of `SCYTHE_MIDI_EDIT_IN` the way the REAPER render check expects and
+/// saves `SCYTHE_MIDI_EDIT_OUT`, for REAPER to render and the null check to compare.
+#[test]
+#[ignore]
+fn edit_a_project_for_reaper() {
+    let (Ok(input), Ok(output)) = (std::env::var("SCYTHE_MIDI_EDIT_IN"), std::env::var("SCYTHE_MIDI_EDIT_OUT")) else {
+        return;
+    };
+    let mut s = session();
+    ok(&mut s, json!({"cmd": "project.open", "path": input}));
+    let item = s.project.tracks[0].items[0].id.0;
+    ok(&mut s, json!({"cmd": "midi.quantize", "item": item, "grid": 0.25, "swing": 0.5, "strength": 75}));
+    ok(&mut s, json!({"cmd": "midi.transpose", "item": item, "semitones": 1, "scale": "Major", "root": 2}));
+    ok(&mut s, json!({"cmd": "midi.notes.set", "item": item, "indexes": [1], "velocity": 33, "end": 1.9}));
+    ok(&mut s, json!({"cmd": "midi.edit", "item": item, "op": "split", "value": 3.1}));
+    ok(
+        &mut s,
+        json!({"cmd": "midi.cc.line", "item": item, "lane": "cc1", "from": 0.5, "to": 2.5, "start_value": 5, "end_value": 120, "shape": "bezier", "tension": -0.4}),
+    );
+    ok(
+        &mut s,
+        json!({"cmd": "midi.cc.line", "item": item, "lane": "pitch", "from": 1.0, "to": 3.5, "start_value": 16000, "end_value": 100, "shape": "slow_start_end"}),
+    );
+    ok(
+        &mut s,
+        json!({"cmd": "midi.cc.set", "item": item, "lane": "cc1", "points": [{"at": 3.0, "value": 60, "shape": "fast_end"}, {"at": 3.75, "value": 0}]}),
+    );
+    ok(&mut s, json!({"cmd": "project.save", "path": output}));
+}

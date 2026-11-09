@@ -379,11 +379,30 @@ Working:
   and paste keeps the space before them. `Ctrl+G` glues the selected items of a track into one
   rendered file; "Apply track FX to items as new take" renders each item through its track's
   effects into a new, active take.
-- **MIDI editor**: double-click a MIDI item (or `E`) for a docked piano roll: click adds a note on
-  the grid, drag moves, drag the right edge resizes, right-click deletes. The lane below edits
-  velocity or, picked with its label, CC 1/7/10/11/64 or pitch bend (click or drag paints on the
-  grid, right-click deletes); "Quantize" moves note starts onto the grid. Edits are written back
-  into the item's `<SOURCE MIDI` (an edited item leaves its pool). Controllers, pitch bend,
+- **MIDI editor**: double-click a MIDI item (or `E`) for the docked editor of its active take, in
+  three modes: piano roll, named notes (a drum map of the track's note names, REAPER's
+  `MIDINOTENAMES`; `.txt` note name files load and save) and the event list (every note,
+  controller, sysex and text event with its fields editable). Click adds a note on the grid
+  (snapped into the scale with key snap), drag on empty grid selects, Shift adds to the
+  selection, drag moves the selection, drag a right edge resizes, right-click deletes,
+  double-click opens a note's properties (start, length, key, velocity, off velocity, channel,
+  mute). Below the roll sit any number of controller lanes (velocity, off velocity, CC 0-127,
+  14-bit pairs, pitch bend, program, channel and poly aftertouch, sysex, text): the draw tool
+  paints values on the grid, the line tool draws a line or curve as REAPER 7 does (two events
+  joined by a CC shape: linear, slow start/end, fast start, fast end, bezier with tension,
+  square), right-click a value for its shape. Commands: quantize (grid, swing grid, strength,
+  position / position and end / end / length, a window around the grid line), humanize,
+  transpose (by scale steps with key snap), legato, split on the grid, join, mute, force into
+  key, channel for new events and a channel filter, step input (notes played on a MIDI input,
+  the virtual keyboard or the editor's keys go in at the step cursor), groove templates
+  (`.rgt`, applied with a strength; notes save as one). Other selected MIDI items show behind
+  the edited one and a click on one of their notes edits that item. Alt+double-click opens an
+  item's inline editor in the arrange view. The editor's settings are stored in the take as
+  REAPER stores them (`CFGEDIT` mode, channel, grid and swing; `KEYSNAP`; `EVTFILTER`; one
+  `VELLANE` per lane); shaped controllers play as REAPER plays them (steps every 1/`CCINTERP`
+  quarter note). The MIDI editor section's actions (32060) run by their REAPER ids through
+  `midi.action`. Edits are written back into the item's `<SOURCE MIDI` (an edited item leaves
+  its pool). Controllers, pitch bend,
   program changes and aftertouch reach CLAP and LV2 instruments as MIDI and VST 3 instruments
   through their MIDI mapping.
 - **MIDI files and input**: `.mid` files import (dialog or drag-and-drop) as in-project MIDI
@@ -902,6 +921,10 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 | MIDI learn through a virtual MIDI port into REAPER on a dummy JACK server and into Scythe (absolute CC, relative 1-3, toggle, soft takeover, pitch bend, notes, other channels) and MIDI shortcuts to actions (CC on and off values, notes, channels) | same parameter values and toggles in the same order |
 | Mackie Control output: scribble strips (six characters and a space), meter mode SysEx, transport and automation LEDs, the time display in beats mode, empty strips (fader 41, ring centred), the extender's SysEx id | same bytes; REAPER sent no fader, ring or LED updates for strips holding tracks under this setup, so those follow the published protocol |
 | HUI: transport LEDs (zone 0x0E: stop, play and record; REAPER never lights stop), the ping every second | same bytes |
+| MIDI CC shapes (a JSFX turning CC 1, pitch bend and channel pressure into DC, and one counting the events it receives): square, linear, slow start/end, fast start, fast end and beziers of tension -1 to 1 on CC, pitch bend (up, down, to the middle) and channel pressure; `CCINTERP` 4, 32, 128, 0 and -1; two and three bezier segments in a row (the start tangent follows the previous slope), unequal spacing, a shape on the last event, a muted event and another channel between | exact (36 renders); the same number of events (REAPER sends a step only when the value changes) |
+| MIDI editor actions (`MIDIEditor_OnCommand` then `MIDI_GetNote`, seven notes): quantize position (1/16, 1/8, 1/8 swing 50 and 80 %, 1/8 triplet), position and end, set length to grid, lengthen and shorten, move by grid, velocity ±1/±10, semitone up, legato (all and some selected), join, split on grid, duplicate an octave up | same notes |
+| A project Scythe edited through the API (quantize with swing and strength, transpose in D major, note velocity and end, split, a bezier CC line, a slow start/end pitch line, fast-end CC points) and saved, rendered by REAPER and by Scythe through a notes, CC and pitch bend JSFX | exact |
+| Take editor settings saved by REAPER 7.73 (`CFGEDIT` mode, grid, swing, channel; `KEYSNAP`; `EVTFILTER` channel filter; `VELLANE` lane numbers -1, 0-127, 128-133, 167, 168), `MIDINOTENAMES`, sysex, text and notation (`NOTE` type 15) events read and written back unchanged | same lines |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.
@@ -925,6 +948,15 @@ compares the two files.
   ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
   sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
   that address.
+- MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
+  (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
+  Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes
+  left overlapping (it merges notes landing on one start, which Scythe does) is the only
+  overlap rule. Key snap's root and scale are not stored in the take (REAPER keeps them in the
+  editor, outside the project; Scythe keeps them per window). Pooled MIDI is not edited as a
+  pool. The inline editor draws notes only (no lanes). Other items show behind the edited one
+  without their takes' play rate or loops.
+
 - Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
   only between the first and last message played (REAPER's CC timeout is not modelled). The
   MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
