@@ -6,6 +6,8 @@ use crate::envelope::{Envelope, EnvelopeKind};
 use crate::fade::Fade;
 use crate::fader::PanMode;
 use crate::groups::GroupFlags;
+use crate::lanes::CompArea;
+use crate::recording::{MonitorMode, RecordMode, RecordTap};
 use crate::rpp::{Chunk, Node};
 use crate::stretch::StretchMarker;
 use crate::tempo::TempoMap;
@@ -799,8 +801,19 @@ pub struct Track {
     /// for a stereo pair, negative for none; MIDI inputs as `midi_route::MidiInput`. The `REC`
     /// line stores MIDI device numbers differently (`midi_route::rec_input_to_rpp`).
     pub rec_input: i64,
-    /// Hear the record input through the track while armed (`REC` field 3).
+    /// Hear the record input through the track while armed (`REC` field 3 not 0).
     pub monitor: bool,
+    /// Tape-style monitoring (`REC` field 3 is 2): the input is heard while stopped or
+    /// recording, not while playing back.
+    pub monitor_auto: bool,
+    /// What recording writes (`REC` field 4).
+    pub rec_mode: RecordMode,
+    /// Where output recording taps the track (`REC` field 8).
+    pub rec_tap: RecordTap,
+    /// Recording tracks play their items while recording (`REC` field 5).
+    pub monitor_items: bool,
+    /// Arm the track when it is selected (`AUTO_RECARM`).
+    pub auto_arm: bool,
     /// Folder structure delta after this track: +1 opens a folder (this track is its parent),
     /// -n closes n levels (this track is the last child).
     pub folder_depth: i32,
@@ -821,6 +834,13 @@ pub struct Track {
     pub fixed_lanes: bool,
     /// Fixed lanes that play (`LANESOLO`): a bitmask per 32 lanes; `None` plays every lane.
     pub lane_solo: Option<Vec<u32>>,
+    /// Lane names (`LANENAME`), top lane first; comp lanes are named `C1`, `C2`...
+    pub lane_names: Vec<String>,
+    /// `LANEREC`: the lane recording goes into (-1 for any), the comp lane being built (-1
+    /// for none), a field kept as is and the lane last recorded into.
+    pub lane_rec: Option<[i64; 4]>,
+    /// The comp areas of the comp lane (`LINKEDLANE`), in time order.
+    pub comp_areas: Vec<CompArea>,
     /// The timebase of the track's items (`BEAT`); `None` takes the project's.
     pub timebase: Option<Timebase>,
     pub items: Vec<Item>,
@@ -880,6 +900,19 @@ impl Track {
         }
     }
 
+    pub fn monitor_mode(&self) -> MonitorMode {
+        match (self.monitor, self.monitor_auto) {
+            (false, _) => MonitorMode::Off,
+            (true, false) => MonitorMode::On,
+            (true, true) => MonitorMode::Auto,
+        }
+    }
+
+    pub fn set_monitor_mode(&mut self, mode: MonitorMode) {
+        self.monitor = mode != MonitorMode::Off;
+        self.monitor_auto = mode == MonitorMode::Auto;
+    }
+
     /// Whether items in `lane` play: every lane does unless the track has fixed lanes and
     /// some are soloed.
     pub fn lane_plays(&self, lane: usize) -> bool {
@@ -915,6 +948,11 @@ impl Track {
             armed: false,
             rec_input: 0,
             monitor: true,
+            monitor_auto: false,
+            rec_mode: RecordMode::Input,
+            rec_tap: RecordTap::PostFader,
+            monitor_items: false,
+            auto_arm: false,
             folder_depth: 0,
             main_send: true,
             pan_law: -1.0,
@@ -924,6 +962,9 @@ impl Track {
             main_send_offset: 0,
             fixed_lanes: false,
             lane_solo: None,
+            lane_names: Vec::new(),
+            lane_rec: None,
+            comp_areas: Vec::new(),
             timebase: None,
             items: Vec::new(),
             fx: Vec::new(),

@@ -7,6 +7,7 @@ pub mod fx_chain;
 pub mod glue;
 pub mod groups;
 pub mod history;
+pub mod lanes;
 pub mod marker_action;
 pub mod metronome;
 pub mod midi;

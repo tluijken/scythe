@@ -23,7 +23,19 @@ pub struct Preferences {
     pub project_tabs: Vec<String>,
     /// `lastproject`: the file of the active tab.
     pub last_project: Option<String>,
+    /// `autoxfade`: editing and recording flags; Scythe reads the recording ones
+    /// (`AUTOXFADE_*`) and keeps the others. `None` until set: REAPER's default.
+    pub autoxfade: Option<u32>,
 }
+
+/// `autoxfade` bit: recording on a fixed-lane track puts each pass in a new lane.
+pub const AUTOXFADE_RECORD_LANES: u32 = 8;
+/// `autoxfade` bit: loop recording adds takes even when new recording adds lanes.
+pub const AUTOXFADE_LOOP_TAKES: u32 = 16;
+/// `autoxfade` bit: newly recorded lanes play exclusively (else they play in layers).
+pub const AUTOXFADE_LANES_EXCLUSIVE: u32 = 256;
+/// REAPER 7.73's `autoxfade` when reaper.ini has none.
+pub const AUTOXFADE_DEFAULT: u32 = 385;
 
 /// Which MIDI devices are enabled and which outputs get clock, as reaper.ini keeps them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,6 +91,7 @@ impl Default for Preferences {
             midi: MidiPrefs::default(),
             project_tabs: Vec::new(),
             last_project: None,
+            autoxfade: None,
         }
     }
 }
@@ -126,6 +139,7 @@ impl Preferences {
                 "metronome_defout" => {
                     prefs.metronome_default_output = value.parse().unwrap_or(prefs.metronome_default_output)
                 }
+                "autoxfade" => prefs.autoxfade = value.parse::<i64>().ok().map(|v| v as u32),
                 "csurf_cnt" => surface_count = value.parse().unwrap_or(0),
                 "projecttabs" => tab_count = value.parse().unwrap_or(0),
                 "lastproject" => prefs.last_project = Some(value.to_owned()).filter(|v| !v.is_empty()),
@@ -169,6 +183,9 @@ impl Preferences {
             ("prerollmeas".to_owned(), format!("{:.14}", self.preroll_measures)),
             ("metronome_defout".to_owned(), self.metronome_default_output.to_string()),
         ];
+        if let Some(v) = self.autoxfade {
+            values.push(("autoxfade".to_owned(), v.to_string()));
+        }
         let has_surfaces = !self.surfaces.is_empty() || text.lines().any(|l| l.trim_start().starts_with("csurf_cnt="));
         if has_surfaces {
             values.push(("csurf_cnt".to_owned(), self.surfaces.len().to_string()));
@@ -239,6 +256,15 @@ impl Preferences {
             flush(&mut out, &mut written);
         }
         out.join("\n") + "\n"
+    }
+
+    pub fn autoxfade_bit(&self, bit: u32) -> bool {
+        self.autoxfade.unwrap_or(AUTOXFADE_DEFAULT) & bit != 0
+    }
+
+    pub fn set_autoxfade_bit(&mut self, bit: u32, on: bool) {
+        let v = self.autoxfade.unwrap_or(AUTOXFADE_DEFAULT);
+        self.autoxfade = Some(if on { v | bit } else { v & !bit });
     }
 
     pub fn count_in_at_measure(&self) -> bool {

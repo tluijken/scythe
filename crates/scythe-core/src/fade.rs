@@ -8,11 +8,13 @@ pub struct Fade {
     pub shape: u8,
     /// Curvature in -1..=1 bending the shape further.
     pub curve: f64,
+    /// Shape `1.1`, which REAPER writes where comp areas cross-fade: an equal-power curve.
+    pub power: bool,
 }
 
 impl Fade {
     pub const fn new(length: f64) -> Self {
-        Self { length, auto_length: 0.0, shape: 1, curve: 0.0 }
+        Self { length, auto_length: 0.0, shape: 1, curve: 0.0, power: false }
     }
 
     pub fn effective_length(&self) -> f64 {
@@ -27,6 +29,12 @@ impl Fade {
     /// REAPER 7.73 renders (within 3e-4). Everything else matches REAPER exactly.
     pub fn gain(&self, x: f64) -> f64 {
         let x = x.clamp(0.0, 1.0);
+        if self.power && self.shape == 1 {
+            // A quartic through the quarter sine, measured from REAPER 7.73 renders (exact
+            // within 4e-8).
+            use std::f64::consts::PI;
+            return x * (PI / 2.0 + x * ((4.0 - 1.25 * PI) + x * ((PI - 4.0) + x * (1.0 - PI / 4.0))));
+        }
         let c = self.curve.clamp(-1.0, 1.0);
         let fast = |k: i32| 1.0 - (1.0 - x).powi(k);
         let towards = |base: f64, steep_rise: f64| {

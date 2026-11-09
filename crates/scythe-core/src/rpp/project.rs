@@ -5,10 +5,12 @@ use crate::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use crate::fade::Fade;
 use crate::fader::PanMode;
 use crate::groups::GroupFlags;
+use crate::lanes::{COMP_FADE, CompArea};
 use crate::model::{
     AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, RegionRenderTrack,
     Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
 };
+use crate::recording::{RecordMode, RecordTap};
 use crate::tempo::TempoPoint;
 use crate::timebase::{PlayRate, Timebase};
 use crate::units::PanTaper;
@@ -496,7 +498,35 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                     "REC" => {
                         track.armed = flag(&t, 1);
                         track.rec_input = crate::midi_route::rec_input_from_rpp(num(&t, 2, 0.0) as i64);
-                        track.monitor = flag(&t, 3);
+                        let monitor = num(&t, 3, 1.0) as i64;
+                        (track.monitor, track.monitor_auto) = (monitor != 0, monitor == 2);
+                        track.rec_mode = RecordMode::from_code(num(&t, 4, 0.0) as i64);
+                        track.rec_tap = RecordTap::from_code(num(&t, 8, 0.0) as i64);
+                        track.monitor_items = flag(&t, 5);
+                        track.extra.push(node.clone());
+                    }
+                    "AUTO_RECARM" => {
+                        track.auto_arm = flag(&t, 1);
+                        track.extra.push(node.clone());
+                    }
+                    "LANENAME" => {
+                        track.lane_names = t[1..].to_vec();
+                        track.extra.push(node.clone());
+                    }
+                    "LANEREC" => {
+                        track.lane_rec = Some(std::array::from_fn(|i| num(&t, i + 1, -1.0) as i64));
+                        track.extra.push(node.clone());
+                    }
+                    "LINKEDLANE" => {
+                        let field = |i: usize, d: &str| t.get(i).cloned().unwrap_or_else(|| d.to_owned());
+                        track.comp_areas.push(CompArea {
+                            start: num(&t, 1, 0.0),
+                            end: num(&t, 2, 0.0),
+                            lane: num(&t, 3, 0.0).max(0.0) as usize,
+                            fade_in: num(&t, 6, COMP_FADE),
+                            fade_out: num(&t, 7, COMP_FADE),
+                            extra: [field(4, "0"), field(5, "-1")],
+                        });
                         track.extra.push(node.clone());
                     }
                     "HWOUT" => {
@@ -816,16 +846,18 @@ fn parse_fade(t: &[String]) -> Fade {
         auto_length: num(t, 3, 0.0),
         shape: num(t, 1, 0.0).clamp(0.0, 6.0) as u8,
         curve: num(t, 6, 0.0),
+        power: (num(t, 1, 0.0) - 1.1).abs() < 1e-9,
     }
 }
 
 fn fade_line(lines: &LineMemo, key: &str, f: &Fade) -> Vec<String> {
     let mut set = vec![(2, fmt_num(f.length)), (3, fmt_num(f.auto_length)), (6, fmt_num(f.curve))];
-    // The shape field can carry a fraction (`1.1`) that REAPER renders as its integer part; only
-    // rewrite it, and the fourth field when it mirrors it, if the shape actually changed.
+    // The shape field can carry a fraction (`1.1`, the equal-power variant); only rewrite it, and
+    // the fourth field when it mirrors it, if the shape actually changed.
     let old = lines.get(key);
-    if old.is_none_or(|t| num(t, 1, 0.0).clamp(0.0, 6.0) as u8 != f.shape) {
-        set.push((1, f.shape.to_string()));
+    if old.is_none_or(|t| parse_fade(t).shape != f.shape || parse_fade(t).power != f.power) {
+        let shape = if f.power && f.shape == 1 { "1.1".to_owned() } else { f.shape.to_string() };
+        set.push((1, shape));
         if old.is_none_or(|t| num(t, 1, -1.0) == num(t, 4, -2.0)) {
             set.push((4, f.shape.to_string()));
         }
@@ -1210,6 +1242,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     }
 
     let mut wrote_rec = false;
+    let mut wrote_auto_arm = false;
+    // FREEMODE, LANESOLO, LANEREC, LANENAME, ITEMLANES, LINKEDLANE.
+    let mut wrote_lanes = [false; 6];
     let mut wrote_auto = false;
     let mut wrote_midi_out = false;
     let mut wrote_nchan = false;
@@ -1285,19 +1320,56 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 wrote_groups = true;
             }
             Node::Line(l) if line_key(l) == "REC" => {
-                let mut toks = tokenize(l);
-                if toks.len() > 1 {
-                    toks[1] = if t.armed { "1" } else { "0" }.to_owned();
-                }
-                if toks.len() > 2 {
-                    toks[2] = crate::midi_route::rec_input_to_rpp(t.rec_input).to_string();
-                }
-                // REAPER has several monitoring modes; keep the stored one while it agrees on on/off.
-                if toks.len() > 3 && (num(&toks, 3, 0.0) != 0.0) != t.monitor {
-                    toks[3] = bit(t.monitor);
-                }
-                c.line(toks);
+                c.line(rec_line(t, tokenize(l)));
                 wrote_rec = true;
+            }
+            Node::Line(l) if line_key(l) == "AUTO_RECARM" => {
+                if t.auto_arm {
+                    c.line(["AUTO_RECARM", "1"]);
+                }
+                wrote_auto_arm = true;
+            }
+            Node::Line(l) if line_key(l) == "FREEMODE" => {
+                let stored = num(&tokenize(l), 1, 0.0) as i64;
+                let mode = if t.fixed_lanes {
+                    2
+                } else if stored == 2 {
+                    0
+                } else {
+                    stored
+                };
+                c.line(["FREEMODE".to_owned(), mode.to_string()]);
+                wrote_lanes[0] = true;
+            }
+            Node::Line(l) if line_key(l) == "LANESOLO" => {
+                if !wrote_lanes[1] {
+                    write_lane_solo(&mut c, t);
+                }
+                wrote_lanes[1] = true;
+            }
+            Node::Line(l) if line_key(l) == "LANEREC" => {
+                if let Some(rec) = t.lane_rec {
+                    c.line(std::iter::once("LANEREC".to_owned()).chain(rec.iter().map(i64::to_string)));
+                }
+                wrote_lanes[2] = true;
+            }
+            Node::Line(l) if line_key(l) == "LANENAME" => {
+                if !t.lane_names.is_empty() {
+                    c.line(std::iter::once("LANENAME".to_owned()).chain(t.lane_names.iter().cloned()));
+                }
+                wrote_lanes[3] = true;
+            }
+            Node::Line(l) if line_key(l) == "ITEMLANES" => {
+                if t.fixed_lanes {
+                    c.line(["ITEMLANES".to_owned(), t.lane_count().to_string()]);
+                }
+                wrote_lanes[4] = true;
+            }
+            Node::Line(l) if line_key(l) == "LINKEDLANE" => {
+                if !wrote_lanes[5] {
+                    write_comp_areas(&mut c, t);
+                }
+                wrote_lanes[5] = true;
             }
             _ => c.children.push(node.clone()),
         }
@@ -1326,9 +1398,33 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     if !wrote_auto && t.auto_mode != AutoMode::TrimRead {
         c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
     }
-    if !wrote_rec && t.armed {
-        let input = crate::midi_route::rec_input_to_rpp(t.rec_input).to_string();
-        c.line(["REC", "1", &input, &bit(t.monitor), "0", "0", "0", "0", "0"]);
+    let default_rec =
+        t.monitor && !t.monitor_auto && t.rec_mode == RecordMode::Input && t.rec_tap.code() == 0 && !t.monitor_items;
+    if !wrote_rec && (t.armed || !default_rec) {
+        c.line(rec_line(t, ["REC", "0", "0", "1", "0", "0", "0", "0", "0"].map(String::from).to_vec()));
+    }
+    if !wrote_auto_arm && t.auto_arm {
+        c.line(["AUTO_RECARM", "1"]);
+    }
+    if t.fixed_lanes {
+        if !wrote_lanes[0] {
+            c.line(["FREEMODE", "2"]);
+        }
+        if !wrote_lanes[1] {
+            write_lane_solo(&mut c, t);
+        }
+        if let (false, Some(rec)) = (wrote_lanes[2], t.lane_rec) {
+            c.line(std::iter::once("LANEREC".to_owned()).chain(rec.iter().map(i64::to_string)));
+        }
+        if !wrote_lanes[3] && !t.lane_names.is_empty() {
+            c.line(std::iter::once("LANENAME".to_owned()).chain(t.lane_names.iter().cloned()));
+        }
+        if !wrote_lanes[4] {
+            c.line(["ITEMLANES".to_owned(), t.lane_count().to_string()]);
+        }
+        if !wrote_lanes[5] {
+            write_comp_areas(&mut c, t);
+        }
     }
     for env in t.envelopes.iter().filter(|e| !wrote_envs.contains(&e.kind)) {
         c.push_chunk(write_envelope(env));
@@ -1369,6 +1465,47 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         c.push_chunk(write_item(item));
     }
     c
+}
+
+/// `REC armed input monitor mode monitor-items preserve-pdc ? flags`, from the stored line.
+fn rec_line(t: &Track, mut toks: Vec<String>) -> Vec<String> {
+    toks.resize(toks.len().max(9), "0".into());
+    toks[1] = bit(t.armed);
+    toks[2] = crate::midi_route::rec_input_to_rpp(t.rec_input).to_string();
+    // A stored value REAPER does not document (3) stays while it still means "on".
+    let stored = num(&toks, 3, 1.0) as i64;
+    let monitor = match (t.monitor, t.monitor_auto) {
+        (false, _) => 0,
+        (true, true) => 2,
+        (true, false) if stored != 0 && stored != 2 => stored,
+        (true, false) => 1,
+    };
+    toks[3] = monitor.to_string();
+    toks[4] = t.rec_mode.code().to_string();
+    toks[5] = bit(t.monitor_items);
+    toks[8] = ((num(&toks, 8, 0.0) as i64 & !3) | t.rec_tap.code()).to_string();
+    toks
+}
+
+fn write_lane_solo(c: &mut Chunk, t: &Track) {
+    if let Some(words) = &t.lane_solo {
+        c.line(std::iter::once("LANESOLO".to_owned()).chain(words.iter().map(u32::to_string)));
+    }
+}
+
+fn write_comp_areas(c: &mut Chunk, t: &Track) {
+    for a in &t.comp_areas {
+        c.line([
+            "LINKEDLANE".to_owned(),
+            fmt_num(a.start),
+            fmt_num(a.end),
+            a.lane.to_string(),
+            a.extra[0].clone(),
+            a.extra[1].clone(),
+            fmt_num(a.fade_in),
+            fmt_num(a.fade_out),
+        ]);
+    }
 }
 
 fn midi_out_code(out: Option<(u8, u8)>) -> i64 {
@@ -1972,6 +2109,44 @@ mod section_tests {
         assert_eq!(tracks[0].sends.len(), 1);
         assert_eq!(tracks[0].sends[0].dest, tracks[1].id);
         assert_ne!(tracks[0].guid, p.tracks[0].guid);
+    }
+
+    /// The record settings and comp lanes as REAPER 7.73 saves them (Lua probes).
+    #[test]
+    fn record_modes_and_comp_lanes_round_trip() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  RECMODE 0\n  <TRACK\n    FREEMODE 2\n    FIXEDLANES 9 0 0 0 0\n    LANESOLO 1 0 0 0 0 0 0 0\n    LANEREC -1 0 -1 -1\n    LANENAME C1 1 2 3\n    REC 1 1024 2 6 1 0 0 2\n    AUTO_RECARM 1\n    ITEMLANES 4\n    LINKEDLANE 1.5 2.01 1 0 -1 0.01 0.01\n    LINKEDLANE 2 2.75 2 0 -1 0.01 0.01\n  >\n>\n";
+        let p = project_from_rpp(text).unwrap();
+        let t = &p.tracks[0];
+        assert!(t.armed && t.monitor && t.monitor_auto && t.monitor_items && t.auto_arm);
+        assert_eq!(t.rec_mode, RecordMode::Output { format: crate::recording::OutputFormat::Mono, compensated: true });
+        assert_eq!(t.rec_tap, RecordTap::PostFxPreFader);
+        assert_eq!(t.lane_names, ["C1", "1", "2", "3"]);
+        assert_eq!((t.comp_lane(), t.comp_areas.len(), t.comp_areas[1].lane), (Some(0), 2, 2));
+        assert_eq!(crate::recording::ProjectRecordMode::of(&p), crate::recording::ProjectRecordMode::ItemPunch);
+        let out = project_to_rpp(&p);
+        for line in [
+            "REC 1 1024 2 6 1 0 0 2",
+            "AUTO_RECARM 1",
+            "LANEREC -1 0 -1 -1",
+            "LANENAME C1 1 2 3",
+            "LINKEDLANE 1.5 2.01 1 0 -1 0.01 0.01",
+            "LINKEDLANE 2 2.75 2 0 -1 0.01 0.01",
+            "LANESOLO 1 0 0 0 0 0 0 0",
+            "FREEMODE 2",
+        ] {
+            assert!(out.contains(line), "{line} missing in\n{out}");
+        }
+        let mut p = p;
+        let t = &mut p.tracks[0];
+        (t.monitor_auto, t.rec_mode, t.rec_tap, t.auto_arm) =
+            (false, RecordMode::MidiLatchReplace, RecordTap::PreFx, false);
+        let out = project_to_rpp(&p);
+        assert!(out.contains("REC 1 1024 1 16 1 0 0 1") && !out.contains("AUTO_RECARM"), "{out}");
+        // A track that is not armed but records its output keeps a REC line.
+        let mut t = Track::new("o");
+        t.rec_mode = RecordMode::Output { format: crate::recording::OutputFormat::Stereo, compensated: false };
+        p.tracks.push(t);
+        assert!(project_to_rpp(&p).contains("REC 0 0 1 1 0 0 0 0"));
     }
 
     #[test]
