@@ -169,7 +169,19 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         }
     }
 
-    let mut y = tabs.bottom() + 16.0;
+    // The tab's content scrolls under the tabs when it is taller than the card.
+    let area = Rect::from_min_max(pos2(rect.left(), tabs.bottom() + 8.0), rect.max);
+    let scroll_id = Id::unique("inspector-scroll");
+    let mut scroll: f32 = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0.0);
+    if ui.rect_contains_pointer(area) {
+        scroll -= ui.input(|i| i.smooth_scroll_delta.y);
+    }
+    let mut content = ui.new_child(egui::UiBuilder::new().max_rect(area));
+    content.set_clip_rect(area.intersect(ui.clip_rect()));
+    let ui = &mut content;
+    let clip = painter.with_clip_rect(area);
+    let start = tabs.bottom() + 16.0;
+    let mut y = start - scroll;
     match app.view.inspector_tab {
         InspectorTab::Fx => fx_tab(app, ui, &clip, inner, &mut y, track_id),
         InspectorTab::Sends => sends_tab(app, ui, &clip, inner, &mut y, track_id),
@@ -195,7 +207,14 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             y += 46.0;
         }
     }
-    let panel = Rect::from_min_max(rect.min, pos2(rect.right(), (y + 10.0).min(rect.bottom())));
+    let overflow = (y + scroll + 10.0 - rect.bottom()).max(0.0);
+    let clamped = scroll.clamp(0.0, overflow);
+    if clamped != scroll {
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|d| d.insert_temp(scroll_id, clamped));
+    let bottom = if overflow > 0.0 { rect.bottom() } else { (y + 10.0).min(rect.bottom()) };
+    let panel = Rect::from_min_max(rect.min, pos2(rect.right(), bottom));
     painter.set(background, egui::epaint::RectShape::filled(panel, CornerRadius::same(18), PANEL));
 }
 

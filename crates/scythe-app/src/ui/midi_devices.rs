@@ -103,10 +103,16 @@ fn keyboard(app: &mut ScytheApp, ui: &mut Ui) {
                 app.view.keyboard.velocity = v.clamp(1.0, 127.0) as u8;
             }
             if !app.keyboard_in_use() {
+                let hint = crate::ui::widgets::truncate(
+                    ui,
+                    "Arm a track to hear it",
+                    &theme::regular(11.0),
+                    ui.clip_rect().right().min(row.right()) - row.left() - 308.0,
+                );
                 ui.painter().text(
                     row.min + vec2(300.0, 13.0),
                     Align2::LEFT_CENTER,
-                    "Arm a track with the keyboard as its MIDI input to hear it",
+                    hint,
                     theme::regular(11.0),
                     TEXT_DIM,
                 );

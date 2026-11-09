@@ -226,7 +226,11 @@ pub struct Unused {
 pub fn unused_files(project: &Project, dir: &Path) -> std::io::Result<Unused> {
     let used = used_files(project);
     let mut out = Unused { dir: dir.to_owned(), ..Default::default() };
-    for entry in std::fs::read_dir(dir)? {
+    let read = match std::fs::read_dir(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        read => read?,
+    };
+    for entry in read {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -270,6 +274,13 @@ mod tests {
     }
 
     /// The scratch project REAPER 7.73's "clean current project directory" was run on.
+    #[test]
+    fn a_project_without_its_media_folder_has_nothing_to_clean() {
+        let dir = std::env::temp_dir().join(format!("scythe-bay-missing-{}", std::process::id())).join("Media");
+        let unused = unused_files(&Project::default(), &dir).unwrap();
+        assert_eq!((unused.total, unused.files.len()), (0, 0));
+    }
+
     #[test]
     fn lists_unused_files_as_reaper_does() {
         let dir = std::env::temp_dir().join(format!("scythe-bay-{}", std::process::id()));
