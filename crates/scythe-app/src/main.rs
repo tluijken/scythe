@@ -200,6 +200,7 @@ fn main() -> eframe::Result {
     let demo = args.iter().any(|a| a == "--demo") || open.is_none();
     let play = args.iter().any(|a| a == "--play");
     let no_input = args.iter().any(|a| a == "--no-input");
+    let null_audio = args.iter().any(|a| a == "--null-audio");
     let setlist = args.iter().any(|a| a == "--setlist");
 
     if args.iter().any(|a| a == "--render-project") {
@@ -249,7 +250,7 @@ fn main() -> eframe::Result {
             if let Some(scale) = std::env::var("SCYTHE_UI_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
                 cc.egui_ctx.set_zoom_factor(scale.clamp(0.5, 3.0));
             }
-            let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default());
+            let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default(), null_audio);
             app.no_input = no_input;
             app.view.setlist = setlist;
             match open {

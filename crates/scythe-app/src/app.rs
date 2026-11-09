@@ -152,9 +152,12 @@ pub struct GfxView {
 }
 
 impl ScytheApp {
-    pub fn new(ctx: egui::Context, project: Project) -> Self {
+    /// A window on `project`, playing on the default device, or on a silent clock with
+    /// `null_audio`.
+    pub fn new(ctx: egui::Context, project: Project, null_audio: bool) -> Self {
         let pool = Arc::new(MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK));
-        let mut session = Session::new(Engine::start(pool));
+        let engine = if null_audio { Engine::start_offline(pool, 48_000) } else { Engine::start(pool) };
+        let mut session = Session::new(engine);
         session.load(project);
         Self::with_session(ctx, session)
     }
