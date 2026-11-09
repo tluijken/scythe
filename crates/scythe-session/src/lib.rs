@@ -11,6 +11,7 @@ mod live;
 mod media;
 mod midi;
 pub mod render;
+pub mod tabs;
 mod transport;
 
 pub mod access;
@@ -109,6 +110,9 @@ pub struct Session {
     pub selected_track: Option<TrackId>,
     /// MIDI and OSC learn: listening, and the action shortcuts.
     pub learn: learn::LearnState,
+    /// Every project tab; the active one's slot is empty, its project being `project`.
+    parked_tabs: Vec<Option<tabs::ParkedTab>>,
+    active_tab: usize,
 }
 
 impl Session {
@@ -153,6 +157,8 @@ impl Session {
             surface_status: Vec::new(),
             selected_track: None,
             learn: Default::default(),
+            parked_tabs: vec![None],
+            active_tab: 0,
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));

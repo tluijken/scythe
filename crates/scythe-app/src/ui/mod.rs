@@ -28,6 +28,7 @@ const INSPECTOR_W: f32 = 300.0;
 const MIXER_H: f32 = 236.0;
 const MIDI_H: f32 = 340.0;
 const SEARCH_W: f32 = 216.0;
+const TABS_H: f32 = 30.0;
 
 pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     let full = ui.max_rect();
@@ -37,7 +38,13 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     let header = Rect::from_min_size(area.min, vec2(area.width(), HEADER_H));
     top_bar(app, ui, header);
 
-    let body = Rect::from_min_max(pos2(area.left(), header.bottom() + GAP), area.max);
+    let mut top = header.bottom() + GAP;
+    if app.tab_count() > 1 {
+        let strip = Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), TABS_H));
+        project_tabs(app, ui, strip);
+        top = strip.bottom() + GAP;
+    }
+    let body = Rect::from_min_max(pos2(area.left(), top), area.max);
     let show_inspector = body.width() > 980.0;
     let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 + 8.0 * 48.0 + 1.0 + 8.0));
     nav_rail(app, ui, rail);
@@ -78,6 +85,46 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     }
 
     finish(app, ui, full);
+}
+
+/// The project tabs, shown while more than one project is open: a click switches, the cross
+/// closes, the plus opens a new tab.
+fn project_tabs(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
+    let font = theme::regular(13.0);
+    let mut x = rect.left();
+    let mut action = None;
+    for tab in app.tabs() {
+        let label = if tab.dirty { format!("{} *", tab.name) } else { tab.name.clone() };
+        let label = widgets::truncate(ui, &label, &font, 180.0);
+        let w = widgets::text_width(ui, &label, font.clone()) + 48.0;
+        let r = Rect::from_min_size(pos2(x, rect.top()), vec2(w, rect.height()));
+        let (bg, fg) = if tab.active { (RAISED_HI, TEXT) } else { (PANEL, TEXT_DIM) };
+        let tip = tab.path.as_ref().map_or_else(|| "Not saved yet".to_owned(), |p| p.display().to_string());
+        let body = Rect::from_min_max(r.min, pos2(r.right() - 24.0, r.bottom()));
+        let resp = ui.interact(body, egui::Id::unique(("project_tab", tab.index)), Sense::click()).on_hover_text(tip);
+        ui.painter().rect_filled(r, CornerRadius::same(8), if resp.hovered() { RAISED } else { bg });
+        if tab.active {
+            let bar = Rect::from_min_size(pos2(r.left() + 8.0, r.bottom() - 3.0), vec2(w - 16.0, 2.0));
+            ui.painter().rect_filled(bar, CornerRadius::same(1), ACCENT);
+        }
+        ui.painter().text(pos2(r.left() + 12.0, r.center().y), Align2::LEFT_CENTER, label, font.clone(), fg);
+        let close = Rect::from_center_size(pos2(r.right() - 14.0, r.center().y), vec2(18.0, 18.0));
+        if icon_button(ui, close, Icon::Close, egui::Color32::TRANSPARENT, TEXT_DIM, 12.0, "Close tab").clicked() {
+            action = Some((tab.index, true));
+        } else if resp.clicked() {
+            action = Some((tab.index, false));
+        }
+        x = r.right() + 6.0;
+    }
+    let plus = Rect::from_min_size(pos2(x, rect.top()), vec2(rect.height(), rect.height()));
+    if icon_button(ui, plus, Icon::Plus, PANEL, TEXT_MID, 14.0, "New project tab").clicked() {
+        app.new_tab();
+    }
+    match action {
+        Some((i, true)) => app.close_tab(i),
+        Some((i, false)) => app.switch_tab(i),
+        None => {}
+    }
 }
 
 /// Windows and overlays drawn over every page.

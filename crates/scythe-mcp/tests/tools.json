@@ -480,6 +480,94 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The open project tabs, in order, and which is active.\n\nControl API command `project.tabs`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "project_tabs",
+    "title": "Project tabs"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Opens a new tab, with the .RPP at `path` or an empty project, and switches to it.\n\nControl API command `project.tab_new`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "default": null,
+          "description": "A path on the machine running Scythe; an empty project when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "project_tab_new",
+    "title": "Project tab new"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Switches to tab `index` (from 0); the tab left stops and keeps its unsaved changes.\n\nControl API command `project.tab_switch`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "project_tab_switch",
+    "title": "Project tab switch"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Closes tab `index` (the active one when left out), dropping its unsaved changes.\n\nControl API command `project.tab_close`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "project_tab_close",
+    "title": "Project tab close"
+  },
+  {
+    "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true
     },

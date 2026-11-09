@@ -48,6 +48,25 @@ pub enum ProjectCommand {
         #[serde(default)]
         at: Option<f64>,
     },
+    /// The open project tabs, in order, and which is active.
+    #[serde(rename = "project.tabs")]
+    Tabs,
+    /// Opens a new tab, with the .RPP at `path` or an empty project, and switches to it.
+    #[serde(rename = "project.tab_new")]
+    TabNew {
+        /// A path on the machine running Scythe; an empty project when left out.
+        #[serde(default)]
+        path: Option<PathBuf>,
+    },
+    /// Switches to tab `index` (from 0); the tab left stops and keeps its unsaved changes.
+    #[serde(rename = "project.tab_switch")]
+    TabSwitch { index: usize },
+    /// Closes tab `index` (the active one when left out), dropping its unsaved changes.
+    #[serde(rename = "project.tab_close")]
+    TabClose {
+        #[serde(default)]
+        index: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +135,34 @@ pub fn execute(session: &mut Session, command: ProjectCommand) -> Result<Value, 
             };
             session.edit_merging("Change tempo", "tempo", |p| p.change_tempo(|t| t.set_bpm_at(at, bpm)));
             Ok(serde_json::json!({"bpm": session.project.tempo.bpm_at(at)}))
+        }
+        ProjectCommand::Tabs => Ok(json(session.tabs())),
+        ProjectCommand::TabNew { path } => {
+            session.stop();
+            match path {
+                Some(path) => session.open_in_new_tab(&path).map_err(ApiError::failed)?,
+                None => session.new_tab(),
+            }
+            Ok(json(session.tabs()))
+        }
+        ProjectCommand::TabSwitch { index } => {
+            if index >= session.tab_count() {
+                return Err(ApiError::not_found(format!("no tab {index}")));
+            }
+            session.stop();
+            session.switch_tab(index);
+            Ok(json(session.tabs()))
+        }
+        ProjectCommand::TabClose { index } => {
+            let index = index.unwrap_or(session.active_tab());
+            if index >= session.tab_count() {
+                return Err(ApiError::not_found(format!("no tab {index}")));
+            }
+            if index == session.active_tab() {
+                session.stop();
+            }
+            session.close_tab(index);
+            Ok(json(session.tabs()))
         }
     }
 }

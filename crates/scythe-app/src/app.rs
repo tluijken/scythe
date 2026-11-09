@@ -374,6 +374,38 @@ impl ScytheApp {
         self.follow_session();
     }
 
+    pub fn new_tab(&mut self) {
+        self.session.new_tab();
+        self.follow_session();
+    }
+
+    pub fn open_tab_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).pick_file() {
+            let _ = self.session.open_in_new_tab(&path);
+            self.follow_session();
+        }
+    }
+
+    pub fn switch_tab(&mut self, index: usize) {
+        if self.session.switch_tab(index) {
+            self.follow_session();
+        }
+    }
+
+    /// Switches `step` tabs on (or back), wrapping around.
+    pub fn cycle_tab(&mut self, step: isize) {
+        let n = self.session.tab_count() as isize;
+        if n > 1 {
+            self.switch_tab((self.session.active_tab() as isize + step).rem_euclid(n) as usize);
+        }
+    }
+
+    pub fn close_tab(&mut self, index: usize) {
+        if self.session.close_tab(index) {
+            self.follow_session();
+        }
+    }
+
     pub fn open_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).pick_file() {
             self.open_path(&path);

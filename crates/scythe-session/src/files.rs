@@ -14,6 +14,7 @@ impl Session {
         self.dirty = false;
         self.saved_at = None;
         self.after_load();
+        self.remember_tabs();
     }
 
     /// Replaces the project with one built elsewhere (a generated demo, a template).
@@ -38,6 +39,7 @@ impl Session {
                 self.saved_at = None;
                 self.after_load();
                 self.notify(format!("Opened {}", path.display()));
+                self.remember_tabs();
                 Ok(())
             }
             Err(e) => {
@@ -90,6 +92,7 @@ impl Session {
                 self.autosaved_at = Instant::now();
                 self.saved_at = Some(Instant::now());
                 self.notify(format!("Saved {}", path.display()));
+                self.remember_tabs();
                 Ok(())
             }
             Err(e) => {

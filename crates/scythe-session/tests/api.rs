@@ -1361,3 +1361,20 @@ fn modulation_and_learn_are_stored_beside_the_plugin() {
     let removed = ok(&mut s, json!({"cmd": "action.learn.remove", "action": "_SCYTHE_SETLIST_NEXT"}));
     assert_eq!(removed["removed"], 1);
 }
+
+#[test]
+fn project_tabs() {
+    let mut s = session();
+    add_track(&mut s, "One");
+    let tabs = ok(&mut s, json!({"cmd": "project.tab_new"}));
+    assert_eq!(tabs.as_array().unwrap().len(), 2);
+    assert_eq!(tabs[1]["active"], true);
+    assert!(s.project.tracks.is_empty());
+    ok(&mut s, json!({"cmd": "project.tab_switch", "index": 0}));
+    assert_eq!(s.project.tracks[0].name, "One");
+    let err = execute_json(&mut s, json!({"cmd": "project.tab_switch", "index": 5})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::NotFound);
+    let tabs = ok(&mut s, json!({"cmd": "project.tab_close", "index": 1}));
+    assert_eq!(tabs.as_array().unwrap().len(), 1);
+    assert_eq!(ok(&mut s, json!({"cmd": "project.tabs"}))[0]["dirty"], true);
+}

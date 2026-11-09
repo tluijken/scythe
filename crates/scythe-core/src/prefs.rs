@@ -18,6 +18,11 @@ pub struct Preferences {
     /// MIDI device settings, each a mask over device numbers 0-63 stored as two 32-bit words
     /// (`<key>` and `<key>_h`).
     pub midi: MidiPrefs,
+    /// `projecttabs` and `projecttab<n>`: the open project tabs' files, in tab order; an
+    /// unsaved tab is an empty string.
+    pub project_tabs: Vec<String>,
+    /// `lastproject`: the file of the active tab.
+    pub last_project: Option<String>,
 }
 
 /// Which MIDI devices are enabled and which outputs get clock, as reaper.ini keeps them.
@@ -72,6 +77,8 @@ impl Default for Preferences {
             metronome_default_output: -1,
             surfaces: Vec::new(),
             midi: MidiPrefs::default(),
+            project_tabs: Vec::new(),
+            last_project: None,
         }
     }
 }
@@ -83,6 +90,10 @@ const MIDI_KEYS: [&str; 6] =
 const SECTION: &str = "[REAPER]";
 
 /// The index of a `csurf_<i>` key.
+fn tab_index(key: &str) -> Option<usize> {
+    key.strip_prefix("projecttab").and_then(|i| i.parse::<usize>().ok()).filter(|i| *i > 0)
+}
+
 fn surface_index(key: &str) -> Option<usize> {
     key.strip_prefix("csurf_").and_then(|i| i.parse().ok())
 }
@@ -94,6 +105,7 @@ impl Preferences {
         let mut in_section = false;
         let mut surface_count = 0;
         let mut surfaces = Vec::new();
+        let (mut tab_count, mut tabs) = (0, Vec::new());
         for line in text.lines() {
             let line = line.trim();
             if line.starts_with('[') {
@@ -115,7 +127,13 @@ impl Preferences {
                     prefs.metronome_default_output = value.parse().unwrap_or(prefs.metronome_default_output)
                 }
                 "csurf_cnt" => surface_count = value.parse().unwrap_or(0),
+                "projecttabs" => tab_count = value.parse().unwrap_or(0),
+                "lastproject" => prefs.last_project = Some(value.to_owned()).filter(|v| !v.is_empty()),
                 key => {
+                    if let Some(i) = tab_index(key) {
+                        tabs.push((i, value.to_owned()));
+                        continue;
+                    }
                     if let Some(i) = surface_index(key) {
                         surfaces.push((i, Surface::parse(value)));
                         continue;
@@ -139,6 +157,8 @@ impl Preferences {
         }
         surfaces.sort_by_key(|(i, _)| *i);
         prefs.surfaces = surfaces.into_iter().filter(|(i, _)| *i < surface_count).map(|(_, s)| s).collect();
+        tabs.sort_by_key(|(i, _)| *i);
+        prefs.project_tabs = tabs.into_iter().filter(|(i, _)| *i <= tab_count).map(|(_, t)| t).collect();
         prefs
     }
 
@@ -154,7 +174,18 @@ impl Preferences {
             values.push(("csurf_cnt".to_owned(), self.surfaces.len().to_string()));
         }
         values.extend(self.surfaces.iter().enumerate().map(|(i, s)| (format!("csurf_{i}"), s.line())));
-        let stale = |key: &str| surface_index(key).is_some_and(|i| i >= self.surfaces.len());
+        if !self.project_tabs.is_empty() || text.lines().any(|l| l.trim_start().starts_with("projecttabs=")) {
+            values.push(("projecttabs".to_owned(), self.project_tabs.len().to_string()));
+            values
+                .extend(self.project_tabs.iter().enumerate().map(|(i, t)| (format!("projecttab{}", i + 1), t.clone())));
+        }
+        if let Some(last) = &self.last_project {
+            values.push(("lastproject".to_owned(), last.clone()));
+        }
+        let stale = |key: &str| {
+            surface_index(key).is_some_and(|i| i >= self.surfaces.len())
+                || tab_index(key).is_some_and(|i| i > self.project_tabs.len())
+        };
         let m = &self.midi;
         let masks = [Some(m.inputs), Some(m.outputs), None, None, None, Some(m.control)];
         let plain = [0, 0, m.clock, m.clock_no_spp, m.no_reset, 0];
@@ -279,5 +310,18 @@ mod tests {
         assert!(written.contains("midiins=-1\nmidiins_h=-1\n"), "{written}");
         assert_eq!(Preferences::parse(&written).midi, q.midi);
         assert!(!Preferences::default().write_into("").contains("midi"));
+    }
+
+    #[test]
+    fn project_tabs_round_trip() {
+        let text =
+            "[REAPER]\nlastproject=/a/b.RPP\nprojecttab1=/a/a.RPP\nprojecttab2=/a/b.RPP\nprojecttab3=\nprojecttabs=3\n";
+        let p = Preferences::parse(text);
+        assert_eq!(p.project_tabs, ["/a/a.RPP", "/a/b.RPP", ""]);
+        assert_eq!(p.last_project.as_deref(), Some("/a/b.RPP"));
+        let one = Preferences { project_tabs: vec!["/a/c.RPP".into()], last_project: Some("/a/c.RPP".into()), ..p };
+        let written = one.write_into(text);
+        assert!(!written.contains("projecttab2") && !written.contains("projecttab3="));
+        assert_eq!(Preferences::parse(&written).project_tabs, ["/a/c.RPP"]);
     }
 }
