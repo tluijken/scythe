@@ -1,6 +1,6 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
 use scythe_core::units::format_db;
-use scythe_core::{EnvelopeKind, Send, TrackId};
+use scythe_core::{EnvelopeKind, HwOut, Send, SendMode, TrackId};
 use scythe_engine::fx::FxStatus;
 use scythe_engine::midi_io::{ALL_MIDI_INPUTS, midi_input_channel};
 
@@ -212,7 +212,8 @@ fn content_height(app: &ScytheApp, track: &scythe_core::Track) -> f32 {
             let receives = app.project.tracks.iter().filter(|t| t.sends.iter().any(|s| s.dest == track.id)).count();
             let picking = app.ctx.data(|d| d.get_temp::<bool>(Id::unique(("pick-send", track.id)))).unwrap_or(false);
             let picker = if picking { app.project.tracks.len() as f32 * 36.0 } else { 0.0 };
-            30.0 + track.sends.len() as f32 * 56.0 + 46.0 + picker + 30.0 + receives as f32 * 46.0 + 60.0
+            let hw = 30.0 + track.hw_outs.len() as f32 * (ROW_H + 6.0) + 46.0;
+            30.0 + track.sends.len() as f32 * 56.0 + 46.0 + picker + 30.0 + receives as f32 * 46.0 + 60.0 + hw
         }
         InspectorTab::Envelopes => EnvelopeKind::ALL.len() as f32 * (ROW_H + 6.0) + 30.0,
     };
@@ -696,13 +697,11 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
             theme::regular(13.0),
             TEXT,
         );
-        painter.text(
-            pos2(r.left() + 12.0, r.center().y + 9.0),
-            Align2::LEFT_CENTER,
-            "drag value to adjust",
-            theme::regular(10.0),
-            TEXT_DIM,
-        );
+        let mode = Rect::from_min_size(pos2(r.left() + 8.0, r.center().y + 2.0), vec2(110.0, 16.0));
+        if mode_pill(ui, painter, mode, s.mode, ("send-mode", track_id, i)) {
+            let next = next_mode(s.mode);
+            app.edit("Set send mode", |p| p.track_mut(track_id).unwrap().sends[i].mode = next);
+        }
         // Channels: source pair → destination pair.
         let dest_channels = app.project.track(s.dest).map_or(2, |t| t.channels);
         let (src, dst) = ((s.src_channels & 1023) as u32, (s.dst_channels & 1023) as u32);
@@ -818,6 +817,91 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         app.edit("Toggle master/parent send", |p| p.track_mut(track_id).unwrap().main_send ^= true);
     }
     *y += 46.0;
+
+    *y += 4.0;
+    painter.text(
+        pos2(inner.left(), *y + 8.0),
+        Align2::LEFT_CENTER,
+        "Hardware outputs",
+        theme::semibold(12.0),
+        TEXT_DIM,
+    );
+    *y += 26.0;
+    for (i, o) in track.hw_outs.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), ROW_H));
+        painter.rect_filled(r, CornerRadius::same(12), RAISED);
+        let out = Rect::from_min_size(pos2(r.left() + 8.0, r.center().y - 20.0), vec2(110.0, 22.0));
+        let resp = text_pill(ui, out, &o.label(), theme::mono(11.0), BG, if o.muted { TEXT_DIM } else { TEXT })
+            .on_hover_text("Device outputs (click: next pair, right-click: stereo or mono)");
+        if resp.clicked() || resp.secondary_clicked() {
+            let mono = o.is_mono() ^ resp.secondary_clicked();
+            let step = if mono { 1 } else { 2 };
+            let first = if resp.clicked() { (o.first_output() + step) % 64 } else { o.first_output() };
+            let flags = o.dst_channels & !(1024 | 511);
+            app.edit("Set hardware output", |p| {
+                p.track_mut(track_id).unwrap().hw_outs[i].dst_channels =
+                    flags | first as i64 | if mono { 1024 } else { 0 }
+            });
+        }
+        let mode = Rect::from_min_size(pos2(r.left() + 8.0, r.center().y + 4.0), vec2(110.0, 16.0));
+        if mode_pill(ui, painter, mode, o.mode, ("hw-mode", track_id, i)) {
+            let next = next_mode(o.mode);
+            app.edit("Set hardware output mode", |p| p.track_mut(track_id).unwrap().hw_outs[i].mode = next);
+        }
+        let val = Rect::from_min_size(pos2(r.right() - 108.0, r.center().y - 12.0), vec2(70.0, 24.0));
+        widgets::label_pill(ui, val, &format!("{} dB", format_db(o.volume)), BG, if o.muted { TEXT_DIM } else { TEXT });
+        let drag = ui
+            .interact(val, Id::unique(("hw-vol", track_id, i)), Sense::click_and_drag())
+            .on_hover_text("Drag to set the output level, double-click for 0 dB, right-click to mute");
+        if drag.dragged() {
+            let db = scythe_core::units::gain_to_db(o.volume).max(-60.0) - drag.drag_delta().y as f64 * 0.25;
+            let gain = if db <= -60.0 { 0.0 } else { scythe_core::units::db_to_gain(db.min(12.0)) };
+            app.gesture("Adjust hardware output level", |p| p.track_mut(track_id).unwrap().hw_outs[i].volume = gain);
+        }
+        if drag.drag_stopped() {
+            app.end_gesture();
+        }
+        if drag.double_clicked() {
+            app.edit("Reset hardware output level", |p| p.track_mut(track_id).unwrap().hw_outs[i].volume = 1.0);
+        }
+        if drag.secondary_clicked() {
+            app.edit("Toggle hardware output mute", |p| p.track_mut(track_id).unwrap().hw_outs[i].muted ^= true);
+        }
+        let del = Rect::from_min_size(pos2(r.right() - 32.0, r.center().y - 12.0), vec2(24.0, 24.0));
+        if text_pill(ui, del, "×", theme::semibold(14.0), RAISED_HI, TEXT_DIM).on_hover_text("Remove output").clicked()
+        {
+            app.edit("Remove hardware output", |p| {
+                p.track_mut(track_id).unwrap().hw_outs.remove(i);
+            });
+        }
+        *y += ROW_H + 6.0;
+    }
+    let add = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 40.0));
+    if text_pill(ui, add, "Add hardware output", theme::semibold(12.0), RAISED, TEXT).clicked() {
+        let first = app.project.next_free_output(2);
+        app.edit("Add hardware output", |p| p.track_mut(track_id).unwrap().hw_outs.push(HwOut::stereo(first)));
+    }
+    *y += 46.0;
+}
+
+fn next_mode(mode: SendMode) -> SendMode {
+    let at = SendMode::CHOICES.iter().position(|m| m.label() == mode.label()).unwrap_or(0);
+    SendMode::CHOICES[(at + 1) % SendMode::CHOICES.len()]
+}
+
+/// A small clickable label naming where a send taps its track; returns whether it was clicked.
+fn mode_pill(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    r: Rect,
+    mode: SendMode,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+) -> bool {
+    let resp =
+        ui.interact(r, Id::unique(salt), Sense::click()).on_hover_text("Where the signal is taken (click to change)");
+    let color = if resp.hovered() { TEXT } else { TEXT_DIM };
+    painter.text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, mode.label(), theme::regular(10.0), color);
+    resp.clicked()
 }
 
 const ITEM_ROW: f32 = 40.0;

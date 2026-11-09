@@ -4,8 +4,8 @@ use super::{Chunk, Node, ParseError, line_key, parse, quote_always, tokenize, wr
 use crate::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use crate::fade::Fade;
 use crate::model::{
-    AutoMode, Color, FxSlot, Item, LineMemo, Marker, Processing, Project, Section, Send, Source, Take, TimeRange,
-    Track, TrackId, new_guid,
+    AutoMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode, Source, Take,
+    TimeRange, Track, TrackId, new_guid,
 };
 use crate::tempo::TempoPoint;
 use crate::units::PanTaper;
@@ -123,6 +123,7 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
     // AUXRECV lives on the receiving track and names its source by index.
     let mut receives: Vec<(usize, usize, Send)> = Vec::new();
     let mut region_starts: Vec<Marker> = Vec::new();
+    let mut master_hw: Option<Vec<HwOut>> = None;
 
     for node in &root.children {
         match node {
@@ -135,6 +136,17 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                     remember(&mut p.lines, &t);
                 }
                 match t[0].as_str() {
+                    // A bare `MASTERHWOUT` is how REAPER saves a master without hardware outputs;
+                    // a project without the line gets the default pair.
+                    "MASTERHWOUT" => {
+                        let outs = master_hw.get_or_insert_with(|| {
+                            p.extra.push(Node::Line("MASTERHWOUT".into()));
+                            Vec::new()
+                        });
+                        if t.len() > 1 {
+                            outs.push(parse_hw_out(&t));
+                        }
+                    }
                     "TEMPO" => {
                         p.tempo.bpm = num(&t, 1, 120.0);
                         p.tempo.beats_per_bar = num(&t, 2, 4.0) as u32;
@@ -200,6 +212,9 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
             let src_id = src_track.id;
             p.track_mut(src_id).unwrap().sends.push(send);
         }
+    }
+    if let Some(outs) = master_hw {
+        p.master.hw_outs = outs;
     }
     p.markers.extend(region_starts);
     p.markers.sort_by(|a, b| a.position.total_cmp(&b.position).then(a.index.cmp(&b.index)));
@@ -338,6 +353,15 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.monitor = flag(&t, 3);
                         track.extra.push(node.clone());
                     }
+                    "HWOUT" => {
+                        if track.hw_outs.is_empty() {
+                            track.extra.push(Node::Line("HWOUT".into()));
+                        }
+                        track.hw_outs.push(parse_hw_out(&t));
+                    }
+                    k if k.starts_with("HWOUT_") && !track.hw_outs.is_empty() => {
+                        track.hw_outs.last_mut().unwrap().trailing.push(node.clone());
+                    }
                     "AUXRECV" => receives.push((
                         num(&t, 1, 0.0) as usize,
                         Send {
@@ -345,6 +369,9 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                             volume: num(&t, 3, 1.0),
                             pan: num(&t, 4, 0.0),
                             muted: flag(&t, 5),
+                            mode: SendMode::from_code(num(&t, 2, 0.0) as i64),
+                            mono: flag(&t, 6),
+                            phase: flag(&t, 7),
                             envelopes: Vec::new(),
                             src_channels: num(&t, 8, 0.0) as i64,
                             dst_channels: num(&t, 9, 0.0) as i64,
@@ -375,6 +402,66 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
         }
     }
     (track, receives)
+}
+
+/// `HWOUT <dst> <mode> <volume> <pan> <mute> <phase> <src> <pan law>:U <automation mode>`;
+/// `MASTERHWOUT` has the same fields up to the pan law, without the `:U`.
+fn parse_hw_out(t: &[String]) -> HwOut {
+    let law = t.get(8).and_then(|v| v.split(':').next()?.parse().ok()).unwrap_or(-1.0);
+    HwOut {
+        dst_channels: num(t, 1, 0.0) as i64,
+        mode: SendMode::from_code(num(t, 2, 0.0) as i64),
+        volume: num(t, 3, 1.0),
+        pan: num(t, 4, 0.0),
+        muted: flag(t, 5),
+        phase: flag(t, 6),
+        src_channels: num(t, 7, 0.0) as i64,
+        pan_law: law,
+        raw: Some(t.to_vec()),
+        trailing: Vec::new(),
+    }
+}
+
+fn hw_out_line(o: &HwOut, key: &str) -> Vec<String> {
+    let default: &[&str] = if key == "HWOUT" {
+        &["HWOUT", "0", "0", "1", "0", "0", "0", "0", "-1:U", "-1"]
+    } else {
+        &["MASTERHWOUT", "0", "0", "1", "0", "0", "0", "0", "-1"]
+    };
+    let mut toks: Vec<String> = match &o.raw {
+        Some(r) if r.len() >= 9 => r.clone(),
+        _ => default.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    toks[0] = key.to_owned();
+    let suffix = toks[8].find(':').map(|i| toks[8][i..].to_owned()).unwrap_or_default();
+    let fields = [
+        o.dst_channels.to_string(),
+        o.mode.code().to_string(),
+        fmt_num(o.volume),
+        fmt_num(o.pan),
+        bit(o.muted),
+        bit(o.phase),
+        o.src_channels.to_string(),
+        format!("{}{suffix}", fmt_num(o.pan_law)),
+    ];
+    for (i, v) in fields.into_iter().enumerate() {
+        toks[i + 1] = v;
+    }
+    toks
+}
+
+fn write_master_hw_outs(root: &mut Chunk, outs: &[HwOut]) {
+    if outs.is_empty() {
+        root.line(["MASTERHWOUT"]);
+    }
+    write_hw_outs(root, outs, "MASTERHWOUT");
+}
+
+fn write_hw_outs(c: &mut Chunk, outs: &[HwOut], key: &str) {
+    for o in outs {
+        c.line(hw_out_line(o, key));
+        c.children.extend(o.trailing.iter().cloned());
+    }
 }
 
 /// `PT <time> <value> <shape> <?> <selected> <?> <bezier tension>`.
@@ -753,8 +840,15 @@ pub fn project_to_rpp(p: &Project) -> String {
     ));
     root.line(line_from(l, "MASTERMUTESOLO", &["MASTERMUTESOLO"], &[(1, bit(m.muted))]));
     let (mut wrote_law, mut wrote_flags, mut wrote_tempo, mut wrote_nch) = (false, false, false, false);
+    let mut wrote_hw = false;
     for node in &p.extra {
         match node {
+            Node::Line(l) if line_key(l) == "MASTERHWOUT" => {
+                if !wrote_hw {
+                    write_master_hw_outs(&mut root, &m.hw_outs);
+                }
+                wrote_hw = true;
+            }
             Node::Line(l) if line_key(l) == "MASTER_NCH" => {
                 let mut toks = tokenize(l);
                 toks.resize(toks.len().max(2), String::new());
@@ -779,6 +873,9 @@ pub fn project_to_rpp(p: &Project) -> String {
             }
             _ => root.children.push(node.clone()),
         }
+    }
+    if !wrote_hw && !p.master_default_output() {
+        write_master_hw_outs(&mut root, &m.hw_outs);
     }
     if !wrote_nch && m.channels != 2 {
         root.line(["MASTER_NCH".to_owned(), m.channels.to_string(), "2".to_owned()]);
@@ -853,8 +950,15 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     };
     c.line(line_from(l, "ISBUS", &["ISBUS"], &[(1, state.into()), (2, t.folder_depth.to_string())]));
     let has_mainsend = t.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == "MAINSEND"));
+    let has_hw_marker = t.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == "HWOUT"));
+    // New hardware outputs follow `MAINSEND`, as REAPER writes them.
+    let mut wrote_hw = false;
     if !has_mainsend && !t.main_send {
         c.line(["MAINSEND", "0", "0"]);
+    }
+    if !has_mainsend && !has_hw_marker {
+        write_hw_outs(&mut c, &t.hw_outs, "HWOUT");
+        wrote_hw = true;
     }
 
     let mut wrote_rec = false;
@@ -886,6 +990,16 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 toks[1] = if t.main_send { "1" } else { "0" }.to_owned();
                 toks[2] = t.main_send_offset.to_string();
                 c.line(toks);
+                if !has_hw_marker && !wrote_hw {
+                    write_hw_outs(&mut c, &t.hw_outs, "HWOUT");
+                    wrote_hw = true;
+                }
+            }
+            Node::Line(l) if line_key(l) == "HWOUT" => {
+                if !wrote_hw {
+                    write_hw_outs(&mut c, &t.hw_outs, "HWOUT");
+                    wrote_hw = true;
+                }
             }
             Node::Line(l) if line_key(l) == "NCHAN" => {
                 c.line(["NCHAN".to_owned(), t.channels.to_string()]);
@@ -937,6 +1051,9 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             toks[4] = fmt_num(s.pan);
             toks[5] = if s.muted { "1" } else { "0" }.to_owned();
             toks.resize(toks.len().max(10), "0".into());
+            toks[2] = s.mode.code().to_string();
+            toks[6] = bit(s.mono);
+            toks[7] = bit(s.phase);
             toks[8] = s.src_channels.to_string();
             toks[9] = s.dst_channels.to_string();
             c.line(toks);
@@ -1447,5 +1564,93 @@ mod section_tests {
         assert!(out.contains("PLAYRATE 0.75 1 3 5 0 0.0025") && out.contains("DEFPITCHMODE 851968 0"), "{out}");
         let plain = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n>\n").unwrap();
         assert_eq!(plain.default_pitch_mode, Processing::DEFAULT_MODE);
+    }
+
+    /// Lines as REAPER 7.73 saves them for hardware outputs set up through
+    /// `SetTrackSendInfo_Value(tr, 1, …)`.
+    const HW_PROJECT: &str = "<REAPER_PROJECT 0.1 \"7.73\" 0
+  MASTERHWOUT 0 0 1 0 0 0 0 -1
+  MASTERHWOUT 6 3 0.25 0.5 1 1 1024 0.5
+  MASTER_NCH 2 2
+  <TRACK
+    NAME a
+    MAINSEND 0 0
+    HWOUT 1026 3 0.5 -0.25 0 0 0 -1:U -1
+    HWOUT 4 1 1 0 1 1 1025 -1:U -1
+    HWOUT 2 0 1 0 0 0 2048 0.5:U 2
+    HWOUT_WITHOUT_PANLAW_BOOST
+    HWOUT 0 0 1 0 0 0 -1 -1:U -1
+  >
+  <TRACK
+    NAME b
+    AUXRECV 0 3 0.7 -0.3 1 1 1 0 0 -1:U 0 -1 ''
+    MAINSEND 1 0
+  >
+>
+";
+
+    #[test]
+    fn hardware_outputs_round_trip() {
+        let mut p = project_from_rpp(HW_PROJECT).unwrap();
+        let hw = &p.tracks[0].hw_outs;
+        assert_eq!(hw.len(), 4);
+        assert_eq!(
+            (hw[0].first_output(), hw[0].is_mono(), hw[0].mode, hw[0].volume, hw[0].pan),
+            (2, true, SendMode::PostFx, 0.5, -0.25)
+        );
+        assert_eq!((hw[1].mode, hw[1].muted, hw[1].phase, hw[1].src_channels), (SendMode::PreFx, true, true, 1025));
+        assert_eq!((hw[2].outputs(), hw[2].pan_law, hw[2].trailing.len()), (2..6, 0.5, 1));
+        assert_eq!(hw[3].outputs(), 0..0, "no source channels");
+        assert_eq!(hw[0].label(), "Out 3 (mono)");
+        let m = &p.master.hw_outs;
+        assert_eq!(m.len(), 2);
+        assert_eq!(
+            (m[1].first_output(), m[1].mode, m[1].volume, m[1].pan, m[1].muted, m[1].phase, m[1].pan_law),
+            (6, SendMode::PostFx, 0.25, 0.5, true, true, 0.5)
+        );
+        assert!(!p.master_default_output());
+        let send = &p.tracks[0].sends[0];
+        assert_eq!((send.mode, send.muted, send.mono, send.phase), (SendMode::PostFx, true, true, true));
+
+        let out = project_to_rpp(&p);
+        for line in HW_PROJECT.lines().filter(|l| l.contains("HWOUT") || l.contains("AUXRECV")) {
+            assert_eq!(out.matches(&format!("{}\n", line.trim().replace('\'', "\""))).count(), 1, "{line}\n{out}");
+        }
+        let at = |key: &str| out.find(key).unwrap();
+        assert!(
+            at("MAINSEND 0 0") < at("HWOUT 1026")
+                && at("HWOUT 2 0") < at("HWOUT_WITHOUT")
+                && at("HWOUT_WITHOUT") < at("    HWOUT 0 0")
+        );
+
+        let t = &mut p.tracks[0];
+        t.hw_outs[0].volume = 1.0;
+        t.hw_outs[0].mode = SendMode::PostFader;
+        t.hw_outs.remove(3);
+        t.sends[0].mode = SendMode::PreFx;
+        p.tracks[1].hw_outs.push(HwOut::stereo(4));
+        p.master.hw_outs.clear();
+        let out = project_to_rpp(&p);
+        assert!(out.contains("HWOUT 1026 0 1 -0.25 0 0 0 -1:U -1\n") && !out.contains("HWOUT 0 0 1 0 0 0 -1"), "{out}");
+        assert!(out.contains("MAINSEND 1 0\n    HWOUT 4 0 1 0 0 0 0 -1:U -1\n"), "{out}");
+        assert!(out.contains("AUXRECV 0 1 0.7"), "{out}");
+        assert!(out.contains("  MASTERHWOUT\n") && !out.contains("MASTERHWOUT 0"), "{out}");
+        assert!(project_from_rpp(&out).unwrap().master.hw_outs.is_empty());
+    }
+
+    #[test]
+    fn master_output_defaults() {
+        let p = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n>\n").unwrap();
+        assert!(p.master_default_output(), "REAPER gives a project without MASTERHWOUT the default pair");
+        assert!(!project_to_rpp(&p).contains("MASTERHWOUT"));
+        let mut p = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n  MASTERHWOUT 0 0 1 0 0 0 0 -1\n>\n").unwrap();
+        assert!(p.master_default_output());
+        assert!(project_to_rpp(&p).contains("MASTERHWOUT 0 0 1 0 0 0 0 -1\n"));
+        p.master.hw_outs[0].volume = 0.5;
+        assert!(!p.master_default_output());
+        let mut fresh = Project::default();
+        fresh.master.hw_outs.push(HwOut::stereo(2));
+        let out = project_to_rpp(&fresh);
+        assert!(out.contains("  MASTERHWOUT 0 0 1 0 0 0 0 -1\n  MASTERHWOUT 2 0 1 0 0 0 0 -1\n"), "{out}");
     }
 }

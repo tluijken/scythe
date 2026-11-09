@@ -4,7 +4,7 @@ use std::sync::Arc;
 use scythe_core::envelope::PointShape;
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
-use scythe_core::{Envelope, EnvelopeKind, Fade, Project, Source, TrackId};
+use scythe_core::{Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
 
 use crate::fx::{FxInstance, FxRegistry, ParamAutomation, PinMap, ProcessContext, pin_map};
 use crate::media::{AudioData, MediaPool};
@@ -139,10 +139,17 @@ pub struct RenderTrack {
     pub gain_r: f32,
     /// The fader alone, for channels 3 and up: REAPER pans only the first pair.
     pub volume: f32,
+    /// Whether the track plays at all: it is heard, or it feeds a track heard while others are
+    /// soloed.
     pub audible: bool,
+    /// Whether its own output (to the parent or master, and its hardware outputs) is heard.
+    pub main_out: bool,
     pub items: Vec<RenderItem>,
     pub meter: Arc<Meter>,
     pub sends: Vec<RenderSend>,
+    /// Hardware outputs, routed into `RenderGraph::hw_bus`.
+    pub hw_outs: Vec<RenderSend>,
+    pub taps: Taps,
     /// Audio channels; 1 and 2 live in the render scratch, the rest in `aux`.
     pub channels: usize,
     pub aux: Option<Arc<AuxChannels>>,
@@ -181,33 +188,165 @@ pub struct RenderTrack {
     /// into its parent or the master, when any are needed.
     pub send_delays: Vec<Option<Arc<DelayLine>>>,
     pub main_delay: Option<Arc<DelayLine>>,
+    pub hw_delays: Vec<Option<Arc<DelayLine>>>,
 }
 
-/// One send as the graph plays it.
+/// One send or hardware output as the graph plays it.
 #[derive(Debug, Clone)]
 pub struct RenderSend {
-    /// Index into `RenderGraph::tracks`.
+    /// Index into `RenderGraph::tracks`; unused for hardware outputs.
     pub dest: usize,
+    /// Gains of the pair, polarity included.
     pub gain_l: f32,
     pub gain_r: f32,
-    /// Source channels (first, count) and the first destination channel, 0-based; a single
-    /// source channel feeds a pair, or one channel with `mono`.
+    /// Source channels (first, count) and the first destination channel (or device output),
+    /// 0-based; a single source channel feeds a pair, or one channel with `mono`.
     pub src: (usize, usize),
     pub dst: usize,
     pub mono: bool,
+    /// Mix a source pair down to mono before panning (`B_MONO`).
+    pub downmix: bool,
+    /// -1 when the polarity is inverted, for the envelope gains.
+    pub sign: f32,
+    pub tap: SendMode,
 }
 
 impl RenderSend {
     /// Source and destination channel of every routed channel, with whether it takes the
-    /// right gain of the pair.
-    fn routes(&self) -> impl Iterator<Item = (usize, usize, bool)> + '_ {
+    /// right gain of the pair and a factor on top of it.
+    fn routes(&self) -> impl Iterator<Item = (usize, usize, bool, f32)> + '_ {
         let (first, count) = self.src;
-        let pairs: Box<dyn Iterator<Item = (usize, usize, bool)>> = match (count, self.mono) {
-            (_, true) => Box::new((0..count).map(move |k| (first + k, self.dst, false))),
-            (1, false) => Box::new([(first, self.dst, false), (first, self.dst + 1, true)].into_iter()),
-            _ => Box::new((0..count).map(move |k| (first + k, self.dst + k, k % 2 == 1))),
+        let dst = self.dst;
+        let pairs: Box<dyn Iterator<Item = (usize, usize, bool, f32)>> = match (count, self.mono) {
+            // REAPER pans the pair first, then averages it into the one channel.
+            (1, true) => Box::new([(first, dst, false, 1.0)].into_iter()),
+            (_, true) => Box::new((0..count).map(move |k| (first + k, dst, k % 2 == 1, 1.0 / count as f32))),
+            (1, false) => Box::new([(first, dst, false, 1.0), (first, dst + 1, true, 1.0)].into_iter()),
+            (2, false) if self.downmix => Box::new(
+                [(first, dst, false), (first + 1, dst, false), (first, dst + 1, true), (first + 1, dst + 1, true)]
+                    .into_iter()
+                    .map(|(s, d, r)| (s, d, r, 0.5)),
+            ),
+            _ => Box::new((0..count).map(move |k| (first + k, dst + k, k % 2 == 1, 1.0))),
         };
         pairs
+    }
+
+    /// A send or hardware output with fixed gains; `None` when it plays nothing.
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        dest: usize,
+        volume: f64,
+        pan: f64,
+        pan_law: PanLaw,
+        src_channels: i64,
+        dst_channels: i64,
+        downmix: bool,
+        phase: bool,
+        mode: SendMode,
+    ) -> Option<Self> {
+        let src = scythe_core::model::source_span(src_channels)?;
+        let (l, r) = pan_law.gains(pan);
+        let sign = if phase { -1.0 } else { 1.0 };
+        Some(Self {
+            dest,
+            gain_l: (sign * volume * l) as f32,
+            gain_r: (sign * volume * r) as f32,
+            src,
+            dst: (dst_channels & 511) as usize,
+            mono: dst_channels & 1024 != 0,
+            downmix,
+            sign: sign as f32,
+            tap: match mode {
+                SendMode::PostFxLegacy => SendMode::PostFx,
+                m => m,
+            },
+        })
+    }
+
+    fn hw(o: &HwOut, project_law: PanLaw) -> Option<Self> {
+        if o.muted || o.is_rearoute() {
+            return None;
+        }
+        let law = if o.pan_law > 0.0 { PanLaw { law: o.pan_law, ..project_law } } else { project_law };
+        Self::new(0, o.volume, o.pan, law, o.src_channels, o.dst_channels, false, o.phase, o.mode)
+    }
+
+    /// One past the last destination channel.
+    fn end(&self) -> usize {
+        self.routes().map(|r| r.1 + 1).max().unwrap_or(0)
+    }
+}
+
+/// Where `RenderGraph::route_track` mixes a route into.
+#[derive(Clone, Copy)]
+enum Dest {
+    Track(usize),
+    /// The parent folder, or the master.
+    Parent,
+    /// The device output bus.
+    Device,
+}
+
+/// Copies of a track's (or the master's) channels where sends and hardware outputs that do
+/// not play post-fader tap it.
+#[derive(Debug, Default, Clone)]
+pub struct Taps {
+    pub pre_fx: Option<Arc<AuxChannels>>,
+    pub post_fx: Option<Arc<AuxChannels>>,
+    /// The pre-FX volume envelope, which acts before both taps (the main path applies it with
+    /// the fader).
+    pub pre_fx_env: Option<Envelope>,
+}
+
+impl Taps {
+    fn new<'a>(channels: usize, modes: impl Iterator<Item = &'a RenderSend>, pre_fx_env: Option<Envelope>) -> Self {
+        let modes: Vec<SendMode> = modes.map(|s| s.tap).collect();
+        let tap = |m: SendMode| modes.contains(&m).then(|| Arc::new(AuxChannels::new(channels)));
+        Self { pre_fx: tap(SendMode::PreFx), post_fx: tap(SendMode::PostFx), pre_fx_env }
+    }
+
+    /// Copies channels 1/2 and the rest into the tap, through the pre-FX volume envelope from
+    /// project frame `frame` on.
+    fn fill(
+        &self,
+        tap: Option<&Arc<AuxChannels>>,
+        l: &[f32],
+        r: &[f32],
+        aux: Option<&[Vec<f32>]>,
+        frame: i64,
+        sr: f64,
+    ) {
+        let Some(mut bufs) = tap.and_then(|t| t.0.try_lock().ok()) else { return };
+        let n = l.len();
+        let rest = aux.unwrap_or(&[]);
+        for (c, b) in bufs.iter_mut().enumerate() {
+            let src = match c {
+                0 => l,
+                1 => r,
+                c => rest.get(c - 2).map_or(&[][..], |a| &a[..n]),
+            };
+            if src.is_empty() {
+                b[..n].fill(0.0);
+                continue;
+            }
+            b[..n].copy_from_slice(src);
+            if let Some(env) = &self.pre_fx_env {
+                for (i, s) in b[..n].iter_mut().enumerate() {
+                    *s *= env.value_at((frame + i as i64) as f64 / sr).unwrap_or(1.0) as f32;
+                }
+            }
+        }
+    }
+
+    fn clear(&self, n: usize) {
+        for tap in self.pre_fx.iter().chain(&self.post_fx) {
+            if let Ok(mut bufs) = tap.0.try_lock() {
+                for b in bufs.iter_mut() {
+                    b[..n].fill(0.0);
+                }
+            }
+        }
     }
 }
 
@@ -390,6 +529,15 @@ pub struct RenderGraph {
     pub master_volume: f32,
     pub master_fx_pins: Vec<Option<PinMap>>,
     pub master_pin_bufs: Option<Arc<AuxChannels>>,
+    /// The master's hardware outputs; `None` sends every master channel to the device output
+    /// of the same number (REAPER's default output, see `Project::master_default_output`).
+    pub master_hw_outs: Option<Vec<RenderSend>>,
+    pub master_taps: Taps,
+    /// Device output channels, when hardware outputs other than the master's default play;
+    /// otherwise the device gets the master's channels.
+    pub hw_bus: Option<Arc<AuxChannels>>,
+    /// Device outputs the project plays to.
+    pub device_channels: usize,
     pub timeline: Arc<Timeline>,
     pub clicks: Arc<ClickSounds>,
     /// Gain of the transport metronome; zero when it is off.
@@ -465,6 +613,10 @@ impl RenderGraph {
             master_volume: 1.0,
             master_fx_pins: Vec::new(),
             master_pin_bufs: None,
+            master_hw_outs: None,
+            master_taps: Taps::default(),
+            hw_bus: None,
+            device_channels: 2,
             timeline: Arc::new(scythe_core::TempoMap::default().timeline()),
             clicks: Arc::new(ClickSounds::new(sample_rate)),
             metronome: 0.0,
@@ -483,6 +635,7 @@ impl RenderGraph {
         let index: HashMap<TrackId, usize> = project.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let timeline = Arc::new(project.tempo.timeline());
         let parents = project.folder_parents();
+        let solo_feeds = project.solo_feeds();
         let mut tracks = project
             .tracks
             .iter()
@@ -578,37 +731,43 @@ impl RenderGraph {
                 let (sends, send_automation): (Vec<_>, Vec<_>) = t
                     .sends
                     .iter()
-                    .filter(|s| !s.muted && s.src_channels >= 0)
+                    .filter(|s| !s.muted)
                     .filter_map(|s| {
-                        let (l, r) = project.pan_law.gains(s.pan);
                         let automation = GainAutomation::new(s.volume, s.pan, project.pan_law, &s.envelopes);
-                        let kind = (s.src_channels >> 10) as usize;
-                        let count = match kind {
-                            0 => 2,
-                            1 => 1,
-                            n => 2 * n,
-                        };
-                        let send = RenderSend {
-                            dest: *index.get(&s.dest)?,
-                            gain_l: (s.volume * l) as f32,
-                            gain_r: (s.volume * r) as f32,
-                            src: ((s.src_channels & 1023) as usize, count),
-                            dst: (s.dst_channels & 1023) as usize,
-                            mono: s.dst_channels & 1024 != 0,
-                        };
+                        let send = RenderSend::new(
+                            *index.get(&s.dest)?,
+                            s.volume,
+                            s.pan,
+                            project.pan_law,
+                            s.src_channels,
+                            s.dst_channels,
+                            s.mono,
+                            s.phase,
+                            s.mode,
+                        )?;
                         Some((send, automation.map(Arc::new)))
                     })
                     .unzip();
+                let hw_outs: Vec<RenderSend> =
+                    t.hw_outs.iter().filter_map(|o| RenderSend::hw(o, project.pan_law)).collect();
                 let channels = (t.channels as usize).max(2);
+                let pre_fx_env = t
+                    .envelope(EnvelopeKind::VolumePreFx)
+                    .filter(|e| e.active && !e.points.is_empty())
+                    .map(|e| Envelope { raw: None, ..e.clone() });
+                let main_out = project.is_audible(t);
                 RenderTrack {
                     id: t.id,
                     gain_l: (t.volume * pl) as f32,
                     gain_r: (t.volume * pr) as f32,
                     volume: t.volume as f32,
-                    audible: project.is_audible(t),
+                    audible: main_out || solo_feeds[ti],
+                    main_out,
                     items,
                     meter: meters.track(t.id),
+                    taps: Taps::new(channels, sends.iter().chain(&hw_outs), pre_fx_env),
                     sends,
+                    hw_outs,
                     channels,
                     aux: (channels > 2).then(|| Arc::new(AuxChannels::new(channels - 2))),
                     main_offset: t.main_send_offset as usize,
@@ -634,6 +793,7 @@ impl RenderGraph {
                     fx_latency: Vec::new(),
                     send_delays: Vec::new(),
                     main_delay: None,
+                    hw_delays: Vec::new(),
                 }
             })
             .collect::<Vec<_>>();
@@ -653,7 +813,36 @@ impl RenderGraph {
         // REAPER renders show no centre attenuation on the master, whatever the project law.
         let (ml, mr) = scythe_core::units::PanLaw::default().gains(project.master.pan);
         let mv = if project.master.muted { 0.0 } else { project.master.volume };
+        let master_hw_outs = (!project.master_default_output()).then(|| {
+            // Muting the master silences its outputs whatever they tap, as muting a track does.
+            let outs = project.master.hw_outs.iter().filter(|_| !project.master.muted);
+            outs.filter_map(|o| RenderSend::hw(o, project.pan_law)).collect::<Vec<_>>()
+        });
+        let master_taps = match &master_hw_outs {
+            Some(outs) => Taps::new(
+                master_channels,
+                outs.iter(),
+                project
+                    .master
+                    .envelope(EnvelopeKind::VolumePreFx)
+                    .filter(|e| e.active && !e.points.is_empty())
+                    .map(|e| Envelope { raw: None, ..e.clone() }),
+            ),
+            None => Taps::default(),
+        };
+        let track_outputs = tracks.iter().flat_map(|t| &t.hw_outs).map(RenderSend::end).max();
+        let master_outputs = match &master_hw_outs {
+            Some(outs) => outs.iter().map(RenderSend::end).max().unwrap_or(0),
+            None => master_channels,
+        };
+        let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(2);
+        let hw_bus =
+            (track_outputs.is_some() || master_hw_outs.is_some()).then(|| Arc::new(AuxChannels::new(device_channels)));
         Self {
+            master_hw_outs,
+            master_taps,
+            hw_bus,
+            device_channels,
             sample_rate,
             order,
             level_of,
@@ -755,7 +944,7 @@ impl RenderGraph {
             l[..n].fill(0.0);
             r[..n].fill(0.0);
         }
-        for aux in self.tracks.iter().filter_map(|t| t.aux.as_ref()).chain(self.master_aux.as_ref()) {
+        for aux in self.tracks.iter().filter_map(|t| t.aux.as_ref()).chain(&self.master_aux).chain(&self.hw_bus) {
             if let Ok(mut bufs) = aux.0.try_lock() {
                 for b in bufs.iter_mut() {
                     b[..n].fill(0.0);
@@ -781,6 +970,9 @@ impl RenderGraph {
             }
         }
         let mut master_aux = self.master_aux.as_ref().and_then(|a| a.0.try_lock().ok());
+        let sr = self.sample_rate as f64;
+        let taps = &self.master_taps;
+        taps.fill(taps.pre_fx.as_ref(), out_l, out_r, master_aux.as_deref().map(|a| &a[..]), start, sr);
         if !self.master_fx.is_empty() {
             // The master's input is the master effects' latency ahead of the output.
             let mut position = start + self.master_fx_latency.iter().sum::<i64>();
@@ -817,6 +1009,7 @@ impl RenderGraph {
                 }
             }
         }
+        taps.fill(taps.post_fx.as_ref(), out_l, out_r, master_aux.as_deref().map(|a| &a[..]), start, sr);
         // The master fader acts on every channel; its pan on the first pair only.
         if let Some(aux) = master_aux.as_deref_mut() {
             for b in aux.iter_mut() {
@@ -840,6 +1033,69 @@ impl RenderGraph {
             let m = self.metronome;
             self.mix_clicks(start, start..start + n as i64, m, m, out_l, out_r);
         }
+        self.master_to_device(n, out_l, out_r);
+    }
+
+    /// Adds the master's hardware outputs to the device bus, when there is one.
+    fn master_to_device(&self, n: usize, out_l: &[f32], out_r: &[f32]) {
+        let Some(mut bus) = self.hw_bus.as_ref().and_then(|b| b.0.try_lock().ok()) else { return };
+        let master_aux = self.master_aux.as_ref().and_then(|a| a.0.try_lock().ok());
+        let post = |c: usize| -> Option<&[f32]> {
+            match c {
+                0 => Some(&out_l[..n]),
+                1 => Some(&out_r[..n]),
+                c => master_aux.as_ref()?.get(c - 2).map(|b| &b[..n]),
+            }
+        };
+        let Some(outs) = &self.master_hw_outs else {
+            for (c, b) in bus.iter_mut().enumerate().take(self.master_channels) {
+                if let Some(src) = post(c) {
+                    b[..n].iter_mut().zip(src).for_each(|(o, s)| *o += s);
+                }
+            }
+            return;
+        };
+        let pre = self.master_taps.pre_fx.as_ref().and_then(|t| t.0.try_lock().ok());
+        let post_fx = self.master_taps.post_fx.as_ref().and_then(|t| t.0.try_lock().ok());
+        for o in outs {
+            for (src, dst, right, scale) in o.routes() {
+                let input = match o.tap {
+                    SendMode::PreFx => pre.as_ref().and_then(|b| b.get(src)).map(|b| &b[..n]),
+                    SendMode::PostFx | SendMode::PostFxLegacy => {
+                        post_fx.as_ref().and_then(|b| b.get(src)).map(|b| &b[..n])
+                    }
+                    SendMode::PostFader => post(src),
+                };
+                let (Some(input), Some(target)) = (input, bus.get_mut(dst)) else { continue };
+                let g = scale * if right { o.gain_r } else { o.gain_l };
+                target[..n].iter_mut().zip(input).for_each(|(t, s)| *t += s * g);
+            }
+        }
+    }
+
+    /// Device output channels of the block just rendered, when hardware outputs other than
+    /// the master's default play: written from frame `at` of `left`, `right` and `extra` (the
+    /// outputs past the first pair), replacing the master's channels there. Returns false (and
+    /// leaves them alone) when the device simply gets the master.
+    pub fn device_out_at(
+        &self,
+        at: usize,
+        n: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+        extra: &mut [Vec<f32>],
+    ) -> bool {
+        let Some(bus) = self.hw_bus.as_ref() else { return false };
+        let Ok(bufs) = bus.0.try_lock() else { return false };
+        left[at..at + n].copy_from_slice(&bufs[0][..n]);
+        right[at..at + n].copy_from_slice(&bufs[1][..n]);
+        for (c, dst) in extra.iter_mut().enumerate() {
+            match bufs.get(c + 2) {
+                Some(src) => dst[at..at + n].copy_from_slice(&src[..n]),
+                None => dst[at..at + n].fill(0.0),
+            }
+        }
+        true
     }
 
     /// Items, FX and fader of one track, in its own buffer.
@@ -882,6 +1138,13 @@ impl RenderGraph {
                     self.mix_clicks(read, from..to, item.gain_l, item.gain_r, tl, tr);
                 }
             }
+        }
+        let sr_f = self.sample_rate as f64;
+        // A muted track's sends fall silent whatever they tap.
+        if track.audible {
+            track.taps.fill(track.taps.pre_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
+        } else {
+            track.taps.clear(n);
         }
         let mut position = read;
         if track.audible && !track.fx.is_empty() {
@@ -1013,8 +1276,10 @@ impl RenderGraph {
                 }
             }
         }
+        if track.audible {
+            track.taps.fill(track.taps.post_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
+        }
         if let Some(aux) = aux.as_deref_mut() {
-            let sr_f = self.sample_rate as f64;
             for b in aux.iter_mut() {
                 for (i, s) in b[..n].iter_mut().enumerate() {
                     *s *= match (&track.automation, track.audible) {
@@ -1133,11 +1398,15 @@ impl RenderGraph {
         let track = &self.tracks[ti];
         let (l, r) = std::mem::take(&mut scratch.track_bufs[ti]);
         let own_aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
-        let source = |c: usize| -> Option<&[f32]> {
-            match c {
-                0 => Some(&l[..n]),
-                1 => Some(&r[..n]),
-                c => own_aux.as_ref()?.get(c - 2).map(|b| &b[..n]),
+        let pre_fx = track.taps.pre_fx.as_ref().and_then(|a| a.0.try_lock().ok());
+        let post_fx = track.taps.post_fx.as_ref().and_then(|a| a.0.try_lock().ok());
+        let source = |tap: SendMode, c: usize| -> Option<&[f32]> {
+            match (tap, c) {
+                (SendMode::PreFx, c) => pre_fx.as_ref()?.get(c).map(|b| &b[..n]),
+                (SendMode::PostFx | SendMode::PostFxLegacy, c) => post_fx.as_ref()?.get(c).map(|b| &b[..n]),
+                (SendMode::PostFader, 0) => Some(&l[..n]),
+                (SendMode::PostFader, 1) => Some(&r[..n]),
+                (SendMode::PostFader, c) => own_aux.as_ref()?.get(c - 2).map(|b| &b[..n]),
             }
         };
         fn mix(
@@ -1163,15 +1432,27 @@ impl RenderGraph {
                 }
             }
         }
-        // Adds source channel `src` to channel `dst` of `dest` (the master when `None`), through
-        // channel `k` of `delay` when there is one.
+        // Adds source channel `src` (tapped where `tap` says) to channel `dst` of `dest`,
+        // through channel `k` of `delay` when there is one.
         let add = |scratch: &mut RenderScratch,
                    out: (&mut [f32], &mut [f32]),
-                   dest: Option<usize>,
-                   (src, dst): (usize, usize),
+                   dest: Dest,
+                   (tap, src, dst): (SendMode, usize, usize),
                    delay: Option<(&mut Vec<Vec<f32>>, usize, usize)>,
                    gain: &dyn Fn(usize) -> f32| {
-            let Some(input) = source(src) else { return };
+            let Some(input) = source(tap, src) else { return };
+            let dest = match dest {
+                Dest::Device => {
+                    let Some(bus) = self.hw_bus.as_ref() else { return };
+                    let Ok(mut guard) = bus.0.try_lock() else { return };
+                    if let Some(b) = guard.get_mut(dst) {
+                        mix(&mut b[..n], input, delay, gain);
+                    }
+                    return;
+                }
+                Dest::Track(d) => Some(d),
+                Dest::Parent => track.parent,
+            };
             match (dest, dst) {
                 (None, 0) => mix(&mut out.0[..n], input, delay, gain),
                 (None, 1) => mix(&mut out.1[..n], input, delay, gain),
@@ -1196,36 +1477,47 @@ impl RenderGraph {
         // The track's output is this far ahead of the master: what its effects did not use up.
         let out_frame = start + track.read_ahead - track.fx_latency.iter().sum::<i64>();
         let sr = self.sample_rate as f64;
-        for (si, send) in track.sends.iter().enumerate() {
-            let auto = track.send_automation.get(si).and_then(Option::as_ref);
-            let mut delay = track.send_delays.get(si).and_then(Option::as_ref).and_then(|d| d.state.try_lock().ok());
-            for (k, (src, dst, right)) in send.routes().enumerate() {
-                let gain = |i: usize| match auto {
-                    Some(a) => {
-                        let g = a.gains_at((out_frame + i as i64) as f64 / sr);
-                        if right { g.1 } else { g.0 }
-                    }
-                    None if right => send.gain_r,
-                    None => send.gain_l,
+        let sends = track.sends.iter().enumerate().map(|(si, s)| (s, Dest::Track(s.dest), si, &track.send_delays));
+        // Hardware outputs follow the track's own output: off while it is only heard through a
+        // send into a soloed track.
+        let hw = track.hw_outs.iter().enumerate().filter(|_| track.main_out);
+        for (send, dest, si, delays) in sends.chain(hw.map(|(i, o)| (o, Dest::Device, i, &track.hw_delays))) {
+            let auto = match dest {
+                Dest::Track(_) => track.send_automation.get(si).and_then(Option::as_ref),
+                _ => None,
+            };
+            let mut delay = delays.get(si).and_then(Option::as_ref).and_then(|d| d.state.try_lock().ok());
+            for (k, (src, dst, right, scale)) in send.routes().enumerate() {
+                let gain = |i: usize| {
+                    scale
+                        * match auto {
+                            Some(a) => {
+                                let g = a.gains_at((out_frame + i as i64) as f64 / sr);
+                                send.sign * if right { g.1 } else { g.0 }
+                            }
+                            None if right => send.gain_r,
+                            None => send.gain_l,
+                        }
                 };
                 let line = delay.as_deref_mut().map(|(lines, at)| (lines, k, *at));
-                add(scratch, (&mut *out_l, &mut *out_r), Some(send.dest), (src, dst), line, &gain);
+                add(scratch, (&mut *out_l, &mut *out_r), dest, (send.tap, src, dst), line, &gain);
             }
             if let Some((lines, at)) = delay.as_deref_mut() {
                 *at = (*at + n) % lines[0].len();
             }
         }
-        if track.main_send {
+        if track.main_send && track.main_out {
             let mut delay = track.main_delay.as_ref().and_then(|d| d.state.try_lock().ok());
             for c in 0..track.channels {
                 let line = delay.as_deref_mut().map(|(lines, at)| (lines, c, *at));
-                add(scratch, (&mut *out_l, &mut *out_r), track.parent, (c, c + track.main_offset), line, &|_| 1.0);
+                let route = (SendMode::PostFader, c, c + track.main_offset);
+                add(scratch, (&mut *out_l, &mut *out_r), Dest::Parent, route, line, &|_| 1.0);
             }
             if let Some((lines, at)) = delay.as_deref_mut() {
                 *at = (*at + n) % lines[0].len();
             }
         }
-        drop(own_aux);
+        drop((own_aux, pre_fx, post_fx));
         scratch.track_bufs[ti] = (l, r);
     }
 
@@ -1277,13 +1569,16 @@ fn compensate_latency(tracks: &mut [RenderTrack], order: &[usize], master_latenc
         let t = &tracks[ti];
         let main = t.main_send.then(|| t.parent.map_or(master_latency, |p| read_ahead[p]));
         let sends: Vec<(i64, usize)> = t.sends.iter().map(|s| (read_ahead[s.dest], s.routes().count())).collect();
-        let out = sends.iter().map(|s| s.0).chain(main).max().unwrap_or(master_latency);
+        // A hardware output leaves at once, so it waits for the slowest path to the master.
+        let hw: Vec<(i64, usize)> = t.hw_outs.iter().map(|s| (0, s.routes().count())).collect();
+        let out = sends.iter().chain(&hw).map(|s| s.0).chain(main).max().unwrap_or(master_latency);
         let delay = |dest: i64, channels: usize| {
             (out > dest).then(|| Arc::new(DelayLine::new((out - dest) as usize, channels)))
         };
         let channels = t.channels;
         let t = &mut tracks[ti];
         t.send_delays = sends.iter().map(|&(d, c)| delay(d, c)).collect();
+        t.hw_delays = hw.iter().map(|&(d, c)| delay(d, c)).collect();
         t.main_delay = main.and_then(|d| delay(d, channels));
         t.read_ahead = out + t.fx_latency.iter().sum::<i64>();
         read_ahead[ti] = t.read_ahead;
@@ -1829,5 +2124,140 @@ mod tests {
         p.track_mut(child).unwrap().main_send_offset = 2;
         let (l, r) = render(&graph_with(&p, quad()), 0, 10);
         assert!((l[5] - 0.1).abs() < 1e-6 && (r[5] - 0.2).abs() < 1e-6, "{} {}", l[5], r[5]);
+    }
+
+    fn stereo() -> AudioData {
+        AudioData { sample_rate: 100, channels: vec![vec![0.4; 100], vec![0.2; 100]] }
+    }
+
+    /// A source at volume 0.5, pan 0.4 sending into a bus (the only thing the master hears).
+    fn source_and_bus(mode: SendMode) -> (Project, TrackId, TrackId) {
+        let mut p = project_with_item(0.0, 1.0);
+        let src = p.tracks[0].id;
+        let bus = p.add_track("bus");
+        let t = p.track_mut(src).unwrap();
+        (t.volume, t.pan, t.main_send) = (0.5, 0.4, false);
+        t.sends.push(Send { volume: 0.7, pan: -0.3, mode, ..Send::new(bus) });
+        (p, src, bus)
+    }
+
+    fn close(a: f32, b: f64) -> bool {
+        (a as f64 - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn send_modes_tap_before_the_fader() {
+        let law = Project::default().pan_law;
+        let (sl, sr) = law.gains(-0.3);
+        let (tl, tr) = law.gains(0.4);
+        let (p, ..) = source_and_bus(SendMode::PostFader);
+        let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(close(l[5], 0.4 * 0.5 * tl * 0.7 * sl) && close(r[5], 0.2 * 0.5 * tr * 0.7 * sr), "{l:?} {r:?}");
+        // Pre-fader and pre-FX taps skip the source's fader, pan and volume envelope.
+        for mode in [SendMode::PostFx, SendMode::PreFx, SendMode::PostFxLegacy] {
+            let (mut p, src, _) = source_and_bus(mode);
+            let env = p.track_mut(src).unwrap().envelope_mut(EnvelopeKind::Volume);
+            env.points.push(scythe_core::EnvPoint::new(0.0, 0.25));
+            let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+            assert!(close(l[5], 0.4 * 0.7 * sl) && close(r[5], 0.2 * 0.7 * sr), "{mode:?} {l:?} {r:?}");
+        }
+        // The pre-FX volume envelope acts before every tap, as in REAPER.
+        let (mut p, src, _) = source_and_bus(SendMode::PreFx);
+        let env = p.track_mut(src).unwrap().envelope_mut(EnvelopeKind::VolumePreFx);
+        env.points.push(scythe_core::EnvPoint::new(0.0, 0.5));
+        let (l, _) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(close(l[5], 0.5 * 0.4 * 0.7 * sl), "{l:?}");
+    }
+
+    #[test]
+    fn muting_and_soloing_pre_fader_sends() {
+        // Muting the source silences its pre-fader sends too.
+        let (mut p, src, bus) = source_and_bus(SendMode::PostFx);
+        p.track_mut(src).unwrap().muted = true;
+        let (l, _) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(l.iter().all(|&s| s == 0.0));
+        // Soloing the bus keeps its source playing into it, but not into the master.
+        p.track_mut(src).unwrap().muted = false;
+        p.track_mut(src).unwrap().main_send = true;
+        p.track_mut(bus).unwrap().solo = true;
+        let (soloed, _) = render(&graph_with(&p, stereo()), 0, 10);
+        p.track_mut(src).unwrap().main_send = false;
+        p.track_mut(bus).unwrap().solo = false;
+        let (plain, _) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(soloed[5] != 0.0 && close(soloed[5], plain[5] as f64), "{soloed:?} {plain:?}");
+        // Soloing something else silences both.
+        let other = p.add_track("other");
+        p.track_mut(other).unwrap().solo = true;
+        let (l, _) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(l.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn send_polarity_and_mono() {
+        let law = Project::default().pan_law;
+        let (sl, sr) = law.gains(-0.3);
+        let (mut p, src, _) = source_and_bus(SendMode::PostFx);
+        let s = &mut p.track_mut(src).unwrap().sends[0];
+        (s.phase, s.mono) = (true, true);
+        let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+        let mono = (0.4 + 0.2) / 2.0;
+        assert!(close(l[5], -mono * 0.7 * sl) && close(r[5], -mono * 0.7 * sr), "{l:?} {r:?}");
+    }
+
+    fn device(g: &RenderGraph, n: usize) -> Vec<Vec<f32>> {
+        let (mut l, mut r) = (vec![0.0; n], vec![0.0; n]);
+        let mut s = RenderScratch::new(8);
+        g.render(0, &mut l, &mut r, &mut s);
+        let mut extra = vec![vec![9.0; n]; g.device_channels - 2];
+        g.master_extra(n, &mut extra);
+        g.device_out_at(0, n, &mut l, &mut r, &mut extra);
+        [l, r].into_iter().chain(extra).collect()
+    }
+
+    #[test]
+    fn hardware_outputs_reach_device_channels() {
+        // A monitor bus off the master, to outputs 3/4, and a mono output to 5.
+        let (mut p, src, bus) = source_and_bus(SendMode::PostFx);
+        p.track_mut(src).unwrap().main_send = true;
+        let b = p.track_mut(bus).unwrap();
+        b.main_send = false;
+        b.volume = 0.5;
+        b.hw_outs = vec![HwOut::stereo(2), HwOut { volume: 0.5, ..HwOut::mono(4) }];
+        let g = graph_with(&p, stereo());
+        assert_eq!(g.device_channels, 5);
+        let law = p.pan_law;
+        let (sl, sr) = law.gains(-0.3);
+        let (tl, tr) = law.gains(0.4);
+        let out = device(&g, 10);
+        // Outputs 1/2 carry the master (the source's own output), 3/4 the bus after its fader.
+        assert!(close(out[0][5], 0.4 * 0.5 * tl) && close(out[1][5], 0.2 * 0.5 * tr), "{out:?}");
+        let (bl, br) = (0.4 * 0.7 * sl * 0.5, 0.2 * 0.7 * sr * 0.5);
+        assert!(close(out[2][5], bl) && close(out[3][5], br), "{out:?}");
+        let (cl, cr) = law.gains(0.0);
+        assert!(close(out[4][5], 0.5 * (bl * cl + br * cr) / 2.0), "{out:?}");
+
+        // A muted output plays nothing; a pre-fader output skips the bus fader.
+        let b = p.track_mut(bus).unwrap();
+        b.hw_outs[1].muted = true;
+        b.hw_outs[0].mode = SendMode::PostFx;
+        let out = device(&graph_with(&p, stereo()), 10);
+        assert_eq!(out.len(), 4);
+        assert!(close(out[2][5], bl * 2.0) && close(out[3][5], br * 2.0), "{out:?}");
+
+        // The master's own outputs, when set, replace the default 1/2.
+        p.master.hw_outs = vec![HwOut { volume: 0.5, ..HwOut::stereo(4) }];
+        let g = graph_with(&p, stereo());
+        assert_eq!(g.device_channels, 6);
+        let out = device(&g, 10);
+        assert!(out[0].iter().chain(&out[1]).all(|&s| s == 0.0), "{out:?}");
+        assert!(close(out[4][5], 0.5 * 0.4 * 0.5 * tl), "{out:?}");
+        p.master.hw_outs.clear();
+        let out = device(&graph_with(&p, stereo()), 10);
+        assert!(out[0].iter().all(|&s| s == 0.0), "a master without outputs is not heard");
+
+        // Without hardware outputs the device just gets the master.
+        let (p, ..) = source_and_bus(SendMode::PostFader);
+        let g = graph_with(&p, stereo());
+        assert!(g.hw_bus.is_none() && g.device_channels == 2);
     }
 }

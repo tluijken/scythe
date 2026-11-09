@@ -302,12 +302,14 @@ impl Processor {
             };
             graph.render_with(pos, l, r, &mut self.scratch, &live);
             graph.master_extra_at(0, frames, &mut self.extra);
+            graph.device_out_at(0, frames, l, r, &mut self.extra);
         }
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 { &self.live } else { &[] };
             let live = LiveInput { channels: channels(off, len), midi, play_items: true, midi_out: clock(pos, off) };
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
             graph.master_extra_at(off, len, &mut self.extra);
+            graph.device_out_at(off, len, l, r, &mut self.extra);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
@@ -607,7 +609,7 @@ impl Engine {
         let mut graph = RenderGraph::build(project, &self.pool, &mut self.meters, &mut self.fx, self.info.sample_rate);
         graph.metronome = self.metronome;
         if let Output::Device(out) = &mut self.output {
-            out.match_master(graph.master_channels, &self.transport);
+            out.match_master(graph.device_channels, &self.transport);
         }
         let old = self.graph.swap(Arc::new(graph));
         let now = Instant::now();

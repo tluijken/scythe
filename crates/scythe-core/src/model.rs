@@ -366,16 +366,84 @@ pub struct FxSlot {
     pub raw: Vec<Node>,
 }
 
+/// Where a send or hardware output taps its track (`I_SENDMODE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SendMode {
+    /// After the fader, pan and volume envelopes.
+    #[default]
+    PostFader,
+    /// Before the effects: the items and live input, with the pre-FX volume envelope.
+    PreFx,
+    /// Code 2, an older spelling of `PostFx` that REAPER still reads and plays the same.
+    PostFxLegacy,
+    /// After the effects, before the fader: what a monitor mix wants.
+    PostFx,
+}
+
+impl SendMode {
+    /// The modes offered for new sends, in REAPER's menu order.
+    pub const CHOICES: [SendMode; 3] = [Self::PostFader, Self::PreFx, Self::PostFx];
+
+    pub fn from_code(v: i64) -> Self {
+        match v {
+            1 => Self::PreFx,
+            2 => Self::PostFxLegacy,
+            3 => Self::PostFx,
+            _ => Self::PostFader,
+        }
+    }
+
+    pub fn code(self) -> i64 {
+        match self {
+            Self::PostFader => 0,
+            Self::PreFx => 1,
+            Self::PostFxLegacy => 2,
+            Self::PostFx => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PostFader => "Post-fader",
+            Self::PreFx => "Pre-FX",
+            Self::PostFxLegacy | Self::PostFx => "Pre-fader (post-FX)",
+        }
+    }
+
+    /// Whether the track's fader, pan and volume envelope act on what is tapped.
+    pub fn post_fader(self) -> bool {
+        self == Self::PostFader
+    }
+}
+
+/// The source channels of `I_SRCCHAN` as (first, count): the first channel in the low 10 bits,
+/// above them 0 for a pair, 1 for one channel, n for 2n channels. `None` for -1 (no audio).
+pub fn source_span(src_channels: i64) -> Option<(usize, usize)> {
+    if src_channels < 0 {
+        return None;
+    }
+    let count = match src_channels >> 10 {
+        0 => 2,
+        1 => 1,
+        n => 2 * n as usize,
+    };
+    Some(((src_channels & 1023) as usize, count))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Send {
     pub dest: TrackId,
     pub volume: f64,
     pub pan: f64,
     pub muted: bool,
+    pub mode: SendMode,
+    /// Mix the source channels down to mono before panning (`B_MONO`).
+    pub mono: bool,
+    /// Invert the polarity (`B_PHASE`).
+    pub phase: bool,
     /// Send volume, pan and mute envelopes.
     pub envelopes: Vec<Envelope>,
-    /// Source channels as REAPER's `I_SRCCHAN`: the first channel in the low 10 bits, above
-    /// them 0 for a pair, 1 for one channel, n for 2n channels; -1 sends no audio.
+    /// Source channels as REAPER's `I_SRCCHAN` (see `source_span`); -1 sends no audio.
     pub src_channels: i64,
     /// Destination as `I_DSTCHAN`: the first channel, plus 1024 to mix down to mono.
     pub dst_channels: i64,
@@ -391,10 +459,102 @@ impl Send {
             volume: 1.0,
             pan: 0.0,
             muted: false,
+            mode: SendMode::PostFader,
+            mono: false,
+            phase: false,
             envelopes: Vec::new(),
             src_channels: 0,
             dst_channels: 0,
             raw: None,
+        }
+    }
+}
+
+/// A track's (or the master's) audio hardware output: REAPER's `HWOUT` / `MASTERHWOUT`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HwOut {
+    /// `I_DSTCHAN`: the first device output (0-based) in the low 10 bits, plus 1024 to mix the
+    /// source down to that one output, plus 512 for a ReaRoute channel (which plays nowhere).
+    pub dst_channels: i64,
+    pub mode: SendMode,
+    pub volume: f64,
+    pub pan: f64,
+    pub muted: bool,
+    pub phase: bool,
+    /// Source channels as `I_SRCCHAN` (see `source_span`); -1 sends no audio.
+    pub src_channels: i64,
+    /// `D_PANLAW`; negative uses the project's.
+    pub pan_law: f64,
+    /// Tokens of the original line, so fields the model does not cover survive a save.
+    pub raw: Option<Vec<String>>,
+    /// Lines REAPER writes right after this output's own (`HWOUT_WITHOUT_PANLAW_BOOST`).
+    pub trailing: Vec<Node>,
+}
+
+impl Default for HwOut {
+    fn default() -> Self {
+        Self::stereo(0)
+    }
+}
+
+impl HwOut {
+    pub const MONO: i64 = 1024;
+    pub const REAROUTE: i64 = 512;
+
+    /// The track's first channel pair to device outputs `first` and `first + 1` (0-based).
+    pub fn stereo(first: u32) -> Self {
+        Self {
+            dst_channels: first as i64,
+            mode: SendMode::PostFader,
+            volume: 1.0,
+            pan: 0.0,
+            muted: false,
+            phase: false,
+            src_channels: 0,
+            pan_law: -1.0,
+            raw: None,
+            trailing: Vec::new(),
+        }
+    }
+
+    /// The track's first channel pair mixed down to device output `output` (0-based).
+    pub fn mono(output: u32) -> Self {
+        Self { dst_channels: output as i64 | Self::MONO, ..Self::stereo(0) }
+    }
+
+    /// First device output, 0-based.
+    pub fn first_output(&self) -> usize {
+        (self.dst_channels & 511) as usize
+    }
+
+    pub fn is_mono(&self) -> bool {
+        self.dst_channels & Self::MONO != 0
+    }
+
+    pub fn is_rearoute(&self) -> bool {
+        self.dst_channels & Self::REAROUTE != 0
+    }
+
+    /// Device outputs this output reaches, as a range of 0-based channels.
+    pub fn outputs(&self) -> std::ops::Range<usize> {
+        let first = self.first_output();
+        match source_span(self.src_channels) {
+            _ if self.is_rearoute() => first..first,
+            None => first..first,
+            Some(_) if self.is_mono() => first..first + 1,
+            Some((_, 1)) => first..first + 2,
+            Some((_, n)) => first..first + n,
+        }
+    }
+
+    /// "Out 3/4" or "Out 5 (mono)": what the output is called in REAPER's routing window.
+    pub fn label(&self) -> String {
+        let r = self.outputs();
+        match r.len() {
+            0 => "None".to_owned(),
+            1 => format!("Out {} (mono)", r.start + 1),
+            2 => format!("Out {}/{}", r.start + 1, r.start + 2),
+            _ => format!("Out {}-{}", r.start + 1, r.end),
         }
     }
 }
@@ -487,12 +647,58 @@ pub struct Track {
     /// FX-chain level lines (window state and such) that precede the first plugin.
     pub fx_chain_prelude: Vec<Node>,
     pub sends: Vec<Send>,
+    /// Audio hardware outputs (`HWOUT`, `MASTERHWOUT` on the master).
+    pub hw_outs: Vec<HwOut>,
     pub envelopes: Vec<Envelope>,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
 
 impl Track {
+    /// A value from the track's extension data (`P_EXT:<key>`, the `<EXT` chunk), which REAPER
+    /// keeps for extensions and scripts.
+    pub fn ext(&self, key: &str) -> Option<String> {
+        self.extra.iter().find_map(|n| match n {
+            Node::Chunk(c) if c.name() == "EXT" => c.children.iter().find_map(|l| match l {
+                Node::Line(l) => {
+                    let t = crate::rpp::tokenize(l);
+                    (t.first().map(String::as_str) == Some(key)).then(|| t[1..].join(" "))
+                }
+                Node::Chunk(_) => None,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Sets (or with `None` removes) an extension value; the `<EXT` chunk goes when it empties.
+    pub fn set_ext(&mut self, key: &str, value: Option<&str>) {
+        let is_key =
+            |n: &Node| matches!(n, Node::Line(l) if crate::rpp::tokenize(l).first().map(String::as_str) == Some(key));
+        let at = self.extra.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "EXT"));
+        let at = match (at, value) {
+            (Some(i), _) => i,
+            (None, None) => return,
+            (None, Some(_)) => {
+                self.extra.push(Node::Chunk(Chunk::new("EXT", &[])));
+                self.extra.len() - 1
+            }
+        };
+        let Node::Chunk(c) = &mut self.extra[at] else { return };
+        match value {
+            Some(v) => {
+                let line = Node::Line(crate::rpp::join_tokens([key, v]));
+                match c.children.iter().position(is_key) {
+                    Some(i) => c.children[i] = line,
+                    None => c.children.push(line),
+                }
+            }
+            None => c.children.retain(|n| !is_key(n)),
+        }
+        if c.children.is_empty() {
+            self.extra.remove(at);
+        }
+    }
+
     /// Whether items in `lane` play: every lane does unless the track has fixed lanes and
     /// some are soloed.
     pub fn lane_plays(&self, lane: usize) -> bool {
@@ -533,6 +739,7 @@ impl Track {
             fx: Vec::new(),
             fx_chain_prelude: Vec::new(),
             sends: Vec::new(),
+            hw_outs: Vec::new(),
             envelopes: Vec::new(),
             lines: LineMemo::new(),
             extra: Vec::new(),
@@ -600,7 +807,7 @@ impl Default for Project {
             sample_rate: None,
             pan_law: PanLaw::default(),
             default_pitch_mode: Processing::DEFAULT_MODE,
-            master: Track::new("Master"),
+            master: Track { hw_outs: vec![HwOut::default()], ..Track::new("Master") },
             tracks: Vec::new(),
             markers: Vec::new(),
             time_selection: None,
@@ -644,6 +851,13 @@ impl Project {
         let id = track.id;
         self.tracks.push(track);
         id
+    }
+
+    /// Whether the master plays through REAPER's default hardware output (its first pair to
+    /// outputs 1/2, untouched). Scythe then sends every master channel to the device output of
+    /// the same number, which is what a stereo master does in REAPER too.
+    pub fn master_default_output(&self) -> bool {
+        matches!(self.master.hw_outs.as_slice(), [o] if HwOut { raw: None, trailing: Vec::new(), ..o.clone() } == HwOut::default())
     }
 
     pub fn remove_track(&mut self, id: TrackId) -> Option<Track> {
@@ -736,6 +950,45 @@ impl Project {
             .iter()
             .enumerate()
             .any(|(i, t)| t.solo && std::iter::successors(parents[i], |&p| parents[p]).any(|p| p == idx))
+    }
+
+    /// Per track, whether it is not heard itself but sends (directly or through other sends)
+    /// into a track that is while others are soloed. REAPER keeps such a track playing into its
+    /// sends and silences only its own output, so soloing a bus still hears its sources.
+    pub fn solo_feeds(&self) -> Vec<bool> {
+        let n = self.tracks.len();
+        let mut feeds = vec![false; n];
+        if !self.any_solo() {
+            return feeds;
+        }
+        let parents = self.folder_parents();
+        let audible: Vec<bool> = self.tracks.iter().map(|t| self.is_audible(t)).collect();
+        let muted: Vec<bool> = (0..n)
+            .map(|i| std::iter::once(i).chain(std::iter::successors(parents[i], |&p| parents[p])))
+            .map(|mut chain| chain.any(|j| self.tracks[j].muted))
+            .collect();
+        let index: BTreeMap<TrackId, usize> = self.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+        loop {
+            let mut changed = false;
+            for i in 0..n {
+                if audible[i] || muted[i] || feeds[i] {
+                    continue;
+                }
+                let reaches = self.tracks[i]
+                    .sends
+                    .iter()
+                    .filter(|s| !s.muted)
+                    .filter_map(|s| index.get(&s.dest))
+                    .any(|&d| audible[d] || feeds[d]);
+                if reaches {
+                    feeds[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                return feeds;
+            }
+        }
     }
 
     /// End of the last item, i.e. the natural project length.
