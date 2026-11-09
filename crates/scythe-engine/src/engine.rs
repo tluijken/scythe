@@ -351,6 +351,8 @@ struct Processor {
     control: rtrb::Producer<LiveMidi>,
     /// The device as hardware inserts see it.
     hardware: Arc<crate::hardware_io::HardwareIo>,
+    /// The media explorer's preview, mixed in after the master.
+    preview: Arc<crate::preview::Preview>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -384,6 +386,7 @@ impl Processor {
             keyboard_used: false,
             control: feeds.control,
             hardware: Arc::default(),
+            preview: Arc::default(),
         }
     }
 
@@ -612,6 +615,7 @@ impl Processor {
             graph.monitor_fx_at(pos, off, len, l, r, &mut self.extra);
         }
         self.hardware.mix_into(&mut self.left[..frames], &mut self.right[..frames], &mut self.extra);
+        self.preview.mix_into(&mut self.left[..frames], &mut self.right[..frames]);
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
         let t = &self.transport;
@@ -838,6 +842,7 @@ pub struct Engine {
     callbacks_seen: (u64, Instant),
     /// Where the metronome plays when the project names no output (`metronome_defout`).
     click_output: i64,
+    preview: Arc<crate::preview::Preview>,
 }
 
 impl Engine {
@@ -987,6 +992,7 @@ impl Engine {
         let (senders, feeds) = feeds();
         let proc = Arc::new(Mutex::new(Processor::new(graph.clone(), transport.clone(), feeds)));
         let hardware = proc.lock().map(|p| p.hardware.clone()).ok();
+        let preview = proc.lock().map(|p| p.preview.clone()).unwrap_or_default();
         let output = Output::null(proc.clone(), sample_rate);
         Self {
             graph,
@@ -1026,6 +1032,7 @@ impl Engine {
             device_channels: 2,
             callbacks_seen: (0, Instant::now()),
             click_output: -1,
+            preview,
         }
     }
 
@@ -1055,6 +1062,11 @@ impl Engine {
 
     pub fn transport(&self) -> &Arc<Transport> {
         &self.transport
+    }
+
+    /// The media explorer's preview player.
+    pub fn preview(&self) -> &Arc<crate::preview::Preview> {
+        &self.preview
     }
 
     pub fn fx(&self) -> &FxRegistry {

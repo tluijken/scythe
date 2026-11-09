@@ -4,7 +4,9 @@
 //! runs under the egui app, without a screen, and behind the control API.
 
 mod automation;
+mod bay;
 mod customize;
+pub mod explorer;
 mod files;
 mod health;
 pub mod learn;
@@ -13,6 +15,7 @@ mod media;
 mod midi;
 pub mod render;
 pub mod tabs;
+mod theme;
 mod transport;
 
 pub mod access;
@@ -56,6 +59,10 @@ const NOTICE_BACKLOG: usize = 64;
 
 pub struct Session {
     pub project: Project,
+    /// The media explorer's settings and the file metadata it has read.
+    pub explorer: explorer::Explorer,
+    /// The colour theme, kept in `theme.ScytheTheme` beside the preferences.
+    pub theme: scythe_core::theme::Theme,
     pub history: History,
     pub engine: Engine,
     pub recording: Option<ActiveRecording>,
@@ -177,6 +184,8 @@ impl Session {
             selected_track: None,
             learn: Default::default(),
             keymap: Default::default(),
+            explorer: Default::default(),
+            theme: Default::default(),
             menus: Default::default(),
             mouse: Default::default(),
             host_actions: false,
@@ -366,6 +375,7 @@ impl Session {
         self.prefs_file = Some(path);
         self.load_action_bindings();
         self.load_customizations();
+        self.load_theme();
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
         if let Some(file) = self.monitor_fx_file()
             && let Ok(text) = std::fs::read_to_string(&file)

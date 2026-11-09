@@ -173,3 +173,7 @@
 40090	Automation: Set all tracks automation mode to write
 40266	Automation: Set all tracks automation mode to latch
 42024	Automation: Set all tracks automation mode to latch preview
+50124	Media explorer: Show/hide media explorer
+41157	View: Show project bay window
+40098	File: Clean current project directory...
+42392	Options: Show theme color controls

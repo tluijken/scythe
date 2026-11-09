@@ -48,6 +48,7 @@ impl eframe::App for Shell {
         }
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
+        theme::recolor(&ctx, &self.app.session.theme);
         // Meters and the clock need a steady frame rate even when nothing is playing.
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }

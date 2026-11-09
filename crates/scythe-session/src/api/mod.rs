@@ -5,9 +5,11 @@
 //! variant and a line in each of [`Command`]'s two `match`es.
 
 pub mod analysis;
+pub mod bay;
 pub mod customize;
 pub mod envelope;
 pub mod events;
+pub mod explorer;
 pub mod feed;
 pub mod fx;
 pub mod groups;
@@ -27,6 +29,7 @@ pub mod setlist;
 pub mod snapshot;
 pub mod surface;
 pub mod tempo;
+pub mod theme;
 pub mod timing;
 pub mod tracks;
 pub mod transport;
@@ -66,6 +69,9 @@ pub enum Command {
     Customize(customize::CustomizeCommand),
     Envelope(envelope::EnvelopeCommand),
     Media(media::MediaCommand),
+    Explorer(explorer::ExplorerCommand),
+    Bay(bay::BayCommand),
+    Theme(theme::ThemeCommand),
     Analysis(analysis::AnalysisCommand),
     Events(feed::EventsCommand),
     Script(script::ScriptCommand),
@@ -76,6 +82,9 @@ const TIMING: &[&str] = &["item.timebase", "take.channel_mode", "project.timebas
 
 /// Commands of the `midi` domain about devices; `midi_edit` answers the rest.
 const MIDI_DEVICES: &[&str] = &["midi.devices", "midi.rescan", "midi.device", "midi.keyboard"];
+
+/// Commands of the `media` domain that `media` answers; the media explorer answers the rest.
+const MEDIA_IMPORT: &[&str] = &["media.import", "media.probe"];
 
 /// Commands of the `track` domain that `recording` answers.
 const RECORDING: &[&str] = &["track.record_mode", "track.monitor_mode"];
@@ -116,7 +125,10 @@ impl<'de> Deserialize<'de> for Command {
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             "render" => serde_json::from_value(value).map(Command::Render),
             "record" | "lanes" => serde_json::from_value(value).map(Command::Recording),
-            "media" => serde_json::from_value(value).map(Command::Media),
+            "media" if MEDIA_IMPORT.contains(&cmd) => serde_json::from_value(value).map(Command::Media),
+            "media" => serde_json::from_value(value).map(Command::Explorer),
+            "bay" => serde_json::from_value(value).map(Command::Bay),
+            "theme" => serde_json::from_value(value).map(Command::Theme),
             "analysis" => serde_json::from_value(value).map(Command::Analysis),
             "events" => serde_json::from_value(value).map(Command::Events),
             "script" => serde_json::from_value(value).map(Command::Script),
@@ -150,6 +162,9 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Customize(c) => customize::execute(session, c),
         Command::Envelope(c) => envelope::execute(session, c),
         Command::Media(c) => media::execute(session, c),
+        Command::Explorer(c) => explorer::execute(session, c),
+        Command::Bay(c) => bay::execute(session, c),
+        Command::Theme(c) => theme::execute(session, c),
         Command::Analysis(c) => analysis::execute(session, c),
         Command::Events(c) => feed::execute(session, c),
         Command::Script(c) => script::execute(session, c),

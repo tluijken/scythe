@@ -3828,6 +3828,7 @@ dependencies = [
 name = "scythe-session"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "hound",
  "rayon",
  "schemars",

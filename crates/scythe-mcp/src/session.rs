@@ -40,6 +40,7 @@ impl InProcess {
                     Engine::start_with(pool, &DeviceRequest::default())
                 };
                 let mut session = Session::new(engine);
+                session.load_preferences(scythe_session::preferences_path());
                 if let Some(path) = &project
                     && let Err(e) = session.open_path(path)
                 {

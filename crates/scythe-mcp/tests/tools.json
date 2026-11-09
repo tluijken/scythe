@@ -11479,6 +11479,673 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The shortcut list (folders and databases) and the preview settings.\n\nControl API command `media.shortcuts`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "media_shortcuts",
+    "title": "Media shortcuts"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a folder to the shortcut list.\n\nControl API command `media.add_shortcut`.",
+    "inputSchema": {
+      "properties": {
+        "folder": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "folder"
+      ],
+      "type": "object"
+    },
+    "name": "media_add_shortcut",
+    "title": "Media add shortcut"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes entry `index` (from `media.shortcuts`) from the shortcut list; a database's\nfile stays.\n\nControl API command `media.remove_shortcut`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "media_remove_shortcut",
+    "title": "Media remove shortcut"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Creates a database scanning `folders` (with their subfolders), adds it to the shortcut\nlist and scans it.\n\nControl API command `media.create_database`.",
+    "inputSchema": {
+      "properties": {
+        "folders": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "folders"
+      ],
+      "type": "object"
+    },
+    "name": "media_create_database",
+    "title": "Media create database"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a database's new files (REAPER's \"Scan database for new files\"); `rescan` reads\nevery file's metadata again; `remove_missing` drops files that are gone.\n\nControl API command `media.scan_database`.",
+    "inputSchema": {
+      "properties": {
+        "database": {
+          "type": "string"
+        },
+        "remove_missing": {
+          "default": false,
+          "type": "boolean"
+        },
+        "rescan": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "database"
+      ],
+      "type": "object"
+    },
+    "name": "media_scan_database",
+    "title": "Media scan database"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The subfolders and media files of a folder, or a database's files, with their\nmetadata (length, rate, channels, bits or bitrate, title, artist, BPM, key …).\n\nControl API command `media.browse`.",
+    "inputSchema": {
+      "properties": {
+        "database": {
+          "default": null,
+          "description": "A media database by file name (`00.ReaperFileList`) or shortcut title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "folder": {
+          "default": null,
+          "description": "A folder on the machine running Scythe.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "media_browse",
+    "title": "Media browse"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Files whose name or metadata match `query`: every word must appear, `-word` must not,\n`\"two words\"` together. A folder search includes subfolders unless `subfolders` is false.\n\nControl API command `media.search`.",
+    "inputSchema": {
+      "properties": {
+        "database": {
+          "default": null,
+          "description": "A media database by file name (`00.ReaperFileList`) or shortcut title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "folder": {
+          "default": null,
+          "description": "A folder on the machine running Scythe.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "type": "string"
+        },
+        "subfolders": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    },
+    "name": "media_search",
+    "title": "Media search"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Marks a file as a favourite (or not); in `database` when given.\n\nControl API command `media.favorite`.",
+    "inputSchema": {
+      "properties": {
+        "database": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on": {
+          "default": true,
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "media_favorite",
+    "title": "Media favorite"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plays a file through the preview player, straight to the device output after the master.\nSet the options first with `media.preview_settings`.\n\nControl API command `media.preview`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "start": {
+          "default": null,
+          "description": "Seconds into the file to start at.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "media_preview",
+    "title": "Media preview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stops the preview.\n\nControl API command `media.preview_stop`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "media_preview_stop",
+    "title": "Media preview stop"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The preview's file, position and length.\n\nControl API command `media.preview_state`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "media_preview_state",
+    "title": "Media preview state"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Preview and insert options: tempo match, pitch (semitones), volume (dB), repeat,\npreserve pitch while tempo matching. Fields left out stay.\n\nControl API command `media.preview_settings`.",
+    "inputSchema": {
+      "properties": {
+        "pitch": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "preserve_pitch": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "repeat": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "tempo_match": {
+          "anyOf": [
+            {
+              "oneOf": [
+                {
+                  "enum": [
+                    "off",
+                    "on"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "const": "half",
+                  "description": "At half the project tempo.",
+                  "type": "string"
+                },
+                {
+                  "const": "double",
+                  "description": "At double the project tempo.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "volume_db": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "media_preview_settings",
+    "title": "Media preview settings"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Inserts a file at the edit cursor: on `track`, on a new track (`new_track`), or on the\nselected track (a new one when none is selected). With tempo match on and a tempo in the\nfile's metadata, the take's rate follows the project tempo.\nRuns a media explorer action by its REAPER id (section 32063: 1008 preview play, 1009\nstop, 40020 tempo match on, 41000 insert into project, 42084 set as favorite, 42006 scan\ndatabase …) on `path` (the selected file) and the folder or database given.\n\nControl API command `media.action`.",
+    "inputSchema": {
+      "properties": {
+        "command": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "database": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "folder": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "media_action",
+    "title": "Media action"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs `media.insert`.\n\nControl API command `media.insert`.",
+    "inputSchema": {
+      "properties": {
+        "new_track": {
+          "default": false,
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "media_insert",
+    "title": "Media insert"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The media files the project uses: as the project names them, where they are, whether\nthey exist, and the takes, items and tracks using each.\n\nControl API command `bay.media`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "bay_media",
+    "title": "Bay media"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Every item: track, position, length, active take and its file.\n\nControl API command `bay.items`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "bay_items",
+    "title": "Bay items"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The effects the project uses, with how many instances and on which tracks.\n\nControl API command `bay.fx`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "bay_fx",
+    "title": "Bay fx"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Points every take playing `from` at the file `to` (replace or relink media), as one\nundo step.\n\nControl API command `bay.retarget`.",
+    "inputSchema": {
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "name": "bay_retarget",
+    "title": "Bay retarget"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The media and peaks files in the project's recording folder (not its subfolders) the\nproject does not use, as REAPER's \"Clean current project directory\" lists them.\n\nControl API command `bay.unused`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "bay_unused",
+    "title": "Bay unused"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes unused files (all of `bay.unused` when `files` is left out) to the trash, or\ndeletes them for good with `trash: false`.\n\nControl API command `bay.clean`.",
+    "inputSchema": {
+      "properties": {
+        "files": {
+          "default": null,
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "trash": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": "bay_clean",
+    "title": "Bay clean"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every themable colour: its key, what it colours, its value and Scythe's default, and\nthe REAPER theme key it is imported from.\n\nControl API command `theme.get`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "theme_get",
+    "title": "Theme get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets colours, as `{\"accent\": \"#fd971f\", ...}` with keys from `theme.get`.\n\nControl API command `theme.set`.",
+    "inputSchema": {
+      "properties": {
+        "colors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "colors"
+      ],
+      "type": "object"
+    },
+    "name": "theme_set",
+    "title": "Theme set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Back to Scythe's own colours.\n\nControl API command `theme.reset`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "theme_reset",
+    "title": "Theme reset"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Loads a `.ScytheTheme`, or the colours of a REAPER `.ReaperTheme` or `.ReaperThemeZip`\nwhere they map (REAPER's images and layouts are not used).\n\nControl API command `theme.load`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "theme_load",
+    "title": "Theme load"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Saves the theme as a `.ScytheTheme` file.\n\nControl API command `theme.save`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "theme_save",
+    "title": "Theme save"
+  },
+  {
+    "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true
     },

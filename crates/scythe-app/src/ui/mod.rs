@@ -1,7 +1,9 @@
 pub mod actions;
 mod arrange;
+pub mod bay;
 mod comp;
 mod envelope_lanes;
+pub mod explorer;
 pub mod gfx_view;
 pub mod groups;
 mod inspector;
@@ -16,6 +18,7 @@ pub mod regions;
 mod setlist;
 mod stretch_markers;
 pub mod surfaces;
+pub mod theme_editor;
 pub mod toolbars;
 pub mod widgets;
 
@@ -161,6 +164,9 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     monitor::wizards(app, ui);
     groups::show(app, ui);
     regions::show(app, ui);
+    explorer::show(app, ui);
+    bay::show(app, ui);
+    theme_editor::show(app, ui);
     toolbars::floating(app, ui);
     toolbars::editor(app, ui);
     toolbars::mouse_editor(app, ui);

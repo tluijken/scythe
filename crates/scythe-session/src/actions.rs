@@ -180,6 +180,10 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("41325", "View: Increase selected track heights", W),
     ("41326", "View: Decrease selected track heights", W),
     ("40326", "View: Show region/marker manager window", W),
+    ("50124", "Media explorer: Show/hide media explorer", W),
+    ("41157", "View: Show project bay window", W),
+    ("40098", "File: Clean current project directory...", W),
+    ("42392", "Options: Show theme color controls", W),
     ("41888", "View: Show region render matrix window", W),
     ("40768", "View: Show track grouping matrix window", W),
     ("40377", "View: Show virtual MIDI keyboard", W),
@@ -246,6 +250,10 @@ static BUILTIN: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         Some(ActionInfo { section: keymap::SECTION_MIDI_EDITOR, ..info(id.to_string(), name, W) })
     });
     out.extend(midi);
+    out.extend(crate::explorer::ACTIONS.iter().map(|(id, name)| ActionInfo {
+        section: keymap::SECTION_MEDIA_EXPLORER,
+        ..info(id.to_string(), (*name).into(), S)
+    }));
     out
 });
 

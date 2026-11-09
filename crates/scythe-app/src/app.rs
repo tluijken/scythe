@@ -78,6 +78,11 @@ pub struct ViewState {
     pub midi_devices_open: bool,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
+    /// The media explorer window, while open.
+    pub explorer: Option<crate::ui::explorer::ExplorerWindow>,
+    /// The project bay window, while open.
+    pub bay: Option<crate::ui::bay::BayWindow>,
+    pub theme_editor: bool,
     /// The Actions window, while open.
     pub actions: Option<crate::ui::actions::ActionsWindow>,
     pub toolbar_editor: Option<crate::ui::toolbars::ToolbarEditor>,
@@ -245,6 +250,9 @@ impl ScytheApp {
                 keyboard: Default::default(),
                 midi_devices_open: false,
                 regions: None,
+                explorer: None,
+                bay: None,
+                theme_editor: false,
                 actions: None,
                 toolbar_editor: None,
                 mouse_editor: false,

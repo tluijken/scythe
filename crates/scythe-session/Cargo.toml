@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 scythe-core.workspace = true
 scythe-engine.workspace = true
+flate2.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

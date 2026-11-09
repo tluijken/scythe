@@ -1,4 +1,5 @@
 pub mod automation_item;
+pub mod bay;
 pub mod envelope;
 pub mod ext_state;
 pub mod fade;
@@ -12,6 +13,7 @@ pub mod ini;
 pub mod keymap;
 pub mod lanes;
 pub mod marker_action;
+pub mod mediadb;
 pub mod menus;
 pub mod metronome;
 pub mod midi;
@@ -32,6 +34,7 @@ pub mod solo;
 pub mod stretch;
 pub mod surface;
 pub mod tempo;
+pub mod theme;
 pub mod timebase;
 pub mod units;
 

@@ -69,6 +69,10 @@ pub enum Action {
     RenderProjectSettings,
     QueueRender,
     RegionManager,
+    MediaExplorer,
+    ProjectBay,
+    CleanProjectDirectory,
+    ThemeColors,
     RegionRenderMatrix,
     NewTab,
     OpenInNewTab,
@@ -192,6 +196,10 @@ impl Action {
         Action::RenderProjectSettings,
         Action::QueueRender,
         Action::RegionManager,
+        Action::MediaExplorer,
+        Action::ProjectBay,
+        Action::CleanProjectDirectory,
+        Action::ThemeColors,
         Action::RegionRenderMatrix,
         Action::NewTab,
         Action::OpenInNewTab,
@@ -331,6 +339,10 @@ impl Action {
             Action::RenderProjectSettings => id(41824),
             Action::QueueRender => id(41823),
             Action::RegionManager => id(40326),
+            Action::MediaExplorer => id(50124),
+            Action::ProjectBay => id(41157),
+            Action::CleanProjectDirectory => id(40098),
+            Action::ThemeColors => id(42392),
             Action::RegionRenderMatrix => id(41888),
             Action::NewTab => id(40859),
             Action::OpenInNewTab => named("_SCYTHE_OPEN_IN_NEW_TAB"),
@@ -463,6 +475,7 @@ impl Action {
             Action::NextTab => k(Modifiers::CTRL, Key::Tab),
             Action::PreviousTab => k(Modifiers { shift: true, ..Modifiers::CTRL }, Key::Tab),
             Action::OpenInNewTab | Action::RegionManager | Action::RegionRenderMatrix => None,
+            Action::MediaExplorer | Action::ProjectBay | Action::CleanProjectDirectory | Action::ThemeColors => None,
             Action::LoadDemo => None,
             Action::ToggleMixer => k(CMD, Key::M),
             Action::ToggleEnvelopeLanes => None,
@@ -754,6 +767,20 @@ impl Action {
             Action::RenderProjectSettings => app.render(crate::app::RenderKind::ProjectSettings),
             Action::QueueRender => app.queue_render(),
             Action::RegionManager => app.view.regions = Some(crate::ui::regions::RegionsTab::List),
+            Action::MediaExplorer => {
+                app.view.explorer = match app.view.explorer.take() {
+                    Some(_) => {
+                        app.session.preview_stop();
+                        None
+                    }
+                    None => Some(crate::ui::explorer::ExplorerWindow::open()),
+                }
+            }
+            Action::ProjectBay => app.view.bay = Some(crate::ui::bay::BayWindow::new(crate::ui::bay::BayTab::Media)),
+            Action::CleanProjectDirectory => {
+                app.view.bay = Some(crate::ui::bay::BayWindow::new(crate::ui::bay::BayTab::Clean))
+            }
+            Action::ThemeColors => app.view.theme_editor = true,
             Action::RegionRenderMatrix => app.view.regions = Some(crate::ui::regions::RegionsTab::Matrix),
             Action::NewTab => app.new_tab(),
             Action::OpenInNewTab => app.open_tab_dialog(),
