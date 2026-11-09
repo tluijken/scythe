@@ -177,3 +177,144 @@
 41157	View: Show project bay window
 40098	File: Clean current project directory...
 42392	Options: Show theme color controls
+1155	Options: Cycle ripple editing mode
+40309	Set ripple editing off
+40310	Set ripple editing per-track
+40311	Set ripple editing all tracks
+41990	Toggle ripple editing per-track
+41991	Toggle ripple editing all tracks
+1135	Options: Toggle locking
+40569	Locking: Enable locking
+40570	Locking: Disable locking
+40567	Locking: Clear all lock modes
+40568	Locking: Set all lock modes
+40571	Locking: Set time selection locking mode
+40572	Locking: Clear time selection locking mode
+40573	Locking: Toggle time selection locking mode
+40574	Locking: Set full item locking mode
+40575	Locking: Clear full item locking mode
+40576	Locking: Toggle full item locking mode
+40577	Locking: Set left/right item locking mode
+40578	Locking: Clear left/right item locking mode
+40579	Locking: Toggle left/right item locking mode
+40580	Locking: Set up/down item locking mode
+40581	Locking: Clear up/down item locking mode
+40582	Locking: Toggle up/down item locking mode
+40583	Locking: Set track envelope locking mode
+40584	Locking: Clear track envelope locking mode
+40585	Locking: Toggle track envelope locking mode
+40586	Locking: Set region locking mode
+40587	Locking: Clear region locking mode
+40588	Locking: Toggle region locking mode
+40589	Locking: Set marker locking mode
+40590	Locking: Clear marker locking mode
+40591	Locking: Toggle marker locking mode
+40592	Locking: Set time signature marker locking mode
+40593	Locking: Clear time signature marker locking mode
+40594	Locking: Toggle time signature marker locking mode
+40595	Locking: Set item edges locking mode
+40596	Locking: Clear item edges locking mode
+40597	Locking: Toggle item edges locking mode
+40598	Locking: Set item fade/volume handles locking mode
+40599	Locking: Clear item fade/volume handles locking mode
+40600	Locking: Toggle item fade/volume handles locking mode
+40627	Locking: Set loop points locking mode
+40628	Locking: Clear loop points locking mode
+40629	Locking: Toggle loop points locking mode
+1156	Options: Toggle item grouping and track media/razor edit grouping
+40041	Options: Auto-crossfade media items when editing
+41118	Options: Enable auto-crossfades
+41119	Options: Disable auto-crossfades
+40753	Snapping: Disable snap
+40754	Snapping: Enable snap
+40145	Options: Toggle grid lines
+40923	Grid: Set measure grid
+42304	Grid: Toggle swing grid
+40725	Grid: Toggle measure grid
+40783	Grid: Adjust by 1/2
+40786	Grid: Adjust by 2
+41047	Grid: Set to 1/128
+40774	Grid: Set to 1/64
+41212	Grid: Set to 1/48 (1/32 triplet)
+40775	Grid: Set to 1/32
+41213	Grid: Set to 1/24 (1/16 triplet)
+42001	Grid: Set to 1/18
+40776	Grid: Set to 1/16
+40777	Grid: Set to 1/12 (1/8 triplet)
+42002	Grid: Set to 1/10 (1/8 quintuplet)
+42003	Grid: Set to 1/9
+40778	Grid: Set to 1/8
+42004	Grid: Set to 1/7 (1/4 septuplet)
+41214	Grid: Set to 1/6 (1/4 triplet)
+42005	Grid: Set to 1/5 (1/4 quintuplet)
+40779	Grid: Set to 1/4
+42000	Grid: Set to 1/3 (1/2 triplet)
+40780	Grid: Set to 1/2
+42007	Grid: Set to 2/3 (whole note triplet)
+40781	Grid: Set to 1
+41210	Grid: Set to 2
+42006	Grid: Set to 3
+41211	Grid: Set to 4
+40006	Item: Remove items
+40687	Item properties: Toggle lock
+40688	Item properties: Lock
+40689	Item properties: Unlock
+40032	Item grouping: Group items
+40033	Item grouping: Remove items from group
+40034	Item grouping: Select all items in groups
+40224	Take: Explode takes of items across tracks
+40642	Take: Explode takes of items in place
+40643	Take: Explode takes of items in order
+40438	Take: Implode items across tracks into takes
+40543	Take: Implode items on same track into takes
+40131	Take: Crop to active take in items
+40129	Take: Delete active take from items
+40126	Take: Switch items to previous take
+41059	Item: Crossfade any overlapping items
+40916	Item: Crossfade items within time selection
+41514	Item: Set fade-in shape to type 1 (linear)
+41515	Item: Set fade-in shape to type 2 (slight convex)
+41516	Item: Set fade-in shape to type 3 (slight concave)
+41517	Item: Set fade-in shape to type 4 (sharp convex)
+41518	Item: Set fade-in shape to type 5 (sharp concave)
+41519	Item: Set fade-in shape to type 6 (slight S-curve)
+41836	Item: Set fade-in shape to type 7 (sharp S-curve)
+41520	Item: Cycle through fade-in shapes
+41521	Item: Set fade-out shape to type 1 (linear)
+41522	Item: Set fade-out shape to type 2 (slight convex)
+41523	Item: Set fade-out shape to type 3 (slight concave)
+41524	Item: Set fade-out shape to type 4 (sharp convex)
+41525	Item: Set fade-out shape to type 5 (sharp concave)
+41526	Item: Set fade-out shape to type 6 (slight S-curve)
+41837	Item: Set fade-out shape to type 7 (sharp S-curve)
+41527	Item: Cycle through fade-out shapes
+41528	Item: Set crossfade shape to type 1 (linear, equal gain)
+41529	Item: Set crossfade shape to type 2 (slight convex, equal power)
+41530	Item: Set crossfade shape to type 3 (slight concave)
+41531	Item: Set crossfade shape to type 4 (sharp convex)
+41532	Item: Set crossfade shape to type 5 (sharp concave)
+41533	Item: Set crossfade shape to type 6 (slight S-curve)
+41838	Item: Set crossfade shape to type 7 (sharp S-curve)
+41534	Item: Cycle through crossfade shapes
+40119	Item edit: Move items/envelope points right
+40120	Item edit: Move items/envelope points left
+40793	Item edit: Move items/envelope points left by grid size
+40794	Item edit: Move items/envelope points right by grid size
+41249	Item edit: Nudge right by last nudge dialog settings
+41250	Item edit: Nudge left by last nudge dialog settings
+40225	Item edit: Grow left edge of items
+40226	Item edit: Shrink left edge of items
+40227	Item edit: Shrink right edge of items
+40228	Item edit: Grow right edge of items
+40375	Item navigation: Move cursor to next transient in items
+40376	Item navigation: Move cursor to previous transient in items
+42399	Razor edit: Move areas forwards without contents
+42400	Razor edit: Move areas backwards without contents
+42402	Razor edit: Move areas up without contents
+42403	Razor edit: Move areas down without contents
+42406	Razor edit: Clear all areas
+40760	Edit: Dynamic split items...
+41827	View: Show crossfade editor window
+41226	Item edit: Nudge/Set...
+40071	Options: Show snap/grid settings
+40277	Options: Show lock settings

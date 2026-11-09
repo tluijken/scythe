@@ -267,7 +267,10 @@ fn toggle(s: &State, id: i64, depth: usize) -> i32 {
     match id {
         1068 => s.project.loop_enabled as i32,
         40364 => s.project.metronome.enabled() as i32,
-        _ => s.ctx.actions.toggles.get(&id).copied().unwrap_or(-1),
+        _ => match scythe_core::edit::actions::toggle_state(&s.project, id) {
+            Some(on) => on as i32,
+            None => s.ctx.actions.toggles.get(&id).copied().unwrap_or(-1),
+        },
     }
 }
 

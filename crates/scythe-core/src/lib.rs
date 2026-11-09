@@ -1,5 +1,6 @@
 pub mod automation_item;
 pub mod bay;
+pub mod edit;
 pub mod envelope;
 pub mod ext_state;
 pub mod fade;

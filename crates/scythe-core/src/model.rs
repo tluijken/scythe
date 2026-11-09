@@ -380,6 +380,10 @@ pub struct Item {
     pub ypos: Option<(f64, f64)>,
     /// What the item follows when the tempo changes (`BEAT`); `None` takes the track's.
     pub timebase: Option<Timebase>,
+    /// Locked against moves, deletes and splits (`LOCK 1`, "Item properties: Lock").
+    pub locked: bool,
+    /// The item group it acts together with (`GROUP`); 0 for none.
+    pub group: u32,
     pub takes: Vec<Take>,
     pub active_take: usize,
     pub lines: LineMemo,
@@ -400,6 +404,8 @@ impl Item {
             looped: false,
             ypos: None,
             timebase: None,
+            locked: false,
+            group: 0,
             takes: vec![take],
             active_take: 0,
             lines: LineMemo::new(),
@@ -1102,6 +1108,8 @@ pub struct Project {
     pub tempo_follows_beats: bool,
     /// The project play rate (`PLAYRATE`).
     pub playrate: PlayRate,
+    /// Ripple editing, snap grid, locking, item grouping and auto-crossfade.
+    pub editing: crate::edit::EditSettings,
     pub master: Track,
     pub tracks: Vec<Track>,
     pub markers: Vec<Marker>,
@@ -1133,6 +1141,7 @@ impl Default for Project {
             timebase: Timebase::Beats,
             tempo_follows_beats: true,
             playrate: PlayRate::default(),
+            editing: Default::default(),
             master: Track { hw_outs: vec![HwOut::default()], ..Track::new("Master") },
             tracks: Vec::new(),
             markers: Vec::new(),
@@ -1337,12 +1346,19 @@ impl Project {
         self.tracks.iter().find_map(|t| t.item(id).map(|i| (t.id, i)))
     }
 
-    /// Sets the automatic fade lengths on a track from item overlaps: overlapping neighbours
-    /// crossfade over the overlap, other items lose their automatic fades.
+    /// Sets the automatic fade lengths on a track from item overlaps, while auto-crossfade is
+    /// on: overlapping neighbours crossfade over the overlap, other items lose their automatic
+    /// fades. A new crossfade takes REAPER's default crossfade shape (equal power) and a fade
+    /// that stops crossfading goes back to the default fade shape, as REAPER 7.73 does.
     pub fn auto_crossfade(&mut self, track: TrackId) {
+        if !self.editing.auto_crossfade {
+            return;
+        }
         let Some(t) = self.track_mut(track) else { return };
         let mut order: Vec<usize> = (0..t.items.len()).collect();
         order.sort_by(|&a, &b| t.items[a].position.total_cmp(&t.items[b].position));
+        let before: Vec<(bool, bool)> =
+            t.items.iter().map(|it| (it.fade_in.auto_length > 0.0, it.fade_out.auto_length > 0.0)).collect();
         for it in &mut t.items {
             it.fade_in.auto_length = 0.0;
             it.fade_out.auto_length = 0.0;
@@ -1353,6 +1369,15 @@ impl Project {
             if overlap > 0.0 && t.items[a].ypos == t.items[b].ypos {
                 t.items[a].fade_out.auto_length = overlap;
                 t.items[b].fade_in.auto_length = overlap;
+            }
+        }
+        for (it, (had_in, had_out)) in t.items.iter_mut().zip(before) {
+            for (fade, had) in [(&mut it.fade_in, had_in), (&mut it.fade_out, had_out)] {
+                let has = fade.auto_length > 0.0;
+                if has != had {
+                    fade.set_api_shape(if has { 7 } else { 1 });
+                    fade.curve = 0.0;
+                }
             }
         }
     }

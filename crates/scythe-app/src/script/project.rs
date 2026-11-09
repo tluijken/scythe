@@ -9,7 +9,7 @@ use scythe_core::rpp::{Chunk, Node, line_key, quote, tokenize};
 use scythe_core::timebase::PlayRate;
 use scythe_core::{Marker, Project, TimeRange, TrackId};
 
-use super::items::{select_all_tracks, selection, set_selected};
+use super::items::{select_all_tracks, selection};
 use super::tracks::{color_from_native, color_to_native};
 use super::{Args, Ret, State, Val, index, ret};
 
@@ -166,6 +166,44 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
 
         // Transport and cursor.
         "GetCursorPosition" | "GetCursorPositionEx" => ret(Val::Num(s.cursor())),
+        "GetSetProjectGrid" => {
+            if a.bool(1) {
+                s.project.editing.grid.set_api(a.num(2), a.int(3), a.num(4));
+                s.changed = true;
+            }
+            let (division, mode, swing) = s.project.editing.grid.api();
+            // REAPER 7.73 answers 3327 here whatever the grid.
+            (Val::Int(3327), vec![Val::Num(division), Val::Int(mode), Val::Num(swing)])
+        }
+        "SnapToGrid" => ret(Val::Num(s.project.editing.grid.snap(&s.project.tempo, a.num(1)))),
+        "ApplyNudge" => {
+            use scythe_core::edit::nudge::{Nudge, NudgeContext, NudgeUnit, NudgeWhat};
+            let (flags, unit) = (a.int(1), a.int(3));
+            let (Some(what), true) = (NudgeWhat::from_code(a.int(2)), (0..NudgeUnit::COUNT as i64).contains(&unit))
+            else {
+                return Some(ret(Val::Bool(false)));
+            };
+            let nudge = Nudge {
+                set: flags & 1 != 0,
+                snap: flags & 2 != 0,
+                what,
+                unit: NudgeUnit(unit as u8),
+                value: a.num(4),
+                reverse: a.bool(5),
+                copies: a.int(6).max(1) as u32,
+            };
+            let items = selection(s);
+            let mut ctx = NudgeContext { cursor: s.cursor(), pixel: 0.01 };
+            let selected = nudge.apply(&mut s.project, &items, &mut ctx);
+            if what == NudgeWhat::EditCursor {
+                s.out.cursor = Some(ctx.cursor);
+            } else if selected != items {
+                s.sel_items = selected;
+                s.sel_changed = true;
+            }
+            s.changed = true;
+            ret(Val::Bool(true))
+        }
         "SetEditCurPos" => {
             s.out.cursor = Some(a.num(0).max(0.0));
             ret(Val::Nil)
@@ -637,25 +675,13 @@ pub(super) fn command(s: &mut State, id: i64) {
             s.changed |= !selected_tracks.is_empty();
         }
         // Items.
-        40006 => {
-            let items = selection(s);
-            for t in &mut s.project.tracks {
-                t.items.retain(|i| !items.contains(&i.id));
-            }
-            for i in items {
-                set_selected(s, i, false);
-            }
-            s.changed = true;
-        }
         40012 | 40757 | 40759 | 43178 | 40186 => {
             let at = if s.playing() { s.ctx.play_position } else { s.cursor() };
             let items = selection(s);
-            for t in &mut s.project.tracks {
-                let mut new = Vec::new();
-                for it in t.items.iter_mut().filter(|i| items.contains(&i.id)) {
-                    new.extend(it.split_at(at));
-                }
-                t.items.extend(new);
+            let right = s.project.split_items(&items, at);
+            if id == 40012 && !right.is_empty() {
+                s.sel_items = right;
+                s.sel_changed = true;
             }
             s.changed = true;
         }
@@ -687,6 +713,19 @@ pub(super) fn command(s: &mut State, id: i64) {
         }
         40020 | 40635 => {
             s.project.time_selection = None;
+            s.changed = true;
+        }
+        // Tab-to-transient needs the media, which the app has.
+        40375 | 40376 => s.out.commands.push(id),
+        _ if u32::try_from(id).is_ok_and(scythe_core::edit::actions::handles) => {
+            let none = scythe_core::edit::actions::no_transients;
+            let items = selection(s);
+            let mut ctx = scythe_core::edit::actions::EditContext::new(items.clone(), s.cursor(), &none);
+            scythe_core::edit::actions::run(&mut s.project, &mut ctx, id as u32);
+            if ctx.items != items {
+                s.sel_items = ctx.items;
+                s.sel_changed = true;
+            }
             s.changed = true;
         }
         _ => s.out.commands.push(id),

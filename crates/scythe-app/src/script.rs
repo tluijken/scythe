@@ -598,6 +598,9 @@ static API: &[Sig] = sigs! {
 
     // Transport and cursor.
     "GetCursorPosition" Num [];
+    "GetSetProjectGrid" Int [P, B, NIO, ZIO, NIO];
+    "SnapToGrid" Num [P, N];
+    "ApplyNudge" Bool [P, Z, Z, Z, N, B, Z];
     "GetCursorPositionEx" Num [P];
     "SetEditCurPos" Void [N, B, B];
     "MoveEditCursor" Void [N, B];

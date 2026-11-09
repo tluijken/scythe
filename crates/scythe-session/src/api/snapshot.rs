@@ -309,6 +309,10 @@ pub struct ItemInfo {
     pub active_take: usize,
     /// The active take's media file, when it plays one.
     pub file: Option<String>,
+    /// Locked against moves, splits and deletes.
+    pub locked: bool,
+    /// Its item group; 0 for none.
+    pub group: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -562,6 +566,8 @@ pub fn item(t: &Track, it: &Item) -> ItemInfo {
         takes: it.takes.len(),
         active_take: it.active_take,
         file: it.take().and_then(|tk| tk.source.file()).map(|f| f.display().to_string()),
+        locked: it.locked,
+        group: it.group,
     }
 }
 

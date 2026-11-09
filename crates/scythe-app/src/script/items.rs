@@ -95,8 +95,10 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "D_FADEOUTLEN" => it.fade_out.length,
                 "D_FADEINLEN_AUTO" => it.fade_in.auto_length,
                 "D_FADEOUTLEN_AUTO" => it.fade_out.auto_length,
-                "C_FADEINSHAPE" => it.fade_in.shape as f64,
-                "C_FADEOUTSHAPE" => it.fade_out.shape as f64,
+                "C_FADEINSHAPE" => it.fade_in.api_shape() as f64,
+                "C_FADEOUTSHAPE" => it.fade_out.api_shape() as f64,
+                "C_LOCK" => it.locked as u8 as f64,
+                "I_GROUPID" => it.group as f64,
                 "D_FADEINDIR" => it.fade_in.curve,
                 "D_FADEOUTDIR" => it.fade_out.curve,
                 "I_CURTAKE" => it.active_take as f64,
@@ -127,8 +129,10 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 "D_FADEOUTLEN" => it.fade_out.length = v.max(0.0),
                 "D_FADEINLEN_AUTO" => it.fade_in.auto_length = v,
                 "D_FADEOUTLEN_AUTO" => it.fade_out.auto_length = v,
-                "C_FADEINSHAPE" => it.fade_in.shape = v.clamp(0.0, 6.0) as u8,
-                "C_FADEOUTSHAPE" => it.fade_out.shape = v.clamp(0.0, 6.0) as u8,
+                "C_FADEINSHAPE" => it.fade_in.set_api_shape(v.clamp(0.0, 7.0) as u8),
+                "C_FADEOUTSHAPE" => it.fade_out.set_api_shape(v.clamp(0.0, 7.0) as u8),
+                "C_LOCK" => it.locked = v as i64 & 1 != 0,
+                "I_GROUPID" => it.group = v.max(0.0) as u32,
                 "D_FADEINDIR" => it.fade_in.curve = v.clamp(-1.0, 1.0),
                 "D_FADEOUTDIR" => it.fade_out.curve = v.clamp(-1.0, 1.0),
                 "I_CURTAKE" => it.active_take = (v.max(0.0) as usize).min(it.takes.len().saturating_sub(1)),
@@ -797,11 +801,6 @@ fn midi(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         }
         _ => return None,
     })
-}
-
-/// Makes an item selected or not, for commands run on the selection.
-pub(super) fn set_selected(s: &mut State, id: ItemId, on: bool) {
-    select_item(s, id, on);
 }
 
 /// The selected items' ids, in track order.

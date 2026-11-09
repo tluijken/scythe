@@ -29,18 +29,22 @@ impl Fade {
     /// REAPER 7.73 renders (within 3e-4). Everything else matches REAPER exactly.
     pub fn gain(&self, x: f64) -> f64 {
         let x = x.clamp(0.0, 1.0);
-        if self.power && self.shape == 1 {
-            // A quartic through the quarter sine, measured from REAPER 7.73 renders (exact
-            // within 4e-8).
-            use std::f64::consts::PI;
-            return x * (PI / 2.0 + x * ((4.0 - 1.25 * PI) + x * ((PI - 4.0) + x * (1.0 - PI / 4.0))));
-        }
         let c = self.curve.clamp(-1.0, 1.0);
         let fast = |k: i32| 1.0 - (1.0 - x).powi(k);
         let towards = |base: f64, steep_rise: f64| {
             let target = if c < 0.0 { steep_rise } else { x.powi(4) };
             base + (target - base) * c.abs()
         };
+        if self.power && self.shape == 1 {
+            // A quartic through the quarter sine, measured from REAPER 7.73 renders (exact
+            // within 4e-8). Positive curvature bends it towards x^4; negative curvature is the
+            // equal-power partner of the positive curve mirrored in time (exact too).
+            use std::f64::consts::PI;
+            let quarter_sine =
+                |x: f64| x * (PI / 2.0 + x * ((4.0 - 1.25 * PI) + x * ((PI - 4.0) + x * (1.0 - PI / 4.0))));
+            let bent = |x: f64| quarter_sine(x) + (x.powi(4) - quarter_sine(x)) * c.abs();
+            return if c < 0.0 { (1.0 - bent(1.0 - x).powi(2)).max(0.0).sqrt() } else { bent(x) };
+        }
         match self.shape {
             1 => towards(fast(2), fast(8).sqrt()),
             2 => x - c * x * (1.0 - x),
@@ -53,6 +57,37 @@ impl Fade {
     /// mirrors the curvature: a fade-out with curvature `c` follows the fade-in with `-c`.
     pub fn out_gain(&self, x: f64) -> f64 {
         Fade { curve: -self.curve, ..*self }.gain(x)
+    }
+
+    /// The shape as REAPER's API numbers it (`C_FADEINSHAPE`): 0 to 6, and 7 for the
+    /// equal-power curve.
+    pub fn api_shape(&self) -> u8 {
+        if self.power && self.shape == 1 { 7 } else { self.shape }
+    }
+
+    pub fn set_api_shape(&mut self, shape: u8) {
+        self.power = shape == 7;
+        self.shape = if shape == 7 { 1 } else { shape.min(6) };
+    }
+
+    /// Applies one of REAPER's seven fade types ("type 1 (linear)" to "type 7 (sharp
+    /// S-curve)", 0-based) the way its "Set fade-in/out shape" actions do: each type is a
+    /// shape with a preset curvature, mirrored for fade-outs. `equal_power` makes type 2 the
+    /// equal-power curve, as the crossfade actions do.
+    pub fn set_type(&mut self, kind: usize, fade_out: bool, equal_power: bool) {
+        const TYPES: [(u8, f64); 7] = [(0, 0.0), (1, 0.0), (2, 1.0), (3, -1.0), (4, 1.0), (5, 0.0), (6, 0.0)];
+        let (shape, curve) = TYPES[kind.min(6)];
+        self.set_api_shape(if equal_power && kind == 1 { 7 } else { shape });
+        self.curve = if fade_out { -curve } else { curve };
+    }
+
+    /// Which of REAPER's seven fade types this is, if it is one of them.
+    pub fn kind(&self, fade_out: bool) -> Option<usize> {
+        (0..7).find(|&k| {
+            let mut f = *self;
+            f.set_type(k, fade_out, self.power);
+            f.shape == self.shape && f.power == self.power && (f.curve - self.curve).abs() < 1e-9
+        })
     }
 }
 

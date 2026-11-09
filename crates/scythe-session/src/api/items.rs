@@ -16,7 +16,8 @@ pub enum ItemCommand {
         #[serde(default)]
         track: Option<TrackRef>,
     },
-    /// Moves the item to `position` (seconds) and/or onto `track`.
+    /// Moves the item to `position` (seconds) and/or onto `track`. Its group moves along and
+    /// later items ripple as the ripple mode says; a locked item stays.
     #[serde(rename = "item.move")]
     Move {
         /// The item's id.
@@ -26,7 +27,7 @@ pub enum ItemCommand {
         #[serde(default)]
         track: Option<TrackRef>,
     },
-    /// Splits the item at `at` (seconds) and answers with both halves.
+    /// Splits the item (and its group) at `at` (seconds) and answers with both halves.
     #[serde(rename = "item.split")]
     Split {
         /// The item's id.
@@ -34,7 +35,7 @@ pub enum ItemCommand {
         /// Project time in seconds, inside the item.
         at: f64,
     },
-    /// Deletes the item.
+    /// Deletes the item, closing the gap as the ripple mode says. A locked item stays.
     #[serde(rename = "item.delete")]
     Delete {
         /// The item's id.
@@ -182,10 +183,10 @@ pub fn execute(session: &mut Session, command: ItemCommand) -> Result<Value, Api
                 if let Some(dest) = dest {
                     p.move_item_to_track(id, dest);
                 }
-                if let (Some(pos), Some(it)) = (position, p.tracks.iter_mut().find_map(|t| t.item_mut(id))) {
-                    it.position = pos;
-                }
-                if let Some((t, _)) = p.find_item(id) {
+                if let Some(pos) = position {
+                    let from = p.find_item(id).map_or(pos, |(_, it)| it.position);
+                    p.move_items(&[id], pos - from);
+                } else if let Some((t, _)) = p.find_item(id) {
                     p.auto_crossfade(t);
                 }
             });
@@ -195,14 +196,8 @@ pub fn execute(session: &mut Session, command: ItemCommand) -> Result<Value, Api
             let (_, id) = find(session, item)?;
             let mut right = None;
             session.edit("Split item", |p| {
-                for t in &mut p.tracks {
-                    let Some(idx) = t.items.iter().position(|i| i.id == id) else { continue };
-                    if let Some(r) = t.items[idx].split_at(at) {
-                        right = Some(r.id);
-                        t.items.insert(idx + 1, r);
-                    }
-                    return;
-                }
+                let track = p.find_item(id).map(|(t, _)| t);
+                right = p.split_items(&[id], at).into_iter().find(|r| p.find_item(*r).map(|(t, _)| t) == track);
             });
             let Some(right) = right else {
                 return Err(ApiError::invalid("the split point must lie inside the item"));
@@ -210,11 +205,9 @@ pub fn execute(session: &mut Session, command: ItemCommand) -> Result<Value, Api
             Ok(json([info(session, id), info(session, right)]))
         }
         ItemCommand::Delete { item } => {
-            let (track, id) = find(session, item)?;
+            let (_, id) = find(session, item)?;
             session.edit("Delete items", |p| {
-                if let Some(t) = p.track_mut(track) {
-                    t.items.retain(|i| i.id != id);
-                }
+                p.delete_items(&[id]);
             });
             Ok(super::done())
         }

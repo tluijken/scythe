@@ -8,6 +8,7 @@ pub mod analysis;
 pub mod bay;
 pub mod customize;
 pub mod envelope;
+pub mod editing;
 pub mod events;
 pub mod explorer;
 pub mod feed;
@@ -75,6 +76,7 @@ pub enum Command {
     Analysis(analysis::AnalysisCommand),
     Events(feed::EventsCommand),
     Script(script::ScriptCommand),
+    Editing(editing::EditingCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -97,6 +99,9 @@ impl<'de> Deserialize<'de> for Command {
         };
         if cmd.starts_with("item.stretch_markers") || TIMING.contains(&cmd) {
             return serde_json::from_value(value).map(Command::Timing).map_err(D::Error::custom);
+        }
+        if editing::COMMANDS.contains(&cmd) || cmd.starts_with("edit.") || (cmd.starts_with("take.") && !TIMING.contains(&cmd)) {
+            return serde_json::from_value(value).map(Command::Editing).map_err(D::Error::custom);
         }
         if RECORDING.contains(&cmd) {
             return serde_json::from_value(value).map(Command::Recording).map_err(D::Error::custom);
@@ -168,6 +173,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Analysis(c) => analysis::execute(session, c),
         Command::Events(c) => feed::execute(session, c),
         Command::Script(c) => script::execute(session, c),
+        Command::Editing(c) => editing::execute(session, c),
     }
 }
 

@@ -237,6 +237,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         p.extra.push(node.clone());
                     }
                     "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
+                    "RIPPLE" | "GRID" | "LOCK" | "AUTOXFADE" | "GROUPOVERRIDE" => {
+                        p.editing.read_line(&t);
+                        p.extra.push(node.clone());
+                    }
                     "SMPTESYNC" => {
                         p.timecode_sync = crate::midi_route::TimecodeSync::parse(&t[1..]);
                         p.extra.push(node.clone());
@@ -822,6 +826,14 @@ pub(crate) fn parse_item(c: &Chunk) -> Item {
                         item.timebase = Timebase::from_rpp(num(&t, 1, -1.0) as i64);
                         item.extra.push(node.clone());
                     }
+                    "LOCK" if take.is_none() => {
+                        item.locked = num(&t, 1, 0.0) as i64 & 1 != 0;
+                        item.extra.push(node.clone());
+                    }
+                    "GROUP" if take.is_none() => {
+                        item.group = num(&t, 1, 0.0).max(0.0) as u32;
+                        item.extra.push(node.clone());
+                    }
                     _ => match take.as_mut() {
                         Some(tk) => tk.extra.push(node.clone()),
                         None => item.extra.push(node.clone()),
@@ -862,28 +874,42 @@ pub(crate) fn parse_item(c: &Chunk) -> Item {
     item
 }
 
-/// `FADEIN|FADEOUT <shape> <length> <auto length> <?> <?> <curvature> <?>`. The fourth field
-/// usually repeats the shape, but REAPER renders follow the first one.|FADEOUT <shape> <length> <auto length> <shape> <?> <curvature> <?>`.
+/// `FADEIN|FADEOUT <shape> <length> <auto length> <shape> <?> <curvature> <?>`. The shape
+/// is REAPER's API shape (`C_FADEINSHAPE`) except that 6 is written `5.1` and the equal-power
+/// 7 as `1.1` (REAPER renders `6` and `7` the same). The fourth field usually repeats the
+/// shape, but REAPER renders follow the first one.
 fn parse_fade(t: &[String]) -> Fade {
-    Fade {
-        length: num(t, 2, 0.0),
-        auto_length: num(t, 3, 0.0),
-        shape: num(t, 1, 0.0).clamp(0.0, 6.0) as u8,
-        curve: num(t, 6, 0.0),
-        power: (num(t, 1, 0.0) - 1.1).abs() < 1e-9,
+    let raw = num(t, 1, 0.0);
+    let api = if (raw - 5.1).abs() < 1e-9 {
+        6
+    } else if (raw - 1.1).abs() < 1e-9 {
+        7
+    } else {
+        raw.clamp(0.0, 7.0) as u8
+    };
+    let mut fade = Fade { length: num(t, 2, 0.0), auto_length: num(t, 3, 0.0), curve: num(t, 6, 0.0), ..Fade::new(0.0) };
+    fade.set_api_shape(api);
+    fade
+}
+
+fn fade_shape_text(f: &Fade) -> String {
+    match f.api_shape() {
+        6 => "5.1".to_owned(),
+        7 => "1.1".to_owned(),
+        s => s.to_string(),
     }
 }
 
 fn fade_line(lines: &LineMemo, key: &str, f: &Fade) -> Vec<String> {
     let mut set = vec![(2, fmt_num(f.length)), (3, fmt_num(f.auto_length)), (6, fmt_num(f.curve))];
-    // The shape field can carry a fraction (`1.1`, the equal-power variant); only rewrite it, and
-    // the fourth field when it mirrors it, if the shape actually changed.
+    // Only rewrite the shape, and the fourth field when it mirrors it, if the shape actually
+    // changed, so REAPER's own spelling survives.
     let old = lines.get(key);
-    if old.is_none_or(|t| parse_fade(t).shape != f.shape || parse_fade(t).power != f.power) {
-        let shape = if f.power && f.shape == 1 { "1.1".to_owned() } else { f.shape.to_string() };
-        set.push((1, shape));
+    if old.is_none_or(|t| parse_fade(t).api_shape() != f.api_shape()) {
+        let shape = fade_shape_text(f);
+        set.push((1, shape.clone()));
         if old.is_none_or(|t| num(t, 1, -1.0) == num(t, 4, -2.0)) {
-            set.push((4, f.shape.to_string()));
+            set.push((4, shape));
         }
     }
     line_from(lines, key, &[key, "1", "0", "0", "1", "0", "0", "0"], &set)
@@ -1043,6 +1069,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     let mut wrote_sync = false;
     let (mut wrote_global_auto, mut wrote_pools) = (false, false);
     let (mut wrote_timebase, mut wrote_tempo_lock, mut wrote_playrate) = (false, false, false);
+    let mut wrote_editing: Vec<String> = Vec::new();
     for node in &p.extra {
         match node {
             Node::Line(l) if line_key(l) == "MASTERHWOUT" => {
@@ -1116,6 +1143,13 @@ pub fn project_to_rpp(p: &Project) -> String {
                 root.line(["TIMELOCKMODE".to_owned(), p.timebase.rpp_code().to_string()]);
                 wrote_timebase = true;
             }
+            Node::Line(l) if crate::edit::EditSettings::KEYS.contains(&line_key(l)) => {
+                let key = line_key(l);
+                if let Some(t) = p.editing.line(key, Some(&tokenize(l))) {
+                    root.line(t);
+                }
+                wrote_editing.push(key.to_owned());
+            }
             Node::Line(l) if line_key(l) == "TEMPOENVLOCKMODE" => {
                 root.line(["TEMPOENVLOCKMODE".to_owned(), bit(p.tempo_follows_beats)]);
                 wrote_tempo_lock = true;
@@ -1167,6 +1201,13 @@ pub fn project_to_rpp(p: &Project) -> String {
     }
     if !wrote_timebase && p.timebase != Timebase::default() {
         root.line(["TIMELOCKMODE".to_owned(), p.timebase.rpp_code().to_string()]);
+    }
+    let default_editing = crate::edit::EditSettings::default();
+    for key in crate::edit::EditSettings::KEYS.into_iter().filter(|k| !wrote_editing.iter().any(|w| w == k)) {
+        let (now, default) = (p.editing.line(key, None), default_editing.line(key, None));
+        if let Some(t) = now.filter(|t| Some(t) != default.as_ref()) {
+            root.line(t);
+        }
     }
     if !wrote_tempo_lock && !p.tempo_follows_beats {
         root.line(["TEMPOENVLOCKMODE", "0"]);
@@ -1584,18 +1625,37 @@ pub(crate) fn write_item(it: &Item) -> Chunk {
     if let Some((top, height)) = it.ypos {
         c.line(line_from(l, "YPOS", &["YPOS", "0", "1", "2"], &[(1, fmt_num(top)), (2, fmt_num(height))]));
     }
-    let mut wrote_beat = false;
+    let (mut wrote_beat, mut wrote_lock, mut wrote_group) = (false, false, false);
     for node in &it.extra {
         match node {
             Node::Line(l) if line_key(l) == "BEAT" => {
                 c.line(["BEAT".to_owned(), it.timebase.map_or(-1, |b| b.rpp_code()).to_string()]);
                 wrote_beat = true;
             }
+            // REAPER drops both lines when they are off.
+            Node::Line(l) if line_key(l) == "LOCK" => {
+                if it.locked {
+                    c.line(["LOCK", "1"]);
+                }
+                wrote_lock = true;
+            }
+            Node::Line(l) if line_key(l) == "GROUP" => {
+                if it.group > 0 {
+                    c.line(["GROUP".to_owned(), it.group.to_string()]);
+                }
+                wrote_group = true;
+            }
             _ => c.children.push(node.clone()),
         }
     }
     if let (false, Some(b)) = (wrote_beat, it.timebase) {
         c.line(["BEAT".to_owned(), b.rpp_code().to_string()]);
+    }
+    if !wrote_lock && it.locked {
+        c.line(["LOCK", "1"]);
+    }
+    if !wrote_group && it.group > 0 {
+        c.line(["GROUP".to_owned(), it.group.to_string()]);
     }
 
     for (i, tk) in it.takes.iter().enumerate() {
