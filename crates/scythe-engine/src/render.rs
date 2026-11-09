@@ -1613,7 +1613,9 @@ impl RenderGraph {
                 let ItemAudio::Media(audio) = &item.audio else { return };
                 let (l, rest) = bufs.split_at_mut(1);
                 mix_item(item, audio, at, sr, &mut l[0][..m], &mut rest[0][..m]);
-                for (c, out) in rest.iter_mut().enumerate().skip(1).take(audio.channels.len().saturating_sub(2)) {
+                let extra =
+                    if item.channel_mode == ChannelMode::Normal { audio.channels.len().saturating_sub(2) } else { 0 };
+                for (c, out) in rest.iter_mut().enumerate().skip(1).take(extra) {
                     mix_item_channel(item, audio, c + 1, at, sr, &mut out[..m]);
                 }
             }
