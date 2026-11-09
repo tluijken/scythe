@@ -1,7 +1,7 @@
 //! Tracks, their sends, effects and envelopes.
 
 use scythe_core::rpp::{Chunk, Node, line_key, quote, tokenize};
-use scythe_core::{Color, EnvPoint, Envelope, EnvelopeKind, PointShape, Project, Send, TrackId};
+use scythe_core::{Color, EnvPoint, Envelope, EnvelopeKind, HwOut, PointShape, Project, Send, SendMode, TrackId};
 
 use super::{Args, Env, Ret, State, Val, index, ret, track};
 
@@ -102,66 +102,126 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         "Track_GetPeakInfo" => ret(Val::Num(0.0)),
 
         // Sends: category < 0 lists the track's receives, 0 its sends, > 0 its hardware
-        // outputs, which Scythe does not have.
+        // outputs (the master has only those).
         "CreateTrackSend" => {
             let dest = a.get(1).track().filter(|d| s.project.track(*d).is_some());
-            let (Some(dest), Some(t)) = (dest, a.get(0).track().and_then(|t| s.project.track_mut(t))) else {
-                return Some(ret(Val::Int(-1)));
+            let Some(t) = track(&mut s.project, a.get(0).track()) else { return Some(ret(Val::Int(-1))) };
+            let n = match dest {
+                Some(dest) => {
+                    t.sends.push(Send::new(dest));
+                    t.sends.len()
+                }
+                None => {
+                    t.hw_outs.push(HwOut::default());
+                    t.hw_outs.len()
+                }
             };
-            t.sends.push(Send::new(dest));
             s.changed = true;
-            ret(Val::Int(t.sends.len() as i64 - 1))
+            ret(Val::Int(n as i64 - 1))
         }
         "RemoveTrackSend" => {
-            let Some((src, i)) = send_at(&s.project, a.get(0).track(), a.int(1), a.int(2)) else {
-                return Some(ret(Val::Bool(false)));
+            let ok = match route_at(&mut s.project, a.get(0).track(), a.int(1), a.int(2)) {
+                Some(Route::Send(src, i)) => {
+                    s.project.track_mut(src).unwrap().sends.remove(i);
+                    true
+                }
+                Some(Route::Hw(t, i)) => {
+                    track(&mut s.project, Some(t)).unwrap().hw_outs.remove(i);
+                    true
+                }
+                None => false,
             };
-            s.project.track_mut(src).unwrap().sends.remove(i);
-            s.changed = true;
-            ret(Val::Bool(true))
+            s.changed |= ok;
+            ret(Val::Bool(ok))
         }
         "GetTrackNumSends" => {
             let (t, cat) = (a.get(0).track(), a.int(1));
-            let n = (0..).take_while(|&i| send_at(&s.project, t, cat, i).is_some()).count();
+            let n = (0..).take_while(|&i| route_at(&mut s.project, t, cat, i).is_some()).count();
             ret(Val::Int(n as i64))
         }
         "GetTrackSendInfo_Value" => {
-            let Some((src, i)) = send_at(&s.project, a.get(0).track(), a.int(1), a.int(2)) else {
+            let Some(route) = route_at(&mut s.project, a.get(0).track(), a.int(1), a.int(2)) else {
                 return Some(ret(Val::Num(0.0)));
             };
-            let send = &s.project.track(src).unwrap().sends[i];
-            let raw = |i: usize| send.raw.as_ref().and_then(|r| r.get(i)).and_then(|v| v.parse::<f64>().ok());
-            ret(match a.text(3).as_str() {
-                "B_MUTE" => Val::Num(send.muted as u8 as f64),
-                "D_VOL" => Val::Num(send.volume),
-                "D_PAN" => Val::Num(send.pan),
-                "I_SRCCHAN" => Val::Num(send.src_channels as f64),
-                "I_DSTCHAN" => Val::Num(send.dst_channels as f64),
-                "I_SENDMODE" => Val::Num(raw(2).unwrap_or(0.0)),
-                "B_MONO" => Val::Num(raw(6).unwrap_or(0.0)),
-                "B_PHASE" => Val::Num(raw(7).unwrap_or(0.0)),
-                "D_PANLAW" | "I_AUTOMODE" => Val::Num(-1.0),
-                "P_DESTTRACK" => Val::Track(send.dest),
-                "P_SRCTRACK" => Val::Track(src),
-                _ => Val::Num(0.0),
-            })
+            let key = a.text(3);
+            let v = |x: f64| ret(Val::Num(x));
+            match route {
+                Route::Send(src, i) => {
+                    let send = &s.project.track(src).unwrap().sends[i];
+                    let raw = |i: usize| send.raw.as_ref()?.get(i)?.split(':').next()?.parse::<f64>().ok();
+                    match key.as_str() {
+                        "B_MUTE" => v(send.muted as u8 as f64),
+                        "D_VOL" => v(send.volume),
+                        "D_PAN" => v(send.pan),
+                        "I_SRCCHAN" => v(send.src_channels as f64),
+                        "I_DSTCHAN" => v(send.dst_channels as f64),
+                        "I_SENDMODE" => v(send.mode.code() as f64),
+                        "B_MONO" => v(send.mono as u8 as f64),
+                        "B_PHASE" => v(send.phase as u8 as f64),
+                        "D_PANLAW" => v(raw(10).unwrap_or(-1.0)),
+                        "I_AUTOMODE" => v(-1.0),
+                        "P_DESTTRACK" => ret(Val::Track(send.dest)),
+                        "P_SRCTRACK" => ret(Val::Track(src)),
+                        _ => v(0.0),
+                    }
+                }
+                Route::Hw(t, i) => {
+                    let o = &track(&mut s.project, Some(t)).unwrap().hw_outs[i];
+                    match key.as_str() {
+                        "B_MUTE" => v(o.muted as u8 as f64),
+                        "D_VOL" => v(o.volume),
+                        "D_PAN" => v(o.pan),
+                        "I_SRCCHAN" => v(o.src_channels as f64),
+                        "I_DSTCHAN" => v(o.dst_channels as f64),
+                        "I_SENDMODE" => v(o.mode.code() as f64),
+                        "B_PHASE" => v(o.phase as u8 as f64),
+                        "D_PANLAW" => v(o.pan_law),
+                        "I_AUTOMODE" => v(-1.0),
+                        "P_SRCTRACK" => ret(Val::Track(t)),
+                        _ => v(0.0),
+                    }
+                }
+            }
         }
         "SetTrackSendInfo_Value" => {
-            let Some((src, i)) = send_at(&s.project, a.get(0).track(), a.int(1), a.int(2)) else {
+            let Some(route) = route_at(&mut s.project, a.get(0).track(), a.int(1), a.int(2)) else {
                 return Some(ret(Val::Bool(false)));
             };
-            let send = &mut s.project.track_mut(src).unwrap().sends[i];
             let v = a.num(4);
-            match a.text(3).as_str() {
-                "B_MUTE" => send.muted = v != 0.0,
-                "D_VOL" => send.volume = v.max(0.0),
-                "D_PAN" => send.pan = v.clamp(-1.0, 1.0),
-                "I_SRCCHAN" => send.src_channels = v as i64,
-                "I_DSTCHAN" => send.dst_channels = v as i64,
-                _ => return Some(ret(Val::Bool(false))),
-            }
-            s.changed = true;
-            ret(Val::Bool(true))
+            let ok = match route {
+                Route::Send(src, i) => {
+                    let send = &mut s.project.track_mut(src).unwrap().sends[i];
+                    match a.text(3).as_str() {
+                        "B_MUTE" => send.muted = v != 0.0,
+                        "D_VOL" => send.volume = v.max(0.0),
+                        "D_PAN" => send.pan = v.clamp(-1.0, 1.0),
+                        "I_SRCCHAN" => send.src_channels = v as i64,
+                        "I_DSTCHAN" => send.dst_channels = v as i64,
+                        "I_SENDMODE" => send.mode = SendMode::from_code(v as i64),
+                        "B_MONO" => send.mono = v != 0.0,
+                        "B_PHASE" => send.phase = v != 0.0,
+                        _ => return Some(ret(Val::Bool(false))),
+                    }
+                    true
+                }
+                Route::Hw(t, i) => {
+                    let o = &mut track(&mut s.project, Some(t)).unwrap().hw_outs[i];
+                    match a.text(3).as_str() {
+                        "B_MUTE" => o.muted = v != 0.0,
+                        "D_VOL" => o.volume = v.max(0.0),
+                        "D_PAN" => o.pan = v.clamp(-1.0, 1.0),
+                        "I_SRCCHAN" => o.src_channels = v as i64,
+                        "I_DSTCHAN" => o.dst_channels = v as i64,
+                        "I_SENDMODE" => o.mode = SendMode::from_code(v as i64),
+                        "B_PHASE" => o.phase = v != 0.0,
+                        "D_PANLAW" => o.pan_law = v,
+                        _ => return Some(ret(Val::Bool(false))),
+                    }
+                    true
+                }
+            };
+            s.changed |= ok;
+            ret(Val::Bool(ok))
         }
         "GetTrackSendName" | "GetTrackReceiveName" => {
             let cat = if name == "GetTrackSendName" { 0 } else { -1 };
@@ -314,6 +374,23 @@ fn set_track_value(s: &mut State, id: Option<TrackId>, key: &str, v: f64) -> boo
 }
 
 /// The send a category and index name: its source track and index in that track's sends.
+enum Route {
+    /// A send: its source track and index in that track's sends.
+    Send(TrackId, usize),
+    /// A hardware output of a track or the master.
+    Hw(TrackId, usize),
+}
+
+/// What a send category and index name, hardware outputs (category > 0) included.
+fn route_at(p: &mut Project, t: Option<TrackId>, category: i64, i: i64) -> Option<Route> {
+    if category > 0 {
+        let i = usize::try_from(i).ok()?;
+        let id = t?;
+        return track(p, Some(id)).filter(|tr| i < tr.hw_outs.len()).map(|_| Route::Hw(id, i));
+    }
+    send_at(p, t, category, i).map(|(src, k)| Route::Send(src, k))
+}
+
 fn send_at(p: &Project, t: Option<TrackId>, category: i64, i: i64) -> Option<(TrackId, usize)> {
     let t = t?;
     let i = usize::try_from(i).ok()?;
@@ -814,6 +891,27 @@ mod tests {
         assert_eq!(api(&mut s, "GetTrackSendName", &[a.clone(), Val::Int(0)]).1, [Val::Str("Bass".into())]);
         assert_eq!(api(&mut s, "RemoveTrackSend", &[b, Val::Int(-1), Val::Int(0)]).0, Val::Bool(true));
         assert!(s.project.tracks[0].sends.is_empty());
+    }
+
+    #[test]
+    fn hardware_outputs() {
+        let p = project();
+        let (a, master) = (Val::Track(p.tracks[0].id), Val::Track(p.master.id));
+        let mut s = state(p);
+        assert_eq!(api(&mut s, "CreateTrackSend", &[a.clone(), Val::Nil]).0, Val::Int(0));
+        assert_eq!(api(&mut s, "GetTrackNumSends", &[a.clone(), Val::Int(1)]).0, Val::Int(1));
+        assert_eq!(api(&mut s, "GetTrackNumSends", &[a.clone(), Val::Int(0)]).0, Val::Int(0));
+        for (key, v) in [("I_DSTCHAN", 1026.0), ("I_SENDMODE", 3.0), ("D_VOL", 0.5)] {
+            let set = [a.clone(), Val::Int(1), Val::Int(0), Val::Str(key.into()), Val::Num(v)];
+            assert_eq!(api(&mut s, "SetTrackSendInfo_Value", &set).0, Val::Bool(true));
+            let get = [a.clone(), Val::Int(1), Val::Int(0), Val::Str(key.into())];
+            assert_eq!(api(&mut s, "GetTrackSendInfo_Value", &get).0, Val::Num(v));
+        }
+        let o = &s.project.tracks[0].hw_outs[0];
+        assert_eq!((o.label(), o.mode), ("Out 3 (mono)".to_owned(), SendMode::PostFx));
+        assert_eq!(api(&mut s, "GetTrackNumSends", &[master.clone(), Val::Int(1)]).0, Val::Int(1));
+        assert_eq!(api(&mut s, "RemoveTrackSend", &[master, Val::Int(1), Val::Int(0)]).0, Val::Bool(true));
+        assert!(s.project.master.hw_outs.is_empty());
     }
 
     #[test]
