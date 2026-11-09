@@ -20,6 +20,7 @@ pub mod meter;
 pub mod midi_io;
 pub mod midi_sync;
 pub mod mix;
+pub mod modulation;
 pub mod nam;
 pub mod normalized;
 pub mod pcmfile;

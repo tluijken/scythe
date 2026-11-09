@@ -468,12 +468,12 @@ fn render_mix(
     // Pre-roll through the plugin latency so lookahead effects have heard the first frames.
     let mut pre = graph.latency();
     while pre > 0 {
-        let n = (pre as usize).min(l.len());
+        let n = graph.block_len(start - pre, (pre as usize).min(l.len()));
         graph.render(start - pre, &mut l[..n], &mut r[..n], &mut scratch);
         pre -= n as i64;
     }
     while done < total {
-        let n = ((total - done) as usize).min(l.len());
+        let n = graph.block_len(start + done, ((total - done) as usize).min(l.len()));
         graph.render(start + done, &mut l[..n], &mut r[..n], &mut scratch);
         graph.master_extra(n, &mut extra);
         sink(&l[..n], &r[..n], &extra)?;

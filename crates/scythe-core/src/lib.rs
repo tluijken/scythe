@@ -10,6 +10,7 @@ pub mod metronome;
 pub mod midi;
 pub mod midi_route;
 pub mod model;
+pub mod modulation;
 pub mod monitor;
 pub mod prefs;
 pub mod recording;

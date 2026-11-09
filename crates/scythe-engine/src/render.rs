@@ -314,6 +314,8 @@ pub struct RenderTrack {
     pub fx: Vec<Arc<FxInstance>>,
     /// Parameter envelopes of each effect in `fx`.
     pub fx_automation: Vec<Vec<ParamAutomation>>,
+    /// Parameter modulation and learned controls of each effect in `fx`.
+    pub fx_mods: Vec<Arc<crate::modulation::FxMods>>,
     /// Pin maps of the effects that do not simply process channels 1/2.
     pub fx_pins: Vec<Option<PinMap>>,
     /// Buffers the pins of such effects are gathered into, one per pin of the widest.
@@ -607,6 +609,9 @@ pub struct RenderGraph {
     pub master_aux: Option<Arc<AuxChannels>>,
     pub master_volume: f32,
     pub master_fx_pins: Vec<Option<PinMap>>,
+    /// An effect's parameter follows one of another effect in its chain: REAPER runs the
+    /// whole chain block by block, so renders go 512 frames at a time.
+    pub linked_fx: bool,
     pub master_pin_bufs: Option<Arc<AuxChannels>>,
     /// The master's hardware outputs; `None` sends every master channel to the device output
     /// of the same number (REAPER's default output, see `Project::master_default_output`).
@@ -690,6 +695,7 @@ impl RenderGraph {
             master_aux: None,
             master_volume: 1.0,
             master_fx_pins: Vec::new(),
+            linked_fx: false,
             master_pin_bufs: None,
             master_hw_outs: None,
             master_taps: Taps::default(),
@@ -812,6 +818,7 @@ impl RenderGraph {
                     })
                     .collect::<Vec<_>>();
                 let (chain, fx_automation) = fx.chain_with_automation(Some(t.id), &t.fx, (t.channels as usize).max(2));
+                let fx_mods = fx.chain_modulation(Some(t.id), &t.fx);
                 // Aligned with `chain`: the enabled slots that have an instance.
                 let fx_pins = effective_pins(&t.fx, &chain, |s, i| fx.instance(Some(t.id), s, i).is_some());
                 let pin_count = pin_buffer_count(&chain, &fx_pins);
@@ -826,6 +833,7 @@ impl RenderGraph {
                     .filter_map(|s| Some((*index.get(&s.dest)?, s.midi(), s.mode == SendMode::PreFx)))
                     .collect();
                 let (items, notes) = if chain.iter().any(|f| f.instrument)
+                    || fx_mods.iter().any(|m| m.reads_midi())
                     || t.midi_out.is_some()
                     || !midi_sends.is_empty()
                 {
@@ -897,6 +905,7 @@ impl RenderGraph {
                     automation: fader.automation.map(Arc::new),
                     fx: chain,
                     fx_automation,
+                    fx_mods,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
                     chain_midi: Arc::default(),
                     midi_sends,
@@ -970,6 +979,9 @@ impl RenderGraph {
         let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
+        let linked_fx = tracks.iter().any(|t| {
+            t.fx_mods.iter().enumerate().any(|(k, m)| m.entries.iter().any(|e| e.source.is_some_and(|s| s.0 != k)))
+        });
         Self {
             master_hw_outs,
             master_taps,
@@ -991,6 +1003,7 @@ impl RenderGraph {
             master_aux: (master_channels > 2).then(|| Arc::new(AuxChannels::new(master_channels - 2))),
             master_volume: mv as f32,
             master_fx_pins,
+            linked_fx,
             master_pin_bufs: master_pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
             timeline,
             clicks: Arc::new(ClickSounds::new(sample_rate)),
@@ -1022,6 +1035,12 @@ impl RenderGraph {
     /// Whether any track listens to the live input.
     /// Frames of plugin latency the graph compensates by reading ahead; a render starting
     /// anywhere should first run this many frames so the effects have heard them.
+    /// The frames to render from `frame` on in one call: up to the next 512-frame block when
+    /// effects link across the chain, else `n`.
+    pub fn block_len(&self, frame: i64, n: usize) -> usize {
+        if self.linked_fx { n.min((512 - frame.rem_euclid(512)) as usize) } else { n }
+    }
+
     pub fn latency(&self) -> i64 {
         let master: i64 = self.master_fx_latency.iter().sum();
         self.tracks.iter().map(|t| t.read_ahead).max().unwrap_or(0).max(master)
@@ -1421,11 +1440,23 @@ impl RenderGraph {
                     })
                 };
                 let sr = self.sample_rate as f64;
+                let mods = track.fx_mods.get(k).filter(|m| !m.is_empty());
+                let plain = automation.is_empty() && mods.is_none();
+                let mod_ctx = |at: usize| {
+                    mods.map(|m| crate::modulation::ModContext {
+                        mods: m,
+                        chain: &track.fx,
+                        own: k,
+                        timeline: &self.timeline,
+                        control: if at == 0 { input.midi } else { &[] },
+                        sample_rate: self.sample_rate,
+                    })
+                };
                 if let (Some(map), Some(bufs)) = (pins, pin_bufs.as_deref_mut()) {
                     gather_pins(map, bufs, n, tl, tr, aux.as_deref(), track.channels);
                     if fx.pins.0 > 2 || fx.pins.1 > 2 {
                         // Several pins: the effect works on all the gathered buffers at once.
-                        if automation.is_empty() {
+                        if plain {
                             fx.process_pins(bufs, 0..n, &ctx);
                         } else {
                             for (at, len, frame) in slices(n) {
@@ -1441,6 +1472,7 @@ impl RenderGraph {
                                     &slice_ctx,
                                     automation,
                                     t + at as f64 / sr,
+                                    mod_ctx(at).as_ref(),
                                 );
                             }
                         }
@@ -1449,7 +1481,7 @@ impl RenderGraph {
                         let (a, b) = main.split_at_mut(1);
                         ctx.aux = (map.inputs.len() >= 4).then(|| (&side[0][..n], &side[1][..n]));
                         let (pl, pr) = (&mut a[0][..n], &mut b[0][..n]);
-                        if automation.is_empty() {
+                        if plain {
                             fx.process(pl, pr, &ctx);
                         } else {
                             for (at, len, frame) in slices(n) {
@@ -1466,6 +1498,7 @@ impl RenderGraph {
                                     &slice_ctx,
                                     automation,
                                     t + at as f64 / sr,
+                                    mod_ctx(at).as_ref(),
                                 );
                             }
                         }
@@ -1473,7 +1506,7 @@ impl RenderGraph {
                     scatter_pins(map, bufs, n, tl, tr, aux.as_deref_mut(), track.channels);
                 } else {
                     ctx.aux = aux.as_deref().filter(|a| a.len() >= 2).map(|a| (&a[0][..n], &a[1][..n]));
-                    if automation.is_empty() {
+                    if plain {
                         fx.process(tl, tr, &ctx);
                     } else {
                         for (at, len, frame) in slices(n) {
@@ -1490,6 +1523,7 @@ impl RenderGraph {
                                 &slice_ctx,
                                 automation,
                                 t + at as f64 / sr,
+                                mod_ctx(at).as_ref(),
                             );
                         }
                     }

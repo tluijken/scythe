@@ -728,6 +728,16 @@ impl Effect for JsfxEffect {
         }
     }
 
+    fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
+        self.script.sliders.get(index).map(|s| (s.min, s.max))
+    }
+
+    fn normalized(&mut self, index: usize) -> Option<f64> {
+        let s = self.script.sliders.get(index)?;
+        let v = *self.values.get(index)?;
+        (s.max != s.min).then(|| ((v - s.min) / (s.max - s.min)).clamp(0.0, 1.0))
+    }
+
     /// REAPER's slider order, values spread linearly over each slider's range.
     fn set_normalized(&mut self, index: usize, value: f64) -> bool {
         let Some(s) = self.script.sliders.get(index) else { return false };

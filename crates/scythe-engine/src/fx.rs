@@ -10,6 +10,7 @@ use scythe_core::{FxSlot, Project, TrackId};
 
 use crate::clap_host::{ClapDescriptor, ClapLibrary, ClapPlugin, ParamInfo};
 use crate::midi_io::LiveMidi;
+use crate::modulation::{FxMods, ModContext, ModState};
 use crate::nam::{NamControl, NamEffect, NamModel, NamVoice};
 use crate::synth::NoteList;
 use crate::vst2::{ReaperVstState, Vst2Plugin};
@@ -281,6 +282,17 @@ pub trait Effect: Send {
         false
     }
 
+    /// Parameter `index` (REAPER's order) in its own units, for effects whose parameters REAPER
+    /// does not count from 0 to 1 (JSFX sliders); `None` for 0..1.
+    fn param_range(&mut self, _index: usize) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// The current value of parameter `index` (REAPER's order), 0..1.
+    fn normalized(&mut self, _index: usize) -> Option<f64> {
+        None
+    }
+
     /// The handle that switches a Neural Amp Modeler slot's model and levels while it runs.
     fn nam_control(&self) -> Option<Arc<crate::nam::NamControl>> {
         None
@@ -369,6 +381,15 @@ fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
         .collect()
 }
 
+/// A parameter envelope's value at `t` in 0..1 of its range, which stands in for the
+/// modulation baseline.
+fn envelope_base(automation: &[ParamAutomation], index: usize, t: f64) -> Option<f64> {
+    let a = automation.iter().find(|a| a.index == index && matches!(a.target, Target::Named(_)))?;
+    let v = a.envelope.value_at(t)?;
+    let span = a.range.1 - a.range.0;
+    Some(if span.abs() > 1e-12 { ((v - a.range.0) / span).clamp(0.0, 1.0) } else { 0.0 })
+}
+
 /// How a slot is being played, for the UI.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FxStatus {
@@ -401,9 +422,16 @@ fn automation_time(fx: &dyn Effect, envelope: &scythe_core::Envelope, t: f64, n:
     t
 }
 
-fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64, n: usize, sample_rate: u32) -> bool {
+fn apply_automation(
+    fx: &mut dyn Effect,
+    automation: &[ParamAutomation],
+    t: f64,
+    n: usize,
+    sample_rate: u32,
+    modulated: &dyn Fn(usize) -> bool,
+) -> bool {
     let mut bypassed = false;
-    for a in automation {
+    for a in automation.iter().filter(|a| !modulated(a.index)) {
         let at = automation_time(fx, &a.envelope, t, n, sample_rate);
         let Some(v) = a.envelope.value_at(at) else { continue };
         match &a.target {
@@ -425,6 +453,8 @@ fn apply_automation(fx: &mut dyn Effect, automation: &[ParamAutomation], t: f64,
 
 pub struct FxInstance {
     effect: Mutex<Box<dyn Effect>>,
+    /// Modulation state, kept while the instance lives.
+    pub(crate) mods: Mutex<ModState>,
     pub instrument: bool,
     pub midi_buses: bool,
     /// Audio input and output pins.
@@ -433,11 +463,17 @@ pub struct FxInstance {
 
 impl FxInstance {
     pub fn new(fx: Box<dyn Effect>) -> Self {
-        Self { instrument: fx.is_instrument(), midi_buses: fx.midi_buses(), pins: fx.pins(), effect: Mutex::new(fx) }
+        Self {
+            instrument: fx.is_instrument(),
+            midi_buses: fx.midi_buses(),
+            pins: fx.pins(),
+            effect: Mutex::new(fx),
+            mods: Default::default(),
+        }
     }
 
-    /// Runs the effect with its parameter envelopes applied at time `t` (seconds). A bypass
-    /// envelope above 0.5 skips the effect.
+    /// Runs the effect with its parameter envelopes applied at time `t` (seconds), and its
+    /// modulation when it has any. A bypass envelope above 0.5 skips the effect.
     pub fn process_automated(
         &self,
         left: &mut [f32],
@@ -445,11 +481,19 @@ impl FxInstance {
         ctx: &ProcessContext,
         automation: &[ParamAutomation],
         t: f64,
+        mods: Option<&ModContext>,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
-        if !apply_automation(fx.as_mut(), automation, t, left.len(), ctx.sample_rate) {
+        let n = left.len();
+        let bypassed = {
+            let aux: [&[f32]; 2] = ctx.aux.map_or([&[], &[]], |(a, b)| [a, b]);
+            let inputs: [&[f32]; 4] = [&*left, &*right, aux[0], aux[1]];
+            self.before(fx.as_mut(), ctx, automation, t, n, mods, &inputs)
+        };
+        if !bypassed {
             fx.process(left, right, ctx);
         }
+        self.after(fx.as_mut(), ctx, automation, t, n, mods);
     }
 
     /// Like `process_automated`, over the effect's pins.
@@ -460,11 +504,74 @@ impl FxInstance {
         ctx: &ProcessContext,
         automation: &[ParamAutomation],
         t: f64,
+        mods: Option<&ModContext>,
     ) {
         let Ok(mut fx) = self.effect.try_lock() else { return };
-        if !apply_automation(fx.as_mut(), automation, t, range.len(), ctx.sample_rate) {
+        let n = range.len();
+        let bypassed = {
+            let inputs: Vec<&[f32]> = bufs.iter().map(|b| &b[range.clone()]).collect();
+            self.before(fx.as_mut(), ctx, automation, t, n, mods, &inputs)
+        };
+        if !bypassed {
             fx.process_pins(bufs, range, ctx);
         }
+        self.after(fx.as_mut(), ctx, automation, t, n, mods);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn before(
+        &self,
+        fx: &mut dyn Effect,
+        ctx: &ProcessContext,
+        automation: &[ParamAutomation],
+        t: f64,
+        n: usize,
+        mods: Option<&ModContext>,
+        inputs: &[&[f32]],
+    ) -> bool {
+        let modulated = |i: usize| mods.is_some_and(|m| m.mods.entries.iter().any(|e| e.index == i));
+        let mut bypassed = apply_automation(fx, automation, t, n, ctx.sample_rate, &modulated);
+        if let Some(m) = mods {
+            let mut midi = Vec::new();
+            if m.mods.reads_midi() {
+                ctx.block_midi(n, &mut midi);
+            }
+            let times: Vec<f64> =
+                automation.iter().map(|a| automation_time(fx, &a.envelope, t, n, ctx.sample_rate)).collect();
+            let at = |index: usize| automation.iter().position(|a| a.index == index).map_or(t, |i| times[i]);
+            let base = |index: usize, stored: f64| envelope_base(automation, index, at(index)).unwrap_or(stored);
+            if let Ok(mut state) = self.mods.try_lock() {
+                bypassed |= crate::modulation::before_block(fx, &mut state, m, ctx.position, &base, inputs, &midi);
+            }
+        }
+        bypassed
+    }
+
+    fn after(
+        &self,
+        fx: &mut dyn Effect,
+        ctx: &ProcessContext,
+        automation: &[ParamAutomation],
+        t: f64,
+        n: usize,
+        mods: Option<&ModContext>,
+    ) {
+        let Some(m) = mods else { return };
+        let next = t + n as f64 / ctx.sample_rate as f64;
+        let base = |index: usize, stored: f64| envelope_base(automation, index, next).unwrap_or(stored);
+        if let Ok(mut state) = self.mods.try_lock() {
+            crate::modulation::after_block(fx, &mut state, m, ctx.position + n as i64, &base);
+        }
+    }
+
+    /// The modulation state, from the UI thread.
+    pub fn with_mods<R>(&self, f: impl FnOnce(&mut ModState) -> R) -> Option<R> {
+        self.mods.lock().ok().map(|mut s| f(&mut s))
+    }
+
+    /// Runs `f` on the effect unless another thread holds it.
+    pub fn try_with<R>(&self, f: impl FnOnce(&mut dyn Effect) -> R) -> Option<R> {
+        self.effect.try_lock().ok().map(|mut e| f(e.as_mut()))
     }
 
     pub fn process_pins(&self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) {
@@ -597,6 +704,29 @@ impl FxRegistry {
             }
         }
         (out, automation)
+    }
+
+    /// The modulation and learned controls of each running effect of a chain built by
+    /// [`FxRegistry::chain_with_automation`], in its order.
+    pub fn chain_modulation(&self, track: Option<TrackId>, slots: &[FxSlot]) -> Vec<Arc<FxMods>> {
+        let mut at = 0;
+        let positions: Vec<Option<usize>> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                let running = slot.enabled && self.instance(track, slot, i).is_some();
+                running.then(|| {
+                    at += 1;
+                    at - 1
+                })
+            })
+            .collect();
+        slots
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| positions[*i].is_some())
+            .map(|(i, slot)| Arc::new(FxMods::from_slot(slot, i, &positions)))
+            .collect()
     }
 
     pub fn instance(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<FxInstance>> {
