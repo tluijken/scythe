@@ -192,3 +192,25 @@ fn hui_strips_and_transport() {
     h.handle(&mut s, &mut bank, &[0xb0, 0x22, 0x00]);
     assert_eq!(common::track(&s, 2).volume, 0.0);
 }
+
+#[test]
+fn surface_edits_carry_to_group_followers() {
+    let mut s = common::session("mcu-groups");
+    let (kick, bass) = (common::track(&s, 0).id.0, common::track(&s, 1).id.0);
+    let api = |s: &mut scythe_session::Session, v: serde_json::Value| scythe_session::api::execute_json(s, v).unwrap();
+    api(
+        &mut s,
+        serde_json::json!({"cmd": "group.set", "track": kick, "group": 1, "params": ["volume_lead", "mute_lead"]}),
+    );
+    api(
+        &mut s,
+        serde_json::json!({"cmd": "group.set", "track": bass, "group": 1, "params": ["volume_follow", "mute_follow"]}),
+    );
+    let mut m = Mcu::new(false, 0);
+    let mut bank = 0;
+    m.handle(&mut s, &mut bank, &mcu::pitch_bend(0, scythe_surface::view::gain_to_fader(0.5)));
+    assert!((common::track(&s, 0).volume - 0.5).abs() < 1e-3);
+    assert!((common::track(&s, 1).volume - 0.25).abs() < 1e-3, "{}", common::track(&s, 1).volume);
+    m.handle(&mut s, &mut bank, &[0x90, mcu::MUTE, 0x7f]);
+    assert!(common::track(&s, 0).muted && common::track(&s, 1).muted);
+}
