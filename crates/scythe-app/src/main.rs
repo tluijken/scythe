@@ -16,6 +16,8 @@ use scythe_core::Project;
 
 struct Shell {
     app: app::ScytheApp,
+    /// The control API, when `--control` serves it; dropped (and stopped) with the window.
+    control: Option<(scythe_server::ControlServer, scythe_session::control::ControlPump)>,
 }
 
 impl eframe::App for Shell {
@@ -26,6 +28,10 @@ impl eframe::App for Shell {
         self.app.tick_editors();
         self.app.tick_automation();
         self.app.tick_script();
+        if let Some((_, pump)) = &mut self.control {
+            pump.pump(&mut self.app.session);
+            self.app.follow_session();
+        }
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
         // Meters and the clock need a steady frame rate even when nothing is playing.
@@ -119,6 +125,30 @@ fn render_headless(
     Ok(())
 }
 
+/// The control API to serve beside the window: `--control ADDR` (or `SCYTHE_CONTROL`), with
+/// `--control-token` (or `SCYTHE_CONTROL_TOKEN`) for clients to present.
+fn control_config(args: &[String]) -> Result<Option<scythe_server::ServerConfig>, String> {
+    let value = |name: &str| {
+        let prefix = format!("{name}=");
+        args.iter().enumerate().find_map(|(i, a)| match a.strip_prefix(&prefix) {
+            Some(v) => Some(v.to_owned()),
+            None if a == name => args.get(i + 1).cloned(),
+            None => None,
+        })
+    };
+    let Some(addr) = value("--control").or_else(|| std::env::var("SCYTHE_CONTROL").ok()).filter(|a| a != "off") else {
+        return Ok(None);
+    };
+    let addr = addr.parse().map_err(|_| format!("--control takes an address like 0.0.0.0:8770, not {addr}"))?;
+    let token =
+        value("--control-token").or_else(|| std::env::var("SCYTHE_CONTROL_TOKEN").ok()).filter(|t| !t.is_empty());
+    let config = scythe_server::ServerConfig { addr, token };
+    if config.is_public() && config.token.is_none() {
+        eprintln!("warning: the control API at {addr} takes commands from anyone on the network; set a token");
+    }
+    Ok(Some(config))
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--script-dialog") {
@@ -130,7 +160,19 @@ fn main() -> eframe::Result {
         let (a, b) = v.split_once('-')?;
         Some(scythe_core::TimeRange::new(a.parse().ok()?, b.parse().ok()?))
     });
-    let open: Option<PathBuf> = args.iter().find(|a| !a.starts_with("--")).map(PathBuf::from);
+    if args.iter().any(|a| a == "--headless") {
+        std::process::exit(scythe_server::headless::main_with_args(&args));
+    }
+    let control = match control_config(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+    let valued = |i: usize| i > 0 && matches!(args[i - 1].as_str(), "--control" | "--control-token");
+    let open: Option<PathBuf> =
+        args.iter().enumerate().find(|(i, a)| !a.starts_with("--") && !valued(*i)).map(|(_, a)| PathBuf::from(a));
     let demo = args.iter().any(|a| a == "--demo") || open.is_none();
     let play = args.iter().any(|a| a == "--play");
     let no_input = args.iter().any(|a| a == "--no-input");
@@ -202,7 +244,20 @@ fn main() -> eframe::Result {
             if play {
                 app.toggle_play();
             }
-            Ok(Box::new(Shell { app }))
+            let wake = cc.egui_ctx.clone();
+            let control = control.and_then(|config| {
+                match scythe_server::ControlServer::start(config, std::sync::Arc::new(move || wake.request_repaint())) {
+                    Ok((server, pump)) => {
+                        eprintln!("control API: http://{}/api", server.addr());
+                        Some((server, pump))
+                    }
+                    Err(e) => {
+                        app.notify(format!("Control API unavailable: {e}"));
+                        None
+                    }
+                }
+            });
+            Ok(Box::new(Shell { app, control }))
         }),
     )
 }

@@ -3681,6 +3681,7 @@ dependencies = [
  "rfd",
  "scythe-core",
  "scythe-engine",
+ "scythe-server",
  "scythe-session",
  "serde",
  "serde_json",
