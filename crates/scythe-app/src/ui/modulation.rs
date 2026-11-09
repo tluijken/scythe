@@ -130,10 +130,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
             link(app, ui, &w, &mut next);
             if next != current || create {
                 let base_moved = next.base != current.base;
-                edit_modulation(app, &w, |md| *md = ParamModulation { param: md.param.clone(), label: md.label.clone(), ..next });
-                if base_moved
-                    && let Some(inst) = app.engine.fx().instance(Some(w.track), &slot, w.fx)
-                {
+                edit_modulation(app, &w, |md| {
+                    *md = ParamModulation { param: md.param.clone(), label: md.label.clone(), ..next }
+                });
+                if base_moved && let Some(inst) = app.engine.fx().instance(Some(w.track), &slot, w.fx) {
                     inst.with_mods(|s| s.clear_base(w.param));
                 }
             }
@@ -162,11 +162,14 @@ fn lfo(ui: &mut Ui, l: &mut m::Lfo) {
     }
     egui::Grid::new("mod-lfo").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Shape");
-        egui::ComboBox::from_id_salt("lfo-shape").selected_text(LFO_SHAPES[l.shape.min(5) as usize]).show_ui(ui, |ui| {
-            for (i, s) in LFO_SHAPES.iter().enumerate() {
-                ui.selectable_value(&mut l.shape, i as u8, *s);
-            }
-        });
+        egui::ComboBox::from_id_salt("lfo-shape").selected_text(LFO_SHAPES[l.shape.min(5) as usize]).show_ui(
+            ui,
+            |ui| {
+                for (i, s) in LFO_SHAPES.iter().enumerate() {
+                    ui.selectable_value(&mut l.shape, i as u8, *s);
+                }
+            },
+        );
         ui.end_row();
         ui.label("Speed");
         ui.horizontal(|ui| {
@@ -177,7 +180,10 @@ fn lfo(ui: &mut Ui, l: &mut m::Lfo) {
                 }
             } else {
                 let mut hz = l.hz();
-                if ui.add(egui::Slider::new(&mut hz, m::LFO_MIN_HZ..=m::LFO_MAX_HZ).suffix(" Hz").logarithmic(true)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut hz, m::LFO_MIN_HZ..=m::LFO_MAX_HZ).suffix(" Hz").logarithmic(true))
+                    .changed()
+                {
                     l.speed = m::Lfo::speed_for_hz(hz);
                 }
             }
@@ -308,9 +314,12 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
                     if *status & 0xf0 == 0xb0 {
                         ui.add(egui::DragValue::new(data1).range(0..=127).prefix("CC "));
                     }
-                    ui.add(egui::DragValue::new(channel).range(0..=16).prefix("ch ").custom_formatter(|v, _| {
-                        if v == 0.0 { "omni".into() } else { format!("{v}") }
-                    }));
+                    ui.add(
+                        egui::DragValue::new(channel)
+                            .range(0..=16)
+                            .prefix("ch ")
+                            .custom_formatter(|v, _| if v == 0.0 { "omni".into() } else { format!("{v}") }),
+                    );
                 });
                 ui.end_row();
             }
@@ -416,9 +425,11 @@ fn learn(app: &mut ScytheApp, ui: &mut Ui, w: &mut ModWindow, slot: &scythe_core
         edit_learn(app, w, |x| *x = next);
     }
     ui.label(
-        RichText::new("Learned controls come from MIDI inputs enabled for control and OSC devices that allow learning.")
-            .color(TEXT_DIM)
-            .font(theme::regular(11.0)),
+        RichText::new(
+            "Learned controls come from MIDI inputs enabled for control and OSC devices that allow learning.",
+        )
+        .color(TEXT_DIM)
+        .font(theme::regular(11.0)),
     );
 }
 

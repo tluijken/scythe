@@ -480,7 +480,8 @@ pub fn param_state(session: &Session, target: Target, index: usize, slot: &FxSlo
     inst.and_then(|i| {
         i.with(|e| {
             let params = e.params();
-            let info = if js { params.into_iter().find(|p| p.id as usize == param) } else { params.into_iter().nth(param) };
+            let info =
+                if js { params.into_iter().find(|p| p.id as usize == param) } else { params.into_iter().nth(param) };
             let name = info.map(|p| p.name).unwrap_or_else(|| format!("Parameter {}", param + 1));
             let (lo, hi) = scythe_engine::modulation::native_range(e, param);
             let v = scythe_engine::modulation::normalized(e, param).unwrap_or(0.0);
@@ -513,7 +514,8 @@ pub fn list(session: &Session, target: Target, index: usize) -> Result<Vec<Param
     let slot = slot(&session.project, target, index)?;
     let mods = m::modulations(&slot);
     let learns = m::learns(&slot);
-    let mut params: Vec<usize> = mods.iter().filter_map(|m| m.index()).chain(learns.iter().filter_map(|l| l.index())).collect();
+    let mut params: Vec<usize> =
+        mods.iter().filter_map(|m| m.index()).chain(learns.iter().filter_map(|l| l.index())).collect();
     params.sort_unstable();
     params.dedup();
     Ok(params
@@ -617,7 +619,12 @@ fn apply_link(md: &mut ParamModulation, s: &LinkSpec, own: usize) -> Result<(), 
             if midi.channel > 16 {
                 return Err(ApiError::invalid("channel runs from 0 (any) to 16"));
             }
-            link.source = LinkSource::Midi { bus: 0, channel: midi.channel as i32, status: kind as i32, data1: midi.number as i32 };
+            link.source = LinkSource::Midi {
+                bus: 0,
+                channel: midi.channel as i32,
+                status: kind as i32,
+                data1: midi.number as i32,
+            };
         }
         (None, Some(fx)) => {
             let param = s.param.map_or(0, |p| p as i64);
@@ -789,9 +796,7 @@ pub fn execute(session: &mut Session, command: ModulationCommand) -> Result<Valu
             Ok(heard_state(session))
         }
         ModulationCommand::Heard => Ok(heard_state(session)),
-        ModulationCommand::Actions => {
-            Ok(Value::Array(session.learn.bindings.iter().map(binding_info).collect()))
-        }
+        ModulationCommand::Actions => Ok(Value::Array(session.learn.bindings.iter().map(binding_info).collect())),
         ModulationCommand::BindAction { action, midi, osc, heard } => {
             let action = action.trim().to_owned();
             if action.is_empty() {
@@ -810,8 +815,8 @@ pub fn execute(session: &mut Session, command: ModulationCommand) -> Result<Valu
                 return Err(ApiError::invalid("give \"action\", \"midi\" or \"osc\""));
             }
             let removed = session.unbind_actions(|b| {
-                let hit = action.as_deref().is_none_or(|a| a == b.action)
-                    && trigger.as_ref().is_none_or(|t| *t == b.trigger);
+                let hit =
+                    action.as_deref().is_none_or(|a| a == b.action) && trigger.as_ref().is_none_or(|t| *t == b.trigger);
                 !hit
             });
             Ok(serde_json::json!({ "removed": removed }))
