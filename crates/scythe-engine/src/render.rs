@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use scythe_core::recording::{RecordMode, RecordTap};
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
 use scythe_core::{ChannelMode, Envelope, EnvelopeKind, Fade, FxSlot, HwOut, Project, SendMode, Source, TrackId};
@@ -329,6 +330,12 @@ pub struct RenderTrack {
     pub monitor: Option<(usize, Option<usize>)>,
     /// The track's input effects, which process the live input before it joins the track.
     pub input_fx: Option<Arc<BufferedChain>>,
+    /// Tape-style monitoring: the input is not heard while playing back without recording.
+    pub monitor_auto: bool,
+    /// The track records and does not monitor its items: they fall silent while recording.
+    pub mute_items_recording: bool,
+    /// Output recording of this track, while one runs.
+    pub record_tap: Option<Arc<crate::record::OutputTap>>,
     /// Live MIDI for an armed, monitored track with a MIDI input: the device and channel it
     /// listens to.
     pub midi_input: Option<RecInput>,
@@ -546,6 +553,9 @@ pub struct LiveInput<'a> {
     /// MIDI from the inputs, due at the start of the block.
     pub midi: &'a [LiveMidi],
     pub play_items: bool,
+    /// A recording runs: output recording taps write, tape-style monitoring listens and
+    /// recording tracks mute their items unless they monitor them.
+    pub recording: bool,
     pub midi_out: Option<MidiOutClock<'a>>,
     pub clicks: Clicks,
 }
@@ -561,7 +571,14 @@ pub struct MidiOutClock<'a> {
 
 impl Default for LiveInput<'_> {
     fn default() -> Self {
-        Self { channels: [None; Self::MAX_CHANNELS], midi: &[], play_items: true, midi_out: None, clicks: Clicks::Off }
+        Self {
+            channels: [None; Self::MAX_CHANNELS],
+            midi: &[],
+            play_items: true,
+            recording: false,
+            midi_out: None,
+            clicks: Clicks::Off,
+        }
     }
 }
 
@@ -573,6 +590,7 @@ impl<'a> LiveInput<'a> {
             channels: self.channels.map(|c| c.and_then(|s| s.get(from..(from + len).min(s.len())))),
             midi: if from == 0 { self.midi } else { &[] },
             play_items: self.play_items,
+            recording: self.recording,
             midi_out: self.midi_out,
             clicks: match self.clicks {
                 Clicks::CountIn { clicks, at } => Clicks::CountIn { clicks, at: at + from as i64 },
@@ -649,6 +667,7 @@ impl RenderScratch {
 #[derive(Debug, Default)]
 pub struct MeterRegistry {
     tracks: HashMap<TrackId, Arc<Meter>>,
+    record_taps: HashMap<TrackId, Arc<crate::record::OutputTap>>,
     pub master: Arc<Meter>,
     pub loudness: Option<Arc<Loudness>>,
 }
@@ -656,6 +675,18 @@ pub struct MeterRegistry {
 impl MeterRegistry {
     pub fn track(&mut self, id: TrackId) -> Arc<Meter> {
         self.tracks.entry(id).or_default().clone()
+    }
+
+    /// The output recording tap of track `id`, while it records its output.
+    pub fn record_tap(&self, id: TrackId) -> Option<Arc<crate::record::OutputTap>> {
+        self.record_taps.get(&id).cloned()
+    }
+
+    pub fn set_record_tap(&mut self, id: TrackId, tap: Option<Arc<crate::record::OutputTap>>) {
+        match tap {
+            Some(t) => self.record_taps.insert(id, t),
+            None => self.record_taps.remove(&id),
+        };
     }
 
     /// The master loudness meter for `sample_rate`, created on first use.
@@ -928,6 +959,11 @@ impl RenderGraph {
                     monitor,
                     input_fx,
                     midi_input: (t.armed && t.monitor).then(|| RecInput::from_rec_input(t.rec_input)).flatten(),
+                    monitor_auto: t.monitor_auto,
+                    mute_items_recording: t.armed
+                        && !t.monitor_items
+                        && !matches!(t.rec_mode, RecordMode::Disabled | RecordMode::MidiOutput),
+                    record_tap: meters.record_tap(t.id),
                     live_buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(512))),
                     midi_out: t.midi_out,
                     read_ahead: 0,
@@ -1319,7 +1355,7 @@ impl RenderGraph {
         let mut live_buf = track.live_buf.try_lock().ok();
         let live: &[LiveMidi] = match (track.midi_input, live_buf.as_deref_mut()) {
             (None, _) => &[],
-            _ if !track.content => &[],
+            _ if !track.content || (track.monitor_auto && input.play_items && !input.recording) => &[],
             (Some(i), _) if i.device == scythe_core::midi_route::MidiDevice::All => input.midi,
             (Some(i), Some(buf)) => {
                 buf.clear();
@@ -1333,7 +1369,8 @@ impl RenderGraph {
         if !routes_midi && let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
             self.send_midi(track, out, clock, start, n as i64, input, live);
         }
-        if let Some((cl, cr)) = track.monitor.filter(|_| track.content)
+        let hears_input = !track.monitor_auto || !input.play_items || input.recording;
+        if let Some((cl, cr)) = track.monitor.filter(|_| track.content && hears_input)
             && let Some(left) = input.channels.get(cl).copied().flatten()
         {
             let right = cr.and_then(|c| input.channels.get(c).copied().flatten()).unwrap_or(left);
@@ -1372,7 +1409,8 @@ impl RenderGraph {
         }
         // Plugin latency downstream is compensated by reading this track's material early.
         let read = start + track.read_ahead;
-        let items: &[RenderItem] = if input.play_items && track.content { &track.items } else { &[] };
+        let items_play = input.play_items && track.content && !(input.recording && track.mute_items_recording);
+        let items: &[RenderItem] = if items_play { &track.items } else { &[] };
         let mut aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
         for item in items {
             if let Some(take_fx) = &item.take_fx {
@@ -1430,6 +1468,10 @@ impl RenderGraph {
                     b[i] *= gain;
                 }
             }
+        }
+        let recording_tap = track.record_tap.as_deref().filter(|_| input.play_items && input.recording);
+        if let Some(tap) = recording_tap.filter(|t| t.point == RecordTap::PreFx) {
+            tap.write(read, tl, tr, aux.as_deref().map(|a| &a[..]));
         }
         // A muted track's sends fall silent whatever they tap.
         if track.audible {
@@ -1508,6 +1550,11 @@ impl RenderGraph {
         if track.audible {
             track.taps.fill(track.taps.post_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
         }
+        // Compensated output recording places the audio where the chain's latency put it.
+        let tap_frame = |tap: &crate::record::OutputTap| if tap.compensated { position } else { read };
+        if let Some(tap) = recording_tap.filter(|t| t.point == RecordTap::PostFxPreFader) {
+            tap.write(tap_frame(tap), tl, tr, aux.as_deref().map(|a| &a[..]));
+        }
         if let Some(aux) = aux.as_deref_mut() {
             for b in aux.iter_mut() {
                 for (i, s) in b[..n].iter_mut().enumerate() {
@@ -1567,6 +1614,10 @@ impl RenderGraph {
                     at += len;
                 }
             }
+        }
+        if let Some(tap) = recording_tap.filter(|t| t.point == RecordTap::PostFader) {
+            let aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
+            tap.write(tap_frame(tap), tl, tr, aux.as_deref().map(|a| &a[..]));
         }
         track.meter.record(tl, tr);
     }
@@ -2422,6 +2473,42 @@ mod tests {
         assert_eq!(l[3], 1.25);
         p.track_mut(live_track).unwrap().monitor = false;
         assert!(!graph_with(&p, ones(100)).monitoring());
+    }
+
+    #[test]
+    fn tape_monitoring_and_items_while_recording() {
+        let mut p = project_with_item(0.0, 1.0);
+        let item_track = p.tracks[0].id;
+        let live_track = p.add_track("guitar");
+        let t = p.track_mut(live_track).unwrap();
+        (t.armed, t.rec_input, t.monitor_auto) = (true, 1, true);
+        let input_ch1 = [0.25f32; 10];
+        let mut channels = [None; LiveInput::MAX_CHANNELS];
+        channels[1] = Some(&input_ch1[..]);
+        let (mut l, mut r) = (vec![0.0; 10], vec![0.0; 10]);
+        let mut s = RenderScratch::new(8);
+        let mut at = |g: &RenderGraph, play_items, recording| {
+            g.render_with(
+                0,
+                &mut l,
+                &mut r,
+                &mut s,
+                &LiveInput { channels, play_items, recording, ..LiveInput::default() },
+            );
+            l[3]
+        };
+        let g = graph_with(&p, ones(100));
+        // Tape style: the input while stopped and while recording, not while playing back.
+        assert_eq!(at(&g, false, false), 0.25);
+        assert_eq!(at(&g, true, false), 1.0);
+        assert_eq!(at(&g, true, true), 1.25);
+        // An armed track recording mutes its own items unless it monitors them.
+        p.track_mut(item_track).unwrap().armed = true;
+        let g = graph_with(&p, ones(100));
+        assert_eq!(at(&g, true, true), 0.25);
+        assert_eq!(at(&g, true, false), 1.0);
+        p.track_mut(item_track).unwrap().monitor_items = true;
+        assert_eq!(at(&graph_with(&p, ones(100)), true, true), 1.25);
     }
 
     #[test]

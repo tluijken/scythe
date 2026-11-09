@@ -566,6 +566,7 @@ impl Processor {
                 channels: channels(0, len),
                 midi: &self.live,
                 play_items: false,
+                recording,
                 midi_out: clock(pos, 0),
                 clicks: Clicks::CountIn { clicks, at },
             };
@@ -579,6 +580,7 @@ impl Processor {
                 channels: channels(0, frames),
                 midi: &self.live,
                 play_items: false,
+                recording,
                 midi_out: clock(pos, 0),
                 clicks: Clicks::Off,
             };
@@ -593,6 +595,7 @@ impl Processor {
                 channels: channels(off, len),
                 midi,
                 play_items: true,
+                recording,
                 midi_out: clock(pos, off),
                 clicks: song_clicks,
             };
@@ -1292,6 +1295,38 @@ impl Engine {
         out
     }
 
+    /// Starts recording the signal of each target track; the taps take effect with the next
+    /// [`Engine::sync`], and the graph writes them while the transport plays and recording is
+    /// on ([`Engine::set_recording`]).
+    pub fn start_output_recording(
+        &mut self,
+        targets: Vec<crate::record::OutputTarget>,
+    ) -> Result<crate::record::OutputRecording, crate::record::RecordError> {
+        let rec = crate::record::OutputRecording::start(targets, self.info.sample_rate)?;
+        for (id, tap) in rec.taps() {
+            self.meters.set_record_tap(*id, Some(tap.clone()));
+        }
+        Ok(rec)
+    }
+
+    /// Takes the taps out (effective with the next [`Engine::sync`]) and closes the files.
+    pub fn finish_output_recording(
+        &mut self,
+        rec: crate::record::OutputRecording,
+    ) -> Result<Vec<crate::record::RecordedOutput>, crate::record::RecordError> {
+        for (id, _) in rec.taps() {
+            self.meters.set_record_tap(*id, None);
+        }
+        rec.finish()
+    }
+
+    /// Feeds `channels` interleaved input channels from `rx` instead of an input device, as
+    /// monitored tracks hear it: for tests and generated input.
+    pub fn set_input_feed(&mut self, rx: rtrb::Consumer<f32>, channels: usize) {
+        self.input_stream = None;
+        let _ = self.input_tx.send(Some((rx, channels)));
+    }
+
     /// Tells the metronome whether a recording runs ("run metronome during recording").
     pub fn set_recording(&self, on: bool) {
         self.transport.recording.store(on, Ordering::Relaxed);
@@ -1856,6 +1891,72 @@ mod tests {
         transport.seek.store(0, Ordering::Relaxed);
         proc.write_interleaved(&mut out, 6);
         assert!(out.iter().all(|&s| s == 0.0));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Records a track's output (post-fader and pre-FX) on the null engine, the track hearing
+    /// a generated input.
+    #[test]
+    fn null_engine_records_track_output() {
+        use scythe_core::recording::{OutputFormat, RecordMode, RecordTap};
+        let dir = std::env::temp_dir().join(format!("scythe-outrec-{}", std::process::id()));
+        let mut e = Engine::start_null(Arc::default(), 48_000, None);
+        let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(48_000);
+        e.set_input_feed(rx, 1);
+        let mut p = Project::default();
+        let mut ids = Vec::new();
+        for tap in [RecordTap::PostFader, RecordTap::PreFx] {
+            let id = p.add_track("out");
+            let t = p.track_mut(id).unwrap();
+            (t.armed, t.monitor, t.rec_input, t.volume) = (true, true, 0, 0.5);
+            t.rec_mode = RecordMode::Output { format: OutputFormat::Stereo, compensated: true };
+            t.rec_tap = tap;
+            ids.push(id);
+        }
+        let targets = ids
+            .iter()
+            .enumerate()
+            .map(|(i, &track)| crate::record::OutputTarget {
+                track,
+                point: p.track(track).unwrap().rec_tap,
+                compensated: true,
+                channels: 2,
+                path: dir.join(format!("{i}.wav")),
+            })
+            .collect();
+        let rec = e.start_output_recording(targets).unwrap();
+        e.sync(&p);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_feed = stop.clone();
+        let feeder = std::thread::spawn(move || {
+            while !stop_feed.load(Ordering::Relaxed) {
+                while tx.slots() > 24_000 {
+                    let _ = tx.push(0.4);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        });
+        e.seek(1.0);
+        e.set_recording(true);
+        e.play();
+        std::thread::sleep(Duration::from_millis(300));
+        e.stop();
+        e.set_recording(false);
+        stop.store(true, Ordering::Relaxed);
+        feeder.join().unwrap();
+        let out = e.finish_output_recording(rec).unwrap();
+        e.sync(&p);
+        assert_eq!(out.len(), 2);
+        for (o, want) in out.iter().zip([0.2f32, 0.4]) {
+            assert!(o.frames > 4_800, "{} frames", o.frames);
+            assert!(o.start.is_some_and(|s| (1.0..1.05).contains(&s)), "start {:?}", o.start);
+            let mut reader = hound::WavReader::open(&o.path).unwrap();
+            assert_eq!(reader.spec().channels, 2);
+            let samples: Vec<f32> = reader.samples::<i32>().map(|s| s.unwrap() as f32 / 8_388_607.0).collect();
+            // The input ring starts filling with the first block; past that it is steady.
+            let steady = &samples[samples.len() / 2..];
+            assert!(steady.iter().all(|s| (s - want).abs() < 1e-4), "want {want}, got {:?}", &steady[..4]);
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 
