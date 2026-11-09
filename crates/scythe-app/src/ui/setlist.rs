@@ -5,7 +5,7 @@ use egui::{Align2, Color32, CornerRadius, Id, Key, Rect, Sense, Stroke, Ui, pos2
 use scythe_core::setlist::{Setlist, Song, SongEnd};
 
 use super::GAP;
-use super::widgets::{self, Icon, icon_button, paint_icon, switch, text_pill};
+use super::widgets::{self, Icon, icon_button, icon_button_with_id, paint_icon, switch, text_pill};
 use crate::app::ScytheApp;
 use crate::palette::{Action, shortcut_text};
 use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
@@ -45,6 +45,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 fn clock(seconds: f64) -> String {
     let s = seconds.max(0.0).round() as u64;
     format!("{}:{:02}", s / 60, s % 60)
+}
+
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
 }
 
 fn card(ui: &Ui, rect: Rect) {
@@ -181,8 +185,8 @@ fn song_list(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], drag_
     let painter = ui.painter().clone();
     let inner = rect.shrink2(vec2(14.0, 14.0));
     painter.text(inner.left_top() + vec2(4.0, 12.0), Align2::LEFT_CENTER, "Songs", theme::semibold(15.0), TEXT);
-    let count = format!("{} from markers", songs.len());
-    painter.text(inner.right_top() + vec2(-4.0, 12.0), Align2::RIGHT_CENTER, count, theme::mono(11.0), TEXT_DIM);
+    let found = format!("{} from markers", songs.len());
+    painter.text(inner.right_top() + vec2(-4.0, 12.0), Align2::RIGHT_CENTER, found, theme::mono(11.0), TEXT_DIM);
     let area = Rect::from_min_max(pos2(inner.left(), inner.top() + HEAD_H), inner.max);
     if songs.is_empty() {
         let msg = "Add a marker at the start of each song\nand a !1016 marker where it should stop.";
@@ -202,7 +206,9 @@ fn song_list(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], drag_
         }
         let resp = ui.interact(row.intersect(area), Id::unique("setlist-song").with(i), Sense::click_and_drag());
         let live = playing_at.is_some_and(|t| song.contains(t));
-        let bg = if resp.hovered() { RAISED_HI } else { RAISED };
+        // By position rather than `hovered`, which the row loses while its own buttons are pressed.
+        let hovered = ui.rect_contains_pointer(row.intersect(area));
+        let bg = if hovered { RAISED_HI } else { RAISED };
         clip.rect_filled(row, CornerRadius::same(10), bg);
         let badge = Rect::from_center_size(row.left_center() + vec2(22.0, 0.0), vec2(30.0, 22.0));
         clip.rect_filled(badge, CornerRadius::same(6), if live { GREEN } else { RAISED_HI });
@@ -215,13 +221,13 @@ fn song_list(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], drag_
         );
         let dur = clock(song.duration());
         let dur_w = widgets::text_width(ui, &dur, theme::mono(12.0));
-        let buttons_w = if resp.hovered() { 64.0 } else { 0.0 };
+        let buttons_w = if hovered { 64.0 } else { 0.0 };
         let name_w = row.width() - 48.0 - dur_w - 20.0 - buttons_w;
         let name = widgets::truncate(ui, &song.name, &theme::regular(14.0), name_w);
         clip.text(row.left_center() + vec2(46.0, -7.0), Align2::LEFT_CENTER, name, theme::regular(14.0), TEXT);
         let mut sub = clock(song.start);
         if !song.sections.is_empty() {
-            sub.push_str(&format!(" · {} cues", song.sections.len()));
+            sub.push_str(&format!(" · {}", plural(song.sections.len(), "cue")));
         }
         clip.text(row.left_center() + vec2(46.0, 9.0), Align2::LEFT_CENTER, sub, theme::mono(10.0), TEXT_DIM);
         clip.text(
@@ -231,13 +237,18 @@ fn song_list(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], drag_
             theme::mono(12.0),
             TEXT_MID,
         );
-        if resp.hovered() {
+        if hovered {
             let add = Rect::from_center_size(row.right_center() - vec2(22.0, 0.0), vec2(28.0, 28.0));
             let play = Rect::from_center_size(row.right_center() - vec2(54.0, 0.0), vec2(28.0, 28.0));
-            if icon_button(ui, play, Icon::Play, RAISED_HI, TEXT, 12.0, "Play this song").clicked() {
+            let id = Id::unique("setlist-song-buttons").with(i);
+            if icon_button_with_id(ui, id.with("play"), play, Icon::Play, RAISED_HI, TEXT, 12.0, "Play this song")
+                .clicked()
+            {
                 app.play_song(song);
             }
-            if icon_button(ui, add, Icon::Plus, ACCENT, BG, 14.0, "Add to the setlist").clicked() {
+            if icon_button_with_id(ui, id.with("add"), add, Icon::Plus, ACCENT, BG, 14.0, "Add to the setlist")
+                .clicked()
+            {
                 app.add_to_setlist(song);
             }
         }
@@ -270,18 +281,23 @@ fn setlist_panel(
     let mut x = inner.left();
     let top = inner.top();
     let rename_id = Id::unique("setlist-rename");
+    // Focus is asked for once, when renaming starts, so a click elsewhere can end it.
+    let focus_id = rename_id.with("focus");
     let mut renaming: Option<String> = ui.data(|d| d.get_temp(rename_id));
     for (i, name) in names.iter().enumerate() {
         let font = theme::semibold(13.0);
-        let w = widgets::text_width(ui, name, font.clone()).min(180.0) + 28.0;
+        let active = i == app.live.list;
+        let shown = renaming.as_deref().filter(|_| active).unwrap_or(name);
+        let w = widgets::text_width(ui, shown, font.clone()).min(180.0) + 28.0;
         if x + w > inner.right() - 40.0 && i > 0 {
             break;
         }
         let r = Rect::from_min_size(pos2(x, top), vec2(w, 28.0));
-        let active = i == app.live.list;
         if active && let Some(text) = renaming.as_mut() {
             let edit = ui.put(r, egui::TextEdit::singleline(text).font(font).margin(vec2(8.0, 5.0)));
-            edit.request_focus();
+            if ui.data_mut(|d| d.remove_temp::<bool>(focus_id)).is_some() {
+                edit.request_focus();
+            }
             if ui.input(|i| i.key_pressed(Key::Escape)) {
                 renaming = None;
             } else if edit.lost_focus() || ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -300,6 +316,7 @@ fn setlist_panel(
             if resp.double_clicked() {
                 app.choose_setlist(i);
                 renaming = Some(name.clone());
+                ui.data_mut(|d| d.insert_temp(focus_id, true));
             }
         }
         x += w + 6.0;
@@ -335,6 +352,7 @@ fn setlist_panel(
     if list.is_some() {
         if tool(ui, "Rename", "Rename this setlist") {
             ui.data_mut(|d| d.insert_temp(rename_id, list.map(|l| l.name.clone()).unwrap_or_default()));
+            ui.data_mut(|d| d.insert_temp(focus_id, true));
         }
         if tool(ui, "Duplicate", "Copy this setlist") {
             let at = app.live.list;
@@ -382,7 +400,7 @@ fn setlist_panel(
         TEXT_MID,
     );
     if let Some(l) = list {
-        let total = format!("{} songs · {}", l.songs.len(), clock(l.duration(songs)));
+        let total = format!("{} · {}", plural(l.songs.len(), "song"), clock(l.duration(songs)));
         let room =
             foot.right() - (sw2.right() + 8.0 + widgets::text_width(ui, "Marker actions", theme::regular(13.0)) + 16.0);
         if widgets::text_width(ui, &total, theme::mono(12.0)) <= room {
@@ -456,9 +474,19 @@ fn setlist_panel(
         clip.text(row.left_center() + vec2(40.0, 0.0), Align2::LEFT_CENTER, name, theme::semibold(15.0), color);
         clip.text(row.right_center() - vec2(48.0, 0.0), Align2::RIGHT_CENTER, dur, theme::mono(12.0), TEXT_MID);
         let close = Rect::from_center_size(row.right_center() - vec2(20.0, 0.0), vec2(26.0, 26.0));
-        if resp.hovered() || ui.rect_contains_pointer(close) {
-            if icon_button(ui, close, Icon::Close, Color32::TRANSPARENT, TEXT_DIM, 12.0, "Remove from the setlist")
-                .clicked()
+        if ui.rect_contains_pointer(row.intersect(area)) {
+            let id = Id::unique("setlist-entry-remove").with((app.live.list, i));
+            if icon_button_with_id(
+                ui,
+                id,
+                close,
+                Icon::Close,
+                Color32::TRANSPARENT,
+                TEXT_DIM,
+                12.0,
+                "Remove from the setlist",
+            )
+            .clicked()
             {
                 remove = Some(i);
             }

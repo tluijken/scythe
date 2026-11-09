@@ -340,7 +340,39 @@ pub fn icon_button(
     icon_size: f32,
     tip: &str,
 ) -> Response {
-    let resp = ui.allocate_rect(rect, Sense::click()).on_hover_text(tip);
+    let resp = ui.allocate_rect(rect, Sense::click());
+    paint_icon_button(ui, resp, rect, icon, bg, fg, icon_size, tip)
+}
+
+/// An [`icon_button`] with its own id, for buttons that come and go (on hover, say): an
+/// allocated id would shift the ids of every widget after it and send their clicks astray.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_button_with_id(
+    ui: &mut Ui,
+    id: egui::Id,
+    rect: Rect,
+    icon: Icon,
+    bg: Color32,
+    fg: Color32,
+    icon_size: f32,
+    tip: &str,
+) -> Response {
+    let resp = ui.interact(rect, id, Sense::click());
+    paint_icon_button(ui, resp, rect, icon, bg, fg, icon_size, tip)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_icon_button(
+    ui: &Ui,
+    resp: Response,
+    rect: Rect,
+    icon: Icon,
+    bg: Color32,
+    fg: Color32,
+    icon_size: f32,
+    tip: &str,
+) -> Response {
+    let resp = resp.on_hover_text(tip);
     let radius = (rect.height() / 2.0).min(255.0) as u8;
     ui.painter().rect_filled(rect, CornerRadius::same(radius), hover_tint(ui, &resp, bg));
     paint_icon(ui, rect, icon, fg, icon_size);
