@@ -281,6 +281,39 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the tempo in effect at `at` (the edit cursor when left out), as dragging the tempo\nfield does.\n\nControl API command `project.tempo`.",
+    "inputSchema": {
+      "properties": {
+        "at": {
+          "default": null,
+          "description": "Seconds; the edit cursor when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "bpm": {
+          "description": "Beats per minute, 20 to 400.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "bpm"
+      ],
+      "type": "object"
+    },
+    "name": "project_tempo",
+    "title": "Project tempo"
+  },
+  {
+    "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true
     },

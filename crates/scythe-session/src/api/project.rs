@@ -42,7 +42,9 @@ pub enum ProjectCommand {
     /// field does.
     #[serde(rename = "project.tempo")]
     Tempo {
+        /// Beats per minute, 20 to 400.
         bpm: f64,
+        /// Seconds; the edit cursor when left out.
         #[serde(default)]
         at: Option<f64>,
     },
