@@ -365,3 +365,137 @@ fn meters_carry_the_monitor_mixes() {
     let events = events.lock().unwrap();
     assert!(events.iter().any(|e| matches!(e, Event::Meters(m) if m.tracks.len() == 2 && m.mixes.len() == 1)));
 }
+
+/// Three short songs on one timeline, each ending at a `!1016` stop marker, with a cue inside
+/// the second.
+fn live_set(s: &mut Session) {
+    for (position, name) in [
+        (0.0, "Opener"),
+        (0.15, "!1016"),
+        (0.3, "Ballad"),
+        (0.35, "solo"),
+        (0.45, "!1016"),
+        (0.6, "Closer"),
+        (0.75, "!1016"),
+    ] {
+        ok(s, json!({"cmd": "marker.add", "position": position, "name": name}));
+    }
+}
+
+/// Lets the null engine play for `ms`, then lets the session follow up on marker actions.
+fn play_for(s: &mut Session, ms: u64) {
+    std::thread::sleep(Duration::from_millis(ms));
+    s.poll();
+}
+
+#[test]
+fn setlists_are_built_from_marker_songs() {
+    let mut s = session();
+    live_set(&mut s);
+    let songs = ok(&mut s, json!({"cmd": "setlist.songs"}));
+    let names: Vec<&str> = songs.as_array().unwrap().iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Opener", "Ballad", "Closer"]);
+    assert_eq!(songs[1]["ends_at"], "stop_marker");
+    assert_eq!(songs[1]["sections"][0]["name"], "solo");
+    assert!((songs[1]["duration"].as_f64().unwrap() - 0.15).abs() < 1e-9);
+
+    let gig = ok(&mut s, json!({"cmd": "setlist.create", "name": "Gig", "songs": ["closer", 0]}));
+    assert_eq!(gig["entries"][0]["name"], "Closer");
+    assert_eq!(gig["entries"][1]["song"], 0);
+    let copy = ok(&mut s, json!({"cmd": "setlist.duplicate", "setlist": "Gig"}));
+    assert_eq!(copy["name"], "Gig copy");
+    let renamed = ok(&mut s, json!({"cmd": "setlist.rename", "setlist": 1, "name": "Gig"}));
+    assert_eq!(renamed["name"], "Gig 2");
+    ok(&mut s, json!({"cmd": "setlist.set", "setlist": 1, "songs": [0, 1, 2]}));
+    let moved = ok(&mut s, json!({"cmd": "setlist.move", "setlist": 1, "from": 2, "to": 0}));
+    let order: Vec<&str> = moved["entries"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap()).collect();
+    assert_eq!(order, ["Closer", "Opener", "Ballad"]);
+    let text = ok(&mut s, json!({"cmd": "setlist.export", "setlist": 1}));
+    assert_eq!(text["text"], "Gig 2\n1. Closer\n2. Opener\n3. Ballad\n");
+
+    let imported = ok(&mut s, json!({"cmd": "setlist.import", "text": "Encore\n- Ballad\n- Missing song\n"}));
+    assert_eq!(imported["name"], "Encore");
+    assert_eq!(imported["entries"][1]["song"], Value::Null);
+    let list = ok(&mut s, json!({"cmd": "setlist.list"}));
+    assert_eq!(list["setlists"].as_array().unwrap().len(), 3);
+    assert_eq!(list["current"], 2);
+    ok(&mut s, json!({"cmd": "setlist.delete", "setlist": "Encore"}));
+    assert_eq!(ok(&mut s, json!({"cmd": "setlist.list"}))["setlists"].as_array().unwrap().len(), 2);
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    assert_eq!(ok(&mut s, json!({"cmd": "setlist.list"}))["setlists"].as_array().unwrap().len(), 3);
+
+    let bad = execute_json(&mut s, json!({"cmd": "setlist.create", "songs": ["Nope"]}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::NotFound);
+    let bad = execute_json(&mut s, json!({"cmd": "setlist.move", "setlist": 0, "from": 0, "to": 9}));
+    assert_eq!(bad.unwrap_err().kind, ErrorKind::Invalid);
+}
+
+#[test]
+fn a_setlist_plays_to_the_stop_marker_and_cues_the_next_song() {
+    let mut s = session();
+    live_set(&mut s);
+    ok(&mut s, json!({"cmd": "setlist.create", "name": "Gig", "songs": ["Ballad", "Closer"]}));
+    let st = ok(&mut s, json!({"cmd": "setlist.auto_advance", "enabled": true}));
+    assert_eq!(st["current"]["name"], "Ballad");
+    assert_eq!(st["next"]["name"], "Closer");
+
+    let st = ok(&mut s, json!({"cmd": "setlist.play"}));
+    assert_eq!(st["playing"], true);
+    play_for(&mut s, 50);
+    let st = ok(&mut s, json!({"cmd": "setlist.status"}));
+    assert!(st["elapsed"].as_f64().unwrap() > 0.0 && st["remaining"].as_f64().unwrap() < 0.15);
+    play_for(&mut s, 400);
+    let st = ok(&mut s, json!({"cmd": "setlist.status"}));
+    assert_eq!(st["playing"], false, "stopped at the song's stop marker");
+    assert_eq!(st["current"]["name"], "Closer", "auto-advance cued the next song");
+    assert_eq!(s.project.cursor, 0.6);
+
+    let st = ok(&mut s, json!({"cmd": "setlist.previous"}));
+    assert_eq!(st["current"]["name"], "Ballad");
+    assert_eq!(s.project.cursor, 0.3);
+    ok(&mut s, json!({"cmd": "setlist.cue", "entry": 1}));
+    assert_eq!(s.project.cursor, 0.6);
+
+    ok(&mut s, json!({"cmd": "setlist.auto_advance", "enabled": false}));
+    let st = ok(&mut s, json!({"cmd": "setlist.marker_actions", "enabled": false}));
+    assert_eq!(st["marker_actions"], false);
+    ok(&mut s, json!({"cmd": "setlist.play", "entry": 0}));
+    play_for(&mut s, 300);
+    assert!(s.is_playing(), "without marker actions playback runs past the stop marker");
+    let st = ok(&mut s, json!({"cmd": "setlist.stop"}));
+    assert_eq!(st["playing"], false);
+    assert_eq!(st["current"]["name"], "Ballad");
+    ok(&mut s, json!({"cmd": "setlist.marker_actions", "enabled": true}));
+    ok(&mut s, json!({"cmd": "setlist.play"}));
+    play_for(&mut s, 400);
+    assert!(!s.is_playing());
+    assert_eq!(s.project.cursor, 0.3, "Stop returns to the edit cursor, the song's start");
+
+    let missing = execute_json(&mut s, json!({"cmd": "setlist.play", "entry": 5}));
+    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
+}
+
+#[test]
+fn setlist_changes_are_published() {
+    let mut s = session();
+    live_set(&mut s);
+    let events: Arc<Mutex<Vec<Event>>> = Arc::default();
+    let seen = events.clone();
+    let (_handle, mut pump) =
+        control::channel(Arc::new(|| {}), Arc::new(move |e: &Event| seen.lock().unwrap().push(e.clone())));
+    pump.pump(&mut s);
+    ok(&mut s, json!({"cmd": "setlist.create", "name": "Gig", "songs": [0, 1]}));
+    pump.pump(&mut s);
+    pump.pump(&mut s);
+    ok(&mut s, json!({"cmd": "setlist.next"}));
+    pump.pump(&mut s);
+    let events = events.lock().unwrap();
+    let statuses: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Setlist(st) => Some(st.current.as_ref().map(|c| c.name.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(statuses, [None, Some("Opener".into()), Some("Ballad".into())]);
+}

@@ -11,6 +11,7 @@ pub mod markers;
 pub mod mix;
 pub mod project;
 pub mod sends;
+pub mod setlist;
 pub mod snapshot;
 pub mod tracks;
 pub mod transport;
@@ -36,6 +37,7 @@ pub enum Command {
     Item(items::ItemCommand),
     Marker(markers::MarkerCommand),
     Mix(mix::MixCommand),
+    Setlist(setlist::SetlistCommand),
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -54,6 +56,7 @@ impl<'de> Deserialize<'de> for Command {
             "item" => serde_json::from_value(value).map(Command::Item),
             "marker" => serde_json::from_value(value).map(Command::Marker),
             "mix" => serde_json::from_value(value).map(Command::Mix),
+            "setlist" => serde_json::from_value(value).map(Command::Setlist),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -71,6 +74,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Item(c) => items::execute(session, c),
         Command::Marker(c) => markers::execute(session, c),
         Command::Mix(c) => mix::execute(session, c),
+        Command::Setlist(c) => setlist::execute(session, c),
     }
 }
 

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::setlist::SetlistStatus;
 use super::snapshot::TransportState;
 
 /// What the session tells every client without being asked.
@@ -15,6 +16,8 @@ pub enum Event {
     ProjectChanged { revision: u64 },
     /// A message the UI would show as a toast (saved, could not open, recording started…).
     Notice { message: String },
+    /// The setlist played, its current or next song, playing or stopped, or its options changed.
+    Setlist(SetlistStatus),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

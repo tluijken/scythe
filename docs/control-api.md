@@ -214,6 +214,40 @@ match wins.
 | `marker.delete` | `marker`, `region?` | `{}` |
 | `marker.goto` | `marker`, `region?` | the transport state |
 
+### Setlists
+
+A live project holds every song on one timeline: a song starts at a marker and runs to the
+next stop marker (`!1016`, a marker action that stops playback when crossed). With stop
+markers present, the first plain marker after a stop begins a song and plain markers inside it
+are its cues; without any, every plain marker begins a song running to the next. Setlists are
+stored in the project (`<EXTSTATE`, section `SCYTHE_SETLISTS`), so REAPER keeps them.
+
+`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the
+setlist being played. Songs in `songs` are an index from `setlist.songs`, or the start marker's
+`{GUID}` or name (any case). `entry` is a position in the setlist, from 0.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `setlist.songs` | | `[{"index", "number", "guid", "name", "start", "end", "duration", "ends_at", "sections": [{"name", "position"}]}]`; `ends_at` is `stop_marker`, `next_song` or `project_end` |
+| `setlist.list` | | `{"setlists": [setlist…], "current", "auto_advance", "marker_actions"}` |
+| `setlist.get` | `setlist?` | `{"index", "name", "entries": [{"name", "guid", "song", "duration"}], "duration"}` (`song` is `null` when the project has no such song) |
+| `setlist.create` | `name?`, `songs?` | the setlist, which becomes the one played |
+| `setlist.rename` | `setlist?`, `name` | the setlist (a name already used gets a number) |
+| `setlist.duplicate` | `setlist?`, `name?` | the copy, placed after it |
+| `setlist.delete` | `setlist?` | `{}` |
+| `setlist.set` | `setlist?`, `songs` | the setlist with these songs |
+| `setlist.move` | `setlist?`, `from`, `to` | the setlist |
+| `setlist.import` | `text`: a title line, then one song per line (numbering and bullets optional) | the new setlist, songs matched by name |
+| `setlist.export` | `setlist?` | `{"text"}` in the same form |
+| `setlist.select` | `setlist` | status; makes it the setlist played, its first song current (nothing starts playing) |
+| `setlist.cue` | `entry` | status; that song plays next (the edit cursor moves to it when stopped) |
+| `setlist.play` | `entry?` (the current one) | status; plays the song from its marker; it stops at its stop marker |
+| `setlist.stop` | | status |
+| `setlist.next`, `setlist.previous` | | status; cues the song when stopped, plays it when playing |
+| `setlist.auto_advance` | `enabled?` | status; after a song stops at its stop marker the next one is cued (not played) |
+| `setlist.marker_actions` | `enabled?` | status; whether crossing a `!` marker runs its actions |
+| `setlist.status` | | `{"setlist", "name", "playing", "current", "next", "elapsed", "remaining", "auto_advance", "marker_actions"}`; `current` and `next` are `{"entry", "name", "start", "duration"}`, `elapsed` and `remaining` are set while the current song plays |
+
 ## The snapshot
 
 ```json
@@ -254,6 +288,7 @@ runs (also across undo) but not across opening the project again; names and GUID
 | `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]`, `mixes` (the monitor mixes' own meters, same shape) | about 20 times a second; peaks as gain, falling back like the UI's meters |
 | `project_changed` | `revision` | after any change to the project, from any client or the UI; fetch a new snapshot when yours is older |
 | `notice` | `message` | what the UI shows as a toast: saved, could not open, recording started… |
+| `setlist` | the setlist status | when the setlist played, its current or next song, play state or options change (not as the song plays on; use `transport` for that) |
 
 ## Extending
 

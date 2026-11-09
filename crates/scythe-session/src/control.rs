@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::api::events::{Meters, TrackMeter};
+use crate::api::setlist::{self, SetlistStatus};
 use crate::api::snapshot::{self, TransportState};
 use crate::api::{self, ApiError, Command, Event};
 use crate::{Session, Waker};
@@ -54,6 +55,7 @@ pub struct ControlPump {
     transport_at: Instant,
     meters_at: Instant,
     revision: u64,
+    setlist: Option<SetlistStatus>,
 }
 
 /// A connected pair. `wake` is called when a command is queued, so a UI that sleeps between
@@ -61,7 +63,7 @@ pub struct ControlPump {
 pub fn channel(wake: Waker, sink: EventSink) -> (ControlHandle, ControlPump) {
     let (tx, rx) = mpsc_channel();
     let due = Instant::now().checked_sub(EVENT_INTERVAL).unwrap_or_else(Instant::now);
-    let pump = ControlPump { rx, sink, transport: None, transport_at: due, meters_at: due, revision: 0 };
+    let pump = ControlPump { rx, sink, transport: None, transport_at: due, meters_at: due, revision: 0, setlist: None };
     (ControlHandle { tx, wake }, pump)
 }
 
@@ -95,6 +97,12 @@ impl ControlPump {
         if self.revision != session.revision() {
             self.revision = session.revision();
             (self.sink)(&Event::ProjectChanged { revision: self.revision });
+        }
+        let status = setlist::status(session);
+        let moved_on = |a: &SetlistStatus| SetlistStatus { elapsed: None, remaining: None, ..a.clone() };
+        if self.setlist.as_ref().is_none_or(|last| moved_on(last) != moved_on(&status)) {
+            (self.sink)(&Event::Setlist(status.clone()));
+            self.setlist = Some(status);
         }
         let now = Instant::now();
         let state = snapshot::transport(session);
