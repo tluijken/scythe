@@ -399,10 +399,10 @@ fn project_info(s: &mut State, key: &str, set: Option<f64>) -> f64 {
         ("PROJECT_SRATE_USE", None) => p.sample_rate.is_some() as u8 as f64,
         ("RENDER_CHANNELS", None) => render_fmt(p, 2).unwrap_or(2.0),
         ("RENDER_SRATE", None) => render_fmt(p, 3).unwrap_or(0.0),
-        ("RENDER_BOUNDSFLAG", None) => match scythe_core::render_settings::RenderSettings::from_project(p).bounds {
-            scythe_core::render_settings::Bounds::Project => 1.0,
-            _ => 0.0,
-        },
+        ("RENDER_BOUNDSFLAG", None) => {
+            scythe_core::render_settings::RenderSettings::from_project(p).bounds.code() as f64
+        }
+        ("RENDER_SETTINGS", None) => scythe_core::render_settings::RenderSettings::from_project(p).source.0 as f64,
         ("RENDER_TAILMS", None) => 1000.0,
         _ => 0.0,
     }
@@ -950,6 +950,7 @@ fn markers(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 name: a.text(4),
                 color,
                 region_end: region.then_some(a.num(3).max(a.num(2))),
+                render_matrix: Vec::new(),
                 lines: Default::default(),
             });
             sort_markers(&mut s.project);

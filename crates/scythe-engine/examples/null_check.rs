@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use scythe_core::render_settings::RenderSettings;
+use scythe_core::render_settings::{RenderSelection, RenderSettings};
 use scythe_engine::MediaPool;
 use scythe_engine::bounce::{BitDepth, Encoding, Finish, bounce_finished};
 
@@ -45,7 +45,8 @@ fn main() {
         };
         let settings = RenderSettings::from_project(&project);
         let rate = settings.sample_rate.or(project.sample_rate).unwrap_or(48_000);
-        let Ok(jobs) = settings.jobs(&project, 0) else { continue };
+        let Ok(jobs) = settings.jobs(&project, &RenderSelection::saved(&project), 0) else { continue };
+        let several = jobs.len() > 1;
         let pool = MediaPool::with_resample(settings.resample);
         for t in &project.tracks {
             for take in t.items.iter().flat_map(|i| &i.takes) {
@@ -55,7 +56,8 @@ fn main() {
             }
         }
         pool.prepare_project(&project);
-        for (range, reaper_out) in jobs {
+        for job in jobs {
+            let (range, reaper_out) = (job.range, job.path);
             let Some(theirs) = read(&reaper_out) else {
                 println!("{file}: no REAPER render at {}", reaper_out.display());
                 continue;
@@ -64,7 +66,8 @@ fn main() {
             // Dither is noise and cannot null; normalisation is compared.
             let finish = Finish { dither: false, noise_shape: false, ..Finish::from_settings(&settings) };
             let wav = Encoding::wav(BitDepth::Float32);
-            bounce_finished(&project, &pool, range, rate, 2, wav, &ours_path, finish, |_| {}).unwrap();
+            let source = scythe_core::render_source::project_for(&project, job.source);
+            bounce_finished(&source, &pool, range, rate, 2, wav, &ours_path, finish, |_| {}).unwrap();
             let ours = read(&ours_path).unwrap();
             let (diff, at) = ours
                 .iter()
@@ -73,7 +76,10 @@ fn main() {
                 .map(|(i, (a, b))| (sample_diff(a.0, b.0).max(sample_diff(a.1, b.1)), i))
                 .fold((0.0f32, 0), |m, v| if v.0 > m.0 { v } else { m });
             total += 1;
-            let name = path.file_stem().map_or(file.clone(), |s| s.to_string_lossy().into_owned());
+            let mut name = path.file_stem().map_or(file.clone(), |s| s.to_string_lossy().into_owned());
+            if several {
+                name = format!("{name}/{}", reaper_out.file_stem().unwrap_or_default().to_string_lossy());
+            }
             if diff <= tolerance {
                 passed += 1;
             } else {

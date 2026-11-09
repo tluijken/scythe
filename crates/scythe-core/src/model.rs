@@ -968,7 +968,20 @@ pub struct Marker {
     pub color: Option<Color>,
     /// Some(end) for regions.
     pub region_end: Option<f64>,
+    /// Tracks the region render matrix renders for this region (`<REGIONRENDER`); the master
+    /// is a flag of the region's `MARKER` lines instead (see `renders_master`).
+    pub render_matrix: Vec<RegionRenderTrack>,
     pub lines: LineMemo,
+}
+
+/// A track in a region's render matrix row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegionRenderTrack {
+    /// The track's `{GUID}` (`TRACKID`).
+    pub guid: String,
+    /// Forced channel count, as `SetRegionRenderMatrix` takes it (2 mono, 4 stereo, 2n n
+    /// channels); 0 renders with the project's channel count.
+    pub channels: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1308,6 +1321,7 @@ impl Project {
             name: name.into(),
             color: None,
             region_end: None,
+            render_matrix: Vec::new(),
             lines: LineMemo::new(),
         });
         self.markers.sort_by(|a, b| a.position.total_cmp(&b.position));

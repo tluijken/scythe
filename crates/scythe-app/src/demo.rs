@@ -428,6 +428,7 @@ pub fn build(sample_rate: u32) -> Result<Project, hound::Error> {
             name: "Verse 2".into(),
             color: Some(Color::from_hex(0x66d9ef)),
             region_end: None,
+            render_matrix: Vec::new(),
             lines: Default::default(),
         },
         Marker {
@@ -436,6 +437,7 @@ pub fn build(sample_rate: u32) -> Result<Project, hound::Error> {
             name: "Chorus".into(),
             color: Some(Color::from_hex(0xfd971f)),
             region_end: None,
+            render_matrix: Vec::new(),
             lines: Default::default(),
         },
         Marker {
@@ -444,6 +446,7 @@ pub fn build(sample_rate: u32) -> Result<Project, hound::Error> {
             name: "Solo".into(),
             color: Some(Color::from_hex(0xf92672)),
             region_end: None,
+            render_matrix: Vec::new(),
             lines: Default::default(),
         },
     ];

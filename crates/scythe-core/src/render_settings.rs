@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::model::{Project, TimeRange};
+use crate::model::{ItemId, Project, TimeRange, TrackId};
 use crate::rpp::{Node, tokenize};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -12,8 +12,116 @@ pub enum Bounds {
     Project,
     TimeSelection,
     Regions,
-    /// Bounds this reimplementation does not handle (selected items or regions …).
+    /// Each selected item's own extent.
+    SelectedItems,
+    /// The selected regions; with no region selection (Scythe keeps none, and REAPER's
+    /// `-renderproject` has none) every region.
+    SelectedRegions,
+    /// Bounds this reimplementation does not handle (razor areas, markers …).
     Other(i64),
+}
+
+impl Bounds {
+    /// REAPER's `RENDER_BOUNDSFLAG` number.
+    pub fn code(&self) -> i64 {
+        match self {
+            Bounds::Custom(_) => 0,
+            Bounds::Project => 1,
+            Bounds::TimeSelection => 2,
+            Bounds::Regions => 3,
+            Bounds::SelectedItems => 4,
+            Bounds::SelectedRegions => 5,
+            Bounds::Other(n) => *n,
+        }
+    }
+
+    fn regions(&self) -> bool {
+        matches!(self, Bounds::Regions | Bounds::SelectedRegions)
+    }
+}
+
+/// What a render job plays: the master mix, or part of the project on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenderSource {
+    Master,
+    /// A track's own output (a stem): its items, children and receives through its FX and
+    /// fader, but neither its parent folders nor the master.
+    Stem(TrackId),
+    /// A track (and its children) soloed through the master.
+    TrackViaMaster(TrackId),
+    /// One item alone through its own track.
+    Item(ItemId),
+    /// One item alone through its track, folders and the master.
+    ItemViaMaster(ItemId),
+}
+
+/// One file to render.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderJob {
+    pub range: TimeRange,
+    pub path: PathBuf,
+    pub source: RenderSource,
+}
+
+/// The tracks and items a render takes as "selected".
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RenderSelection {
+    pub tracks: Vec<TrackId>,
+    pub items: Vec<ItemId>,
+}
+
+impl RenderSelection {
+    /// The selection the project file saved (`SEL 1` on tracks and items), which is what
+    /// REAPER's `-renderproject` renders.
+    pub fn saved(p: &Project) -> Self {
+        let selected = |lines: &crate::model::LineMemo, extra: &[Node]| {
+            let on = |t: &[String]| t.first().map(String::as_str) == Some("SEL") && t.get(1).is_some_and(|v| v != "0");
+            lines.get("SEL").is_some_and(|t| on(t))
+                || extra.iter().any(|n| matches!(n, Node::Line(l) if on(&tokenize(l))))
+        };
+        Self {
+            tracks: p.tracks.iter().filter(|t| selected(&t.lines, &t.extra)).map(|t| t.id).collect(),
+            items: p
+                .tracks
+                .iter()
+                .flat_map(|t| &t.items)
+                .filter(|i| selected(&i.lines, &i.extra))
+                .map(|i| i.id)
+                .collect(),
+        }
+    }
+}
+
+/// `RENDER_STEMS`, REAPER's render source flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SourceFlags(pub i64);
+
+impl SourceFlags {
+    /// Bits 1 and 2: 0 the master mix, 1 the selected tracks' stems and the master, 3 the
+    /// stems alone; 2 alone renders nothing.
+    pub fn master(self) -> bool {
+        self.0 & 3 <= 1
+    }
+
+    pub fn stems(self) -> bool {
+        self.0 & 1 != 0
+    }
+
+    pub fn matrix(self) -> bool {
+        self.0 & 8 != 0
+    }
+
+    pub fn items(self) -> bool {
+        self.0 & 32 != 0
+    }
+
+    pub fn items_via_master(self) -> bool {
+        self.0 & 64 != 0
+    }
+
+    pub fn tracks_via_master(self) -> bool {
+        self.0 & 128 != 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,6 +561,7 @@ pub struct RenderSettings {
     pub dither: bool,
     pub noise_shape: bool,
     pub resample: ResampleMode,
+    pub source: SourceFlags,
     /// `<RENDER_METADATA` tags (`BWF:Description`, `IXML:PROJECT` …) in REAPER's order, when
     /// the render embeds them (`RENDER_STEMS` flag 512); empty otherwise.
     pub metadata: Vec<(String, String)>,
@@ -471,6 +580,7 @@ impl RenderSettings {
             dither: false,
             noise_shape: false,
             resample: ResampleMode::default(),
+            source: SourceFlags::default(),
             metadata: Vec::new(),
         };
         let mut embed_metadata = false;
@@ -486,7 +596,10 @@ impl RenderSettings {
                             s.channels = num(2).map_or(2, |c| c as u16).clamp(1, 64);
                             s.sample_rate = num(3).filter(|r| *r > 0.0).map(|r| r as u32);
                         }
-                        "RENDER_STEMS" => embed_metadata = num(1).is_some_and(|f| f as i64 & 512 != 0),
+                        "RENDER_STEMS" => {
+                            s.source = SourceFlags(num(1).unwrap_or(0.0) as i64);
+                            embed_metadata = s.source.0 & 512 != 0;
+                        }
                         "RENDER_NORMALIZE" => {
                             s.normalize = Normalize::parse(num(1).unwrap_or(0.0) as i64, num(2).unwrap_or(0.0));
                         }
@@ -501,6 +614,8 @@ impl RenderSettings {
                                 1 => Bounds::Project,
                                 2 => Bounds::TimeSelection,
                                 3 => Bounds::Regions,
+                                4 => Bounds::SelectedItems,
+                                5 => Bounds::SelectedRegions,
                                 other => Bounds::Other(other),
                             }
                         }
@@ -537,29 +652,103 @@ impl RenderSettings {
         s
     }
 
-    /// Ranges and output paths to render; the extension follows the format (sinks without an
-    /// encoder here get `.wav`) and is not added twice.
-    pub fn jobs(&self, p: &Project, unix_seconds: u64) -> Result<Vec<(TimeRange, PathBuf)>, String> {
-        let ranges: Vec<(TimeRange, Option<(u32, String)>)> = match &self.bounds {
-            // REAPER renders custom bounds to the nearest millisecond.
-            Bounds::Custom(r) => {
-                let ms = |t: f64| (t * 1000.0).round() / 1000.0;
-                vec![(TimeRange::new(ms(r.start), ms(r.end)), None)]
+    /// The files to render, in REAPER's order, for the project saved selection (see
+    /// [`RenderSelection::saved`]) or the editor's. The extension follows the format (sinks
+    /// without an encoder here get `.wav`) and is not added twice; names that come out the
+    /// same get REAPER's `-001`, `-002` … suffixes.
+    pub fn jobs(&self, p: &Project, sel: &RenderSelection, unix_seconds: u64) -> Result<Vec<RenderJob>, String> {
+        let mut planned: Vec<(TimeRange, RenderSource, Names)> = Vec::new();
+        let source = self.source;
+        if self.bounds == Bounds::SelectedItems || source.items() || source.items_via_master() {
+            if self.bounds != Bounds::SelectedItems {
+                return Err("selected media items render only with selected-items bounds".into());
             }
-            Bounds::Project => vec![(TimeRange::new(0.0, p.length()), None)],
-            Bounds::TimeSelection => {
-                vec![(p.time_selection.ok_or("the project renders its time selection, but has none")?, None)]
+            for (ti, t) in p.tracks.iter().enumerate() {
+                for (ii, item) in t.items.iter().enumerate() {
+                    if !sel.items.contains(&item.id) {
+                        continue;
+                    }
+                    let src = if source.items_via_master() {
+                        RenderSource::ItemViaMaster(item.id)
+                    } else {
+                        RenderSource::Item(item.id)
+                    };
+                    let names = Names {
+                        track: Some((ti + 1, t.name.clone())),
+                        item: Some((ii + 1, item.take().map(|tk| tk.name.clone()).unwrap_or_default())),
+                        region: None,
+                    };
+                    planned.push((TimeRange::new(item.position, item.end()), src, names));
+                }
             }
-            Bounds::Regions => p
-                .markers
-                .iter()
-                .filter_map(|m| {
-                    m.region_end.map(|end| (TimeRange::new(m.position, end), Some((m.index, m.name.clone()))))
-                })
-                .collect(),
-            Bounds::Other(n) => return Err(format!("render bounds mode {n} is not supported")),
-        };
-        if ranges.is_empty() {
+        } else if source.matrix() {
+            if source.0 & 3 != 0 {
+                return Err("the region render matrix renders neither stems nor the master on top".into());
+            }
+            for m in p.markers.iter().filter(|m| m.region_end.is_some()) {
+                let range = TimeRange::new(m.position, m.region_end.unwrap_or(m.position));
+                let region = Some((m.index, m.name.clone()));
+                if m.renders_master() {
+                    planned.push((
+                        range,
+                        RenderSource::Master,
+                        Names { track: Some((0, "Master".into())), item: None, region: region.clone() },
+                    ));
+                }
+                for (ti, t) in p.tracks.iter().enumerate() {
+                    if m.render_matrix.iter().any(|r| r.guid.eq_ignore_ascii_case(&t.guid)) {
+                        let names = Names { track: Some((ti + 1, t.name.clone())), item: None, region: region.clone() };
+                        planned.push((range, RenderSource::Stem(t.id), names));
+                    }
+                }
+            }
+        } else {
+            let ranges: Vec<(TimeRange, Option<(u32, String)>)> = match &self.bounds {
+                // REAPER renders custom bounds to the nearest millisecond.
+                Bounds::Custom(r) => {
+                    let ms = |t: f64| (t * 1000.0).round() / 1000.0;
+                    vec![(TimeRange::new(ms(r.start), ms(r.end)), None)]
+                }
+                Bounds::Project => vec![(TimeRange::new(0.0, p.length()), None)],
+                Bounds::TimeSelection => {
+                    vec![(p.time_selection.ok_or("the project renders its time selection, but has none")?, None)]
+                }
+                Bounds::Regions | Bounds::SelectedRegions => p
+                    .markers
+                    .iter()
+                    .filter_map(|m| {
+                        m.region_end.map(|end| (TimeRange::new(m.position, end), Some((m.index, m.name.clone()))))
+                    })
+                    .collect(),
+                Bounds::SelectedItems => unreachable!(),
+                Bounds::Other(n) => return Err(format!("render bounds mode {n} is not supported")),
+            };
+            let selected: Vec<(usize, &crate::model::Track)> =
+                p.tracks.iter().enumerate().filter(|(_, t)| sel.tracks.contains(&t.id)).collect();
+            for (range, region) in ranges {
+                if source.tracks_via_master() {
+                    if source.0 & 3 == 0 {
+                        for &(ti, t) in &selected {
+                            let names =
+                                Names { track: Some((ti + 1, t.name.clone())), item: None, region: region.clone() };
+                            planned.push((range, RenderSource::TrackViaMaster(t.id), names));
+                        }
+                    }
+                    continue;
+                }
+                if source.stems() {
+                    for &(ti, t) in &selected {
+                        let names = Names { track: Some((ti + 1, t.name.clone())), item: None, region: region.clone() };
+                        planned.push((range, RenderSource::Stem(t.id), names));
+                    }
+                }
+                if source.master() {
+                    let names = Names { track: Some((0, "Master".into())), item: None, region: region.clone() };
+                    planned.push((range, RenderSource::Master, names));
+                }
+            }
+        }
+        if planned.is_empty() {
             return Err("nothing to render".into());
         }
         let dir = p.path.as_deref().and_then(Path::parent).map(Path::to_owned).unwrap_or_default();
@@ -568,47 +757,72 @@ impl RenderSettings {
             f if Path::new(f).is_absolute() => PathBuf::from(f),
             f => dir.join(f),
         };
-        let pattern = match (self.pattern.as_str(), &self.bounds) {
-            ("", Bounds::Regions) => "$project-$regionnumber",
+        let pattern = match (self.pattern.as_str(), self.bounds.regions() && !source.matrix()) {
+            ("", true) => "$project-$regionnumber",
             (pat, _) => pat,
         };
-        Ok(ranges
-            .into_iter()
-            .map(|(range, region)| {
-                let path = if pattern.is_empty() {
+        let ext = match &self.format {
+            Format::Mp3 { .. } => "mp3",
+            Format::Flac { .. } => "flac",
+            Format::Vorbis { .. } => "ogg",
+            Format::Opus { .. } => "opus",
+            Format::WavPack { .. } => "wv",
+            Format::CdImage(_) => "cue",
+            Format::Ddp => "DAT",
+            Format::Video(v) => v.container.extension(),
+            Format::Aiff { .. } => "aif",
+            Format::Caf { .. } => "caf",
+            Format::Gif(_) => "gif",
+            Format::Lcf(_) => "lcf",
+            Format::Wav { .. } | Format::Other(_) => "wav",
+        };
+        let stems: Vec<(PathBuf, String)> = planned
+            .iter()
+            .map(|(_, _, names)| {
+                if pattern.is_empty() {
                     if self.file.is_empty() { base.join(p.name()) } else { base.clone() }
                 } else {
                     base.join({
-                        let name = expand(pattern, p, region.as_ref(), unix_seconds);
-                        // Region wildcards outside region bounds leave only separators behind.
+                        let name = expand(pattern, p, names, unix_seconds);
+                        // Wildcards with nothing to name leave only separators behind.
                         if name.trim_matches(|c: char| " -_.".contains(c)).is_empty() { p.name() } else { name }
                     })
-                };
-                let ext = match &self.format {
-                    Format::Mp3 { .. } => "mp3",
-                    Format::Flac { .. } => "flac",
-                    Format::Vorbis { .. } => "ogg",
-                    Format::Opus { .. } => "opus",
-                    Format::WavPack { .. } => "wv",
-                    Format::CdImage(_) => "cue",
-                    Format::Ddp => "DAT",
-                    Format::Video(v) => v.container.extension(),
-                    Format::Aiff { .. } => "aif",
-                    Format::Caf { .. } => "caf",
-                    Format::Gif(_) => "gif",
-                    Format::Lcf(_) => "lcf",
-                    Format::Wav { .. } | Format::Other(_) => "wav",
-                };
-                if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
-                    return (range, path);
                 }
-                let mut path = path.into_os_string();
+            })
+            .map(|path| match path.extension() {
+                Some(e) if e.eq_ignore_ascii_case(ext) => {
+                    let e = e.to_string_lossy().into_owned();
+                    (path.with_extension(""), e)
+                }
+                _ => (path, ext.to_owned()),
+            })
+            .collect();
+        let mut seen: std::collections::HashMap<&PathBuf, usize> = std::collections::HashMap::new();
+        Ok(planned
+            .iter()
+            .zip(&stems)
+            .map(|((range, source, _), (stem, ext))| {
+                let mut path = stem.clone().into_os_string();
+                if stems.iter().filter(|(s, _)| s == stem).count() > 1 {
+                    let n = seen.entry(stem).or_insert(0);
+                    *n += 1;
+                    path.push(format!("-{n:03}"));
+                }
                 path.push(".");
                 path.push(ext);
-                (range, PathBuf::from(path))
+                RenderJob { range: *range, path: PathBuf::from(path), source: *source }
             })
             .collect())
     }
+}
+
+/// What the render wildcards of one file name: its track (number 0 is the master), item
+/// (number within its track) and region.
+#[derive(Debug, Clone, Default)]
+struct Names {
+    track: Option<(usize, String)>,
+    item: Option<(usize, String)>,
+    region: Option<(u32, String)>,
 }
 
 /// `<RENDER_CFG` holds the sink configuration in base64: a four-character id (stored
@@ -710,7 +924,8 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
 }
 
 /// Expands the render wildcards this reimplementation knows; others stay as written.
-fn expand(pattern: &str, p: &Project, region: Option<&(u32, String)>, unix_seconds: u64) -> String {
+fn expand(pattern: &str, p: &Project, names: &Names, unix_seconds: u64) -> String {
+    let region = names.region.as_ref();
     let days = (unix_seconds / 86_400) as i64;
     let secs = unix_seconds % 86_400;
     let z = days + 719_468;
@@ -723,7 +938,11 @@ fn expand(pattern: &str, p: &Project, region: Option<&(u32, String)>, unix_secon
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + (month <= 2) as i64;
     let mut vars: Vec<(&str, String)> = vec![
-        ("$regionnumber", region.map(|r| r.0.to_string()).unwrap_or_default()),
+        ("$regionnumber", region.map(|r| format!("{:02}", r.0)).unwrap_or_default()),
+        ("$tracknumber", names.track.as_ref().map(|t| format!("{:02}", t.0)).unwrap_or_default()),
+        ("$track", names.track.as_ref().map(|t| t.1.clone()).unwrap_or_default()),
+        ("$itemnumber", names.item.as_ref().map(|i| format!("{:02}", i.0)).unwrap_or_default()),
+        ("$item", names.item.as_ref().map(|i| i.1.clone()).unwrap_or_default()),
         ("$regionname", region.map(|r| r.1.clone()).unwrap_or_default()),
         ("$region", region.map(|r| r.1.clone()).unwrap_or_default()),
         ("$project", p.name()),
@@ -758,10 +977,13 @@ mod tests {
             (s.channels, s.sample_rate, s.bounds.clone(), s.format.clone()),
             (2, Some(44100), Bounds::Regions, Format::Wav { bits: 24, options: WavOptions::default() })
         );
-        let jobs = s.jobs(&p, 0).unwrap();
+        let jobs = s.jobs(&p, &RenderSelection::default(), 0).unwrap();
         assert_eq!(jobs.len(), 2);
-        assert_eq!(jobs[0], (TimeRange::new(10.0, 20.0), PathBuf::from("/out/split/1-Intro.wav")));
-        assert_eq!(jobs[1].1, PathBuf::from("/out/split/2-Verse_Chorus.wav"));
+        assert_eq!(
+            (jobs[0].range, jobs[0].path.clone()),
+            (TimeRange::new(10.0, 20.0), PathBuf::from("/out/split/01-Intro.wav"))
+        );
+        assert_eq!(jobs[1].path, PathBuf::from("/out/split/02-Verse_Chorus.wav"));
     }
 
     #[test]
@@ -769,7 +991,10 @@ mod tests {
         let text = PROJECT.replace("ZXZhdxgAAQ==", "bDNwbUABAAAAAAAAAAAAAP////8EAAAAQAEAAAAAAAA=");
         let s = RenderSettings::from_project(&project_from_rpp(&text).unwrap());
         assert_eq!(s.format, Format::Mp3 { kbps: 320 });
-        assert_eq!(s.jobs(&project_from_rpp(&text).unwrap(), 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.mp3"));
+        assert_eq!(
+            s.jobs(&project_from_rpp(&text).unwrap(), &RenderSelection::default(), 0).unwrap()[0].path,
+            PathBuf::from("/out/split/01-Intro.mp3")
+        );
     }
 
     #[test]
@@ -780,7 +1005,7 @@ mod tests {
         s.pattern.clear();
         s.bounds = Bounds::Project;
         p.tracks.clear();
-        assert_eq!(s.jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/mix.WAV"));
+        assert_eq!(s.jobs(&p, &RenderSelection::default(), 0).unwrap()[0].path, PathBuf::from("/out/mix.WAV"));
     }
 
     #[test]
@@ -819,7 +1044,10 @@ mod tests {
         );
         assert_eq!(format("IHBkZA=="), Format::Ddp);
         let p = project("IHBkZA==");
-        assert_eq!(RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.DAT"));
+        assert_eq!(
+            RenderSettings::from_project(&p).jobs(&p, &RenderSelection::default(), 0).unwrap()[0].path,
+            PathBuf::from("/out/split/01-Intro.DAT")
+        );
     }
 
     #[test]
@@ -875,7 +1103,10 @@ mod tests {
         let s = RenderSettings::from_project(&p);
         let Format::Video(v) = &s.format else { panic!() };
         assert_eq!((v.video, v.audio), (Some(VideoCodec::Vp9), Some(AudioCodec::Opus)));
-        assert_eq!(s.jobs(&p, 0).unwrap()[0].1, PathBuf::from("/out/split/1-Intro.webm"));
+        assert_eq!(
+            s.jobs(&p, &RenderSelection::default(), 0).unwrap()[0].path,
+            PathBuf::from("/out/split/01-Intro.webm")
+        );
     }
 
     #[test]
@@ -884,7 +1115,7 @@ mod tests {
             "<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RANGE 0 1.00004 17.3333 0 1000\n>\n",
         )
         .unwrap();
-        let r = RenderSettings::from_project(&p).jobs(&p, 0).unwrap()[0].0;
+        let r = RenderSettings::from_project(&p).jobs(&p, &RenderSelection::default(), 0).unwrap()[0].range;
         assert_eq!((r.start, r.end), (1.0, 17.333));
     }
 
@@ -913,5 +1144,87 @@ mod tests {
             ResampleMode::Sinc { half: 384, tabled: false }
         );
         assert_eq!(read("<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_RESAMPLE 1 0 1\n>\n"), ResampleMode::Linear);
+    }
+
+    /// The project of `rs/stems.RPP` in the WP11 probes: two regions, the first with Kick and
+    /// Bass in its matrix row, the second with Folder and the master.
+    fn source_project(stems: i64, range: i64, pattern: &str) -> Project {
+        let item = |pos: f64, name: &str, sel: u8| {
+            format!(
+                "    <ITEM\n      POSITION {pos}\n      LENGTH 2\n      SEL {sel}\n      NAME {name}\n      <SOURCE WAVE\n        FILE x.wav\n      >\n    >\n"
+            )
+        };
+        let text = format!(
+            "<REAPER_PROJECT 0.1 \"7.73\" 0\n  RENDER_FILE /out\n  RENDER_PATTERN \"{pattern}\"\n  RENDER_RANGE {range} 0 0 0 1000\n  RENDER_STEMS {stems}\n  MARKER 1 0 Intro 1 0 1 B {{A}} 0 1\n  <REGIONRENDER 1\n    TRACK {{K}} 0\n    TRACK {{B}} 0\n  >\n  MARKER 1 2 \"\" 1\n  MARKER 2 2 Verse 5 0 1 B {{C}} 0 1\n  <REGIONRENDER 2\n    TRACK {{F}} 0\n  >\n  MARKER 2 4 \"\" 5\n  <TRACK {{K}}\n    NAME Kick\n    SEL 1\n{}  >\n  <TRACK {{B}}\n    NAME Bass\n    SEL 0\n{}  >\n  <TRACK {{F}}\n    NAME Folder\n    SEL 1\n    ISBUS 1 1\n  >\n  <TRACK {{D}}\n    NAME Child\n    ISBUS 2 -1\n{}  >\n>\n",
+            item(0.0, "it220", 0),
+            item(1.0, "it330", 1),
+            item(0.5, "it440", 1)
+        );
+        project_from_rpp(&text).unwrap()
+    }
+
+    fn names(stems: i64, range: i64, pattern: &str) -> Vec<String> {
+        let p = source_project(stems, range, pattern);
+        match RenderSettings::from_project(&p).jobs(&p, &RenderSelection::saved(&p), 0) {
+            Ok(jobs) => jobs.iter().map(|j| j.path.file_name().unwrap().to_string_lossy().into_owned()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn render_sources_name_their_files_like_reaper() {
+        assert_eq!(names(1, 1, "$track"), ["Kick.wav", "Folder.wav", "Master.wav"]);
+        assert_eq!(names(3, 1, "$track"), ["Kick.wav", "Folder.wav"]);
+        assert!(names(2, 1, "$track").is_empty());
+        assert_eq!(names(128, 1, "$track"), ["Kick.wav", "Folder.wav"]);
+        assert!(names(129, 1, "$track").is_empty());
+        assert_eq!(names(1, 1, "$tracknumber-$track"), ["01-Kick.wav", "03-Folder.wav", "00-Master.wav"]);
+        assert_eq!(
+            names(32, 4, "$itemnumber-$item-$track-$tracknumber"),
+            ["01-it330-Bass-02.wav", "01-it440-Child-04.wav"]
+        );
+        assert_eq!(names(0, 4, "$item"), ["it330.wav", "it440.wav"]);
+        assert!(names(32, 1, "$item").is_empty());
+        assert_eq!(names(8, 3, "$regionnumber-$tracknumber-$track").len(), 4);
+        assert_eq!(
+            names(8, 3, "$regionnumber-$region"),
+            ["01-Intro-001.wav", "01-Intro-002.wav", "02-Verse-001.wav", "02-Verse-002.wav"]
+        );
+        assert!(names(9, 3, "$region-$track").is_empty());
+        assert_eq!(names(1, 3, "$region-$track").len(), 6);
+    }
+
+    #[test]
+    fn jobs_carry_their_sources() {
+        let p = source_project(64, 4, "$item");
+        let jobs = RenderSettings::from_project(&p).jobs(&p, &RenderSelection::saved(&p), 0).unwrap();
+        let item = p.tracks[1].items[0].id;
+        assert_eq!(jobs[0].source, RenderSource::ItemViaMaster(item));
+        assert_eq!(jobs[0].range, TimeRange::new(1.0, 3.0));
+        let p = source_project(8, 3, "$region-$track");
+        let jobs = RenderSettings::from_project(&p).jobs(&p, &RenderSelection::default(), 0).unwrap();
+        let sources: Vec<_> = jobs.iter().map(|j| j.source).collect();
+        assert_eq!(
+            sources,
+            [
+                RenderSource::Stem(p.tracks[0].id),
+                RenderSource::Stem(p.tracks[1].id),
+                RenderSource::Master,
+                RenderSource::Stem(p.tracks[2].id)
+            ]
+        );
+    }
+
+    #[test]
+    fn region_render_matrix_survives_a_save() {
+        let p = source_project(8, 3, "");
+        assert!(p.markers[1].renders_master() && !p.markers[0].renders_master());
+        let text = crate::rpp::project_to_rpp(&p);
+        let q = project_from_rpp(&text).unwrap();
+        assert_eq!(q.markers[0].render_matrix, p.markers[0].render_matrix);
+        assert_eq!(q.markers[1].render_matrix.len(), 1);
+        assert!(q.markers[1].renders_master());
+        let at = text.find("MARKER 1 0 Intro").unwrap();
+        assert!(text[at..].trim_start_matches(|c| c != '\n').trim_start().starts_with("<REGIONRENDER 1"));
     }
 }

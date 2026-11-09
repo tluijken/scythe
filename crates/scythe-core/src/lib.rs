@@ -17,6 +17,7 @@ pub mod monitor;
 pub mod prefs;
 pub mod recording;
 pub mod render_settings;
+pub mod render_source;
 pub mod rpp;
 pub mod setlist;
 pub mod smf;

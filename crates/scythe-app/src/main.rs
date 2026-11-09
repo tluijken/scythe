@@ -53,25 +53,27 @@ impl eframe::App for Shell {
 
 /// Renders with the project's own render settings, like REAPER's `-renderproject`.
 fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
-    use scythe_core::render_settings::{Format, RenderSettings};
+    use scythe_core::render_settings::{Format, RenderSelection, RenderSettings};
     let project = scythe_core::rpp::read_project(path).map_err(|e| e.to_string())?;
     let settings = RenderSettings::from_project(&project);
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let jobs = settings.jobs(&project, now)?;
+    let jobs = settings.jobs(&project, &RenderSelection::saved(&project), now)?;
     if let Format::Other(ref id) = settings.format {
         eprintln!("note: the project renders to the {id} format; writing 24-bit WAV instead");
     }
     let encoding = scythe_engine::bounce::Encoding::from_format(&settings.format);
     let rate = encoding.sample_rate().or(settings.sample_rate).or(project.sample_rate).unwrap_or(48_000);
     let pool = load_media(&project, rate, settings.resample);
-    for (range, out) in jobs {
+    for job in jobs {
+        let (range, out) = (job.range, job.path);
+        let source = scythe_core::render_source::project_for(&project, job.source);
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         let finish = scythe_engine::bounce::Finish::from_settings(&settings);
         let channels = settings.channels;
         scythe_engine::bounce::bounce_finished(
-            &project,
+            &source,
             &pool,
             range,
             rate,

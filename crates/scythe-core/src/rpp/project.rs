@@ -6,8 +6,8 @@ use crate::fade::Fade;
 use crate::fader::PanMode;
 use crate::groups::GroupFlags;
 use crate::model::{
-    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, Section, Send, SendMode,
-    SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
+    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, RegionRenderTrack,
+    Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
 };
 use crate::tempo::TempoPoint;
 use crate::timebase::{PlayRate, Timebase};
@@ -261,6 +261,27 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                 p.master.fx = fx;
                 p.master.fx_chain_prelude = prelude;
             }
+            // REAPER writes a region's matrix row right after the line that starts the region.
+            Node::Chunk(c) if c.name() == "REGIONRENDER" && !region_starts.is_empty() => {
+                let index = tokenize(&c.header).get(1).and_then(|v| v.parse::<u32>().ok());
+                let region = region_starts.iter_mut().rev().find(|r| Some(r.index) == index);
+                let region = match region {
+                    Some(r) => r,
+                    None => region_starts.last_mut().unwrap(),
+                };
+                region.render_matrix = c
+                    .children
+                    .iter()
+                    .filter_map(|n| match n {
+                        Node::Line(l) => {
+                            let t = tokenize(l);
+                            (t.first().map(String::as_str) == Some("TRACK") && t.len() > 1)
+                                .then(|| RegionRenderTrack { guid: t[1].clone(), channels: num(&t, 2, 0.0) as i64 })
+                        }
+                        Node::Chunk(_) => None,
+                    })
+                    .collect();
+            }
             Node::Chunk(_) => p.extra.push(node.clone()),
         }
     }
@@ -382,14 +403,14 @@ fn parse_marker(t: &[String], markers: &mut Vec<Marker>, open_regions: &mut Vec<
     let mut lines = LineMemo::new();
     lines.insert("MARKER".into(), t.to_vec());
     if flags & 1 == 0 {
-        markers.push(Marker { index, position, name, color, region_end: None, lines });
+        markers.push(Marker { index, position, name, color, region_end: None, render_matrix: Vec::new(), lines });
     } else if let Some(pos) = open_regions.iter().position(|m| m.index == index && m.region_end.is_none()) {
         let mut region = open_regions.remove(pos);
         region.region_end = Some(position);
         region.lines.insert("MARKER_END".into(), t.to_vec());
         markers.push(region);
     } else {
-        open_regions.push(Marker { index, position, name, color, region_end: None, lines });
+        open_regions.push(Marker { index, position, name, color, region_end: None, render_matrix: Vec::new(), lines });
     }
 }
 
@@ -1100,6 +1121,13 @@ pub fn project_to_rpp(p: &Project) -> String {
                 (5, color_to_native(m.color).to_string()),
             ],
         ));
+        if m.region_end.is_some() && !m.render_matrix.is_empty() {
+            let mut c = Chunk::new("REGIONRENDER", &[&m.index.to_string()]);
+            for t in &m.render_matrix {
+                c.line(["TRACK", &t.guid, &t.channels.to_string()]);
+            }
+            root.push_chunk(c);
+        }
         if let Some(end) = m.region_end {
             root.line(line_from(
                 &m.lines,

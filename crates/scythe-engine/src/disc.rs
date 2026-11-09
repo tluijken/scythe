@@ -751,7 +751,15 @@ mod tests {
     use super::*;
 
     fn marker(position: f64, name: &str) -> Marker {
-        Marker { index: 0, position, name: name.into(), color: None, region_end: None, lines: Default::default() }
+        Marker {
+            index: 0,
+            position,
+            name: name.into(),
+            color: None,
+            region_end: None,
+            render_matrix: Vec::new(),
+            lines: Default::default(),
+        }
     }
 
     fn region(position: f64, end: f64, name: &str) -> Marker {

@@ -445,12 +445,16 @@ impl ScytheApp {
             channels = settings.channels;
             finish = Finish::from_settings(&settings);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            match settings.jobs(&self.project, now) {
+            let selection = scythe_core::render_settings::RenderSelection {
+                tracks: self.sel.track.into_iter().collect(),
+                items: self.selected_items(),
+            };
+            match settings.jobs(&self.project, &selection, now) {
                 Ok(jobs) => jobs
                     .into_iter()
-                    .map(|(r, path)| {
-                        ranges.push(r);
-                        (self.project.clone(), path)
+                    .map(|job| {
+                        ranges.push(job.range);
+                        (scythe_core::render_source::project_for(&self.project, job.source), job.path)
                     })
                     .collect(),
                 Err(e) => {

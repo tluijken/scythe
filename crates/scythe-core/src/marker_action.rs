@@ -104,6 +104,26 @@ impl Marker {
         let toks = self.lines.get("MARKER")?;
         toks.iter().skip(6).find(|t| t.starts_with('{') && t.ends_with('}')).map(String::as_str)
     }
+
+    /// Whether the region render matrix renders the master mix for this region: flag 4 of
+    /// both of the region's `MARKER` lines.
+    pub fn renders_master(&self) -> bool {
+        self.lines.get("MARKER").and_then(|t| t.get(4)).and_then(|f| f.parse::<i64>().ok()).is_some_and(|f| f & 4 != 0)
+    }
+
+    pub fn set_renders_master(&mut self, on: bool) {
+        for key in ["MARKER", "MARKER_END"] {
+            let t = self
+                .lines
+                .entry(key.into())
+                .or_insert_with(|| vec!["MARKER".into(), "0".into(), "0".into(), String::new(), "1".into()]);
+            if t.len() < 5 {
+                t.resize(5, "0".into());
+            }
+            let flags = t[4].parse::<i64>().unwrap_or(1);
+            t[4] = (if on { flags | 4 } else { flags & !4 }).to_string();
+        }
+    }
 }
 
 #[cfg(test)]

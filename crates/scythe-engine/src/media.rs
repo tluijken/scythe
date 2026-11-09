@@ -944,7 +944,7 @@ mod tests {
         let pre_skip = usize::from(head.pre_skip);
         let mut writer = OggOpusWriter::new(std::fs::File::create(&path).unwrap(), head).unwrap();
         let mut packet = vec![0u8; MAX_PACKET_BYTES];
-        for block in tone.chunks_exact(960) {
+        for block in tone.as_chunks::<960>().0 {
             let n = encoder.encode(block, 960, &mut packet).unwrap();
             writer.write_packet(&packet[..n]).unwrap();
         }
