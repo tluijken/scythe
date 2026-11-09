@@ -748,6 +748,7 @@ impl FxRegistry {
             let slots = if ti == usize::MAX { &mut project.master.fx } else { &mut project.tracks[ti].fx };
             for (i, slot) in slots.iter_mut().enumerate() {
                 let Some(inst) = self.instance(owner, slot, i) else { continue };
+                store_learned_bases(&inst, slot);
                 if let Some(nodes) = inst.with(|e| e.save_nodes()).flatten() {
                     let Some(Node::Chunk(chunk)) = slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(_))) else {
                         continue;
@@ -1377,6 +1378,20 @@ fn js_pin_blocks(bytes: &[u8]) -> Option<PinMap> {
 /// The plugin chunk is what defines the sound; bypass and window lines do not.
 fn plugin_state(slot: &FxSlot) -> Vec<Node> {
     slot_plugin(slot).map(|c| vec![Node::Chunk(c.clone())]).unwrap_or_default()
+}
+
+/// Writes the baselines learned controls moved into the slot's `PARAMBASE` lines.
+fn store_learned_bases(inst: &FxInstance, slot: &mut FxSlot) {
+    let bases = inst.with_mods(|s| s.learned_bases()).unwrap_or_default();
+    for (index, v) in bases {
+        let Some(mut m) = scythe_core::modulation::modulation(slot, index) else { continue };
+        let (lo, hi) = inst.with(|e| crate::modulation::native_range(e, index)).unwrap_or((0.0, 1.0));
+        let base = lo + v * (hi - lo);
+        if (m.base - base).abs() > 1e-12 {
+            m.base = base;
+            scythe_core::modulation::set_modulation(slot, &m);
+        }
+    }
 }
 
 /// Plugin state saved in a `<STATE` child chunk of a `<CLAP` slot, base64 encoded.

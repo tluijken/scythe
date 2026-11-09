@@ -19,7 +19,6 @@ use scythe_core::modulation::{
 use scythe_core::tempo::Timeline;
 
 use crate::fx::{Effect, FxInstance, Target};
-use crate::midi_io::LiveMidi;
 
 /// One modulated parameter of an effect, as the render graph plays it.
 #[derive(Debug, Clone)]
@@ -81,8 +80,6 @@ pub struct ModContext<'a> {
     pub chain: &'a [Arc<FxInstance>],
     pub own: usize,
     pub timeline: &'a Timeline,
-    /// Messages from the MIDI inputs for this block, for learned controls.
-    pub control: &'a [LiveMidi],
     pub sample_rate: u32,
 }
 
@@ -129,6 +126,13 @@ impl ModState {
     /// Sets a modulated parameter's baseline (0..1), as moving its control does.
     pub fn set_base(&mut self, index: usize, value: f64) {
         self.params.entry(index).or_default().base = Some(value.clamp(0.0, 1.0));
+    }
+
+    /// Drops a learned baseline, so the stored one counts again.
+    pub fn clear_base(&mut self, index: usize) {
+        if let Some(p) = self.params.get_mut(&index) {
+            p.base = None;
+        }
     }
 
     /// Starts over, as after loading: the next block sets the first values again.
@@ -278,7 +282,6 @@ pub fn before_block(
     midi: &[(usize, [u8; 3])],
 ) -> bool {
     let read = Reading { ctx, frame };
-    learn(fx, state, ctx, frame);
     let mut bypassed = false;
     // MIDI links take their first message at once, later ones from the next block on.
     for e in &ctx.mods.entries {
@@ -374,43 +377,67 @@ pub fn after_block(fx: &mut dyn Effect, state: &mut ModState, ctx: &ModContext, 
     }
 }
 
-/// Applies the learned MIDI controls among `ctx.control` to their parameters.
-fn learn(fx: &mut dyn Effect, state: &mut ModState, ctx: &ModContext, frame: i64) {
-    for l in &ctx.mods.learns {
-        let Some(index) = l.index() else { continue };
-        for m in ctx.control.iter().filter(|m| l.matches(m.bytes)) {
-            if l.flags & LEARN_LFO_RETRIGGER != 0 {
-                let t = frame as f64 / ctx.sample_rate as f64;
-                state.params.entry(index).or_default().origin = Some((t, ctx.timeline.qn_at(t)));
-                continue;
-            }
-            let modulated = ctx.mods.entries.iter().find(|e| e.index == index);
-            let current = match modulated {
-                Some(e) => {
-                    let (lo, hi) = native_range(fx, index);
-                    let stored = ((e.def.base - lo) / (hi - lo)).clamp(0.0, 1.0);
-                    state.params.get(&index).and_then(|p| p.base).unwrap_or(stored)
-                }
-                None => state.learned.get(&index).copied().or_else(|| normalized(fx, index)).unwrap_or(0.0),
-            };
-            let Some(value) = learned_value(l, m.bytes, current, state.params.get(&index).and_then(|p| p.control))
-            else {
-                continue;
-            };
-            let p = state.params.entry(index).or_default();
-            if matches!(l.mode(), LearnMode::Absolute | LearnMode::Other(_)) {
-                p.control = Some(control_value(m.bytes));
-            }
-            if modulated.is_some() {
-                p.base = Some(value);
-            } else {
-                state.learned.insert(index, value);
-                let name = l.param.split_once(':').map(|(_, n)| n.to_owned()).unwrap_or_default();
-                let target = if name == "bypass" { Target::Bypass } else { Target::Named(name) };
-                apply(fx, &target, index, value);
-            }
+/// What reached a learned control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Control {
+    Midi([u8; 3]),
+    /// An OSC message's value, 0..1.
+    Value(f64),
+}
+
+/// Applies a learned control to `inst`: a modulated parameter (`modulation`) moves its
+/// baseline, any other parameter takes the value. `now` is the time and quarter note a
+/// retriggered LFO restarts at. Returns the value given.
+pub fn apply_learned(
+    inst: &FxInstance,
+    l: &ParamLearn,
+    control: Control,
+    modulation: Option<&ParamModulation>,
+    now: (f64, f64),
+) -> Option<f64> {
+    let index = l.index()?;
+    inst.with(|fx| {
+        let mut state = inst.mods.lock().ok()?;
+        if l.flags & LEARN_LFO_RETRIGGER != 0 {
+            state.params.entry(index).or_default().origin = Some(now);
+            return None;
         }
-    }
+        let current = match modulation {
+            Some(m) => {
+                let (lo, hi) = native_range(fx, index);
+                let stored = ((m.base - lo) / (hi - lo)).clamp(0.0, 1.0);
+                state.params.get(&index).and_then(|p| p.base).unwrap_or(stored)
+            }
+            None => normalized(fx, index).or_else(|| state.learned.get(&index).copied()).unwrap_or(0.0),
+        };
+        let p = state.params.entry(index).or_default();
+        let last = p.control;
+        let value = match control {
+            Control::Midi(msg) => {
+                if matches!(l.mode(), LearnMode::Absolute | LearnMode::Other(_)) {
+                    p.control = Some(control_value(msg));
+                }
+                learned_value(l, msg, current, last)?
+            }
+            Control::Value(v) if l.mode() == LearnMode::Toggle => {
+                if v <= 0.0 {
+                    return None;
+                }
+                if current >= 0.5 { 0.0 } else { 1.0 }
+            }
+            Control::Value(v) => v.clamp(0.0, 1.0),
+        };
+        if modulation.is_some() {
+            p.base = Some(value);
+        } else {
+            state.learned.insert(index, value);
+            let name = l.param.split_once(':').map(|(_, n)| n.to_owned()).unwrap_or_default();
+            let target = if name == "bypass" { Target::Bypass } else { Target::Named(name) };
+            apply(fx, &target, index, value);
+        }
+        Some(value)
+    })
+    .flatten()
 }
 
 /// A controller message's value, 0..1.
@@ -423,12 +450,15 @@ fn control_value(msg: [u8; 3]) -> f64 {
     }
 }
 
+/// How far one step of a relative controller moves a parameter, of its 0..1 range (measured).
+const RELATIVE_STEP: f64 = 1.0 / 762.0;
+
 /// The value a learned message gives a parameter now at `current`; `None` when it leaves it
 /// (soft takeover waiting for the control to reach the value).
 pub fn learned_value(l: &ParamLearn, msg: [u8; 3], current: f64, last_control: Option<f64>) -> Option<f64> {
     let mode = l.mode();
     if let Some(step) = mode.relative_step(msg[2]) {
-        return Some((current + step as f64 / 127.0).clamp(0.0, 1.0));
+        return Some((current + step as f64 * RELATIVE_STEP).clamp(0.0, 1.0));
     }
     if mode == LearnMode::Toggle {
         let on = control_value(msg) > 0.0;
@@ -437,7 +467,8 @@ pub fn learned_value(l: &ParamLearn, msg: [u8; 3], current: f64, last_control: O
     let v = control_value(msg);
     if l.flags & LEARN_SOFT_TAKEOVER != 0 {
         let step = 1.5 / 127.0;
-        let crossed = last_control.is_some_and(|last| (last - current) * (v - current) <= 0.0);
+        let crossed =
+            last_control.is_some_and(|last| (last - current).abs() <= step || (last - current) * (v - current) <= 0.0);
         if !crossed && (v - current).abs() > step {
             return None;
         }
@@ -452,12 +483,12 @@ mod tests {
     #[test]
     fn relative_and_toggle_modes() {
         let mut l = ParamLearn::midi("0", 0xb0, 1, LearnMode::Relative1);
-        assert!((learned_value(&l, [0xb0, 1, 1], 0.5, None).unwrap() - (0.5 + 1.0 / 127.0)).abs() < 1e-12);
-        assert!((learned_value(&l, [0xb0, 1, 127], 0.5, None).unwrap() - (0.5 - 1.0 / 127.0)).abs() < 1e-12);
+        assert!((learned_value(&l, [0xb0, 1, 1], 0.5, None).unwrap() - (0.5 + RELATIVE_STEP)).abs() < 1e-12);
+        assert!((learned_value(&l, [0xb0, 1, 127], 0.5, None).unwrap() - (0.5 - RELATIVE_STEP)).abs() < 1e-12);
         l.set_mode(LearnMode::Relative2);
-        assert!((learned_value(&l, [0xb0, 1, 63], 0.5, None).unwrap() - (0.5 - 1.0 / 127.0)).abs() < 1e-12);
+        assert!((learned_value(&l, [0xb0, 1, 63], 0.5, None).unwrap() - (0.5 - RELATIVE_STEP)).abs() < 1e-12);
         l.set_mode(LearnMode::Relative3);
-        assert!((learned_value(&l, [0xb0, 1, 66], 0.5, None).unwrap() - (0.5 - 2.0 / 127.0)).abs() < 1e-12);
+        assert!((learned_value(&l, [0xb0, 1, 66], 0.5, None).unwrap() - (0.5 - 2.0 * RELATIVE_STEP)).abs() < 1e-12);
         l.set_mode(LearnMode::Toggle);
         assert_eq!(learned_value(&l, [0xb0, 1, 127], 0.2, None), Some(1.0));
         assert_eq!(learned_value(&l, [0xb0, 1, 0], 0.2, None), None);

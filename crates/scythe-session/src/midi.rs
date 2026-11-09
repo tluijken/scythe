@@ -72,11 +72,12 @@ impl Session {
         if let Some(ChaseSource::Mtc(d) | ChaseSource::Clock(d)) = self.chase_config().map(|c| c.source) {
             wanted.push(d.map_or(MidiDevice::All, MidiDevice::Port));
         }
+        let control = self.control_inputs_wanted();
         self.midi_devices
             .inputs
             .iter()
             .filter(|p| p.present && midi.input_enabled(p.number))
-            .filter(|p| wanted.iter().any(|d| d.hears(p.number)))
+            .filter(|p| wanted.iter().any(|d| d.hears(p.number)) || control && midi.control_enabled(p.number))
             .map(|p| (p.number, p.name.clone()))
             .collect()
     }

@@ -500,14 +500,17 @@ impl ParamLearn {
     }
 
     /// Whether a channel message matches the learned one: the same type and channel, and for
-    /// notes and controllers the same number. Note-offs match a learned note.
+    /// notes and controllers the same number. Note-offs (and note-ons without velocity) leave
+    /// a learned note's parameter alone.
     pub fn matches(&self, msg: [u8; 3]) -> bool {
         let s = self.status();
         if s < 0x80 {
             return false;
         }
         let kind = msg[0] & 0xf0;
-        let kind = if kind == 0x80 { 0x90 } else { kind };
+        if kind == 0x90 && msg[2] == 0 {
+            return false;
+        }
         if kind != s & 0xf0 || msg[0] & 0x0f != s & 0x0f {
             return false;
         }

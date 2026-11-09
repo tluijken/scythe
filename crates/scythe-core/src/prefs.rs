@@ -33,11 +33,19 @@ pub struct MidiPrefs {
     pub clock_no_spp: u64,
     /// `midiouts_noreset`: outputs spared the reset messages at play.
     pub no_reset: u64,
+    /// `midiins_cs`: inputs whose messages reach learned controls and action shortcuts;
+    /// `None` (no key) lets every enabled input do so.
+    pub control: Option<u64>,
 }
 
 impl MidiPrefs {
     pub fn input_enabled(&self, n: u8) -> bool {
         n >= 64 || self.inputs.is_none_or(|m| m >> n & 1 != 0)
+    }
+
+    /// Whether input `n` drives learned controls and action shortcuts.
+    pub fn control_enabled(&self, n: u8) -> bool {
+        self.input_enabled(n) && (n >= 64 || self.control.is_none_or(|m| m >> n & 1 != 0))
     }
 
     pub fn output_enabled(&self, n: u8) -> bool {
@@ -69,7 +77,8 @@ impl Default for Preferences {
 }
 
 /// The reaper.ini keys of the MIDI masks, low word first.
-const MIDI_KEYS: [&str; 5] = ["midiins", "midiouts", "midiouts_clock", "midiouts_clock_nospp", "midiouts_noreset"];
+const MIDI_KEYS: [&str; 6] =
+    ["midiins", "midiouts", "midiouts_clock", "midiouts_clock_nospp", "midiouts_noreset", "midiins_cs"];
 
 const SECTION: &str = "[REAPER]";
 
@@ -122,7 +131,8 @@ impl Preferences {
                         1 => m.outputs = Some(m.outputs.unwrap_or(0) & keep | word),
                         2 => m.clock = m.clock & keep | word,
                         3 => m.clock_no_spp = m.clock_no_spp & keep | word,
-                        _ => m.no_reset = m.no_reset & keep | word,
+                        4 => m.no_reset = m.no_reset & keep | word,
+                        _ => m.control = Some(m.control.unwrap_or(0) & keep | word),
                     }
                 }
             }
@@ -146,8 +156,8 @@ impl Preferences {
         values.extend(self.surfaces.iter().enumerate().map(|(i, s)| (format!("csurf_{i}"), s.line())));
         let stale = |key: &str| surface_index(key).is_some_and(|i| i >= self.surfaces.len());
         let m = &self.midi;
-        let masks = [Some(m.inputs), Some(m.outputs), None, None, None];
-        let plain = [0, 0, m.clock, m.clock_no_spp, m.no_reset];
+        let masks = [Some(m.inputs), Some(m.outputs), None, None, None, Some(m.control)];
+        let plain = [0, 0, m.clock, m.clock_no_spp, m.no_reset, 0];
         for (i, key) in MIDI_KEYS.iter().enumerate() {
             let mask = match masks[i] {
                 Some(None) => continue,

@@ -6,6 +6,7 @@
 mod automation;
 mod files;
 mod health;
+pub mod learn;
 mod live;
 mod media;
 mod midi;
@@ -105,6 +106,8 @@ pub struct Session {
     pub surface_status: Vec<SurfaceStatus>,
     /// The selected track, as the window shows it; control surfaces light it and select it.
     pub selected_track: Option<TrackId>,
+    /// MIDI and OSC learn: listening, and the action shortcuts.
+    pub learn: learn::LearnState,
 }
 
 impl Session {
@@ -148,6 +151,7 @@ impl Session {
             merge: None,
             surface_status: Vec::new(),
             selected_track: None,
+            learn: Default::default(),
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));
@@ -326,6 +330,7 @@ impl Session {
             Err(e) => self.notify(format!("Cannot read {}: {e}", path.display())),
         }
         self.prefs_file = Some(path);
+        self.load_action_bindings();
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
         self.rescan_midi_devices();
     }
@@ -359,7 +364,8 @@ impl Session {
         self.engine.sync(&self.project);
         let is_midi = |t: &scythe_core::Track| midi_input_channel(t.rec_input).is_some();
         let wants_midi = self.project.tracks.iter().any(|t| t.midi_out.is_some() || (t.armed && is_midi(t)))
-            || self.project.timecode_sync.enabled();
+            || self.project.timecode_sync.enabled()
+            || self.control_inputs_wanted();
         if wants_midi && self.midi_devices.inputs.is_empty() && self.midi_devices.outputs.is_empty() {
             self.midi_devices
                 .merge_present(&scythe_engine::midi_io::input_names(), &scythe_engine::midi_io::output_names());

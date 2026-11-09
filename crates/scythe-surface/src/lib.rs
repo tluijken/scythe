@@ -94,6 +94,7 @@ impl SurfaceHost {
 
     /// Opens, closes and runs the surfaces; call it every frame on the session's thread.
     pub fn pump(&mut self, session: &mut Session) {
+        session.poll_control();
         self.sync(session);
         let feed = self.fed_at.elapsed() >= FEEDBACK_INTERVAL;
         if feed {

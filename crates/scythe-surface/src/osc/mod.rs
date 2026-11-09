@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use scythe_core::surface::{OSC_RECEIVE, OSC_SEND, OscSurface as OscConfig};
+use scythe_core::surface::{OSC_LEARN, OSC_RECEIVE, OSC_SEND, OscSurface as OscConfig};
 use scythe_core::tempo::format_time;
 use scythe_session::{AutoTarget, Session};
 use serde_json::json;
@@ -146,6 +146,10 @@ impl OscSurface {
     /// Handles what the device sent, then sends the feedback that changed.
     pub fn pump(&mut self, session: &mut Session) {
         while let Ok((message, _)) = self.rx.try_recv() {
+            let value = message.args.first().and_then(Arg::as_f64);
+            if self.config.flags & OSC_LEARN != 0 && session.control_osc(&message.address, value) {
+                continue;
+            }
             self.handle(session, &message);
         }
         if let Some((speed, at)) = self.shuttle {

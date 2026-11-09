@@ -1442,16 +1442,13 @@ impl RenderGraph {
                 let sr = self.sample_rate as f64;
                 let mods = track.fx_mods.get(k).filter(|m| !m.is_empty());
                 let plain = automation.is_empty() && mods.is_none();
-                let mod_ctx = |at: usize| {
-                    mods.map(|m| crate::modulation::ModContext {
-                        mods: m,
-                        chain: &track.fx,
-                        own: k,
-                        timeline: &self.timeline,
-                        control: if at == 0 { input.midi } else { &[] },
-                        sample_rate: self.sample_rate,
-                    })
-                };
+                let mod_ctx = mods.map(|m| crate::modulation::ModContext {
+                    mods: m,
+                    chain: &track.fx,
+                    own: k,
+                    timeline: &self.timeline,
+                    sample_rate: self.sample_rate,
+                });
                 if let (Some(map), Some(bufs)) = (pins, pin_bufs.as_deref_mut()) {
                     gather_pins(map, bufs, n, tl, tr, aux.as_deref(), track.channels);
                     if fx.pins.0 > 2 || fx.pins.1 > 2 {
@@ -1472,7 +1469,7 @@ impl RenderGraph {
                                     &slice_ctx,
                                     automation,
                                     t + at as f64 / sr,
-                                    mod_ctx(at).as_ref(),
+                                    mod_ctx.as_ref(),
                                 );
                             }
                         }
@@ -1498,7 +1495,7 @@ impl RenderGraph {
                                     &slice_ctx,
                                     automation,
                                     t + at as f64 / sr,
-                                    mod_ctx(at).as_ref(),
+                                    mod_ctx.as_ref(),
                                 );
                             }
                         }
@@ -1523,7 +1520,7 @@ impl RenderGraph {
                                 &slice_ctx,
                                 automation,
                                 t + at as f64 / sr,
-                                mod_ctx(at).as_ref(),
+                                mod_ctx.as_ref(),
                             );
                         }
                     }

@@ -265,6 +265,7 @@ struct Feeds {
     hits: rtrb::Producer<Hit>,
     keyboard: rtrb::Consumer<LiveMidi>,
     sync_rx: Receiver<SyncConfig>,
+    control: rtrb::Producer<LiveMidi>,
 }
 
 /// The main thread's ends.
@@ -276,6 +277,7 @@ struct FeedSenders {
     hits: rtrb::Consumer<Hit>,
     keyboard: rtrb::Producer<LiveMidi>,
     sync_tx: Sender<SyncConfig>,
+    control: rtrb::Consumer<LiveMidi>,
 }
 
 fn feeds() -> (FeedSenders, Feeds) {
@@ -286,9 +288,28 @@ fn feeds() -> (FeedSenders, Feeds) {
     let (hits_tx, hits_rx) = rtrb::RingBuffer::new(256);
     let (keys_tx, keys_rx) = rtrb::RingBuffer::new(512);
     let (sync_tx, sync_rx) = channel();
+    let (control_tx, control_rx) = rtrb::RingBuffer::new(1024);
     (
-        FeedSenders { input_tx, midi_tx, recorded: consumer, midi_out_tx, hits: hits_rx, keyboard: keys_tx, sync_tx },
-        Feeds { input_rx, midi_rx, recorded: producer, midi_out_rx, hits: hits_tx, keyboard: keys_rx, sync_rx },
+        FeedSenders {
+            input_tx,
+            midi_tx,
+            recorded: consumer,
+            midi_out_tx,
+            hits: hits_rx,
+            keyboard: keys_tx,
+            sync_tx,
+            control: control_rx,
+        },
+        Feeds {
+            input_rx,
+            midi_rx,
+            recorded: producer,
+            midi_out_rx,
+            hits: hits_tx,
+            keyboard: keys_rx,
+            sync_rx,
+            control: control_tx,
+        },
     )
 }
 
@@ -326,6 +347,8 @@ struct Processor {
     /// The virtual keyboard has played, so monitoring keeps running while stopped as it does
     /// for open inputs.
     keyboard_used: bool,
+    /// Every message from the MIDI inputs, for learned controls and actions.
+    control: rtrb::Producer<LiveMidi>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -357,6 +380,7 @@ impl Processor {
             chase: None,
             sync_in: Vec::with_capacity(MAX_LIVE_MIDI),
             keyboard_used: false,
+            control: feeds.control,
         }
     }
 
@@ -393,6 +417,7 @@ impl Processor {
             while self.live.len() < MAX_LIVE_MIDI {
                 let Ok(m) = rx.midi.pop() else { break };
                 self.live.push(m);
+                let _ = self.control.push(m);
             }
             while self.sync_in.len() < MAX_LIVE_MIDI {
                 let Ok(m) = rx.sync.pop() else { break };
@@ -783,6 +808,7 @@ pub struct Engine {
     keyboard: rtrb::Producer<LiveMidi>,
     sync_tx: Sender<SyncConfig>,
     sync: SyncConfig,
+    control_midi: rtrb::Consumer<LiveMidi>,
     marker_hits: rtrb::Consumer<Hit>,
     /// The cue lists handed to the audio thread lately, to name the commands it reports.
     recent_cues: VecDeque<Arc<CueList>>,
@@ -966,6 +992,7 @@ impl Engine {
             keyboard: senders.keyboard,
             sync_tx: senders.sync_tx,
             sync: SyncConfig::default(),
+            control_midi: senders.control,
             info: DeviceInfo {
                 name: "No audio device".into(),
                 sample_rate,
@@ -1243,6 +1270,15 @@ impl Engine {
         let mut out = Vec::with_capacity(self.recorded_midi.slots());
         while let Ok(e) = self.recorded_midi.pop() {
             out.push(e);
+        }
+        out
+    }
+
+    /// Messages from the MIDI inputs since the last call, whether or not the transport runs.
+    pub fn take_control_midi(&mut self) -> Vec<LiveMidi> {
+        let mut out = Vec::new();
+        while let Ok(m) = self.control_midi.pop() {
+            out.push(m);
         }
         out
     }
