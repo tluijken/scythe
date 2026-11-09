@@ -17,6 +17,7 @@ pub mod setlist;
 pub mod snapshot;
 pub mod surface;
 pub mod tempo;
+pub mod timing;
 pub mod tracks;
 pub mod transport;
 
@@ -47,7 +48,11 @@ pub enum Command {
     Tempo(tempo::TempoCommand),
     Surface(surface::SurfaceCommand),
     Midi(midi::MidiCommand),
+    Timing(timing::TimingCommand),
 }
+
+/// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
+const TIMING: &[&str] = &["item.timebase", "take.channel_mode", "project.timebase", "project.playrate"];
 
 impl<'de> Deserialize<'de> for Command {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -55,6 +60,9 @@ impl<'de> Deserialize<'de> for Command {
         let Some(cmd) = value.get("cmd").and_then(Value::as_str) else {
             return Err(D::Error::custom("a command needs a \"cmd\" field naming it, such as \"transport.play\""));
         };
+        if cmd.starts_with("item.stretch_markers") || TIMING.contains(&cmd) {
+            return serde_json::from_value(value).map(Command::Timing).map_err(D::Error::custom);
+        }
         let domain = cmd.split_once('.').map_or(cmd, |(d, _)| d).to_owned();
         let parsed = match domain.as_str() {
             "transport" => serde_json::from_value(value).map(Command::Transport),
@@ -92,6 +100,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Tempo(c) => tempo::execute(session, c),
         Command::Surface(c) => surface::execute(session, c),
         Command::Midi(c) => midi::execute(session, c),
+        Command::Timing(c) => timing::execute(session, c),
     }
 }
 

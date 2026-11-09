@@ -556,6 +556,9 @@ fn tempo_markers_are_listed_added_edited_and_deleted() {
     assert_eq!(map["markers"][2]["time_signature"], Value::Null);
     let map = ok(&mut s, json!({"cmd": "tempo.edit", "index": 0, "bpm": 140.0, "time_signature": [3, 4]}));
     assert_eq!((map["bpm"].as_f64(), map["time_signature"].clone()), (Some(140.0), json!([3, 4])));
+    // The later markers keep their beat: 8 quarter notes at 140 bpm.
+    let second = map["markers"][1]["time"].as_f64().unwrap();
+    assert!((second - 8.0 * 60.0 / 140.0).abs() < 1e-9, "{map}");
     assert_eq!(ok(&mut s, json!({"cmd": "snapshot"}))["tempo"].as_array().map(Vec::len), Some(3));
 
     let map = ok(&mut s, json!({"cmd": "tempo.delete", "index": 2}));
@@ -564,7 +567,7 @@ fn tempo_markers_are_listed_added_edited_and_deleted() {
         json!({"cmd": "tempo.delete", "index": 9}),
         json!({"cmd": "tempo.edit", "index": 1, "bpm": 5.0}),
         json!({"cmd": "tempo.add", "time": 1.0, "time_signature": [4, 3]}),
-        json!({"cmd": "tempo.add", "time": 4.0}),
+        json!({"cmd": "tempo.add", "time": second}),
     ] {
         assert!(execute_json(&mut s, bad.clone()).is_err(), "{bad}");
     }
@@ -1151,4 +1154,79 @@ fn midi_device_settings_are_kept_in_the_preferences() {
     );
     assert_eq!(devices["inputs"][0]["enabled"], false);
     std::fs::remove_dir_all(&dir).unwrap();
+/// The positions REAPER 7.73 gives the same items after `SetTempoTimeSigMarker` halves the
+/// starting tempo of a map with markers at 0 and 4 s.
+#[test]
+fn items_and_markers_follow_tempo_edits_by_their_timebase() {
+    let mut s = session();
+    add_track(&mut s, "A");
+    ok(&mut s, json!({"cmd": "tempo.add", "time": 4.0, "bpm": 120.0}));
+    ok(&mut s, json!({"cmd": "marker.add", "position": 3.0}));
+    let mut ids = Vec::new();
+    for timebase in ["project", "time", "beats", "beats_position"] {
+        let item = Item::new(2.0, 1.0, Take::from_file("/nonexistent/take.wav".into()));
+        ids.push(item.id.0);
+        s.edit("Add item", |p| p.tracks[0].items.push(item));
+        ok(&mut s, json!({"cmd": "item.timebase", "item": ids.last(), "timebase": timebase}));
+    }
+    let tb = ok(&mut s, json!({"cmd": "project.timebase"}));
+    assert_eq!((tb["timebase"].as_str(), tb["tempo_follows_beats"].as_bool()), (Some("beats"), Some(true)));
+    ok(&mut s, json!({"cmd": "tempo.edit", "index": 0, "bpm": 60.0}));
+    let at = |s: &Session, id: u64| {
+        let it = s.project.find_item(scythe_core::ItemId(id)).unwrap().1;
+        (it.position, it.length, it.takes[0].playrate)
+    };
+    assert_eq!(at(&s, ids[0]), (4.0, 2.0, 0.5));
+    assert_eq!(at(&s, ids[1]), (2.0, 1.0, 1.0));
+    assert_eq!(at(&s, ids[2]), (4.0, 2.0, 0.5));
+    assert_eq!(at(&s, ids[3]), (4.0, 1.0, 1.0));
+    assert_eq!(s.project.tempo.points[1].time, 8.0);
+    assert_eq!(s.project.markers[0].position, 6.0);
+
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    ok(&mut s, json!({"cmd": "project.timebase", "timebase": "time", "tempo_follows_beats": false}));
+    ok(&mut s, json!({"cmd": "tempo.edit", "index": 0, "bpm": 60.0}));
+    assert_eq!(at(&s, ids[0]), (2.0, 1.0, 1.0));
+    assert_eq!(s.project.tempo.points[1].time, 4.0);
+    assert_eq!(s.project.markers[0].position, 3.0);
+}
+
+#[test]
+fn stretch_markers_channel_modes_and_play_rate() {
+    let mut s = session();
+    add_track(&mut s, "A");
+    let item = Item::new(0.0, 2.0, Take::from_file("/nonexistent/take.wav".into()));
+    let id = item.id.0;
+    s.edit("Add item", |p| p.tracks[0].items.push(item));
+
+    ok(&mut s, json!({"cmd": "item.stretch_markers.add", "item": id, "position": 0.5}));
+    let list = ok(&mut s, json!({"cmd": "item.stretch_markers.add", "item": id, "position": 1.5, "source": 1.3}));
+    assert_eq!(list.as_array().map(Vec::len), Some(2));
+    assert_eq!((list[0]["position"].as_f64(), list[0]["source"].as_f64()), (Some(0.5), Some(0.5)));
+    let list = ok(&mut s, json!({"cmd": "item.stretch_markers.move", "item": id, "index": 0, "source": 0.8}));
+    assert_eq!(list[0]["source"].as_f64(), Some(0.8));
+    let list = ok(&mut s, json!({"cmd": "item.stretch_markers.move", "item": id, "index": 0, "position": 0.6}));
+    assert_eq!((list[0]["position"].as_f64(), list[0]["source"].as_f64()), (Some(0.6), Some(0.8)));
+    let crossing = json!({"cmd": "item.stretch_markers.move", "item": id, "index": 0, "position": 1.7});
+    assert_eq!(execute_json(&mut s, crossing).unwrap_err().kind, ErrorKind::Invalid);
+    let list = ok(&mut s, json!({"cmd": "item.stretch_markers.slope", "item": id, "index": 0, "slope": 0.5}));
+    assert_eq!(list[0]["slope"].as_f64(), Some(0.5));
+    let take = &s.project.tracks[0].items[0].takes[0];
+    assert!((take.source_pos(1.6) - 1.4).abs() < 1e-9);
+    let list = ok(&mut s, json!({"cmd": "item.stretch_markers.delete", "item": id, "index": 1}));
+    assert_eq!(list.as_array().map(Vec::len), Some(1));
+    ok(&mut s, json!({"cmd": "item.stretch_markers.delete", "item": id}));
+    assert!(s.project.tracks[0].items[0].takes[0].stretch_markers.is_empty());
+
+    let mode = ok(&mut s, json!({"cmd": "take.channel_mode", "item": id, "mode": "mono", "channel": 2}));
+    assert_eq!((mode["code"].as_i64(), mode["label"].as_str()), (Some(4), Some("Mono (right)")));
+    let mode = ok(&mut s, json!({"cmd": "take.channel_mode", "item": id, "mode": "stereo", "channel": 3}));
+    assert_eq!(mode["code"].as_i64(), Some(69));
+
+    let rate = ok(&mut s, json!({"cmd": "project.playrate", "rate": 1.5, "preserve_pitch": true}));
+    assert_eq!((rate["rate"].as_f64(), rate["preserve_pitch"].as_bool()), (Some(1.5), Some(true)));
+    assert_eq!(
+        execute_json(&mut s, json!({"cmd": "project.playrate", "rate": 9.0})).unwrap_err().kind,
+        ErrorKind::Invalid
+    );
 }

@@ -8,7 +8,7 @@ use schemars::generate::SchemaSettings;
 use scythe_session::api::{
     fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, midi::MidiCommand,
     mix::MixCommand, project::ProjectCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand,
-    tempo::TempoCommand, tracks::TrackCommand, transport::TransportCommand,
+    tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -96,6 +96,7 @@ fn domains() -> Vec<Value> {
         schema::<TempoCommand>(),
         schema::<SurfaceCommand>(),
         schema::<MidiCommand>(),
+        schema::<TimingCommand>(),
     ]
 }
 
