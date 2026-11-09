@@ -1,0 +1,216 @@
+//! Settings of a headless session: a TOML file, overridden by command-line flags.
+//!
+//! ```toml
+//! project = "/home/band/live/monitors.RPP"
+//! control = "0.0.0.0:8770"
+//! token = "change-me"
+//! no_input = false
+//!
+//! [audio]
+//! host = "ALSA"
+//! output = "Scarlett 18i20"
+//! input = "Scarlett 18i20"
+//! sample_rate = 48000
+//! buffer_size = 128
+//! output_channels = 8
+//! null = false
+//! ```
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use scythe_engine::DeviceRequest;
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    pub project: Option<PathBuf>,
+    /// Where the control API listens, `"off"` for not at all.
+    pub control: Option<String>,
+    pub token: Option<String>,
+    #[serde(default)]
+    pub no_input: bool,
+    #[serde(default)]
+    pub audio: AudioConfig,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AudioConfig {
+    pub host: Option<String>,
+    pub output: Option<String>,
+    pub input: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub buffer_size: Option<u32>,
+    pub output_channels: Option<u16>,
+    /// Run without opening any audio device (silent, for tests and dry runs).
+    #[serde(default)]
+    pub null: bool,
+}
+
+/// Everything a headless run needs, after the file and the flags are combined.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Options {
+    pub project: Option<PathBuf>,
+    pub control: Option<SocketAddr>,
+    pub token: Option<String>,
+    pub devices: DeviceRequest,
+    pub null_audio: bool,
+    pub list_devices: bool,
+}
+
+/// `$XDG_CONFIG_HOME/scythe/headless.toml`.
+pub fn default_path() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|c| c.join("scythe").join("headless.toml"))
+}
+
+pub fn read(path: &Path) -> Result<Config, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+pub const USAGE: &str = "\
+usage: scythe-server [project.RPP] [options]
+
+  --config FILE          settings file (default $XDG_CONFIG_HOME/scythe/headless.toml)
+  --control ADDR         control API address (default 127.0.0.1:8770), `off` to disable
+  --token TOKEN          require this token from clients (also SCYTHE_CONTROL_TOKEN)
+  --audio-host NAME      audio host (ALSA, JACK, ...)
+  --output-device NAME   output device, exact or part of its name
+  --input-device NAME    input device for monitoring and recording
+  --sample-rate HZ       device sample rate
+  --buffer-size FRAMES   frames per audio callback
+  --output-channels N    open at least N output channels
+  --null-audio           open no audio device at all
+  --no-input             never open an audio or MIDI input
+  --list-devices         print the audio devices and exit
+";
+
+/// Combines the settings file with `args` (the arguments after the program name, `--headless`
+/// already taken out).
+pub fn options(args: &[String]) -> Result<Options, String> {
+    let mut flags: Vec<(String, Option<String>)> = Vec::new();
+    let mut positional: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    const VALUED: [&str; 9] = [
+        "--config",
+        "--control",
+        "--token",
+        "--audio-host",
+        "--output-device",
+        "--input-device",
+        "--sample-rate",
+        "--buffer-size",
+        "--output-channels",
+    ];
+    while let Some(arg) = it.next() {
+        if let Some((name, value)) = arg.split_once('=').filter(|(n, _)| n.starts_with("--")) {
+            flags.push((name.to_owned(), Some(value.to_owned())));
+        } else if VALUED.contains(&arg.as_str()) {
+            let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
+            flags.push((arg.clone(), Some(value.clone())));
+        } else if arg.starts_with("--") {
+            flags.push((arg.clone(), None));
+        } else {
+            positional.push(arg.clone());
+        }
+    }
+    let flag = |name: &str| flags.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone());
+    let value = |name: &str| flag(name).flatten();
+    let number = |name: &str| -> Result<Option<u32>, String> {
+        value(name).map(|v| v.parse().map_err(|_| format!("{name} takes a number, not {v}"))).transpose()
+    };
+
+    let config = match value("--config") {
+        Some(path) => read(Path::new(&path))?,
+        None => match default_path().filter(|p| p.is_file()) {
+            Some(path) => read(&path)?,
+            None => Config::default(),
+        },
+    };
+    for (name, _) in &flags {
+        let known = VALUED.contains(&name.as_str())
+            || ["--null-audio", "--no-input", "--list-devices", "--headless"].contains(&name.as_str());
+        if !known {
+            return Err(format!("unknown option {name}"));
+        }
+    }
+    if positional.len() > 1 {
+        return Err("give at most one project".into());
+    }
+
+    let control = match value("--control").or(config.control) {
+        Some(c) if c == "off" || c == "none" => None,
+        Some(c) => Some(c.parse::<SocketAddr>().map_err(|_| format!("{c} is not an address like 0.0.0.0:8770"))?),
+        None => Some(crate::DEFAULT_ADDR.parse().expect("the default address parses")),
+    };
+    let token = value("--token")
+        .or_else(|| std::env::var("SCYTHE_CONTROL_TOKEN").ok())
+        .or(config.token)
+        .filter(|t| !t.is_empty());
+    let audio = config.audio;
+    let devices = DeviceRequest {
+        host: value("--audio-host").or(audio.host),
+        output: value("--output-device").or(audio.output),
+        input: value("--input-device").or(audio.input),
+        sample_rate: number("--sample-rate")?.or(audio.sample_rate),
+        buffer_size: number("--buffer-size")?.or(audio.buffer_size),
+        output_channels: number("--output-channels")?
+            .map(|n| u16::try_from(n).map_err(|_| "--output-channels is too large".to_owned()))
+            .transpose()?
+            .or(audio.output_channels),
+        no_input: flag("--no-input").is_some() || config.no_input,
+    };
+    Ok(Options {
+        project: positional.pop().map(PathBuf::from).or(config.project),
+        control,
+        token,
+        devices,
+        null_audio: flag("--null-audio").is_some() || audio.null,
+        list_devices: flag("--list-devices").is_some(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn flags_override_the_file() {
+        let dir = std::env::temp_dir().join(format!("scythe-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("headless.toml");
+        std::fs::write(
+            &file,
+            "project = \"/a.RPP\"\ncontrol = \"0.0.0.0:9000\"\n[audio]\noutput = \"USB\"\nsample_rate = 44100\n",
+        )
+        .unwrap();
+        let o = options(&args(&["--config", file.to_str().unwrap(), "--sample-rate=96000", "b.RPP"])).unwrap();
+        assert_eq!(o.project, Some(PathBuf::from("b.RPP")));
+        assert_eq!(o.control, Some("0.0.0.0:9000".parse().unwrap()));
+        assert_eq!(o.devices.output.as_deref(), Some("USB"));
+        assert_eq!(o.devices.sample_rate, Some(96000));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn control_can_be_turned_off_and_bad_flags_are_refused() {
+        let empty = std::env::temp_dir().join(format!("scythe-empty-{}.toml", std::process::id()));
+        std::fs::write(&empty, "").unwrap();
+        let config = format!("--config={}", empty.display());
+        let o = options(&args(&[&config, "--control", "off", "--null-audio"])).unwrap();
+        assert_eq!(o.control, None);
+        assert!(o.null_audio);
+        assert!(options(&args(&[&config, "--frobnicate"])).is_err());
+        assert!(options(&args(&[&config, "--sample-rate", "fast"])).is_err());
+        std::fs::remove_file(&empty).unwrap();
+    }
+}

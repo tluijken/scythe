@@ -1,0 +1,25 @@
+[package]
+name = "scythe-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "scythe-server"
+path = "src/main.rs"
+
+[dependencies]
+scythe-core.workspace = true
+scythe-engine.workspace = true
+scythe-session.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+tokio-tungstenite.workspace = true
+libc.workspace = true

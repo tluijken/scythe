@@ -1,0 +1,38 @@
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
+
+use serde_json::Value;
+
+/// A minimal HTTP/1.1 exchange: the status code and the JSON body.
+pub fn http(addr: SocketAddr, method: &str, path: &str, token: Option<&str>, body: Option<&Value>) -> (u16, Value) {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
+    let auth = token.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+    let request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    let (head, rest) = response.split_once("\r\n\r\n").expect("an HTTP response");
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).expect("a status code");
+    let chunked = head.to_ascii_lowercase().contains("transfer-encoding: chunked");
+    let text = if chunked { dechunk(rest) } else { rest.to_owned() };
+    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+}
+
+fn dechunk(mut rest: &str) -> String {
+    let mut out = String::new();
+    while let Some((size, tail)) = rest.split_once("\r\n") {
+        let n = usize::from_str_radix(size.trim(), 16).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        out.push_str(&tail[..n]);
+        rest = &tail[n + 2..];
+    }
+    out
+}

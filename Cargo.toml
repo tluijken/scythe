@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
+members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-app", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 scythe-core = { path = "crates/scythe-core" }
 scythe-engine = { path = "crates/scythe-engine" }
 scythe-session = { path = "crates/scythe-session" }
+scythe-server = { path = "crates/scythe-server" }
 anyhow = "1.0.104"
 thiserror = "2.0.21"
 base64 = "0.23.1"
@@ -40,6 +41,11 @@ ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 sha2 = "0.10"
 getrandom = "0.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+axum = { version = "0.8.9", features = ["ws"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+toml = "0.8.23"
+tokio-tungstenite = "0.29.0"
 
 [profile.dev.package."*"]
 opt-level = 2
