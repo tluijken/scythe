@@ -99,6 +99,21 @@ fn track_details(track: &Value, names: &HashMap<u64, String>) -> String {
     if !sends.is_empty() {
         write!(out, "; sends: {}", sends.join(", ")).ok();
     }
+    if track["main_send"] == false {
+        out.push_str("; not to the master");
+    }
+    let outputs: Vec<String> = track["hw_outs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let muted = if o["muted"] == true { ", muted" } else { "" };
+            format!("{} at {}{muted}", o["label"].as_str().unwrap_or("?"), level(&o["volume"]))
+        })
+        .collect();
+    if !outputs.is_empty() {
+        write!(out, "; hardware out: {}", outputs.join(", ")).ok();
+    }
     let items = track["items"].as_array().map_or(&[][..], Vec::as_slice);
     if !items.is_empty() {
         let start = items.iter().filter_map(|i| i["position"].as_f64()).fold(f64::INFINITY, f64::min);
@@ -124,6 +139,42 @@ fn item_line(item: &Value) -> String {
     if item["takes"].as_u64().is_some_and(|n| n > 1) {
         write!(out, ", {} takes (active {})", item["takes"], item["active_take"]).ok();
     }
+    out
+}
+
+fn mix_line(mix: &Value) -> String {
+    let output = mix["output"]["label"].as_str().unwrap_or("no output");
+    let mut out = format!(
+        "#{} {} for {}: {}, {output}",
+        mix["id"],
+        quoted(&mix["name"]),
+        quoted(&mix["musician"]),
+        level(&mix["volume"])
+    );
+    if mix["more_me"].as_f64().is_some_and(|db| db != 0.0) {
+        write!(out, ", more me {:+.1} dB", mix["more_me"].as_f64().unwrap_or(0.0)).ok();
+    }
+    if mix["limiter"] == false {
+        out.push_str(", limiter off");
+    }
+    let sources: Vec<String> = mix["sources"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|src| {
+            let mut text = format!("{} {}", quoted(&src["name"]), level(&src["volume"]));
+            if src["pan"].as_f64().is_some_and(|p| p != 0.0) {
+                write!(text, " {}", pan(&src["pan"])).ok();
+            }
+            for (flag, word) in [("muted", " muted"), ("own", " (own)")] {
+                if src[flag] == true {
+                    text.push_str(word);
+                }
+            }
+            text
+        })
+        .collect();
+    write!(out, "; sources: {}", if sources.is_empty() { "none".into() } else { sources.join(", ") }).ok();
     out
 }
 
@@ -186,6 +237,14 @@ pub fn project(snapshot: &Value, items: bool) -> String {
         }
     }
 
+    let mixes = s["mixes"].as_array().map_or(&[][..], Vec::as_slice);
+    if !mixes.is_empty() {
+        writeln!(out, "Monitor mixes ({}):", mixes.len()).ok();
+        for mix in mixes {
+            writeln!(out, "  {}", mix_line(mix)).ok();
+        }
+    }
+
     let markers = s["markers"].as_array().map_or(&[][..], Vec::as_slice);
     if markers.is_empty() {
         out.push_str("No markers or regions.\n");
@@ -226,6 +285,9 @@ mod tests {
                             "muted": true, "takes": 1, "active_take": 0}]},
                 {"id": 15, "name": "Verb", "level": 0, "volume": 0.0, "pan": 1.0, "fx": [], "sends": [], "items": []}
             ],
+            "mixes": [{"id": 20, "musician": "Drummer", "name": "MON Drummer", "volume": 1.0, "more_me": 6.0,
+                        "output": {"output": 2, "mono": false, "label": "Out 3/4"}, "limiter": true,
+                        "sources": [{"track": 12, "name": "Vox", "volume": 0.5, "pan": 0.0, "muted": false, "own": true}]}],
             "markers": [{"number": 1, "region": true, "name": "Song 1", "position": 10.0, "end": 200.0}]
         });
         let text = project(&snapshot, true);
@@ -240,6 +302,12 @@ mod tests {
         );
         assert!(text.contains("item #31 \"take.wav\" 1s to 5s, muted"), "{text}");
         assert!(text.contains("#15 \"Verb\": -inf dB, pan 100%R\n"), "{text}");
+        assert!(
+            text.contains(
+                "#20 \"MON Drummer\" for \"Drummer\": 0.0 dB, Out 3/4, more me +6.0 dB; sources: \"Vox\" -6.0 dB (own)"
+            ),
+            "{text}"
+        );
         assert!(text.contains("region 1 \"Song 1\" 10s to 200s"), "{text}");
         assert!(!project(&snapshot, false).contains("item #31"));
     }

@@ -214,6 +214,11 @@ fn prompts() -> Value {
         {"name": "mix_check", "title": "Mix check",
          "description": "Inspect levels, routing and effects of the open project and report problems.",
          "arguments": [{"name": "focus", "description": "What to look at most, such as \"vocals\" or \"the drum bus\".", "required": false}]},
+        {"name": "monitor_mix", "title": "Monitor mix change",
+         "description": "Change a musician's in-ear monitor mix the way they ask.",
+         "arguments": [
+            {"name": "musician", "description": "Whose mix, such as \"Drummer\".", "required": true},
+            {"name": "request", "description": "What they asked for, such as \"more bass, less keys\".", "required": true}]},
         {"name": "record_setup", "title": "Recording setup",
          "description": "Check and prepare tracks, inputs and monitoring for recording.",
          "arguments": [{"name": "tracks", "description": "The tracks to record, such as \"Vox and Gtr\".", "required": false}]},
@@ -235,6 +240,18 @@ fn get_prompt(params: &Value) -> Result<Value, RpcError> {
                  concrete changes as tool calls, but make none until I agree."
             );
             ("Inspect levels, routing and effects", text)
+        }
+        Some("monitor_mix") => {
+            let musician = argument("musician").unwrap_or("the musician");
+            let request = argument("request").unwrap_or("a better balance");
+            let text = format!(
+                "{musician} asks for this in their monitor mix: \"{request}\". Find their mix with mix_list \
+                 (create one with mix_create only if there is none, and tell me). Change it with \
+                 mix_level, mix_pan, mix_mute or mix_more_me in small steps, at most 3 dB at a time, \
+                 and never touch the main mix (track faders) or other musicians' mixes. Then list what \
+                 you changed, from and to, so it can be undone."
+            );
+            ("Adjust a monitor mix", text)
         }
         Some("record_setup") => {
             let tracks = argument("tracks").map(|t| format!(" for {t}")).unwrap_or_default();

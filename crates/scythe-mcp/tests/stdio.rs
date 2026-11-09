@@ -94,6 +94,14 @@ fn stdio_against_an_in_process_session() {
     assert!(error && text.starts_with("invalid"), "{text}");
     let (error, text) = client.call("scythe_command", json!({"command": {"cmd": "project.undo"}}));
     assert!(!error && text.contains("Add plugin"), "{text}");
+    let (error, text) = client.call("mix_create", json!({"musician": "Drummer", "own": ["Drums"]}));
+    assert!(!error, "{text}");
+    let (error, text) = client.call("mix_more_me", json!({"mix": "MON Drummer", "db": 6.0}));
+    assert!(!error, "{text}");
+    let (error, text) = client.call("get_project", json!({}));
+    assert!(!error && text.contains("Monitor mixes (1):") && text.contains("more me +6.0 dB"), "{text}");
+    let (error, text) = client.call("setlist_status", json!({}));
+    assert!(!error, "{text}");
     let unknown = client.request("tools/call", json!({"name": "launch_rockets", "arguments": {}}));
     assert_eq!(unknown["error"]["code"], -32602);
 

@@ -63,8 +63,8 @@ claude mcp add --transport http scythe http://127.0.0.1:8770/mcp   # or without 
 
 Scythe is an [MCP](docs/mcp.md) server, so Claude Code, Claude Desktop and other agents can
 read and edit a running session: a compact project overview (`get_project`), transport,
-project open/save/undo, tracks, sends, effects (catalog search and parameters), items and
-markers, plus `scythe_command` for any control API command. Every Scythe serving the control
+project open/save/undo, tracks, sends and hardware outputs, effects (catalog search and
+parameters), items, markers, monitor mixes and setlists, plus `scythe_command` for any control API command. Every Scythe serving the control
 API answers MCP over Streamable HTTP at `/mcp`; the `scythe-mcp` binary serves stdio, bridging
 to a running Scythe (`--url`, `--token`) or running a session of its own (`--headless
 song.RPP`). Tool schemas are generated from the API's command types; deleting, opening,

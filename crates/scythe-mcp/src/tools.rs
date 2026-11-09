@@ -6,8 +6,8 @@ use std::sync::OnceLock;
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
-    fx::FxCommand, items::ItemCommand, markers::MarkerCommand, project::ProjectCommand, sends::SendCommand,
-    tracks::TrackCommand, transport::TransportCommand,
+    fx::FxCommand, items::ItemCommand, markers::MarkerCommand, mix::MixCommand, project::ProjectCommand,
+    sends::SendCommand, setlist::SetlistCommand, tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -89,6 +89,8 @@ fn domains() -> Vec<Value> {
         schema::<FxCommand>(),
         schema::<ItemCommand>(),
         schema::<MarkerCommand>(),
+        schema::<MixCommand>(),
+        schema::<SetlistCommand>(),
     ]
 }
 
@@ -202,18 +204,42 @@ fn title(cmd: &str) -> String {
 /// Hints for clients deciding what to confirm with the user, judged by the action's name so
 /// that new domains get sensible ones too.
 fn annotations(cmd: &str) -> Value {
-    const READS: [&str; 9] = ["list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info"];
+    const READS: [&str; 12] = [
+        "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
+    ];
     // Opening or starting a project drops unsaved changes; saving overwrites a file.
     const DESTROYS: [&str; 6] = ["delete", "remove", "clear", "open", "new", "save"];
-    const TOGGLES: [&str; 6] = ["mute", "solo", "arm", "monitor", "bypass", "toggle"];
-    const ADDS: [&str; 6] = ["add", "split", "undo", "redo", "duplicate", "insert"];
+    // Toggles, and actions that add or step on each time.
+    const REPEATABLE: [&str; 22] = [
+        "mute",
+        "solo",
+        "arm",
+        "monitor",
+        "bypass",
+        "toggle",
+        "own",
+        "limiter",
+        "advance",
+        "actions",
+        "add",
+        "split",
+        "undo",
+        "redo",
+        "duplicate",
+        "insert",
+        "create",
+        "copy",
+        "import",
+        "bus",
+        "next",
+        "previous",
+    ];
     let action = cmd.rsplit('.').next().unwrap_or(cmd);
-    if READS.contains(&action) {
+    let has = |list: &[&str]| action.split('_').any(|word| list.contains(&word));
+    if has(&READS) {
         return json!({"readOnlyHint": true, "openWorldHint": false});
     }
-    let destructive = DESTROYS.contains(&action);
-    let idempotent = !TOGGLES.contains(&action) && !ADDS.contains(&action);
-    json!({"readOnlyHint": false, "destructiveHint": destructive, "idempotentHint": idempotent, "openWorldHint": false})
+    json!({"readOnlyHint": false, "destructiveHint": has(&DESTROYS), "idempotentHint": !has(&REPEATABLE), "openWorldHint": false})
 }
 
 #[cfg(test)]
@@ -255,6 +281,16 @@ mod tests {
         for name in ["track_list", "fx_catalog", "transport_state", "get_project"] {
             assert_eq!(find(name).unwrap().definition["annotations"]["readOnlyHint"], true, "{name}");
         }
+        for name in ["mix_delete", "mix_remove_source", "send_hw_remove", "setlist_delete"] {
+            assert_eq!(find(name).unwrap().definition["annotations"]["destructiveHint"], true, "{name}");
+        }
+        for name in ["mix_list", "send_hw_list", "setlist_status", "setlist_songs", "setlist_export"] {
+            assert_eq!(find(name).unwrap().definition["annotations"]["readOnlyHint"], true, "{name}");
+        }
+        for name in ["mix_more_me", "mix_level", "setlist_cue"] {
+            assert_eq!(find(name).unwrap().definition["annotations"]["idempotentHint"], true, "{name}");
+        }
+        assert_eq!(find("setlist_next").unwrap().definition["annotations"]["idempotentHint"], false);
         assert_eq!(find("track_volume").unwrap().definition["annotations"]["destructiveHint"], false);
         assert_eq!(find("track_mute").unwrap().definition["annotations"]["idempotentHint"], false);
     }

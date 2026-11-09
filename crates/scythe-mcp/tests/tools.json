@@ -823,6 +823,45 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Whether the track feeds its parent or the master; off for a bus that only plays through\nits hardware outputs. Toggles when `on` is left out.\n\nControl API command `track.main_send`.",
+    "inputSchema": {
+      "properties": {
+        "on": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_main_send",
+    "title": "Track main send"
+  },
+  {
+    "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true
     },
@@ -1083,6 +1122,329 @@
     },
     "name": "send_mute",
     "title": "Send mute"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Where the send taps the track (`post_fader`, `pre_fx`, `post_fx`), and optionally its\nmono downmix and polarity.\n\nControl API command `send.mode`.",
+    "inputSchema": {
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "description": "Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).",
+              "oneOf": [
+                {
+                  "const": "post_fader",
+                  "description": "After the fader and pan.",
+                  "type": "string"
+                },
+                {
+                  "const": "pre_fx",
+                  "description": "Before the effects.",
+                  "type": "string"
+                },
+                {
+                  "const": "post_fx",
+                  "description": "After the effects, before the fader: what monitor mixes use.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mono": {
+          "default": null,
+          "description": "Mix down to mono before panning.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "phase": {
+          "default": null,
+          "description": "Invert the polarity.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "send"
+      ],
+      "type": "object"
+    },
+    "name": "send_mode",
+    "title": "Send mode"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The audio hardware outputs of a track or `\"master\"`.\n\nControl API command `send.hw_list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "send_hw_list",
+    "title": "Send hw list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a hardware output from device output `output` (counted from 0; the next free pair\nor channel when left out), mono when `mono`, and answers with it.\n\nControl API command `send.hw_add`.",
+    "inputSchema": {
+      "properties": {
+        "mono": {
+          "default": false,
+          "type": "boolean"
+        },
+        "output": {
+          "default": null,
+          "description": "The first device output, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "send_hw_add",
+    "title": "Send hw add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes hardware output number `hw`.\n\nControl API command `send.hw_remove`.",
+    "inputSchema": {
+      "properties": {
+        "hw": {
+          "description": "The hardware output's index in `send.hw_list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "hw"
+      ],
+      "type": "object"
+    },
+    "name": "send_hw_remove",
+    "title": "Send hw remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes hardware output number `hw`; fields left out stay.\n\nControl API command `send.hw_set`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "hw": {
+          "description": "The hardware output's index in `send.hw_list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "description": "Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).",
+              "oneOf": [
+                {
+                  "const": "post_fader",
+                  "description": "After the fader and pan.",
+                  "type": "string"
+                },
+                {
+                  "const": "pre_fx",
+                  "description": "Before the effects.",
+                  "type": "string"
+                },
+                {
+                  "const": "post_fx",
+                  "description": "After the effects, before the fader: what monitor mixes use.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mono": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "output": {
+          "default": null,
+          "description": "The first device output, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pan": {
+          "default": null,
+          "description": "From -1 (left) to 1 (right).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "phase": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "hw"
+      ],
+      "type": "object"
+    },
+    "name": "send_hw_set",
+    "title": "Send hw set"
   },
   {
     "annotations": {
@@ -1770,6 +2132,1455 @@
     },
     "name": "marker_goto",
     "title": "Marker goto"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every monitor mix, with its sources.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "mix_list",
+    "title": "Mix list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One monitor mix with its sources.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.get`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_get",
+    "title": "Mix get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A mix for `musician` from `sources` (every track that is not a monitor mix or folder\nparent when left out), `own` of them the musician's own. Plays pre-fader post-FX\n(`mode`) to device output `output` (from 0; the next free pair or channel when left\nout), with a safety limiter unless `limiter` is false. Answers with the new mix.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.create`.",
+    "inputSchema": {
+      "properties": {
+        "levels_from_tracks": {
+          "default": false,
+          "description": "Start each source at its track's fader level instead of 0 dB.",
+          "type": "boolean"
+        },
+        "limiter": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "description": "Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).",
+              "oneOf": [
+                {
+                  "const": "post_fader",
+                  "description": "After the fader and pan.",
+                  "type": "string"
+                },
+                {
+                  "const": "pre_fx",
+                  "description": "Before the effects.",
+                  "type": "string"
+                },
+                {
+                  "const": "post_fx",
+                  "description": "After the effects, before the fader: what monitor mixes use.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mono": {
+          "default": false,
+          "type": "boolean"
+        },
+        "musician": {
+          "type": "string"
+        },
+        "output": {
+          "default": null,
+          "description": "The first device output, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "own": {
+          "default": [],
+          "description": "Sources that are the musician's own, which \"more me\" raises.",
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+          },
+          "type": "array"
+        },
+        "pans_from_tracks": {
+          "default": false,
+          "description": "Start each source at its track's pan instead of centre.",
+          "type": "boolean"
+        },
+        "sources": {
+          "default": null,
+          "description": "The tracks the mix receives.",
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "musician"
+      ],
+      "type": "object"
+    },
+    "name": "mix_create",
+    "title": "Mix create"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A copy of `mix` for another musician, on the next free output.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.copy`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "musician": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mix",
+        "musician"
+      ],
+      "type": "object"
+    },
+    "name": "mix_copy",
+    "title": "Mix copy"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Renames the mix for another musician.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.rename`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "musician": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mix",
+        "musician"
+      ],
+      "type": "object"
+    },
+    "name": "mix_rename",
+    "title": "Mix rename"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the mix (its track and the sends feeding it).\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.delete`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_delete",
+    "title": "Mix delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The level of one source in the mix.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.level`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "The source track."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mix",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "mix_level",
+    "title": "Mix level"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The pan of one source in the mix.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.pan`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "pan": {
+          "description": "From -1 (left) to 1 (right).",
+          "format": "double",
+          "type": "number"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "The source track."
+        }
+      },
+      "required": [
+        "mix",
+        "source",
+        "pan"
+      ],
+      "type": "object"
+    },
+    "name": "mix_pan",
+    "title": "Mix pan"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Mutes a source in the mix, or toggles it when `muted` is left out.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.mute`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "mix_mute",
+    "title": "Mix mute"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Marks a source as the musician's own (or not; toggles when `own` is left out).\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.own`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "own": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "mix_own",
+    "title": "Mix own"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Raises the musician's own sources `db` / 2 above the levels and the rest `db` / 2 below\n(-24 to 24).\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.more_me`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "description": "-24 to 24; 0 is the levels as set.",
+          "format": "double",
+          "type": "number"
+        },
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix",
+        "db"
+      ],
+      "type": "object"
+    },
+    "name": "mix_more_me",
+    "title": "Mix more me"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The whole mix's level (its track fader).\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.volume`.",
+    "inputSchema": {
+      "properties": {
+        "db": {
+          "default": null,
+          "description": "Level in dB, instead of `volume`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "volume": {
+          "default": null,
+          "description": "Gain: 1.0 is 0 dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_volume",
+    "title": "Mix volume"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Where the mix plays: device output `output` (from 0), or nowhere with `null`.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.output`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "mono": {
+          "default": false,
+          "type": "boolean"
+        },
+        "output": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_output",
+    "title": "Mix output"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Turns the mix's safety limiter on or off; toggles when `on` is left out.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.limiter`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "on": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "mix_limiter",
+    "title": "Mix limiter"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a track to the mix.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.add_source`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "description": "Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).",
+              "oneOf": [
+                {
+                  "const": "post_fader",
+                  "description": "After the fader and pan.",
+                  "type": "string"
+                },
+                {
+                  "const": "pre_fx",
+                  "description": "Before the effects.",
+                  "type": "string"
+                },
+                {
+                  "const": "post_fx",
+                  "description": "After the effects, before the fader: what monitor mixes use.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "mix_add_source",
+    "title": "Mix add source"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Takes a track out of the mix.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.remove_source`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "source": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "mix",
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "mix_remove_source",
+    "title": "Mix remove source"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "SWS's \"Create cue buss from track selection\": a bus named `name` receiving `sources`,\nwith SWS's options. It feeds the master only when it has no `output`.\n\n`mix` names a monitor mix by its track's id or name (\"MON Drummer\"); `source` is a track it\nreceives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),\n`pre_fx` or `post_fader`.\n\nControl API command `mix.cue_bus`.",
+    "inputSchema": {
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "description": "Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).",
+              "oneOf": [
+                {
+                  "const": "post_fader",
+                  "description": "After the fader and pan.",
+                  "type": "string"
+                },
+                {
+                  "const": "pre_fx",
+                  "description": "Before the effects.",
+                  "type": "string"
+                },
+                {
+                  "const": "post_fx",
+                  "description": "After the effects, before the fader: what monitor mixes use.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "mono": {
+          "default": false,
+          "type": "boolean"
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pans_from_tracks": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sources": {
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+          },
+          "type": "array"
+        },
+        "volumes_from_tracks": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "sources"
+      ],
+      "type": "object"
+    },
+    "name": "mix_cue_bus",
+    "title": "Mix cue bus"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The songs derived from the markers.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.songs`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_songs",
+    "title": "Setlist songs"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every setlist, which one is played, and the options.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_list",
+    "title": "Setlist list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One setlist with its entries and durations.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.get`.",
+    "inputSchema": {
+      "properties": {
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_get",
+    "title": "Setlist get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a setlist (with `songs` when given) and plays from it.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.create`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "songs": {
+          "default": [],
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A song by its index in `setlist.songs`, or by its start marker's `{GUID}` or name."
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_create",
+    "title": "Setlist create"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Renames the setlist (a name already used gets a number).\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.rename`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_rename",
+    "title": "Setlist rename"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the setlist.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.delete`.",
+    "inputSchema": {
+      "properties": {
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_delete",
+    "title": "Setlist delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Copies the setlist, placing the copy after it.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.duplicate`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_duplicate",
+    "title": "Setlist duplicate"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Replaces the setlist's songs.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.set`.",
+    "inputSchema": {
+      "properties": {
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "songs": {
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A song by its index in `setlist.songs`, or by its start marker's `{GUID}` or name."
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "songs"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_set",
+    "title": "Setlist set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves entry `from` to position `to`.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.move`.",
+    "inputSchema": {
+      "properties": {
+        "from": {
+          "description": "Entry position, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "to": {
+          "description": "Entry position, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_move",
+    "title": "Setlist move"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a setlist from text: a title line, then one song per line (numbering optional).\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.import`.",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_import",
+    "title": "Setlist import"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The setlist as text, in the form `setlist.import` takes.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.export`.",
+    "inputSchema": {
+      "properties": {
+        "setlist": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_export",
+    "title": "Setlist export"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Makes a setlist the one played, from its first song.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.select`.",
+    "inputSchema": {
+      "properties": {
+        "setlist": {
+          "anyOf": [
+            {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being\nplayed."
+        }
+      },
+      "required": [
+        "setlist"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_select",
+    "title": "Setlist select"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Makes `entry` play next; when stopped the edit cursor moves to it.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.cue`.",
+    "inputSchema": {
+      "properties": {
+        "entry": {
+          "description": "Position in the setlist, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "entry"
+      ],
+      "type": "object"
+    },
+    "name": "setlist_cue",
+    "title": "Setlist cue"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plays `entry` (the current one when left out) from its marker.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.play`.",
+    "inputSchema": {
+      "properties": {
+        "entry": {
+          "default": null,
+          "description": "Position in the setlist, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_play",
+    "title": "Setlist play"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Stops playback.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.stop`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_stop",
+    "title": "Setlist stop"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The next song: cued when stopped, played when playing.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.next`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_next",
+    "title": "Setlist next"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The previous song: cued when stopped, played when playing.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.previous`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_previous",
+    "title": "Setlist previous"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Whether the next song is cued after a song stops at its stop marker; toggles when\n`enabled` is left out.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.auto_advance`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_auto_advance",
+    "title": "Setlist auto advance"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Whether crossing a `!` marker runs its actions (`!1016` stops).\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.marker_actions`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "setlist_marker_actions",
+    "title": "Setlist marker actions"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The setlist played, its current and next song, elapsed and remaining time.\n\n`setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the\nsetlist being played. Songs are an index from `setlist.songs`, or the start marker's\n`{GUID}` or name. `entry` is a position in the setlist, from 0.\n\nControl API command `setlist.status`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "setlist_status",
+    "title": "Setlist status"
   },
   {
     "annotations": {
