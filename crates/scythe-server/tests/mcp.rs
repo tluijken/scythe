@@ -91,7 +91,7 @@ fn mcp_over_streamable_http() {
             json!({"jsonrpc": "2.0", "id": 9, "method": "ping"}),
         );
         assert_eq!(status, 400);
-        assert_eq!(http(addr, "GET", "/mcp", Some(TOKEN), None).0, 405);
+        assert_eq!(http(addr, "DELETE", "/mcp", Some(TOKEN), None).0, 405);
     });
     assert_eq!(session.project.tracks.len(), 1);
     assert!(session.project.tracks[0].muted);
@@ -105,5 +105,91 @@ fn without_a_token_only_local_pages_may_call() {
         assert_eq!((status, body["result"].clone()), (200, json!({})));
         assert_eq!(rpc(addr, &[("Origin", "http://localhost:5173")], ping.clone()).0, 200);
         assert_eq!(rpc(addr, &[("Origin", "https://evil.example")], ping).0, 403);
+    });
+}
+
+/// Holds `GET /mcp` open and hands on each server-sent event's data.
+fn notifications(addr: SocketAddr) -> std::sync::mpsc::Receiver<Value> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    let request = format!(
+        "GET /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {TOKEN}\r\nAccept: text/event-stream\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stream).lines() {
+            let Ok(line) = line else { return };
+            if let Some(data) = line.strip_prefix("data: ")
+                && let Ok(message) = serde_json::from_str::<Value>(data)
+                && tx.send(message).is_err()
+            {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+#[test]
+fn tool_selection_notifications_and_access_links() {
+    serve(Some(TOKEN), |addr| {
+        let auth = format!("Bearer {TOKEN}");
+        let auth = [("Authorization", auth.as_str())];
+        let list = |path: &str| {
+            let message = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+            let mut headers =
+                vec![("Accept", "application/json, text/event-stream"), ("MCP-Protocol-Version", "2025-11-25")];
+            headers.extend_from_slice(&auth);
+            let (_, body) = request(addr, "POST", path, &headers, Some(&message));
+            body["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let default = list("/mcp");
+        assert!(default.contains(&"media_import".to_owned()) && !default.contains(&"mix_more_me".to_owned()));
+        let all = list("/mcp?tools=all");
+        assert_eq!(all.len(), scythe_mcp::tools::all().len());
+        let mixes = list("/mcp?tools=mix");
+        assert!(mixes.contains(&"mix_more_me".to_owned()) && !mixes.contains(&"track_add".to_owned()), "{mixes:?}");
+        assert_eq!(rpc(addr, &auth, json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})).0, 200);
+        let (status, _) = request(
+            addr,
+            "POST",
+            "/mcp?tools=bogus",
+            &[auth[0], ("MCP-Protocol-Version", "2025-11-25")],
+            Some(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"})),
+        );
+        assert_eq!(status, 400);
+
+        let events = notifications(addr);
+        std::thread::sleep(Duration::from_millis(200));
+        let (_, body) = rpc(addr, &auth, call(2, "scythe_tools", json!({"enable": ["setlist"]})));
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let changed = events.recv_timeout(Duration::from_secs(5)).expect("a notification");
+        assert_eq!(changed["method"], "notifications/tools/list_changed");
+        assert!(list("/mcp").contains(&"setlist_next".to_owned()));
+
+        let subscribe =
+            json!({"jsonrpc": "2.0", "id": 3, "method": "resources/subscribe", "params": {"uri": "scythe://project"}});
+        assert_eq!(rpc(addr, &auth, subscribe).1["result"], json!({}));
+        std::thread::sleep(Duration::from_millis(400));
+        rpc(addr, &auth, call(4, "track_add", json!({"name": "Click"})));
+        let updated = events.recv_timeout(Duration::from_secs(5)).expect("a resource update");
+        assert_eq!(updated["method"], "notifications/resources/updated", "{updated}");
+        assert_eq!(updated["params"]["uri"], "scythe://project");
+
+        let (_, body) =
+            rpc(addr, &auth, call(5, "scythe_command", json!({"command": {"cmd": "access.create", "role": "stage"}})));
+        let link: Value = serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(link["role"], "stage", "{link}");
+        assert!(link["path"].as_str().unwrap().starts_with("/setlist?token="));
+        assert!(link["urls"].is_array());
+        let (_, body) = rpc(addr, &auth, call(6, "events_since", json!({})));
+        let text = body["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("project_changed"), "{text}");
     });
 }

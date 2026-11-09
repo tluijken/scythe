@@ -442,6 +442,26 @@ impl Finish {
     }
 }
 
+/// Renders the master mix of `range` block by block into `sink` without writing a file, at the
+/// project's play rate as a render plays it, for measuring a mix.
+pub fn render_blocks(
+    project: &Project,
+    pool: &MediaPool,
+    range: TimeRange,
+    sample_rate: u32,
+    mut sink: impl FnMut(&[f32], &[f32]),
+    progress: impl FnMut(f32),
+) -> Result<(), BounceError> {
+    let rate = if project.playrate.is_normal() { 1.0 } else { project.playrate.rate };
+    let played = project.at_playrate();
+    let range = TimeRange { start: range.start / rate, end: range.end / rate };
+    let sink = |l: &[f32], r: &[f32], _: &[Vec<f32>]| {
+        sink(l, r);
+        Ok(())
+    };
+    render_mix(played.as_ref(), pool, range, sample_rate, sink, progress)
+}
+
 /// Renders the mix of `range` block by block into `sink`.
 fn render_mix(
     project: &Project,

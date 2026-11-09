@@ -206,20 +206,13 @@ impl Session {
     /// Places a MIDI file as an in-project MIDI item (REAPER's default for imported MIDI), its
     /// length following the project tempo map.
     fn import_midi(&mut self, path: &Path, track: TrackId, position: f64) {
-        let parsed =
-            std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| read_smf(&b).map_err(|e| e.to_string()));
-        let (source, _) = match parsed {
-            Ok(s) => s,
+        let item = match self.midi_item(path, position) {
+            Ok(item) => item,
             Err(e) => {
                 self.notify(format!("Could not load {}: {e}", path.display()));
                 return;
             }
         };
-        let timeline = self.project.tempo.timeline();
-        let end = timeline.time_at_qn(timeline.qn_at(position) + source.length_qn());
-        let mut take = Take::from_file(path.to_owned());
-        take.source = Source::Raw(source.to_chunk());
-        let item = Item::new(position, (end - position).max(MIN_ITEM_LENGTH), take);
         let id = item.id;
         self.edit("Import MIDI", |p| {
             if let Some(t) = p.track_mut(track) {
@@ -227,6 +220,17 @@ impl Session {
             }
         });
         self.select = Some(Selection { track: Some(track), item: Some(id) });
+    }
+
+    /// An in-project MIDI item of the file at `position`, its length following the tempo map.
+    pub(crate) fn midi_item(&self, path: &Path, position: f64) -> Result<Item, String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let (source, _) = read_smf(&bytes).map_err(|e| e.to_string())?;
+        let timeline = self.project.tempo.timeline();
+        let end = timeline.time_at_qn(timeline.qn_at(position) + source.length_qn());
+        let mut take = Take::from_file(path.to_owned());
+        take.source = Source::Raw(source.to_chunk());
+        Ok(Item::new(position, (end - position).max(MIN_ITEM_LENGTH), take))
     }
 
     /// Takes in what background work finished, follows up on crossed marker actions, and

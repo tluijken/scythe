@@ -158,3 +158,45 @@ pub fn run(session: &mut Session, scope: &Scope, command: Command) -> Result<Val
     }
     api::execute(session, command)
 }
+
+/// The `access.*` commands, which the server answers itself (the links live there, not in the
+/// session); all but `access.whoami` need the admin token. A link's `path` is the page it opens
+/// with its token; `urls` are that page at the addresses phones on the network can reach,
+/// which is what its QR code holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "cmd", deny_unknown_fields)]
+pub enum AccessCommand {
+    /// The caller's role.
+    #[serde(rename = "access.whoami")]
+    Whoami,
+    /// Every access link, with the addresses this server is reached at (`origins`).
+    #[serde(rename = "access.list")]
+    List,
+    /// A new link for a musician's monitor mix or for the stage tablet (the setlist).
+    #[serde(rename = "access.create")]
+    Create {
+        /// `musician` or `stage`.
+        role: String,
+        /// Whose monitor mix, for a musician's link (as in `mix.create`).
+        #[serde(default)]
+        musician: Option<String>,
+        /// What to call the link, such as "Drummer's phone".
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// Renames a link, or points a musician's link at another musician's mix.
+    #[serde(rename = "access.update")]
+    Update {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        musician: Option<String>,
+    },
+    /// A new token for the link; the old one stops working (a lost phone).
+    #[serde(rename = "access.renew")]
+    Renew { id: String },
+    /// Deletes the link; its token stops working.
+    #[serde(rename = "access.delete")]
+    Delete { id: String },
+}

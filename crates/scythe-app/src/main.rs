@@ -229,6 +229,7 @@ fn main() -> eframe::Result {
             if play {
                 app.toggle_play();
             }
+            app.session.script_runner = Some(crate::script_host::control_runner());
             let wake = cc.egui_ctx.clone();
             let control = control.and_then(|config| {
                 match scythe_server::ControlServer::start(config, std::sync::Arc::new(move || wake.request_repaint())) {

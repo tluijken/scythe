@@ -184,6 +184,23 @@ impl LoudnessScan {
     pub fn max_short_term(&self) -> f64 {
         self.windows(30).map(|m| lufs(m) as f64).fold(f64::NEG_INFINITY, f64::max)
     }
+
+    /// Loudness range in LU after EBU Tech 3342: the short-term values above -70 LUFS and above
+    /// their mean less 20 LU, from the 10th to the 95th percentile. Only whole 3 s windows count.
+    pub fn loudness_range(&self) -> f64 {
+        let gated: Vec<f64> = self.windows(30).skip(29).filter(|&m| lufs(m) as f64 > -70.0).collect();
+        if gated.is_empty() {
+            return 0.0;
+        }
+        let relative = lufs(gated.iter().sum::<f64>() / gated.len() as f64) as f64 - 20.0;
+        let mut kept: Vec<f64> = gated.into_iter().map(|m| lufs(m) as f64).filter(|&l| l > relative).collect();
+        if kept.len() < 2 {
+            return 0.0;
+        }
+        kept.sort_by(f64::total_cmp);
+        let at = |p: f64| kept[((kept.len() - 1) as f64 * p).round() as usize];
+        at(0.95) - at(0.10)
+    }
 }
 
 #[cfg(test)]
@@ -224,6 +241,21 @@ mod tests {
         m.record(&sig, &sig);
         assert!((m.momentary() - -20.0).abs() < 0.1, "{}", m.momentary());
         assert!((m.short_term() - -20.0).abs() < 0.1, "{}", m.short_term());
+    }
+
+    /// EBU Tech 3342 test signal 1: 20 s of a 1 kHz sine at -20 dBFS then 20 s at -30 dBFS
+    /// (stereo, so -23 and -33 LUFS) has a loudness range of 10 LU.
+    #[test]
+    fn loudness_range_of_two_levels() {
+        let mut scan = LoudnessScan::new(48000);
+        let loud = sine(0.1, 20.0, 48000);
+        let quiet = sine(0.1 / 10f32.sqrt(), 20.0, 48000);
+        scan.push(&loud, &loud);
+        scan.push(&quiet, &quiet);
+        assert!((scan.loudness_range() - 10.0).abs() < 0.1, "{}", scan.loudness_range());
+        let mut steady = LoudnessScan::new(48000);
+        steady.push(&loud, &loud);
+        assert!(steady.loudness_range() < 0.1);
     }
 
     #[test]

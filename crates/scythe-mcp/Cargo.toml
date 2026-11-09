@@ -20,3 +20,4 @@ ureq.workspace = true
 
 [dev-dependencies]
 scythe-server.workspace = true
+hound.workspace = true

@@ -72,3 +72,71 @@ impl Services for AppServices {
         }
     }
 }
+
+/// Runs `script.run` from the control API: the script sees the session's project, selected
+/// track and cursor, and may add any installed plugin by name; it shows no dialogs (a message
+/// box answers OK, user inputs are cancelled), and one that defers is stopped after its first
+/// pass.
+pub fn control_runner() -> scythe_session::api::script::ScriptRunner {
+    use scythe_session::api::script::{Language, ScriptRun};
+    Box::new(|session, language, code| {
+        let fx = session.engine.fx();
+        let mut plugins: Vec<FxSlot> = scythe_engine::builtin::Builtin::ALL.iter().map(|b| b.slot()).collect();
+        plugins.extend(fx.clap_plugins().iter().map(scythe_engine::fx::clap_slot));
+        plugins.extend(fx.lv2_plugins().iter().map(scythe_engine::fx::lv2_slot));
+        plugins.extend(fx.vst3_plugins().iter().map(scythe_engine::fx::vst3_slot));
+        let services = std::rc::Rc::new(Headless { plugins, pool: session.engine.pool().clone() });
+        let ctx = crate::script::ScriptContext {
+            selected_tracks: session.selected_track.into_iter().collect(),
+            cursor: session.project.cursor,
+            playing: session.is_playing(),
+            play_position: session.project.cursor,
+            services: Some(services as std::rc::Rc<dyn Services>),
+            undo: session.history.undo_label().map(str::to_owned),
+            redo: session.history.redo_label().map(str::to_owned),
+            dirty: session.dirty,
+            ..Default::default()
+        };
+        let name = match language {
+            Language::Lua => "control.lua",
+            Language::Eel => "control.eel",
+        };
+        let (mut out, running) = crate::script::run(code, name, &session.project, ctx.clone())?;
+        if let Some(script) = running {
+            let base = out.project.clone().unwrap_or_else(|| session.project.clone());
+            let last = script.stop(&base, ctx)?;
+            out.console.push_str(&last.console);
+            out.project = last.project.or(out.project);
+            out.undo = last.undo.or(out.undo);
+            out.cursor = last.cursor.or(out.cursor);
+        }
+        Ok(ScriptRun { project: out.project, console: out.console, undo: out.undo, cursor: out.cursor })
+    })
+}
+
+/// What a script run over the control API gets of the app: plugins and media, no dialogs.
+struct Headless {
+    plugins: Vec<FxSlot>,
+    pool: Arc<MediaPool>,
+}
+
+impl Services for Headless {
+    fn message_box(&self, _text: &str, _title: &str, _kind: i64) -> i64 {
+        1
+    }
+
+    fn user_inputs(&self, _title: &str, _captions: &[String], _values: &[String]) -> Option<Vec<String>> {
+        None
+    }
+
+    fn plugin(&self, name: &str) -> Option<FxSlot> {
+        self.plugins.iter().find(|s| crate::script::fx_name_matches(&s.name, name)).cloned()
+    }
+
+    fn media_length(&self, path: &Path) -> Option<f64> {
+        match self.pool.ready(path) {
+            Some(m) => Some(m.duration()),
+            None => scythe_engine::media::decode_file(path).ok().map(|a| a.duration()),
+        }
+    }
+}

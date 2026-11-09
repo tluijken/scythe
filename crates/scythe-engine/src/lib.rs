@@ -1,3 +1,4 @@
+pub mod analysis;
 pub mod animation;
 pub mod bounce;
 pub mod builtin;

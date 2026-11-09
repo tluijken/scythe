@@ -3792,6 +3792,7 @@ dependencies = [
 name = "scythe-mcp"
 version = "0.1.0"
 dependencies = [
+ "hound",
  "libc",
  "schemars",
  "scythe-core",
@@ -3827,6 +3828,7 @@ dependencies = [
 name = "scythe-session"
 version = "0.1.0"
 dependencies = [
+ "hound",
  "rayon",
  "schemars",
  "scythe-core",

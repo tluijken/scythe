@@ -183,6 +183,16 @@ impl ReaEqCompat {
     }
 }
 
+/// The gain in dB `band` applies at `freq`, from the same filter design ReaEQ plays.
+pub fn response_db(band: &Band, freq: f64, sample_rate: f64) -> f64 {
+    let f = Biquad::design(band, sample_rate);
+    let w = std::f64::consts::TAU * freq / sample_rate;
+    let (c1, s1, c2, s2) = (w.cos(), w.sin(), (2.0 * w).cos(), (2.0 * w).sin());
+    let num = (f.b0 + f.b1 * c1 + f.b2 * c2).powi(2) + (f.b1 * s1 + f.b2 * s2).powi(2);
+    let den = (1.0 + f.a1 * c1 + f.a2 * c2).powi(2) + (f.a1 * s1 + f.a2 * s2).powi(2);
+    10.0 * (num / den.max(1e-30)).max(1e-30).log10()
+}
+
 fn kind_name(kind: BandKind) -> &'static str {
     match kind {
         BandKind::LowShelf => "low shelf",

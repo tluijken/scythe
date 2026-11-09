@@ -21,6 +21,11 @@ pub struct Local(pub ControlHandle);
 
 impl Backend for Local {
     fn command(&self, command: Value) -> Result<Value, ApiError> {
+        if command["cmd"].as_str().is_some_and(|c| c.starts_with("access.")) {
+            return Err(ApiError::failed(
+                "access links are kept by scythe-server; this session has none (connect with --url or to /mcp)",
+            ));
+        }
         let command: Command = serde_json::from_value(command).map_err(|e| ApiError::invalid(e.to_string()))?;
         let (tx, rx) = mpsc::channel();
         if !self.0.send(command, move |answer| {

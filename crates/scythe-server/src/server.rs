@@ -16,11 +16,12 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use scythe_mcp::McpServer;
+use scythe_mcp::{Backend, McpServer, Selection};
 use scythe_session::Waker;
 use scythe_session::access::Scope;
 use scythe_session::api::{ApiError, Command, ErrorKind, Event};
@@ -86,6 +87,10 @@ struct AppState {
     folders: Arc<Vec<PathBuf>>,
     addr: SocketAddr,
     mcp: McpServer,
+    /// Views of `mcp` listing other tools, by the `?tools=` they were asked for.
+    mcp_views: Arc<std::sync::Mutex<HashMap<String, McpServer>>>,
+    /// MCP notifications, for the clients holding `GET /mcp` open.
+    mcp_events: broadcast::Sender<Arc<str>>,
     /// WebSocket clients connected now.
     clients: Arc<AtomicUsize>,
 }
@@ -108,7 +113,13 @@ impl ControlServer {
             let _ = publish.send(Arc::new(Published { event: event.clone(), text: event_text(event).into() }));
         });
         let (handle, pump) = control::channel(wake, sink);
-        let mcp = McpServer::new(scythe_mcp::Local(handle.clone()));
+        let access = Arc::new(access);
+        let mcp = McpServer::new(McpBackend { local: scythe_mcp::Local(handle.clone()), access: access.clone(), addr });
+        let (mcp_events, _) = broadcast::channel::<Arc<str>>(256);
+        let notify = mcp_events.clone();
+        mcp.set_notifier(Arc::new(move |message: &Value| {
+            let _ = notify.send(message.to_string().into());
+        }));
         let folders = if config.folders.is_empty() {
             std::env::var_os("HOME").map(PathBuf::from).into_iter().collect()
         } else {
@@ -117,10 +128,12 @@ impl ControlServer {
         let state = AppState {
             control: handle,
             events,
-            access: Arc::new(access),
+            access,
             folders: Arc::new(folders),
             addr,
             mcp,
+            mcp_views: Arc::default(),
+            mcp_events,
             clients: Arc::default(),
         };
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -174,7 +187,7 @@ fn router(state: AppState) -> Router {
         .route("/api/peaks", get(peaks))
         .route("/api/files", get(files))
         .route("/api/ws", get(websocket))
-        .route("/mcp", post(mcp).get(mcp_stream).delete(mcp_stream))
+        .route("/mcp", post(mcp).get(mcp_stream).delete(mcp_delete))
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .route("/api/health", get(health))
         .fallback(crate::web::serve)
@@ -269,12 +282,45 @@ fn origins(addr: SocketAddr) -> Vec<String> {
 /// `access.*` commands, which the server answers itself: the links live here, not in the
 /// session.
 fn access_command(state: &AppState, scope: &Scope, value: Value) -> Result<Value, ApiError> {
+    access_answer(&state.access, state.addr, scope, value)
+}
+
+/// Answers an `access.*` command, giving each link the addresses its page is reached at (what
+/// its QR code holds).
+fn access_answer(access: &Access, addr: SocketAddr, scope: &Scope, value: Value) -> Result<Value, ApiError> {
     let listing = value.get("cmd").and_then(Value::as_str) == Some("access.list");
-    let mut answer = state.access.execute(scope, value)?;
+    let mut answer = access.execute(scope, value)?;
+    let origins = origins(addr);
+    let with_urls = |link: &mut Value| {
+        if let Some(path) = link.get("path").and_then(Value::as_str).map(str::to_owned) {
+            let urls: Vec<String> = origins.iter().map(|o| format!("{o}{path}")).collect();
+            link["urls"] = urls.into();
+        }
+    };
+    match answer.get_mut("links").and_then(Value::as_array_mut) {
+        Some(links) => links.iter_mut().for_each(with_urls),
+        None => with_urls(&mut answer),
+    }
     if listing {
-        answer["origins"] = origins(state.addr).into();
+        answer["origins"] = origins.into();
     }
     Ok(answer)
+}
+
+/// The session for MCP tools, with the access links the server keeps.
+struct McpBackend {
+    local: scythe_mcp::Local,
+    access: Arc<Access>,
+    addr: SocketAddr,
+}
+
+impl Backend for McpBackend {
+    fn command(&self, command: Value) -> Result<Value, ApiError> {
+        if is_access(&command) {
+            return access_answer(&self.access, self.addr, &Scope::Admin, command);
+        }
+        self.local.command(command)
+    }
 }
 
 async fn command(State(state): State<AppState>, Extension(scope): Extension<Scope>, body: Bytes) -> Response {
@@ -360,6 +406,7 @@ fn trusted_origin(origin: &str, host: Option<&str>) -> bool {
 async fn mcp(
     State(state): State<AppState>,
     Extension(scope): Extension<Scope>,
+    Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -389,7 +436,13 @@ async fn mcp(
         Ok(m) => m,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(scythe_mcp::protocol::parse_error(e))).into_response(),
     };
-    let server = state.mcp.clone();
+    let server = match mcp_view(&state, query.get("tools")) {
+        Ok(server) => server,
+        Err(e) => {
+            let body = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": e}});
+            return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+        }
+    };
     // Tool calls wait for the session's thread to answer.
     match tokio::task::spawn_blocking(move || server.handle(message)).await {
         Ok(Some(answer)) => Json(answer).into_response(),
@@ -398,9 +451,41 @@ async fn mcp(
     }
 }
 
-/// No server-initiated stream: this server sends no requests or notifications of its own.
-async fn mcp_stream() -> Response {
-    (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "POST")]).into_response()
+/// The server for `?tools=`: the default one, or a view listing those tools, kept so a
+/// client's later `scythe_tools` changes last.
+fn mcp_view(state: &AppState, tools: Option<&String>) -> Result<McpServer, String> {
+    let Some(spec) = tools.map(|t| t.trim()).filter(|t| !t.is_empty()) else { return Ok(state.mcp.clone()) };
+    let mut views = state.mcp_views.lock().unwrap();
+    if let Some(view) = views.get(spec) {
+        return Ok(view.clone());
+    }
+    let view = state.mcp.view(Selection::parse(spec)?);
+    views.insert(spec.to_owned(), view.clone());
+    Ok(view)
+}
+
+/// The server's notifications (resource updates, tool list changes, log messages) as a
+/// stream of server-sent events, for as long as the client holds it open.
+async fn mcp_stream(State(state): State<AppState>, Extension(scope): Extension<Scope>) -> Response {
+    if !scope.is_admin() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let events = state.mcp_events.subscribe();
+    let stream = futures_util::stream::unfold(events, |mut events| async move {
+        loop {
+            match events.recv().await {
+                Ok(text) => return Some((Ok::<_, std::convert::Infallible>(SseEvent::default().data(&*text)), events)),
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}
+
+/// Sessions are not tracked, so there is none to end.
+async fn mcp_delete() -> Response {
+    (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "GET, POST")]).into_response()
 }
 
 async fn websocket(

@@ -51,7 +51,8 @@ survive restarts and opening another project, and do not travel with a copied .R
 | `GET` | `/api/peaks?item=…&width=…&from=…&to=…` | the same as `item.peaks` (`from` and `to` optional), for waveforms a browser can cache by address |
 | `GET` | `/api/files?path=…` | admin only: the folders (`--folder`, `folders = […]`; home by default) and, given a `path` inside one, its sub-folders and `.RPP` files: `{"roots", "path", "parent", "entries": [{"name", "path", "dir", "size", "modified"}]}`; a path resolving outside every folder (through `..` or a link) is `forbidden` |
 | `GET` | `/api/ws` | WebSocket: commands in, replies and events out |
-| `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md) |
+| `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md); `?tools=` picks the tools listed |
+| `GET` | `/mcp` | the MCP server's notifications as server-sent events |
 | `GET` | `/`, `/monitor`, `/setlist`, … | the web UI (see the README), no token needed to load it |
 
 Errors answer `{"ok": false, "error": {"kind": …, "message": …}}` with HTTP status 400 for
@@ -559,8 +560,82 @@ Answered by the server, not the session; all but `access.whoami` need the admin 
 | `access.renew` | `id` | the link with a new token; the old one stops working |
 | `access.delete` | `id` | `{"links"}` left |
 
-A link: `{"id", "name", "role", "musician"?, "token", "created", "path"}`; `path` is the page it
-opens with its token, such as `/monitor?token=…`.
+A link: `{"id", "name", "role", "musician"?, "token", "created", "path", "urls"}`; `path` is the
+page it opens with its token, such as `/monitor?token=…`, and `urls` that page at each address
+in `origins`: the payload of the link's QR code.
+
+### Media
+
+Admin only: paths name files on the machine running Scythe, anything its process may read.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `media.import` | `paths` (audio files, `.mid` files), `track?` (else a new track per file, named after it), `position?` (seconds, 0), `sequence?` (all on one track, one after another), `gap?` (seconds between them), `name?` (the new track's) | `{"items": [{"track", "track_name", "item", "path", "position", "length", "kind": "audio"\|"midi"}], "end"}`; each file is one undo step (`Import media`, `Import MIDI`); MIDI becomes in-project MIDI items as REAPER imports them |
+| `media.probe` | `path` | a job (see below) whose result is `{"kind", "format", "sample_rate", "channels", "frames", "duration", "exact", "integrated_lufs", "true_peak_dbtp", "loudness_range_lu", "sample_peak_dbfs"}` (for MIDI: `{"kind": "midi", "length_qn"}`) |
+
+An item's length comes from the file's header for WAV, AIFF, CAF and FLAC, and from decoding it
+for codecs with encoder delay (MP3, AAC, Vorbis, Opus), so it matches what REAPER gives the item.
+
+### Analysis
+
+Measuring takes seconds, so these commands start a job on a thread of its own and answer at
+once with `{"job", "kind", "status": "running"}`, or `"done"` with the `result` when it was
+measured before. `analysis.job` answers `running` (with `elapsed`), `done` (with `result`,
+`seconds`) or `failed` (with `error`). MCP tools wait for the job and answer with the finished
+one. Mixes are rendered offline through the render path (effects, sends, automation, the
+project's play rate), never played; the session goes on meanwhile. Files' measurements are
+kept in `$XDG_DATA_HOME/scythe/analysis-cache`, keyed by path, size, modification time and
+range, so a reference is measured once; nothing leaves the machine.
+
+| `cmd` | Arguments | Result |
+|---|---|---|
+| `analysis.file` | `path`, `start?`, `end?` (seconds into the file) | a measurement |
+| `analysis.mix` | `target?` (`"master"`, a track id or name, a folder renders as its bus, or `{"group": n}` for a track group soloed through the master), `start?`, `end?` (project time; the project's end by default) | a measurement |
+| `analysis.job` | `job` | the job's state; a finished `match_eq` with `apply` applies its EQ now (once) and reports it as `applied` |
+| `analysis.compare` | `reference`, `mix`: each a subject | `{"reference", "mix"}` (the measurements without bands) and `comparison` |
+| `analysis.match_eq` | `reference`, `mix`, `apply?` (track or `"master"`), `max_bands?` (6, at most 12), `max_gain_db?` (6, at most 12), `min_hz?`, `max_hz?` (30 to 16000) | `{"bands": [{"kind", "freq", "gain_db", "bandwidth"}], "max_error_before_db", "max_error_after_db", "rms_error_before_db", "rms_error_after_db", "curve": [{"hz", "target_db", "eq_db"}], "dynamics", "loudness_lufs", "true_peak_dbtp"}` |
+| `analysis.apply_eq` | `track`, `bands` (as `match_eq` gives them; gains within ±12 dB) | not a job: adds a ReaEQ with these bands at the end of the chain, one undo step (`Match EQ`): `{"track", "fx_index", "bands"}` |
+| `analysis.segments` | `path` or `item` (its active take's file, in project time), `threshold_db?` (-50), `min_silence?` (2 s), `min_length?` (5 s), `markers?`, `name?` ("Song") | `{"duration", "segments": [{"start", "end", "length", "peak_db", "loudness_lufs", "onsets", "bpm"}], "ignored", "markers": [{"position", "name"}], "added"}`; the proposed markers are a song marker at each start and a `!1016` stop marker just after each end; with `markers` they are added as one undo step (`Song markers`) at once, without a job |
+
+A subject is `{"job": n}` (a finished `analysis.file` or `analysis.mix`), `{"file": path,
+"start"?, "end"?}` or `{"mix": target, "start"?, "end"?}`.
+
+A measurement: `integrated_lufs`, `short_term_max_lufs`, `momentary_max_lufs` (BS.1770-4 with
+gating), `loudness_range_lu` (EBU Tech 3342), `true_peak_dbtp` (4x oversampled),
+`sample_peak_dbfs`, `rms_dbfs`, `crest_db` (sample peak over RMS), `plr_db` (true peak over
+integrated loudness), `correlation` and `side_db` (side over mid), `centroid_hz`,
+`brightness_pct` (power above 4 kHz), `tilt_db_per_octave` (0 for pink noise, +3 for white),
+`transients_per_second`, `low_end` (`{"below_hz": 120, "correlation", "side_db",
+"mono_safe"}`) and `bands`: 31 third octaves from 20 Hz to 20 kHz with `level_db` (mean power of
+the mid signal), `tonal_db` (smoothed over about an octave and less the integrated loudness, so
+mixes of different loudness compare by shape), `side_db` and `correlation`. Silence reads -150.
+
+A comparison (the mix less the reference): `loudness_diff_lu`, `true_peak_diff_db`,
+`crest_diff_db`, `plr_diff_db`, `loudness_range_diff_lu`, `side_diff_db`,
+`tilt_diff_db_per_octave`, `centroid_ratio`, `transients_diff_per_second`, `regions` (sub, low
+end, low mids, mids, presence, air: average tonal difference), `bands` (`diff_db`,
+`side_diff_db`), `max_tonal_diff_db` (40 Hz to 16 kHz) and `summary`: what stands out, in
+plain sentences.
+
+`match_eq` fits low and high shelves and peaks (ReaEQ's filters, the response computed from the
+same design) greedily, then refines their gains together, stopping when what is left is under
+0.25 dB or a band no longer helps; the level is left to the fader. `dynamics` advises:
+`loudness_gap_lu`, `limiter_drive_db` (at most 6 dB per step), `limiter_ceiling_db` (-1 to -2
+dBTP), a `compressor` (`ratio`, `attack_ms`, `release_ms`, `target_reduction_db`) when the mix's
+peak-to-loudness ratio is more than 3 dB above the reference's, and `notes`.
+
+### Events for polling
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `events.since` | `since?` | `{"latest", "missed", "revision", "transport", "events": [{"event", …, "seq", "time_ms"}]}`: the events numbered after `since` (the last 256 are kept): `project_changed` (consecutive ones folded into the last), `notice`, `setlist`, `transport` (only changes, not the moving position), `health` (when it changes). Pass `latest` as `since` next time; `missed` says some were dropped in between |
+| `events.meters` | | `{"master": {"peak_db": [l, r]}, "tracks": [{"id", "name", "peak_db"}], "mixes": [{"id", "musician", "peak_db"}], "health", "transport"}`, peaks in dBFS decaying like the UI's meters |
+
+### Scripts
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `script.run` | `code`, `language?` (`lua`, `eel`) | `{"console", "changed", "undo"}`: runs ReaScript text over the project (the `reaper.*` functions Scythe implements); its changes are one undo step named by `Undo_EndBlock`. Admin only. Only the desktop app runs scripts (`failed` from the headless server); message boxes answer OK, user inputs are cancelled, and a script that defers is stopped after its first pass |
 
 ### Setlists
 

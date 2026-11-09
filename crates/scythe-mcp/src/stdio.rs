@@ -1,13 +1,21 @@
-//! MCP's stdio transport: one JSON-RPC message per line in, one answer per line out.
+//! MCP's stdio transport: one JSON-RPC message per line in, one answer per line out, and the
+//! server's notifications in between.
 
 use std::io::{self, BufRead, Write};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
 use crate::protocol::{self, McpServer};
 
 /// Answers messages from `input` on `output` until `input` ends.
-pub fn serve(server: &McpServer, input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+pub fn serve(server: &McpServer, input: impl BufRead, output: impl Write + Send + 'static) -> io::Result<()> {
+    let output = Arc::new(Mutex::new(output));
+    let out = output.clone();
+    server.set_notifier(Arc::new(move |message: &Value| {
+        let mut o = out.lock().unwrap();
+        let _ = writeln!(o, "{message}").and_then(|()| o.flush());
+    }));
     for line in input.lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -18,8 +26,9 @@ pub fn serve(server: &McpServer, input: impl BufRead, mut output: impl Write) ->
             Err(e) => Some(protocol::parse_error(e)),
         };
         if let Some(answer) = answer {
-            writeln!(output, "{answer}")?;
-            output.flush()?;
+            let mut o = output.lock().unwrap();
+            writeln!(o, "{answer}")?;
+            o.flush()?;
         }
     }
     Ok(())

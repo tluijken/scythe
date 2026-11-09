@@ -3,18 +3,20 @@ use std::io::{self, BufWriter};
 use std::path::PathBuf;
 
 use scythe_mcp::session::InProcess;
-use scythe_mcp::{McpServer, Remote, stdio};
+use scythe_mcp::{McpServer, Remote, Selection, stdio};
 
 const USAGE: &str = "\
-usage: scythe-mcp [--url URL] [--token TOKEN]
-       scythe-mcp --headless [project.RPP] [--null-audio]
+usage: scythe-mcp [--url URL] [--token TOKEN] [--tools DOMAINS]
+       scythe-mcp --headless [project.RPP] [--null-audio] [--tools DOMAINS]
 
 An MCP server on stdin and stdout for AI agents to drive Scythe.
 
-  --url URL      the control API of a running Scythe (default http://127.0.0.1:8770)
-  --token TOKEN  the token it requires (also SCYTHE_CONTROL_TOKEN)
-  --headless     run a session in this process instead, without a window
-  --null-audio   with --headless: open no audio device
+  --url URL        the control API of a running Scythe (default http://127.0.0.1:8770)
+  --token TOKEN    the token it requires (also SCYTHE_CONTROL_TOKEN)
+  --headless       run a session in this process instead, without a window
+  --null-audio     with --headless: open no audio device
+  --tools DOMAINS  the tools to list: `default` (a compact set), `all`, or domains such as
+                   `default,mix,setlist` (comma-separated); scythe_command reaches the rest
 ";
 
 struct Options {
@@ -23,6 +25,7 @@ struct Options {
     headless: bool,
     project: Option<PathBuf>,
     null_audio: bool,
+    tools: Selection,
 }
 
 fn options(args: &[String]) -> Result<Options, String> {
@@ -32,6 +35,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         headless: false,
         project: None,
         null_audio: false,
+        tools: Selection::default(),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -45,6 +49,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             "--token" => o.token = Some(value()?).filter(|t| !t.is_empty()),
             "--headless" => o.headless = true,
             "--null-audio" => o.null_audio = true,
+            "--tools" => o.tools = Selection::parse(&value()?)?,
             n if n.starts_with("--") => return Err(format!("unknown option {n}")),
             _ if o.project.is_none() => o.project = Some(PathBuf::from(arg)),
             _ => return Err("give at most one project".into()),
@@ -73,7 +78,7 @@ fn run(options: Options) -> Result<(), String> {
     if options.headless {
         let output = protocol_output().map_err(|e| format!("cannot set up stdout: {e}"))?;
         let session = InProcess::start(options.project, options.null_audio)?;
-        let server = McpServer::new(session.backend());
+        let server = McpServer::with_tools(session.backend(), options.tools);
         eprintln!("scythe-mcp: serving an in-process session on stdio");
         stdio::serve(&server, stdin, BufWriter::new(output)).map_err(|e| e.to_string())
     } else {
@@ -82,8 +87,8 @@ fn run(options: Options) -> Result<(), String> {
             Ok(()) => eprintln!("scythe-mcp: serving Scythe at {} on stdio", remote.url()),
             Err(e) => eprintln!("scythe-mcp: {e}; tools fail until Scythe runs with its control API"),
         }
-        let server = McpServer::new(remote);
-        stdio::serve(&server, stdin, io::stdout().lock()).map_err(|e| e.to_string())
+        let server = McpServer::with_tools(remote, options.tools);
+        stdio::serve(&server, stdin, io::stdout()).map_err(|e| e.to_string())
     }
 }
 

@@ -1,15 +1,18 @@
 //! The tools, made from the control API's command types so their names, descriptions and
 //! argument schemas follow the API: every command `domain.action` is a tool `domain_action`.
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
+use scythe_session::access::AccessCommand;
 use scythe_session::api::{
-    customize::CustomizeCommand, envelope::EnvelopeCommand, fx::FxCommand, groups::GroupCommand, items::ItemCommand,
-    markers::MarkerCommand, midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
-    recording::RecordingCommand, render::RenderCommand, sends::SendCommand, setlist::SetlistCommand,
-    surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
+    analysis::AnalysisCommand, customize::CustomizeCommand, envelope::EnvelopeCommand, feed::EventsCommand,
+    fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, media::MediaCommand,
+    midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
+    recording::RecordingCommand, render::RenderCommand, script::ScriptCommand, sends::SendCommand,
+    setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
     transport::TransportCommand,
 };
 use serde::Deserialize;
@@ -24,11 +27,16 @@ pub enum Action {
     Project,
     /// Runs the command given as the `command` argument.
     Passthrough,
+    /// Shows or changes which tools are listed.
+    Tools,
 }
 
 #[derive(Debug, Clone)]
 pub struct Tool {
     pub name: String,
+    /// The API domain (`track`, `mix`…), what `--tools` selects by; empty for the tools
+    /// always listed.
+    pub domain: String,
     pub action: Action,
     /// The tool as `tools/list` lists it.
     pub definition: Value,
@@ -104,6 +112,11 @@ fn domains() -> Vec<Value> {
         schema::<RecordingCommand>(),
         schema::<CustomizeCommand>(),
         schema::<EnvelopeCommand>(),
+        schema::<MediaCommand>(),
+        schema::<AnalysisCommand>(),
+        schema::<EventsCommand>(),
+        schema::<AccessCommand>(),
+        schema::<ScriptCommand>(),
     ]
 }
 
@@ -118,6 +131,7 @@ pub fn all() -> &'static [Tool] {
             tools.extend(variants.iter().filter_map(|v| command_tool(v, notes.as_deref())));
         }
         tools.push(passthrough_tool());
+        tools.push(tools_tool());
         tools
     })
 }
@@ -160,6 +174,7 @@ fn command_tool(variant: &Value, notes: Option<&str>) -> Option<Tool> {
     }
     description.push_str(&format!("\n\nControl API command `{cmd}`."));
     let name = cmd.replace('.', "_");
+    let domain = cmd.split('.').next().unwrap_or_default().to_owned();
     let definition = json!({
         "name": name,
         "title": title(&cmd),
@@ -167,7 +182,7 @@ fn command_tool(variant: &Value, notes: Option<&str>) -> Option<Tool> {
         "inputSchema": input,
         "annotations": annotations(&cmd),
     });
-    Some(Tool { name, action: Action::Command(cmd), definition })
+    Some(Tool { name, domain, action: Action::Command(cmd), definition })
 }
 
 fn project_tool() -> Tool {
@@ -176,6 +191,7 @@ fn project_tool() -> Tool {
         markers. Start here: tools name tracks by the ids and names it shows. Times are in seconds.";
     Tool {
         name: "get_project".into(),
+        domain: String::new(),
         action: Action::Project,
         definition: json!({
             "name": "get_project",
@@ -194,6 +210,7 @@ fn passthrough_tool() -> Tool {
         lists every command.";
     Tool {
         name: "scythe_command".into(),
+        domain: String::new(),
         action: Action::Passthrough,
         definition: json!({
             "name": "scythe_command",
@@ -202,6 +219,187 @@ fn passthrough_tool() -> Tool {
             "inputSchema": arguments::<CommandArgs>(),
             "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
         }),
+    }
+}
+
+/// Arguments of `scythe_tools`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolsArgs {
+    /// Domains to list the tools of from now on, besides those listed (`mix`, `setlist`,
+    /// `fx`…; `all` for every tool).
+    #[serde(default)]
+    pub enable: Vec<String>,
+    /// Domains to stop listing (`default` for the curated set).
+    #[serde(default)]
+    pub disable: Vec<String>,
+}
+
+fn tools_tool() -> Tool {
+    let description = "Shows which tool domains are listed and which exist, or lists more (`enable`) or \
+        fewer (`disable`). The default is a compact set for building and mixing a session; every \
+        domain's tools can be added here, and any command runs through scythe_command meanwhile. \
+        Clients are told of the change (tools/list_changed).";
+    Tool {
+        name: "scythe_tools".into(),
+        domain: String::new(),
+        action: Action::Tools,
+        definition: json!({
+            "name": "scythe_tools",
+            "title": "Choose the tools listed",
+            "description": description,
+            "inputSchema": arguments::<ToolsArgs>(),
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }),
+    }
+}
+
+/// The compact set listed unless `--tools` says otherwise: enough to build a live session,
+/// mix it and match it to a reference, with scythe_command for the rest.
+pub const CURATED: &[&str] = &[
+    "transport_play",
+    "transport_stop",
+    "transport_seek",
+    "transport_state",
+    "transport_metronome",
+    "project_save",
+    "project_undo",
+    "project_redo",
+    "track_add",
+    "track_rename",
+    "track_volume",
+    "track_pan",
+    "track_mute",
+    "track_input",
+    "track_folder",
+    "send_add",
+    "send_hw_add",
+    "fx_catalog",
+    "fx_add",
+    "fx_params",
+    "fx_param",
+    "marker_list",
+    "marker_add",
+    "mix_create",
+    "mix_level",
+    "mix_output",
+    "setlist_songs",
+    "setlist_create",
+    "media_import",
+    "media_probe",
+    "analysis_file",
+    "analysis_mix",
+    "analysis_compare",
+    "analysis_match_eq",
+    "analysis_segments",
+    "events_since",
+    "events_meters",
+];
+
+/// Which tools `tools/list` gives: the curated set and/or whole domains, or all of them.
+/// `get_project`, `scythe_command` and `scythe_tools` are always listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub all: bool,
+    pub curated: bool,
+    pub domains: BTreeSet<String>,
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Self { all: false, curated: true, domains: BTreeSet::new() }
+    }
+}
+
+/// Every domain that has tools, in the order they are listed.
+pub fn domain_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for t in all() {
+        if !t.domain.is_empty() && !names.contains(&t.domain.as_str()) {
+            names.push(t.domain.as_str());
+        }
+    }
+    names
+}
+
+impl Selection {
+    pub fn everything() -> Self {
+        Self { all: true, curated: true, domains: BTreeSet::new() }
+    }
+
+    /// `--tools` and `?tools=`: a comma-separated list of domains, `default` for the curated
+    /// set, `all` for every tool.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut s = Self { all: false, curated: false, domains: BTreeSet::new() };
+        s.enable(spec.split(',').map(str::trim).filter(|d| !d.is_empty()))?;
+        if !s.all && !s.curated && s.domains.is_empty() {
+            s.curated = true;
+        }
+        Ok(s)
+    }
+
+    pub fn enable<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+        let known = domain_names();
+        for name in names {
+            match name {
+                "all" => self.all = true,
+                "default" => self.curated = true,
+                d if known.contains(&d) => {
+                    self.domains.insert(d.to_owned());
+                }
+                d => return Err(format!("no tool domain \"{d}\"; there are default, all, {}", known.join(", "))),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn disable<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) -> Result<(), String> {
+        let known = domain_names();
+        for name in names {
+            match name {
+                "all" => {
+                    self.all = false;
+                    self.curated = false;
+                    self.domains.clear();
+                }
+                "default" => self.curated = false,
+                d if known.contains(&d) => {
+                    if self.all {
+                        self.all = false;
+                        self.curated = false;
+                        self.domains = known.iter().map(|k| (*k).to_owned()).collect();
+                    }
+                    self.domains.remove(d);
+                }
+                d => return Err(format!("no tool domain \"{d}\"")),
+            }
+        }
+        Ok(())
+    }
+
+    pub fn includes(&self, tool: &Tool) -> bool {
+        self.all
+            || tool.domain.is_empty()
+            || self.domains.contains(&tool.domain)
+            || (self.curated && CURATED.contains(&tool.name.as_str()))
+    }
+
+    /// The tools listed, in `tools/list` order.
+    pub fn tools(&self) -> Vec<&'static Tool> {
+        all().iter().filter(|t| self.includes(t)).collect()
+    }
+
+    /// How it reads in `--tools` form.
+    pub fn describe(&self) -> String {
+        if self.all {
+            return "all".into();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if self.curated {
+            parts.push("default".into());
+        }
+        parts.extend(self.domains.iter().cloned());
+        if parts.is_empty() { "none".into() } else { parts.join(",") }
     }
 }
 
@@ -217,12 +415,14 @@ fn title(cmd: &str) -> String {
 /// Hints for clients deciding what to confirm with the user, judged by the action's name so
 /// that new domains get sensible ones too.
 fn annotations(cmd: &str) -> Value {
-    const READS: [&str; 16] = [
+    const READS: [&str; 24] = [
         "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
-        "peaks", "health", "devices", "evaluate",
+        "peaks", "health", "devices", "evaluate", "since", "meters", "probe", "job", "compare", "file", "mix",
+        "whoami",
     ];
-    // Opening or starting a project drops unsaved changes; saving overwrites a file.
-    const DESTROYS: [&str; 6] = ["delete", "remove", "clear", "open", "new", "save"];
+    // Opening or starting a project drops unsaved changes; saving overwrites a file; renewing
+    // a link locks out the phone holding it.
+    const DESTROYS: [&str; 7] = ["delete", "remove", "clear", "open", "new", "save", "renew"];
     // Toggles, and actions that add or step on each time.
     const REPEATABLE: [&str; 22] = [
         "mute",
@@ -248,6 +448,9 @@ fn annotations(cmd: &str) -> Value {
         "next",
         "previous",
     ];
+    if cmd == "script.run" {
+        return json!({"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false});
+    }
     let action = cmd.rsplit('.').next().unwrap_or(cmd);
     let has = |list: &[&str]| action.split('_').any(|word| list.contains(&word));
     if has(&READS) {
@@ -307,6 +510,27 @@ mod tests {
         assert_eq!(find("setlist_next").unwrap().definition["annotations"]["idempotentHint"], false);
         assert_eq!(find("track_volume").unwrap().definition["annotations"]["destructiveHint"], false);
         assert_eq!(find("track_mute").unwrap().definition["annotations"]["idempotentHint"], false);
+    }
+
+    #[test]
+    fn selections_pick_domains() {
+        let default = Selection::default().tools();
+        assert!(default.len() < all().len() / 3);
+        assert!(CURATED.iter().all(|name| find(name).is_some()), "every curated tool exists");
+        let mixes = Selection::parse("mix").unwrap();
+        assert!(mixes.tools().iter().all(|t| t.domain.is_empty() || t.domain == "mix"));
+        assert_eq!(Selection::parse("all").unwrap().tools().len(), all().len());
+        assert_eq!(Selection::parse("default,setlist").unwrap().describe(), "default,setlist");
+        assert!(Selection::parse("nope").is_err());
+        let mut s = Selection::everything();
+        s.disable(["mix"]).unwrap();
+        assert!(!s.tools().iter().any(|t| t.domain == "mix") && s.tools().iter().any(|t| t.domain == "track"));
+        for name in ["script_run", "access_renew"] {
+            assert_eq!(find(name).unwrap().definition["annotations"]["destructiveHint"], true, "{name}");
+        }
+        for name in ["analysis_compare", "media_probe", "events_since", "analysis_file"] {
+            assert_eq!(find(name).unwrap().definition["annotations"]["readOnlyHint"], true, "{name}");
+        }
     }
 
     #[test]

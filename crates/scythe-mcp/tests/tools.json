@@ -9933,6 +9933,1133 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Places audio files (WAV, FLAC, AIFF, MP3, Ogg, Opus…) and MIDI files (.mid, as\nin-project MIDI items) as items, as one undo step per file, and answers with the items.\nWithout `track` each file gets a new track named after it; with `sequence` they go one\nafter another on one track.\n\nControl API command `media.import`.",
+    "inputSchema": {
+      "properties": {
+        "gap": {
+          "default": null,
+          "description": "Seconds between items with `sequence` (default 0).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "The name of the new track, when one track is made for all of them.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "paths": {
+          "description": "Files on the machine running Scythe.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "position": {
+          "default": null,
+          "description": "Project time of the first item, in seconds; 0 when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sequence": {
+          "default": false,
+          "description": "All files on one track, each after the one before, `gap` seconds apart.",
+          "type": "boolean"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The track to place them on (id or name); left out, new tracks."
+        }
+      },
+      "required": [
+        "paths"
+      ],
+      "type": "object"
+    },
+    "name": "media_import",
+    "title": "Media import"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "What a file holds: format, sample rate, channels and length from its header, and its\nloudness (integrated LUFS), true peak and loudness range once decoded. Starts a job\nlike the `analysis.*` commands (see `analysis.job`).\n\nControl API command `media.probe`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "A file on the machine running Scythe.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "media_probe",
+    "title": "Media probe"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Measures an audio file: integrated, short-term and momentary loudness (EBU R128),\nloudness range, true peak, crest factor, a third-octave long-term spectrum with a\ntonal balance curve normalised to the loudness, stereo width and correlation per band,\na low-end mono check, spectral centroid, brightness and transients per second.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.file`.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "default": null,
+          "description": "Seconds into the file to end at.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "path": {
+          "description": "An audio file on the machine running Scythe.",
+          "type": "string"
+        },
+        "start": {
+          "default": null,
+          "description": "Seconds into the file to start at.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "analysis_file",
+    "title": "Analysis file"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Renders the mix offline (nothing is heard) through Scythe's render path and measures it\nas `analysis.file` does: the master, one track's output, or a track group.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.mix`.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "default": null,
+          "description": "Project time to end at; the project's end when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "start": {
+          "default": null,
+          "description": "Project time to start at, in seconds; 0 when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "target": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "description": "The tracks of track group `group` (1-64), soloed through the master.",
+                  "properties": {
+                    "group": {
+                      "format": "uint",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "group"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "`\"master\"`, or a track by id or name (its own output, a folder with its children)."
+                }
+              ],
+              "description": "What part of the mix to render."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "`\"master\"` (default), a track id or name, or `{\"group\": n}`."
+        }
+      },
+      "type": "object"
+    },
+    "name": "analysis_mix",
+    "title": "Analysis mix"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "A job's state: `running`, `done` with its `result`, or `failed` with its `error`.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.job`.",
+    "inputSchema": {
+      "properties": {
+        "job": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "type": "object"
+    },
+    "name": "analysis_job",
+    "title": "Analysis job"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Measures both and reports how `mix` differs from `reference`: loudness, peaks,\ndynamics, width, the tonal balance per third octave and per region, and a summary in\nplain words.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.compare`.",
+    "inputSchema": {
+      "properties": {
+        "mix": {
+          "anyOf": [
+            {
+              "description": "A finished `analysis.file` or `analysis.mix` job, by its number.",
+              "properties": {
+                "job": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "job"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An audio file on the machine running Scythe, such as a reference track.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Seconds into the file to end at; the end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "file": {
+                  "type": "string"
+                },
+                "start": {
+                  "default": null,
+                  "description": "Seconds into the file to start at; the start when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The project rendered offline: `\"master\"`, a track (a folder track renders as its bus),\nor `{\"group\": n}` for the tracks of a track group.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Project time to end at; the project's end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mix": {
+                  "anyOf": [
+                    {
+                      "description": "The tracks of track group `group` (1-64), soloed through the master.",
+                      "properties": {
+                        "group": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "group"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "anyOf": [
+                        {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ],
+                      "description": "`\"master\"`, or a track by id or name (its own output, a folder with its children)."
+                    }
+                  ],
+                  "description": "What part of the mix to render."
+                },
+                "start": {
+                  "default": null,
+                  "description": "Project time to start at, in seconds; 0 when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "mix"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "What to measure: an audio file, the project's mix, or a measurement already made."
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "description": "A finished `analysis.file` or `analysis.mix` job, by its number.",
+              "properties": {
+                "job": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "job"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An audio file on the machine running Scythe, such as a reference track.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Seconds into the file to end at; the end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "file": {
+                  "type": "string"
+                },
+                "start": {
+                  "default": null,
+                  "description": "Seconds into the file to start at; the start when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The project rendered offline: `\"master\"`, a track (a folder track renders as its bus),\nor `{\"group\": n}` for the tracks of a track group.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Project time to end at; the project's end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mix": {
+                  "anyOf": [
+                    {
+                      "description": "The tracks of track group `group` (1-64), soloed through the master.",
+                      "properties": {
+                        "group": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "group"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "anyOf": [
+                        {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ],
+                      "description": "`\"master\"`, or a track by id or name (its own output, a folder with its children)."
+                    }
+                  ],
+                  "description": "What part of the mix to render."
+                },
+                "start": {
+                  "default": null,
+                  "description": "Project time to start at, in seconds; 0 when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "mix"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "What to measure: an audio file, the project's mix, or a measurement already made."
+        }
+      },
+      "required": [
+        "reference",
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "analysis_compare",
+    "title": "Analysis compare"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Proposes a few EQ bands (smoothed, limited gain) that bring `mix`'s tonal balance\ntowards `reference`'s, with advice on compression and limiting for its loudness and\npeaks. With `apply`, the bands go onto that track (or the master) as a new ReaEQ in one\nundo step once the job is done.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.match_eq`.",
+    "inputSchema": {
+      "properties": {
+        "apply": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "A track id or name, or \"master\", to put the EQ on."
+        },
+        "max_bands": {
+          "default": null,
+          "description": "At most this many bands (default 6).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_gain_db": {
+          "default": null,
+          "description": "No band beyond this many dB either way (default 6, at most 12).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "max_hz": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_hz": {
+          "default": null,
+          "description": "The range to match, in Hz (default 30 to 16000).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "mix": {
+          "anyOf": [
+            {
+              "description": "A finished `analysis.file` or `analysis.mix` job, by its number.",
+              "properties": {
+                "job": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "job"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An audio file on the machine running Scythe, such as a reference track.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Seconds into the file to end at; the end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "file": {
+                  "type": "string"
+                },
+                "start": {
+                  "default": null,
+                  "description": "Seconds into the file to start at; the start when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The project rendered offline: `\"master\"`, a track (a folder track renders as its bus),\nor `{\"group\": n}` for the tracks of a track group.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Project time to end at; the project's end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mix": {
+                  "anyOf": [
+                    {
+                      "description": "The tracks of track group `group` (1-64), soloed through the master.",
+                      "properties": {
+                        "group": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "group"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "anyOf": [
+                        {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ],
+                      "description": "`\"master\"`, or a track by id or name (its own output, a folder with its children)."
+                    }
+                  ],
+                  "description": "What part of the mix to render."
+                },
+                "start": {
+                  "default": null,
+                  "description": "Project time to start at, in seconds; 0 when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "mix"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "What to measure: an audio file, the project's mix, or a measurement already made."
+        },
+        "reference": {
+          "anyOf": [
+            {
+              "description": "A finished `analysis.file` or `analysis.mix` job, by its number.",
+              "properties": {
+                "job": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "job"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "An audio file on the machine running Scythe, such as a reference track.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Seconds into the file to end at; the end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "file": {
+                  "type": "string"
+                },
+                "start": {
+                  "default": null,
+                  "description": "Seconds into the file to start at; the start when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "The project rendered offline: `\"master\"`, a track (a folder track renders as its bus),\nor `{\"group\": n}` for the tracks of a track group.",
+              "properties": {
+                "end": {
+                  "default": null,
+                  "description": "Project time to end at; the project's end when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "mix": {
+                  "anyOf": [
+                    {
+                      "description": "The tracks of track group `group` (1-64), soloed through the master.",
+                      "properties": {
+                        "group": {
+                          "format": "uint",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "group"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "anyOf": [
+                        {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ],
+                      "description": "`\"master\"`, or a track by id or name (its own output, a folder with its children)."
+                    }
+                  ],
+                  "description": "What part of the mix to render."
+                },
+                "start": {
+                  "default": null,
+                  "description": "Project time to start at, in seconds; 0 when left out.",
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "mix"
+              ],
+              "type": "object"
+            }
+          ],
+          "description": "What to measure: an audio file, the project's mix, or a measurement already made."
+        }
+      },
+      "required": [
+        "reference",
+        "mix"
+      ],
+      "type": "object"
+    },
+    "name": "analysis_match_eq",
+    "title": "Analysis match eq"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a ReaEQ with these bands to a track's (or the master's) effects, as one undo step.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.apply_eq`.",
+    "inputSchema": {
+      "properties": {
+        "bands": {
+          "items": {
+            "description": "An EQ band as `analysis.match_eq` proposes it and `analysis.apply_eq` takes it.",
+            "properties": {
+              "bandwidth": {
+                "default": 1.0,
+                "description": "Octaves (for shelves, the slope: 1 is a gentle one).",
+                "format": "double",
+                "type": "number"
+              },
+              "freq": {
+                "description": "Hz.",
+                "format": "double",
+                "type": "number"
+              },
+              "gain_db": {
+                "description": "dB, at most 12 either way.",
+                "format": "double",
+                "type": "number"
+              },
+              "kind": {
+                "description": "`low_shelf`, `high_shelf` or `peak`.",
+                "enum": [
+                  "low_shelf",
+                  "high_shelf",
+                  "peak"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "freq",
+              "gain_db"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "bands"
+      ],
+      "type": "object"
+    },
+    "name": "analysis_apply_eq",
+    "title": "Analysis apply eq"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Finds the songs in a backing-track or click file (or an item's file): sound between\nsilences, with start and end, loudness and, for a click, the tempo. Proposes a song\nmarker at each start and a `!1016` stop marker after each end; with `markers` it adds\nthem (in project time, for an item) as one undo step.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.segments`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "default": null,
+          "description": "An item's id: its active take's file, placed where the item is.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "markers": {
+          "default": false,
+          "description": "Add the proposed markers to the project.",
+          "type": "boolean"
+        },
+        "min_length": {
+          "default": null,
+          "description": "Shorter sounds are not songs (default 5 seconds).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min_silence": {
+          "default": null,
+          "description": "Silence of at least this many seconds separates songs (default 2).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "Song marker names: this followed by a number (default \"Song\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "An audio file; or give `item`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threshold_db": {
+          "default": null,
+          "description": "Below this peak level counts as silence (default -50 dBFS).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "analysis_segments",
+    "title": "Analysis segments"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The events after number `since` (all kept when left out), oldest first, with `latest`\nto pass as `since` next time; `missed` says older ones were dropped in between. Events:\n`project_changed` (with `revision`), `notice`, `setlist`, `transport` (play, stop,\nrecord, loop, metronome changes), `health` (xruns, device lost). Also answers the\nproject `revision` and the transport now.\n\nControl API command `events.since`.",
+    "inputSchema": {
+      "properties": {
+        "since": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "events_since",
+    "title": "Events since"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Meter levels now (peak dBFS per channel, decaying like the UI's) of the master, every\ntrack and every monitor mix, with the audio device's health (xruns, load, status).\n\nControl API command `events.meters`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "events_meters",
+    "title": "Events meters"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The caller's role.\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.whoami`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "access_whoami",
+    "title": "Access whoami"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every access link, with the addresses this server is reached at (`origins`).\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.list`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object"
+    },
+    "name": "access_list",
+    "title": "Access list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A new link for a musician's monitor mix or for the stage tablet (the setlist).\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.create`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "musician": {
+          "default": null,
+          "description": "Whose monitor mix, for a musician's link (as in `mix.create`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "description": "What to call the link, such as \"Drummer's phone\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "description": "`musician` or `stage`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role"
+      ],
+      "type": "object"
+    },
+    "name": "access_create",
+    "title": "Access create"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Renames a link, or points a musician's link at another musician's mix.\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.update`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "musician": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "access_update",
+    "title": "Access update"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "A new token for the link; the old one stops working (a lost phone).\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.renew`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "access_renew",
+    "title": "Access renew"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes the link; its token stops working.\n\nThe `access.*` commands, which the server answers itself (the links live there, not in the\nsession); all but `access.whoami` need the admin token. A link's `path` is the page it opens\nwith its token; `urls` are that page at the addresses phones on the network can reach,\nwhich is what its QR code holds.\n\nControl API command `access.delete`.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "name": "access_delete",
+    "title": "Access delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs ReaScript code (REAPER's `reaper.*` API, the subset Scythe implements) and answers\nwith what it printed. Its changes to the project are one undo step. It can change\nanything in the project, so it needs the admin token; it runs in the desktop app only.\n\nControl API command `script.run`.",
+    "inputSchema": {
+      "properties": {
+        "code": {
+          "description": "The script's text.",
+          "type": "string"
+        },
+        "language": {
+          "default": "lua",
+          "description": "`lua` (default) or `eel`.",
+          "enum": [
+            "lua",
+            "eel"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "type": "object"
+    },
+    "name": "script_run",
+    "title": "Script run"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,
@@ -9955,5 +11082,38 @@
     },
     "name": "scythe_command",
     "title": "Run a control API command"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Shows which tool domains are listed and which exist, or lists more (`enable`) or fewer (`disable`). The default is a compact set for building and mixing a session; every domain's tools can be added here, and any command runs through scythe_command meanwhile. Clients are told of the change (tools/list_changed).",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "disable": {
+          "default": [],
+          "description": "Domains to stop listing (`default` for the curated set).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enable": {
+          "default": [],
+          "description": "Domains to list the tools of from now on, besides those listed (`mix`, `setlist`,\n`fx`…; `all` for every tool).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "scythe_tools",
+    "title": "Choose the tools listed"
   }
 ]

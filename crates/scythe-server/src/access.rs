@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use scythe_session::access::Scope;
+use scythe_session::access::{AccessCommand, Scope};
 use scythe_session::api::ApiError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -75,35 +75,6 @@ fn musician_name(value: Option<&str>) -> Result<String, ApiError> {
         return Err(ApiError::invalid("a musician's link needs \"musician\": whose monitor mix it reaches"));
     }
     Ok(name.to_owned())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", deny_unknown_fields)]
-enum AccessCommand {
-    #[serde(rename = "access.whoami")]
-    Whoami,
-    #[serde(rename = "access.list")]
-    List,
-    #[serde(rename = "access.create")]
-    Create {
-        role: String,
-        #[serde(default)]
-        musician: Option<String>,
-        #[serde(default)]
-        name: Option<String>,
-    },
-    #[serde(rename = "access.update")]
-    Update {
-        id: String,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        musician: Option<String>,
-    },
-    #[serde(rename = "access.renew")]
-    Renew { id: String },
-    #[serde(rename = "access.delete")]
-    Delete { id: String },
 }
 
 impl Access {

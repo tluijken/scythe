@@ -87,7 +87,23 @@ parameters), items, markers, monitor mixes and setlists, plus `scythe_command` f
 API answers MCP over Streamable HTTP at `/mcp`; the `scythe-mcp` binary serves stdio, bridging
 to a running Scythe (`--url`, `--token`) or running a session of its own (`--headless
 song.RPP`). Tool schemas are generated from the API's command types; deleting, opening,
-starting a new project and saving are marked destructive for clients to confirm.
+starting a new project, saving and running scripts are marked destructive for clients to confirm.
+
+For building live sessions and mixing, agents also get: `media_import` and `media_probe` (audio
+and MIDI files as items, with length, rate and loudness), `analysis_segments` (songs in a
+backing-track or click file, with tempo, and proposed song and `!1016` stop markers),
+`analysis_file`, `analysis_mix`, `analysis_compare` and `analysis_match_eq` (EBU R128 loudness,
+true peak, loudness range, crest factor, third-octave spectrum and tonal balance, width and
+correlation per band, low-end mono check, brightness, transient density; mixes rendered
+offline through the render path, never played; a few limited-gain ReaEQ bands proposed and
+applied as one undo step, with compression and limiting advice), `events_since` and
+`events_meters` for polling, the access links with their QR payloads, and `script_run` for
+ReaScript text in the desktop app. A compact set of tools is listed by default; `--tools
+mix,setlist` (or `/mcp?tools=all`) and the `scythe_tools` tool list more, with
+`tools/list_changed`. Clients can subscribe to `scythe://project` and get log messages for
+notices, transport and device health (stdio, or `GET /mcp` as server-sent events). Prompts
+`build_live_session`, `setlist_from_backing_tracks` and `match_reference` walk an agent through
+the whole job.
 
 ### Web UI (browser, tablet, phone)
 
@@ -145,7 +161,7 @@ the UI without rebuilding. Its logic tests run with `node crates/scythe-server/w
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
 | `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |
 | `scythe-surface` | Control surfaces on top of the control API: OSC with REAPER's `.ReaperOSC` pattern files, Mackie Control and extenders, HUI; run by the app and the server from the `csurf_<i>` preferences |
-| `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts; the `scythe-mcp` stdio binary |
+| `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts, tool selection, subscriptions and notifications, waiting for measuring jobs; the `scythe-mcp` stdio binary |
 | `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), Actions window, toolbars, plugin editor windows, ReaScript, demo generator |
 
 `cargo run -p scythe-core --example rpp_roundtrip -- *.RPP` loads projects, writes them back
@@ -901,6 +917,14 @@ compares the two files.
   (`LFO`) and the points it generated, so its generator could not be compared. Take envelope
   and tempo envelope lanes, razor edits on envelopes and per-envelope automation modes are not
   there; the lanes dock under the arrange view rather than under each track.
+- Mix analysis and reference matching (`analysis.*`): tonal balance is matched with ReaEQ
+  shelves and peaks only (no linear-phase or ReaFIR matching), loudness and dynamics come as
+  advice rather than applied processing, and the measurements are checked against synthetic
+  signals with known answers (EBU Tech 3341/3342 style sines, pink and white noise), not
+  against another meter. `script.run` needs the desktop app (the headless server has no
+  ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
+  sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
+  that address.
 - Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
   only between the first and last message played (REAPER's CC timeout is not modelled). The
   MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER

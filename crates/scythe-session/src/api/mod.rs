@@ -4,19 +4,23 @@
 //! own module with its own command enum; adding a domain means a module, a [`Command`]
 //! variant and a line in each of [`Command`]'s two `match`es.
 
+pub mod analysis;
 pub mod customize;
 pub mod envelope;
 pub mod events;
+pub mod feed;
 pub mod fx;
 pub mod groups;
 pub mod items;
 pub mod markers;
+pub mod media;
 pub mod midi;
 pub mod mix;
 pub mod modulation;
 pub mod project;
 pub mod recording;
 pub mod render;
+pub mod script;
 pub mod sends;
 pub mod setlist;
 pub mod snapshot;
@@ -59,6 +63,10 @@ pub enum Command {
     Recording(recording::RecordingCommand),
     Customize(customize::CustomizeCommand),
     Envelope(envelope::EnvelopeCommand),
+    Media(media::MediaCommand),
+    Analysis(analysis::AnalysisCommand),
+    Events(feed::EventsCommand),
+    Script(script::ScriptCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -102,6 +110,10 @@ impl<'de> Deserialize<'de> for Command {
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             "render" => serde_json::from_value(value).map(Command::Render),
             "record" | "lanes" => serde_json::from_value(value).map(Command::Recording),
+            "media" => serde_json::from_value(value).map(Command::Media),
+            "analysis" => serde_json::from_value(value).map(Command::Analysis),
+            "events" => serde_json::from_value(value).map(Command::Events),
+            "script" => serde_json::from_value(value).map(Command::Script),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -130,6 +142,10 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Recording(c) => recording::execute(session, c),
         Command::Customize(c) => customize::execute(session, c),
         Command::Envelope(c) => envelope::execute(session, c),
+        Command::Media(c) => media::execute(session, c),
+        Command::Analysis(c) => analysis::execute(session, c),
+        Command::Events(c) => feed::execute(session, c),
+        Command::Script(c) => script::execute(session, c),
     }
 }
 

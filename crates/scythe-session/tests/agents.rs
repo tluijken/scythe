@@ -1,0 +1,292 @@
+//! The commands AI agents build sessions and match mixes with: importing media, finding songs
+//! in backing tracks, measuring files and mixes offline, matching EQ, and polling events.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use scythe_core::render_settings::ResampleMode;
+use scythe_engine::analysis::signals::pink;
+use scythe_engine::{Engine, MediaPool};
+use scythe_session::Session;
+use scythe_session::api::{ErrorKind, Event, execute_json};
+use scythe_session::control;
+use serde_json::{Value, json};
+
+const RATE: u32 = 48_000;
+
+fn session() -> Session {
+    let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    Session::new(Engine::start_offline(pool, RATE))
+}
+
+fn ok(session: &mut Session, command: Value) -> Value {
+    execute_json(session, command.clone()).unwrap_or_else(|e| panic!("{command} failed: {e}"))
+}
+
+/// Runs a command that starts a job and answers with the finished job.
+fn job(session: &mut Session, command: Value) -> Value {
+    let started = ok(session, command);
+    result(session, started)
+}
+
+/// Waits for a job a command started and answers with its result.
+fn result(session: &mut Session, started: Value) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut answer = started;
+    while answer["status"] == "running" {
+        assert!(Instant::now() < deadline, "the job took too long: {answer}");
+        std::thread::sleep(Duration::from_millis(20));
+        answer = ok(session, json!({"cmd": "analysis.job", "job": answer["job"]}));
+    }
+    assert_eq!(answer["status"], "done", "{answer}");
+    answer
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("scythe-agents-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn write_wav(path: &Path, left: &[f32], right: &[f32]) {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: RATE,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec).unwrap();
+    for (l, r) in left.iter().zip(right) {
+        w.write_sample(*l).unwrap();
+        w.write_sample(*r).unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+/// A click file for a set: songs of clicks at 120, 100 and 140 BPM with 4 s of silence between.
+fn click_file(path: &Path) -> Vec<(f64, f64)> {
+    let mut signal = vec![0.0f32; RATE as usize];
+    let mut songs = Vec::new();
+    for (bpm, beats) in [(120.0, 24), (100.0, 20), (140.0, 28)] {
+        let start = signal.len();
+        let period = (60.0 / bpm * RATE as f64) as usize;
+        for beat in 0..beats {
+            let mut block = vec![0.0f32; if beat + 1 == beats { 480 } else { period }];
+            for (i, s) in block.iter_mut().take(480).enumerate() {
+                *s = 0.5 * (std::f32::consts::TAU * 1500.0 * i as f32 / RATE as f32).sin() * (1.0 - i as f32 / 480.0);
+            }
+            signal.extend(block);
+        }
+        songs.push((start as f64 / RATE as f64, bpm));
+        signal.extend(vec![0.0f32; 4 * RATE as usize]);
+    }
+    write_wav(path, &signal, &signal);
+    songs
+}
+
+/// Four beats of one note, as a type 0 standard MIDI file.
+fn midi_file(path: &Path) {
+    // Note on, note off 3840 ticks (four beats) later, end of track.
+    let track = vec![0x00, 0x90, 60, 100, 0x9E, 0x00, 0x80, 60, 0, 0x00, 0xFF, 0x2F, 0x00];
+    let mut bytes = b"MThd".to_vec();
+    bytes.extend([0, 0, 0, 6, 0, 0, 0, 1, 0x03, 0xC0]);
+    bytes.extend(b"MTrk");
+    bytes.extend((track.len() as u32).to_be_bytes());
+    bytes.extend(track);
+    std::fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn import_probe_and_find_songs_in_a_click_file() {
+    let dir = scratch("import");
+    let click = dir.join("click.wav");
+    let songs = click_file(&click);
+    let midi = dir.join("keys.mid");
+    midi_file(&midi);
+    let mut s = session();
+
+    let probe = job(&mut s, json!({"cmd": "media.probe", "path": click}));
+    let info = &probe["result"];
+    assert_eq!((info["sample_rate"].as_u64(), info["channels"].as_u64()), (Some(48_000), Some(2)), "{info}");
+    assert!(info["integrated_lufs"].as_f64().unwrap() < -10.0, "{info}");
+    let midi_probe = job(&mut s, json!({"cmd": "media.probe", "path": midi}));
+    assert_eq!(midi_probe["result"]["kind"], "midi");
+
+    let imported = ok(&mut s, json!({"cmd": "media.import", "paths": [click, midi], "position": 2.0}));
+    let items = imported["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2, "{imported}");
+    assert_eq!(items[0]["track_name"], "click");
+    assert_eq!(items[1]["kind"], "midi");
+    assert_eq!(s.project.tracks.len(), 2);
+    let length = items[0]["length"].as_f64().unwrap();
+    let file_length = 1.0 + songs.len() as f64 * 4.0 + (23.0 * 0.5 + 19.0 * 0.6 + 27.0 * 60.0 / 140.0) + 3.0 * 0.01;
+    assert!((length - file_length).abs() < 0.01, "{length} against {file_length}");
+    assert!((items[1]["length"].as_f64().unwrap() - 2.0).abs() < 1e-6, "four beats at 120 BPM: {imported}");
+    let undone = ok(&mut s, json!({"cmd": "project.undo"}));
+    assert_eq!(undone["label"], "Import MIDI");
+    ok(&mut s, json!({"cmd": "project.redo"}));
+
+    let seq = ok(
+        &mut s,
+        json!({"cmd": "media.import", "paths": [click, click], "sequence": true, "gap": 2.0, "name": "Backing"}),
+    );
+    let placed = seq["items"].as_array().unwrap();
+    assert_eq!(placed[0]["track"], placed[1]["track"]);
+    assert!((placed[1]["position"].as_f64().unwrap() - (length + 2.0)).abs() < 1e-9, "{seq}");
+    let missing = execute_json(&mut s, json!({"cmd": "media.import", "paths": ["/nowhere/x.wav"]})).unwrap_err();
+    assert_eq!(missing.kind, ErrorKind::NotFound);
+
+    let item = items[0]["item"].as_u64().unwrap();
+    let found = job(&mut s, json!({"cmd": "analysis.segments", "item": item}));
+    let segments = found["result"]["segments"].as_array().unwrap();
+    assert_eq!(segments.len(), 3, "{found}");
+    for (segment, (start, bpm)) in segments.iter().zip(&songs) {
+        assert!((segment["start"].as_f64().unwrap() - start).abs() < 0.002, "{segment}");
+        assert!((segment["bpm"].as_f64().unwrap() - bpm).abs() < 0.5, "{segment}");
+    }
+    let markers = found["result"]["markers"].as_array().unwrap();
+    assert_eq!(markers.len(), 6);
+    assert!((markers[0]["position"].as_f64().unwrap() - (2.0 + songs[0].0)).abs() < 0.002, "item time: {markers:?}");
+    assert_eq!(markers[1]["name"], "!1016");
+
+    let placed = ok(&mut s, json!({"cmd": "analysis.segments", "item": item, "markers": true, "name": "Track"}));
+    assert_eq!(placed["result"]["added"], true);
+    let setlist = ok(&mut s, json!({"cmd": "setlist.songs"}));
+    let names: Vec<&str> = setlist.as_array().unwrap().iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names, ["Track 1", "Track 2", "Track 3"], "{setlist}");
+    assert_eq!(s.history.undo_label(), Some("Song markers"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A reference made by putting a known ReaEQ on pink noise: matching the plain noise to it
+/// through the render path, applying the proposed EQ and rendering again leaves the tonal
+/// balance within half a dB.
+#[test]
+fn matching_a_mix_to_a_reference_converges() {
+    let dir = scratch("match");
+    let noise = dir.join("noise.wav");
+    let p = pink(20.0, RATE, 21);
+    write_wav(&noise, &p, &p);
+    let mut s = session();
+    ok(&mut s, json!({"cmd": "media.import", "paths": [noise], "name": "Ref"}));
+    ok(&mut s, json!({"cmd": "media.import", "paths": [noise], "name": "Mix"}));
+    let (ref_id, mix_id) = (s.project.tracks[0].id.0, s.project.tracks[1].id.0);
+    let shaped = ok(
+        &mut s,
+        json!({"cmd": "analysis.apply_eq", "track": ref_id, "bands": [
+            {"kind": "low_shelf", "freq": 150.0, "gain_db": 3.5},
+            {"kind": "peak", "freq": 1800.0, "gain_db": -2.5, "bandwidth": 1.2},
+            {"kind": "high_shelf", "freq": 7000.0, "gain_db": 2.0}]}),
+    );
+    assert_eq!(shaped["fx_index"], 0);
+    let too_much = execute_json(
+        &mut s,
+        json!({"cmd": "analysis.apply_eq", "track": mix_id, "bands": [{"kind": "peak", "freq": 1000.0, "gain_db": 20.0}]}),
+    )
+    .unwrap_err();
+    assert_eq!(too_much.kind, ErrorKind::Invalid);
+
+    let reference = job(&mut s, json!({"cmd": "analysis.mix", "target": ref_id}));
+    let reference_job = reference["job"].clone();
+    assert!((reference["result"]["duration"].as_f64().unwrap() - 20.0).abs() < 0.01, "{reference}");
+    let before =
+        job(&mut s, json!({"cmd": "analysis.compare", "reference": {"job": reference_job}, "mix": {"mix": mix_id}}));
+    assert!(before["result"]["comparison"]["max_tonal_diff_db"].as_f64().unwrap() > 2.0, "{before}");
+    assert!(
+        before["result"]["comparison"]["summary"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().unwrap().contains("low end"))
+    );
+
+    let matched = ok(
+        &mut s,
+        json!({"cmd": "analysis.match_eq", "reference": {"job": reference_job}, "mix": {"mix": "Mix"}, "apply": "Mix"}),
+    );
+    let matched = result(&mut s, matched);
+    assert!(matched["result"]["max_error_after_db"].as_f64().unwrap() <= 0.5, "{matched}");
+    assert_eq!(matched["applied"]["track"], "Mix", "{matched}");
+    assert_eq!(s.history.undo_label(), Some("Match EQ"));
+    assert_eq!(s.project.tracks[1].fx.len(), 1);
+    let again = ok(&mut s, json!({"cmd": "analysis.job", "job": matched["job"]}));
+    assert_eq!(s.project.tracks[1].fx.len(), 1, "applied once: {again}");
+
+    let after =
+        job(&mut s, json!({"cmd": "analysis.compare", "reference": {"job": reference_job}, "mix": {"mix": "Mix"}}));
+    let c = &after["result"]["comparison"];
+    let worst = c["bands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|b| (30.0..=16_000.0).contains(&b["hz"].as_f64().unwrap()))
+        .map(|b| b["diff_db"].as_f64().unwrap().abs())
+        .fold(0.0, f64::max);
+    assert!(worst <= 0.5, "{worst} dB left: {c}");
+
+    let file = job(&mut s, json!({"cmd": "analysis.file", "path": noise}));
+    assert!(file["result"]["tilt_db_per_octave"].as_f64().unwrap().abs() < 0.3, "{file}");
+    let cached = ok(&mut s, json!({"cmd": "analysis.file", "path": noise}));
+    let cached = result(&mut s, cached);
+    assert_eq!(cached["result"], file["result"]);
+    let cache = scythe_session::data_dir().join("analysis-cache");
+    assert!(std::fs::read_dir(&cache).unwrap().count() >= 1);
+    let missing = execute_json(
+        &mut s,
+        json!({"cmd": "analysis.compare", "reference": {"job": 999_999}, "mix": {"mix": "master"}}),
+    );
+    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn events_can_be_polled_and_meters_read() {
+    let mut s = session();
+    let (_handle, mut pump) = control::channel(Arc::new(|| {}), Arc::new(|_: &Event| {}));
+    pump.pump(&mut s);
+    let start = ok(&mut s, json!({"cmd": "events.since"}));
+    let latest = start["latest"].as_u64().unwrap();
+    ok(&mut s, json!({"cmd": "track.add", "name": "Vox"}));
+    s.notify("Saved");
+    pump.pump(&mut s);
+    let news = ok(&mut s, json!({"cmd": "events.since", "since": latest}));
+    let kinds: Vec<&str> = news["events"].as_array().unwrap().iter().filter_map(|e| e["event"].as_str()).collect();
+    assert!(kinds.contains(&"project_changed") && kinds.contains(&"notice"), "{news}");
+    assert!(!kinds.contains(&"meters"));
+    assert_eq!(news["revision"].as_u64(), Some(s.revision()));
+    assert_eq!(news["missed"], false);
+    let nothing = ok(&mut s, json!({"cmd": "events.since", "since": news["latest"]}));
+    assert_eq!(nothing["events"], json!([]));
+
+    let meters = ok(&mut s, json!({"cmd": "events.meters"}));
+    assert_eq!(meters["tracks"][0]["name"], "Vox");
+    assert_eq!(meters["tracks"][0]["peak_db"], json!([-150.0, -150.0]));
+    assert!(meters["health"]["status"].is_string(), "{meters}");
+}
+
+#[test]
+fn scripts_need_a_runner_and_are_one_undo_step() {
+    let mut s = session();
+    let refused = execute_json(&mut s, json!({"cmd": "script.run", "code": "reaper.InsertTrackAtIndex(0, true)"}));
+    assert_eq!(refused.unwrap_err().kind, ErrorKind::Failed);
+    let seen = Arc::new(Mutex::new(String::new()));
+    let code_seen = seen.clone();
+    s.script_runner = Some(Box::new(move |session, _, code| {
+        *code_seen.lock().unwrap() = code.to_owned();
+        let mut project = session.project.clone();
+        project.add_track("From script");
+        Ok(scythe_session::api::script::ScriptRun {
+            project: Some(project),
+            console: "hello\n".into(),
+            undo: Some("Script edit".into()),
+            cursor: Some(4.0),
+        })
+    }));
+    let ran = ok(&mut s, json!({"cmd": "script.run", "code": "-- anything", "language": "lua"}));
+    assert_eq!((ran["console"].as_str(), ran["changed"].as_bool()), (Some("hello\n"), Some(true)));
+    assert_eq!(seen.lock().unwrap().as_str(), "-- anything");
+    assert_eq!(s.project.tracks[0].name, "From script");
+    assert_eq!(s.history.undo_label(), Some("Script edit"));
+    assert_eq!(s.project.cursor, 4.0);
+}

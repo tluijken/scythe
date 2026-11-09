@@ -127,6 +127,10 @@ pub struct Session {
     /// Every project tab; the active one's slot is empty, its project being `project`.
     parked_tabs: Vec<Option<tabs::ParkedTab>>,
     active_tab: usize,
+    /// Recent events for clients that poll (`events.since`).
+    pub event_log: api::feed::EventLog,
+    /// Runs ReaScript for `script.run`; the desktop app sets it.
+    pub script_runner: Option<api::script::ScriptRunner>,
 }
 
 impl Session {
@@ -180,6 +184,8 @@ impl Session {
             host_toggles: HashMap::new(),
             parked_tabs: vec![None],
             active_tab: 0,
+            event_log: Default::default(),
+            script_runner: None,
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));

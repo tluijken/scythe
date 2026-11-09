@@ -119,16 +119,16 @@ impl ControlPump {
 
     fn publish(&mut self, session: &mut Session) {
         for message in session.take_notices() {
-            (self.sink)(&Event::Notice { message });
+            self.emit(session, Event::Notice { message }, true);
         }
         if self.revision != session.revision() {
             self.revision = session.revision();
-            (self.sink)(&Event::ProjectChanged { revision: self.revision });
+            self.emit(session, Event::ProjectChanged { revision: self.revision }, true);
         }
         let status = setlist::status(session);
         let moved_on = |a: &SetlistStatus| SetlistStatus { elapsed: None, remaining: None, ..a.clone() };
         if self.setlist.as_ref().is_none_or(|last| moved_on(last) != moved_on(&status)) {
-            (self.sink)(&Event::Setlist(status.clone()));
+            self.emit(session, Event::Setlist(status.clone()), true);
             self.setlist = Some(status);
         }
         let now = Instant::now();
@@ -137,7 +137,7 @@ impl ControlPump {
         let changed = self.transport.as_ref().is_none_or(|last| !same_state(last, &state));
         if changed || (running && now.duration_since(self.transport_at) >= EVENT_INTERVAL) {
             self.transport_at = now;
-            (self.sink)(&Event::Transport(state.clone()));
+            self.emit(session, Event::Transport(state.clone()), changed);
             self.transport = Some(state);
         }
         if now.duration_since(self.meters_at) >= EVENT_INTERVAL {
@@ -165,8 +165,18 @@ impl ControlPump {
         let since = now.duration_since(self.health_at);
         if (news && since >= EVENT_INTERVAL) || since >= HEALTH_INTERVAL {
             self.health_at = now;
-            (self.sink)(&Event::Health(health.clone()));
+            self.emit(session, Event::Health(health.clone()), news);
             self.health = Some(health);
+        }
+    }
+}
+
+impl ControlPump {
+    /// Publishes `event`, and keeps it for clients that poll when `keep`.
+    fn emit(&self, session: &mut Session, event: Event, keep: bool) {
+        (self.sink)(&event);
+        if keep {
+            session.event_log.push(event);
         }
     }
 }

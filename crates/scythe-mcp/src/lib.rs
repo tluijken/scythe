@@ -4,6 +4,7 @@
 //! HTTP at `/mcp`.
 
 pub mod backend;
+pub mod prompts;
 pub mod protocol;
 pub mod session;
 pub mod stdio;
@@ -11,4 +12,5 @@ pub mod summary;
 pub mod tools;
 
 pub use backend::{Backend, Local, Remote};
-pub use protocol::{McpServer, PROTOCOL_VERSIONS};
+pub use protocol::{McpServer, Notifier, PROTOCOL_VERSIONS};
+pub use tools::Selection;
