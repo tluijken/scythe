@@ -4,6 +4,7 @@ pub mod builtin;
 pub mod clap_host;
 pub mod clap_presets;
 pub mod convolve;
+mod cues;
 pub mod delay;
 pub mod devices;
 pub mod disc;
@@ -37,6 +38,7 @@ pub mod vst2;
 pub mod vst3_host;
 pub mod wavcodec;
 
+pub use cues::MarkerAction;
 pub use devices::DeviceRequest;
 pub use engine::{DeviceInfo, Engine, Transport};
 pub use media::{AudioData, Media, MediaPool, MediaState, Peaks};

@@ -50,6 +50,8 @@ pub struct ViewState {
     pub monitor_page: bool,
     pub monitor_wizard: Option<crate::ui::monitor::Wizard>,
     pub cue_dialog: Option<crate::ui::monitor::Wizard>,
+    /// The setlist page replaces the arrange view.
+    pub setlist: bool,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -182,6 +184,7 @@ impl ScytheApp {
                 monitor_page: false,
                 monitor_wizard: None,
                 cue_dialog: None,
+                setlist: false,
             },
             palette: None,
             clipboard: Vec::new(),
@@ -229,6 +232,7 @@ impl ScytheApp {
 
     pub fn poll(&mut self) {
         self.session.poll();
+        self.run_marker_commands();
         self.poll_nam();
         self.follow_session();
     }

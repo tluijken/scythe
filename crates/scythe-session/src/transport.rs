@@ -190,6 +190,7 @@ impl Session {
 
     /// Play/pause: pausing leaves the edit cursor where playback stopped.
     pub fn toggle_play(&mut self) {
+        self.live.driving = false;
         if self.is_playing() {
             self.project.cursor = self.engine.transport().position_seconds();
             self.engine.stop();
@@ -201,6 +202,7 @@ impl Session {
 
     /// Stop returns the play cursor to the edit cursor, as in REAPER.
     pub fn stop(&mut self) {
+        self.live.driving = false;
         if self.is_recording() {
             self.toggle_record();
             return;

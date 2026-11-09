@@ -2,6 +2,7 @@ mod app;
 mod demo;
 mod dialog;
 mod fx_preset;
+mod live;
 mod nam;
 mod palette;
 mod plugin_window;
@@ -176,6 +177,7 @@ fn main() -> eframe::Result {
     let demo = args.iter().any(|a| a == "--demo") || open.is_none();
     let play = args.iter().any(|a| a == "--play");
     let no_input = args.iter().any(|a| a == "--no-input");
+    let setlist = args.iter().any(|a| a == "--setlist");
 
     if args.iter().any(|a| a == "--render-project") {
         let Some(path) = open.as_deref() else {
@@ -226,6 +228,7 @@ fn main() -> eframe::Result {
             }
             let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default());
             app.no_input = no_input;
+            app.view.setlist = setlist;
             match open {
                 Some(path) => app.open_path(&path),
                 None if demo => app.load_demo(),

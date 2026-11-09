@@ -24,6 +24,10 @@ pub enum Icon {
     Previous,
     Next,
     Headphones,
+    SkipBack,
+    SkipForward,
+    Close,
+    Setlist,
 }
 
 /// Maps the 24×24 SVG coordinate space of the mockup's icons into `rect`.
@@ -200,6 +204,25 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
             let r = CornerRadius::same((2.0 * c.scale) as u8);
             painter.rect_filled(Rect::from_min_max(c.p(3.0, 13.0), c.p(8.0, 20.0)), r, color);
             painter.rect_filled(Rect::from_min_max(c.p(16.0, 13.0), c.p(21.0, 20.0)), r, color);
+        }
+        Icon::SkipBack | Icon::SkipForward => {
+            let flip = |x: f32| if icon == Icon::SkipForward { 24.0 - x } else { x };
+            let bar = |x0: f32, x1: f32| {
+                Rect::from_min_max(c.p(flip(x0).min(flip(x1)), 5.0), c.p(flip(x0).max(flip(x1)), 19.0))
+            };
+            painter.rect_filled(bar(5.0, 7.5), CornerRadius::same(c.scale as u8), color);
+            let tri = c.pts(&[(flip(19.0), 5.0), (flip(9.0), 12.0), (flip(19.0), 19.0)]);
+            painter.add(Shape::convex_polygon(tri, color, Stroke::NONE));
+        }
+        Icon::Close => {
+            line(&[(6.0, 6.0), (18.0, 18.0)]);
+            line(&[(18.0, 6.0), (6.0, 18.0)]);
+        }
+        Icon::Setlist => {
+            for y in [6.0, 12.0, 18.0] {
+                painter.circle_filled(c.p(4.5, y), 1.4 * c.scale, color);
+                line(&[(9.0, y), (20.0, y)]);
+            }
         }
     }
 }

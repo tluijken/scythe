@@ -175,6 +175,32 @@ Working:
   into one take, as REAPER's MIDI overdub. A track can also send its MIDI (items and monitored
   input, optionally forced to one channel) to a hardware output (Sends tab), timed to sound
   with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
+- **Marker actions**: a marker named `!` plus command ids runs them when the play cursor
+  crosses it (REAPER's SWS "marker actions": `!1016` stops, `!1016 40042` stops and goes to the
+  start, `!_SWS_…` names a custom/extension command). Sample-accurate on the audio thread:
+  `!1016` stops on the marker's frame; starting or seeking onto a marker does not run it, nor
+  does a loop wrap landing on it. Stop (1016, 40044) returns to the edit cursor as REAPER's Stop
+  does; pause (1008, 40073, 40328) leaves the cursor at the marker; go to start/end/loop start
+  (40042, 40043, 40632) seek while playing, 1068 toggles repeat and 1007 is a no-op. Other ids
+  run the matching Scythe action (record 1013, metronome 40364, insert marker 40157, undo…);
+  named commands only show a notice. "Options: Toggle marker actions" turns it off.
+- **Setlists** (rail button or `L`; `scythe-app --setlist set.RPP` opens on it): the project's
+  markers become songs. With stop markers (`!1016` and other stopping actions) the first plain
+  marker after a stop begins a song that runs to the next stop marker, and markers inside it
+  are its cues (drawn on the progress bar); without stop markers every marker is a song up to
+  the next. Build several setlists per project from them (`+` or drag a song in, drag to
+  reorder, double-click a tab to rename, duplicate, delete), stored in the project's
+  `<EXTSTATE` (section `SCYTHE_SETLISTS`, one value per setlist, the same store as the
+  ReaScript `SetProjExtState`), which REAPER 7.73 reads (`GetProjExtState`) and saves back
+  unchanged. Entries find their song by the start marker's GUID, else by name, so renumbering
+  or moving markers keeps them. Export as plain text (title line, one numbered song per line;
+  also copied to the clipboard) and import text typed by hand. The stage view shows the song now playing with elapsed/remaining time,
+  what is next up and big previous/play-stop/next buttons; `Enter` plays the current song from
+  its marker, `N`/`P` move to the next/previous song (cueing it when stopped, playing it when
+  playing), `Esc` stops. With auto-advance on, a song that stops at its stop marker cues the
+  next one without playing it. It runs in the session, so a headless server plays setlists
+  too, and the control API has a `setlist.*` domain (songs, editing, play/cue/next, status
+  and a `setlist` event; see `docs/control-api.md`).
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
   file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
   output in a console window. 246 `reaper.*` functions:
@@ -499,6 +525,13 @@ compare with scythe's output sample by sample:
 compares the two files.
 
 ### Not there yet
+
+- Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
+  not advance playback without an audio device and the test setup has no SWS, so neither when
+  SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other
+  quirks were measured. Unlike SWS, a marker at the spot playback starts from or wraps to does
+  not run, and markers just before a loop end are never skipped. The on/off option is not saved
+  (SWS keeps `MarkerActionsEnabled` in reaper.ini). Setlist songs start without a count-in.
 
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.

@@ -5,6 +5,7 @@
 
 mod automation;
 mod files;
+mod live;
 mod media;
 mod transport;
 
@@ -24,6 +25,7 @@ use scythe_engine::midi_io::midi_input_channel;
 
 pub use automation::AutoTarget;
 use automation::AutoWrite;
+pub use live::LiveState;
 use media::StretchKey;
 pub use media::{LoaderMsg, RenderedItems};
 pub use scythe_core::ItemId;
@@ -47,6 +49,8 @@ pub struct Session {
     pub history: History,
     pub engine: Engine,
     pub recording: Option<ActiveRecording>,
+    /// The setlist being played and where in it.
+    pub live: LiveState,
     /// Record mode "time selection auto-punch": keep only what falls inside the time selection.
     pub auto_punch: bool,
     pub metronome: bool,
@@ -92,6 +96,7 @@ impl Session {
             history: History::default(),
             engine,
             recording: None,
+            live: LiveState::default(),
             auto_punch: false,
             metronome: false,
             no_input: false,
@@ -155,6 +160,9 @@ impl Session {
     }
 
     fn after_load(&mut self) {
+        self.live.list = 0;
+        self.live.player = Default::default();
+        self.live.driving = false;
         self.engine.stop();
         self.engine.seek(self.project.cursor);
         self.sync();

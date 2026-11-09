@@ -85,6 +85,11 @@ pub enum Action {
     ShowMonitorMixes,
     NewMonitorMix,
     CreateCueBus,
+    ToggleSetlist,
+    SetlistPlay,
+    SetlistNext,
+    SetlistPrevious,
+    ToggleMarkerActions,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -173,6 +178,11 @@ impl Action {
         Action::ShowMonitorMixes,
         Action::NewMonitorMix,
         Action::CreateCueBus,
+        Action::ToggleSetlist,
+        Action::SetlistPlay,
+        Action::SetlistNext,
+        Action::SetlistPrevious,
+        Action::ToggleMarkerActions,
     ];
 
     pub fn label(self) -> &'static str {
@@ -257,12 +267,19 @@ impl Action {
             Action::ShowMonitorMixes => "View: Toggle monitor mixes (in-ear)",
             Action::NewMonitorMix => "Monitor: New monitor mix for a musician…",
             Action::CreateCueBus => "SWS: Create cue buss from track selection…",
+            Action::ToggleSetlist => "View: Toggle setlist",
+            Action::SetlistPlay => "Setlist: Play current song",
+            Action::SetlistNext => "Setlist: Next song",
+            Action::SetlistPrevious => "Setlist: Previous song",
+            Action::ToggleMarkerActions => "Options: Toggle marker actions (run !markers during playback)",
         }
     }
 
     /// The action REAPER runs for command `id` (`Main_OnCommand`), where Scythe has one.
     pub fn from_reaper_command(id: i64) -> Option<Self> {
         Some(match id {
+            6 => Action::ToggleMuteTrack,
+            7 => Action::ToggleSoloTrack,
             1011 => Action::ZoomOut,
             1012 => Action::ZoomIn,
             1013 => Action::Record,
@@ -275,11 +292,14 @@ impl Action {
             40026 => Action::SaveProject,
             40029 => Action::Undo,
             40030 => Action::Redo,
+            40001 => Action::AddTrack,
+            40012 | 40757 => Action::SplitItem,
             40061 => Action::SplitAtSelection,
             40078 => Action::ToggleMixer,
             40125 => Action::NextTake,
             40153 => Action::OpenMidiEditor,
             40172 => Action::PreviousMarker,
+            40157 => Action::InsertMarker,
             40173 => Action::NextMarker,
             40200 => Action::InsertSpace,
             40201 => Action::RippleCutSelection,
@@ -381,6 +401,11 @@ impl Action {
             Action::NamSnapshotC => k(Modifiers::ALT, Key::Num3),
             Action::NamSnapshotD => k(Modifiers::ALT, Key::Num4),
             Action::ShowMonitorMixes | Action::NewMonitorMix | Action::CreateCueBus => None,
+            Action::ToggleSetlist => k(Modifiers::NONE, Key::L),
+            Action::SetlistPlay => k(Modifiers::NONE, Key::Enter),
+            Action::SetlistNext => k(Modifiers::NONE, Key::N),
+            Action::SetlistPrevious => k(Modifiers::NONE, Key::P),
+            Action::ToggleMarkerActions => None,
         }
     }
 
@@ -590,7 +615,10 @@ impl Action {
             Action::RenderProjectSettings => app.render(crate::app::RenderKind::ProjectSettings),
             Action::LoadDemo => app.load_demo(),
             Action::ToggleMixer => app.view.show_mixer = !app.view.show_mixer,
-            Action::ShowMonitorMixes => app.view.monitor_page = !app.view.monitor_page,
+            Action::ShowMonitorMixes => {
+                app.view.monitor_page = !app.view.monitor_page;
+                app.view.setlist = false;
+            }
             Action::NewMonitorMix => {
                 app.view.monitor_wizard = Some(crate::ui::monitor::Wizard::monitor(&app.project));
             }
@@ -642,6 +670,18 @@ impl Action {
                 };
                 app.edit("Set master channels", |p| p.master.channels = next);
                 app.notify(format!("Master: {next} channels"));
+            }
+            Action::ToggleSetlist => {
+                app.view.setlist = !app.view.setlist;
+                app.view.monitor_page = false;
+            }
+            Action::SetlistPlay => app.setlist_play(),
+            Action::SetlistNext => app.setlist_step(true),
+            Action::SetlistPrevious => app.setlist_step(false),
+            Action::ToggleMarkerActions => {
+                let on = !app.engine.marker_actions();
+                app.engine.set_marker_actions(on);
+                app.notify(if on { "Marker actions on" } else { "Marker actions off" });
             }
             Action::RunScript => app.run_script_dialog(),
             Action::RunLastScript => match app.last_script.clone() {

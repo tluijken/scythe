@@ -5,6 +5,7 @@ pub mod midi_editor;
 mod mixer;
 pub mod monitor;
 mod nam;
+mod setlist;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
@@ -33,8 +34,15 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
 
     let body = Rect::from_min_max(pos2(area.left(), header.bottom() + GAP), area.max);
     let show_inspector = body.width() > 980.0;
-    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 * 2.0 + 7.0 * 48.0 + 9.0));
+    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 * 2.0 + 8.0 * 48.0 + 9.0));
     nav_rail(app, ui, rail);
+
+    if app.view.setlist {
+        let page = Rect::from_min_max(pos2(rail.right() + GAP, body.top()), body.max);
+        setlist::show(app, ui, page);
+        finish(app, ui, full);
+        return;
+    }
 
     let main_right = if show_inspector { body.right() - INSPECTOR_W - GAP } else { body.right() };
     let main = Rect::from_min_max(pos2(rail.right() + GAP, body.top()), pos2(main_right, body.bottom()));
@@ -64,6 +72,11 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
         inspector::show(app, ui, r);
     }
 
+    finish(app, ui, full);
+}
+
+/// Windows and overlays drawn over every page.
+fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     gfx_view::show(app, ui);
     nam::show(app, ui);
     arrange::color_picker(app, ui);
@@ -283,15 +296,26 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         r
     };
     let monitors = app.view.monitor_page;
-    if rail_button(ui, next(44.0), Icon::Arrange, !monitors, ACCENT, "Arrange").clicked() {
+    let setlist = app.view.setlist;
+    let arrange = !monitors && !setlist;
+    if rail_button(ui, next(44.0), Icon::Arrange, arrange, ACCENT, "Arrange").clicked() {
+        app.view.monitor_page = false;
+        app.view.setlist = false;
+    }
+    let tip = format!("Setlist ({})", palette::shortcut_text(ui.ctx(), Action::ToggleSetlist));
+    if rail_button(ui, next(44.0), Icon::Setlist, setlist, ACCENT, &tip).clicked() {
+        app.view.setlist = !setlist;
         app.view.monitor_page = false;
     }
-    if rail_button(ui, next(44.0), Icon::Mixer, app.view.show_mixer && !monitors, ACCENT, "Mixer (Ctrl+M)").clicked() {
+    let mixer_shown = app.view.show_mixer && arrange;
+    if rail_button(ui, next(44.0), Icon::Mixer, mixer_shown, ACCENT, "Mixer (Ctrl+M)").clicked() {
+        app.view.show_mixer = !mixer_shown;
         app.view.monitor_page = false;
-        app.view.show_mixer = !app.view.show_mixer || monitors;
+        app.view.setlist = false;
     }
     if rail_button(ui, next(44.0), Icon::Headphones, monitors, ACCENT, "Monitor mixes (in-ear)").clicked() {
         app.view.monitor_page = !monitors;
+        app.view.setlist = false;
     }
     if rail_button(ui, next(44.0), Icon::Folder, false, ACCENT, "Insert media files (Insert)").clicked() {
         app.import_dialog();

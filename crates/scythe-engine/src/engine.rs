@@ -8,8 +8,10 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use cpal::traits::{DeviceTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
+use scythe_core::marker_action::TransportAction;
 use scythe_core::{Project, TimeRange};
 
+use crate::cues::{CueList, Hit, MarkerAction};
 use crate::devices::DeviceRequest;
 use crate::fx::FxRegistry;
 use crate::media::MediaPool;
@@ -35,6 +37,9 @@ pub struct Transport {
     wake_frames: AtomicI64,
     /// Time from the output callback until its first frame is heard, as f64 bits (seconds).
     output_latency: AtomicU64,
+    /// Whether crossing a `!` marker runs its actions.
+    marker_actions: AtomicBool,
+    cues: ArcSwap<CueList>,
     sample_rate: u32,
 }
 
@@ -50,6 +55,8 @@ impl Transport {
             load: AtomicU32::new(0),
             wake_frames: AtomicI64::new(0),
             output_latency: AtomicU64::new(0),
+            marker_actions: AtomicBool::new(true),
+            cues: ArcSwap::from_pointee(CueList::default()),
             sample_rate,
         }
     }
@@ -73,9 +80,14 @@ impl Transport {
         f32::from_bits(self.load.load(Ordering::Relaxed))
     }
 
-    /// Advances the playhead over one block, honouring seeks and the loop range. Returns the
-    /// segments `(project_frame, offset_in_block, len)` to render.
-    fn advance(&self, frames: usize, segments: &mut [(i64, usize, usize); 8]) -> usize {
+    /// Advances the playhead over one block, honouring seeks, the loop range and marker
+    /// actions. Returns the segments `(project_frame, offset_in_block, len)` to render.
+    ///
+    /// A marker action runs when playback crosses its marker: the marker lies after the frame
+    /// the segment starts at and no later than where it ends. One the playhead starts on (play,
+    /// seek or loop wrap onto the marker) does not run, so a song started at the stop marker of
+    /// the song before it plays.
+    fn advance(&self, frames: usize, segments: &mut [(i64, usize, usize); 8], hit: &mut impl FnMut(Hit)) -> usize {
         let seek = self.seek.swap(NO_SEEK, Ordering::Relaxed);
         if seek != NO_SEEK {
             self.position.store(seek, Ordering::Relaxed);
@@ -83,23 +95,53 @@ impl Transport {
         if !self.is_playing() {
             return 0;
         }
+        let cues = self.cues.load();
+        let cues = self.marker_actions.load(Ordering::Relaxed).then_some(&**cues);
         let mut pos = self.position.load(Ordering::Relaxed);
-        let looping = self.loop_enabled.load(Ordering::Relaxed);
-        let (ls, le) = (self.loop_start.load(Ordering::Relaxed), self.loop_end.load(Ordering::Relaxed));
-        // Like REAPER, only crossing the loop end wraps; a playhead already past it plays on.
-        let wraps = |p: i64| looping && le > ls && p < le;
         let mut done = 0;
         let mut count = 0;
         while done < frames && count < segments.len() {
+            let looping = self.loop_enabled.load(Ordering::Relaxed);
+            let (ls, le) = (self.loop_start.load(Ordering::Relaxed), self.loop_end.load(Ordering::Relaxed));
+            // Like REAPER, only crossing the loop end wraps; a playhead already past it plays on.
+            let will_wrap = looping && le > ls && pos < le;
             let mut len = frames - done;
-            let will_wrap = wraps(pos);
             if will_wrap {
                 len = len.min((le - pos) as usize);
+            }
+            let cue = cues.and_then(|c| c.first_in(pos, pos + len as i64));
+            if let Some(c) = cue {
+                len = (c.frame - pos) as usize;
             }
             segments[count] = (pos, done, len);
             count += 1;
             done += len;
             pos += len as i64;
+            if let (Some(c), Some(list)) = (cue, cues) {
+                let before = pos;
+                for &command in &c.commands {
+                    let action = CueList::transport_action(command);
+                    match action {
+                        Some(TransportAction::Stop | TransportAction::Pause) => {
+                            self.playing.store(false, Ordering::Relaxed)
+                        }
+                        Some(TransportAction::GoToStart) => pos = 0,
+                        Some(TransportAction::GoToEnd) => pos = list.end_frame,
+                        Some(TransportAction::GoToLoopStart) => pos = ls,
+                        Some(TransportAction::ToggleRepeat) => {
+                            self.loop_enabled.fetch_xor(true, Ordering::Relaxed);
+                        }
+                        Some(TransportAction::Play) | None => {}
+                    }
+                    hit(Hit { frame: c.frame, command, applied: action.is_some(), generation: list.generation });
+                }
+                if !self.is_playing() {
+                    break;
+                }
+                if pos != before {
+                    continue;
+                }
+            }
             if will_wrap && pos == le {
                 pos = ls;
             }
@@ -123,6 +165,7 @@ struct Feeds {
     midi_rx: Receiver<MidiFeed>,
     recorded: rtrb::Producer<RecordedMidi>,
     midi_out_rx: Receiver<Option<MidiOutQueue>>,
+    hits: rtrb::Producer<Hit>,
 }
 
 /// The main thread's ends.
@@ -131,6 +174,7 @@ struct FeedSenders {
     midi_tx: Sender<MidiFeed>,
     recorded: rtrb::Consumer<RecordedMidi>,
     midi_out_tx: Sender<Option<MidiOutQueue>>,
+    hits: rtrb::Consumer<Hit>,
 }
 
 fn feeds() -> (FeedSenders, Feeds) {
@@ -138,9 +182,10 @@ fn feeds() -> (FeedSenders, Feeds) {
     let (midi_tx, midi_rx) = channel();
     let (midi_out_tx, midi_out_rx) = channel();
     let (producer, consumer) = rtrb::RingBuffer::new(16_384);
+    let (hits_tx, hits_rx) = rtrb::RingBuffer::new(256);
     (
-        FeedSenders { input_tx, midi_tx, recorded: consumer, midi_out_tx },
-        Feeds { input_rx, midi_rx, recorded: producer, midi_out_rx },
+        FeedSenders { input_tx, midi_tx, recorded: consumer, midi_out_tx, hits: hits_rx },
+        Feeds { input_rx, midi_rx, recorded: producer, midi_out_rx, hits: hits_tx },
     )
 }
 
@@ -167,6 +212,7 @@ struct Processor {
     midi_out_rx: Receiver<Option<MidiOutQueue>>,
     midi_out: Option<MidiOutQueue>,
     was_playing: bool,
+    hits: rtrb::Producer<Hit>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -191,6 +237,7 @@ impl Processor {
             midi_out_rx: feeds.midi_out_rx,
             midi_out: None,
             was_playing: false,
+            hits: feeds.hits,
         }
     }
 
@@ -257,7 +304,10 @@ impl Processor {
             b[..frames].fill(0.0);
         }
         let mut segments = [(0i64, 0usize, 0usize); 8];
-        let n = self.transport.advance(frames, &mut segments);
+        let hits = &mut self.hits;
+        let n = self.transport.advance(frames, &mut segments, &mut |h| {
+            let _ = hits.push(h);
+        });
         let graph = self.graph.load();
         let has_input = self.read_input(frames);
         let has_midi = self.read_midi();
@@ -435,6 +485,9 @@ pub struct Engine {
     recorded_midi: rtrb::Consumer<RecordedMidi>,
     midi_out_tx: Sender<Option<MidiOutQueue>>,
     midi_sender: Option<MidiSender>,
+    marker_hits: rtrb::Consumer<Hit>,
+    /// The cue lists handed to the audio thread lately, to name the commands it reports.
+    recent_cues: VecDeque<Arc<CueList>>,
     output: Output,
     devices: DeviceRequest,
 }
@@ -494,6 +547,8 @@ impl Engine {
             midi_tx: senders.midi_tx,
             midi_inputs: None,
             recorded_midi: senders.recorded,
+            marker_hits: senders.hits,
+            recent_cues: VecDeque::new(),
             midi_out_tx: senders.midi_out_tx,
             midi_sender: None,
             info: DeviceInfo { name, sample_rate, block_size, fallback_reason: None },
@@ -547,6 +602,8 @@ impl Engine {
             midi_tx: senders.midi_tx,
             midi_inputs: None,
             recorded_midi: senders.recorded,
+            marker_hits: senders.hits,
+            recent_cues: VecDeque::new(),
             midi_out_tx: senders.midi_out_tx,
             midi_sender: None,
             info: DeviceInfo {
@@ -618,6 +675,53 @@ impl Engine {
             self.retired.pop_front();
         }
         self.set_loop(project.loop_enabled, project.time_selection);
+        self.sync_cues(project);
+    }
+
+    fn sync_cues(&mut self, project: &Project) {
+        let mut cues = CueList::build(project, self.info.sample_rate);
+        let current = self.transport.cues.load_full();
+        if (&cues.cues, &cues.names, cues.end_frame) == (&current.cues, &current.names, current.end_frame) {
+            return;
+        }
+        cues.generation = current.generation + 1;
+        let cues = Arc::new(cues);
+        self.transport.cues.store(cues.clone());
+        self.recent_cues.push_back(cues);
+        while self.recent_cues.len() > 4 {
+            self.recent_cues.pop_front();
+        }
+    }
+
+    /// Turns running the actions of `!` markers during playback on or off.
+    pub fn set_marker_actions(&self, on: bool) {
+        self.transport.marker_actions.store(on, Ordering::Relaxed);
+    }
+
+    pub fn marker_actions(&self) -> bool {
+        self.transport.marker_actions.load(Ordering::Relaxed)
+    }
+
+    /// The marker actions playback ran into since the last call, in order. Transport commands
+    /// (`applied`) have already taken effect; the host runs the others and follows up on stops,
+    /// e.g. returning the play cursor to the edit cursor as REAPER's Stop does.
+    pub fn take_marker_actions(&mut self) -> Vec<MarkerAction> {
+        let mut out = Vec::new();
+        while let Ok(hit) = self.marker_hits.pop() {
+            let Some(list) = self.recent_cues.iter().find(|c| c.generation == hit.generation) else { continue };
+            out.push(MarkerAction {
+                position: hit.frame as f64 / self.info.sample_rate as f64,
+                command: list.command(hit.command),
+                applied: if hit.applied { CueList::transport_action(hit.command) } else { None },
+            });
+        }
+        out
+    }
+
+    /// Seeks to `seconds` and plays.
+    pub fn play_from(&self, seconds: f64) {
+        self.seek(seconds);
+        self.play();
     }
 
     /// Opens or closes the live input for monitoring. Returns the reason when it cannot open.
@@ -834,9 +938,124 @@ mod tests {
     use super::*;
 
     fn segs(t: &Transport, frames: usize) -> Vec<(i64, usize, usize)> {
+        segs_hits(t, frames).0
+    }
+
+    /// Rendered segments, and the hits as (frame, command id or 0 when named, applied).
+    type Advanced = (Vec<(i64, usize, usize)>, Vec<(i64, u32, bool)>);
+
+    fn segs_hits(t: &Transport, frames: usize) -> Advanced {
         let mut s = [(0, 0, 0); 8];
-        let n = t.advance(frames, &mut s);
-        s[..n].to_vec()
+        let mut hits = Vec::new();
+        let n = t.advance(frames, &mut s, &mut |h: Hit| {
+            let id = match h.command {
+                crate::cues::CueCommand::Id(id) => id,
+                crate::cues::CueCommand::Named(_) => 0,
+            };
+            hits.push((h.frame, id, h.applied));
+        });
+        (s[..n].to_vec(), hits)
+    }
+
+    /// A transport at 100 Hz playing from `from` with these markers.
+    fn with_markers(markers: &[(f64, &str)], from: i64) -> Transport {
+        let mut p = Project::default();
+        for &(at, name) in markers {
+            p.add_marker(at, name);
+        }
+        let t = Transport::new(100);
+        t.cues.store(Arc::new(CueList::build(&p, 100)));
+        t.position.store(from, Ordering::Relaxed);
+        t.playing.store(true, Ordering::Relaxed);
+        t
+    }
+
+    #[test]
+    fn stop_marker_stops_on_its_frame() {
+        let t = with_markers(&[(0.25, "!1016"), (0.27, "!40042")], 0);
+        assert_eq!(segs_hits(&t, 10), (vec![(0, 0, 10)], vec![]));
+        assert_eq!(segs_hits(&t, 10), (vec![(10, 0, 10)], vec![]));
+        assert_eq!(segs_hits(&t, 10), (vec![(20, 0, 5)], vec![(25, 1016, true)]));
+        assert!(!t.is_playing());
+        assert_eq!(t.position.load(Ordering::Relaxed), 25);
+        assert_eq!(segs(&t, 10), []);
+    }
+
+    #[test]
+    fn marker_on_a_block_edge_fires_once() {
+        let t = with_markers(&[(0.2, "!1016")], 0);
+        assert_eq!(segs_hits(&t, 20), (vec![(0, 0, 20)], vec![(20, 1016, true)]));
+        assert_eq!(t.position.load(Ordering::Relaxed), 20);
+        assert!(!t.is_playing());
+    }
+
+    #[test]
+    fn starting_or_seeking_onto_a_marker_does_not_run_it() {
+        let t = with_markers(&[(0.2, "!1016"), (0.5, "!1016")], 20);
+        assert_eq!(segs_hits(&t, 10), (vec![(20, 0, 10)], vec![]));
+        t.seek.store(60, Ordering::Relaxed);
+        assert_eq!(segs_hits(&t, 10), (vec![(60, 0, 10)], vec![]));
+        assert!(t.is_playing());
+    }
+
+    #[test]
+    fn disabled_marker_actions_play_through() {
+        let t = with_markers(&[(0.05, "!1016")], 0);
+        t.marker_actions.store(false, Ordering::Relaxed);
+        assert_eq!(segs_hits(&t, 10), (vec![(0, 0, 10)], vec![]));
+        assert!(t.is_playing());
+    }
+
+    #[test]
+    fn several_commands_run_in_order() {
+        let t = with_markers(&[(0.05, "!1068 _SWS_X 40043"), (0.15, "!1016"), (0.3, "!40042 1016")], 0);
+        let (s, h) = segs_hits(&t, 10);
+        assert_eq!(s, [(0, 0, 5), (30, 5, 5)]);
+        assert_eq!(h, [(5, 1068, true), (5, 0, false), (5, 40043, true)]);
+        assert!(t.loop_enabled.load(Ordering::Relaxed));
+        t.seek.store(25, Ordering::Relaxed);
+        assert_eq!(segs_hits(&t, 10), (vec![(25, 0, 5)], vec![(30, 40042, true), (30, 1016, true)]));
+        assert_eq!(t.position.load(Ordering::Relaxed), 0);
+        assert!(!t.is_playing());
+    }
+
+    #[test]
+    fn markers_before_the_loop_end_fire_and_the_loop_start_does_not() {
+        let t = with_markers(&[(0.1, "!1007"), (0.18, "!1007")], 12);
+        t.loop_enabled.store(true, Ordering::Relaxed);
+        t.loop_start.store(10, Ordering::Relaxed);
+        t.loop_end.store(20, Ordering::Relaxed);
+        let (s, h) = segs_hits(&t, 12);
+        assert_eq!(s, [(12, 0, 6), (18, 6, 2), (10, 8, 4)]);
+        assert_eq!(h, [(18, 1007, true)]);
+    }
+
+    #[test]
+    fn engine_names_commands_and_reports_stops() {
+        let mut e = Engine::start_null(Arc::default(), 48_000, None);
+        let mut p = Project::default();
+        p.add_marker(0.05, "!_SWS_X 1016");
+        e.sync(&p);
+        e.play();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!e.transport().is_playing());
+        assert_eq!(e.transport().position_seconds(), 0.05);
+        let actions = e.take_marker_actions();
+        assert_eq!(
+            actions,
+            [
+                MarkerAction {
+                    position: 0.05,
+                    command: scythe_core::marker_action::Command::Named("_SWS_X".into()),
+                    applied: None
+                },
+                MarkerAction {
+                    position: 0.05,
+                    command: scythe_core::marker_action::Command::Id(1016),
+                    applied: Some(TransportAction::Stop)
+                },
+            ]
+        );
     }
 
     #[test]

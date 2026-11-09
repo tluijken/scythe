@@ -465,69 +465,23 @@ fn notes(s: &mut State, set: Option<String>) -> String {
 
 // ---- project extended state ----------------------------------------------------------------
 
-/// The keys and values a project keeps for `ext` (`<EXTSTATE`, which REAPER writes with names
-/// and keys upper-cased).
+/// The keys and values a project keeps for `ext` (`<EXTSTATE`).
 fn proj_ext(p: &Project, ext: &str) -> Vec<(String, String)> {
-    let Some(Node::Chunk(root)) = p.extra.iter().find(|n| matches!(n, Node::Chunk(c) if c.name() == "EXTSTATE")) else {
-        return Vec::new();
-    };
-    let Some(section) = root.children.iter().find_map(|n| match n {
-        Node::Chunk(c) if c.name().eq_ignore_ascii_case(ext) => Some(c),
-        _ => None,
-    }) else {
-        return Vec::new();
-    };
-    section
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            Node::Line(l) => {
-                let t = tokenize(l);
-                Some((t.first()?.clone(), t.get(1).cloned().unwrap_or_default()))
-            }
-            Node::Chunk(_) => None,
-        })
-        .collect()
+    p.ext_state_section(ext)
 }
 
 /// `SetProjExtState`: an empty key clears `ext`, an empty value removes the key. Returns how
 /// many keys `ext` holds.
 fn proj_ext_set(s: &mut State, ext: &str, key: &str, value: &str) -> usize {
-    let mut values = proj_ext(&s.project, ext);
     if key.is_empty() {
-        values.clear();
+        for (k, _) in s.project.ext_state_section(ext) {
+            s.project.set_ext_state(ext, &k, None);
+        }
     } else {
-        let key = key.to_ascii_uppercase();
-        let at = values.iter().position(|(k, _)| *k == key);
-        match (at, value.is_empty()) {
-            (Some(i), true) => {
-                values.remove(i);
-            }
-            (Some(i), false) => values[i].1 = value.to_owned(),
-            (None, false) => values.push((key, value.to_owned())),
-            (None, true) => {}
-        }
-    }
-    let p = &mut s.project;
-    let root = match p.extra.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "EXTSTATE")) {
-        Some(i) => i,
-        None => {
-            p.extra.push(Node::Chunk(Chunk::new("EXTSTATE", &[])));
-            p.extra.len() - 1
-        }
-    };
-    let Node::Chunk(root_chunk) = &mut p.extra[root] else { unreachable!() };
-    root_chunk.children.retain(|n| !matches!(n, Node::Chunk(c) if c.name().eq_ignore_ascii_case(ext)));
-    if !values.is_empty() {
-        let mut section = Chunk::new(&ext.to_ascii_uppercase(), &[]);
-        section.children = values.iter().map(|(k, v)| Node::Line(format!("{k} {}", quote(v)))).collect();
-        root_chunk.children.push(Node::Chunk(section));
-    }
-    if root_chunk.children.is_empty() {
-        p.extra.remove(root);
+        s.project.set_ext_state(ext, key, Some(value));
     }
     s.changed = true;
-    values.len()
+    s.project.ext_state_section(ext).len()
 }
 
 // ---- extended state ------------------------------------------------------------------------
