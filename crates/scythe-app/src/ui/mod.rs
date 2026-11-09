@@ -2,6 +2,7 @@ pub mod actions;
 mod arrange;
 pub mod bay;
 mod comp;
+pub mod editing;
 mod envelope_lanes;
 pub mod explorer;
 pub mod gfx_view;
@@ -167,6 +168,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     explorer::show(app, ui);
     bay::show(app, ui);
     theme_editor::show(app, ui);
+    editing::show(app, ui);
     toolbars::floating(app, ui);
     toolbars::editor(app, ui);
     toolbars::mouse_editor(app, ui);

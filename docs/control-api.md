@@ -348,12 +348,38 @@ Items are named by their `id` from a snapshot or `item.list`.
 | `cmd` | Arguments | Answer |
 |---|---|---|
 | `item.list` | `track?` | the items of the track, or of all tracks |
-| `item.move` | `item`, `position?`, `track?` | the item (overlaps crossfade, as after a move in the UI) |
-| `item.split` | `item`, `at` | both halves; `invalid` unless `at` lies inside the item |
-| `item.delete` | `item` | `{}` |
+| `item.move` | `item`, `position?`, `track?` | the item (its group moves along, later items ripple as the ripple mode says, overlaps crossfade while auto-crossfade is on; a locked item stays) |
+| `item.split` | `item`, `at` | both halves; `invalid` unless `at` lies inside the item (the item's group splits too) |
+| `item.delete` | `item` | `{}` (the gap closes as the ripple mode says; a locked item stays) |
 | `item.volume` | `item`, `volume` or `db` | the item |
 | `item.mute` | `item`, `muted?` | the item |
 | `item.peaks` | `item`, `width` (columns, 1 to 8192), `from?`, `to?` (seconds into the item; all of it when left out) | `{"item", "from", "to", "state", "min", "max"}`: per column the lowest and highest sample (channels summed, item and take gain applied, -1 to 1) from the engine's peak cache; `state` is `ready`, `loading` (ask again shortly), `offline` (the file is missing) or `none` (no audio file) |
+
+### Editing
+
+These follow the project's editing settings as REAPER's actions do: ripple mode, item groups,
+locks and auto-crossfade. Items are lists of ids.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `edit.ripple` | `mode?`: `off`, `per_track`, `all_tracks` | `{"ripple", "auto_crossfade", "grouping"}` |
+| `project.editing` | `auto_crossfade?`, `grouping?` | the same |
+| `project.grid` | `division?` (whole notes, as `GetSetProjectGrid`), `kind?` (`normal`, `swing`, `measure`), `swing?` (-1 to 1), `snap?`, `lines?` | `{"division", "kind", "swing_mode", "swing", "snap", "lines", "label"}` |
+| `project.snap` | `time` | `{"time"}` snapped to the grid (`SnapToGrid`; unchanged while snapping is off) |
+| `project.lock` | `enabled?`, `modes?` (names: "time selection", "full item", "left/right item", "up/down item", "track envelope", "region", "marker", "time signature marker", "item edges", "item fade/volume handles", "loop points") | `{"enabled", "modes", "flags"}` |
+| `item.lock` | `items`, `locked?` (toggles when left out) | the items |
+| `item.group` / `item.ungroup` | `items` | `{"group"}` / the items |
+| `item.select_groups` | `items` | the ids with their group mates |
+| `item.nudge` | `items`, `value`, `what?` (`position`, `left_trim`, `left_edge`, `right_edge`, `contents`, `duplicate`, `edit_cursor`), `unit?` (REAPER's nudge units 0-21: ms, seconds, grid, notes 1/256 to whole, measures.beats, samples, frames, pixels, item lengths, item selections), `set?`, `snap?`, `reverse?`, `copies?` | the items to select afterwards (`{"cursor"}` for the edit cursor) |
+| `item.fade` | `item`, `fade` (`in`/`out`), `length?`, `shape?` (0-7, 7 equal power), `curve?`, `kind?` (REAPER's fade types 1-7) | the fade |
+| `item.crossfade` | `items`, `start?` and `end?` (crossfade neighbours over that range, extending them), `kind?` (crossfade type 1-7 for items that already crossfade) | the items |
+| `item.transients` | `item`, `sensitivity?` (0-1, 0.5), `threshold_db?` (-24) | `{"transients"}` in project time |
+| `item.dynamic_split` | `items`, `sensitivity?`, `threshold_db?`, `min_length?` | the pieces |
+| `take.explode` | `items`, `mode?` (`across_tracks`, `in_place`, `in_order`) | the new items |
+| `take.implode` | `items`, `mode?` (`across_tracks`, `same_track`) | the resulting items |
+| `take.crop` / `take.delete` | `items` | the items |
+| `take.active` | `item`, `take` | the item |
+| `edit.razor` | `areas` (`track`, `start`, `end`, `envelope?` naming an envelope lane), `op` (`delete`, `split`) | `{}` |
 
 ### Markers and regions
 

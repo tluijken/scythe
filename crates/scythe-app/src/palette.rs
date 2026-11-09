@@ -124,6 +124,8 @@ pub enum Action {
     /// Window set 1 to 10.
     LoadScreenset(u8),
     SaveScreenset(u8),
+    /// One of REAPER's editing actions (`scythe_core::edit::actions`), by command id.
+    Edit(u32),
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -256,6 +258,7 @@ impl Action {
         out.extend((1..=scythe_core::menus::FLOATING_TOOLBARS as u8).map(Action::Toolbar));
         out.extend((1..=scythe_session::actions::SCREENSETS as u8).map(Action::LoadScreenset));
         out.extend((1..=scythe_session::actions::SCREENSETS as u8).map(Action::SaveScreenset));
+        out.extend(crate::ui::editing::window_ids().into_iter().map(Action::Edit));
         out
     }
 
@@ -392,6 +395,7 @@ impl Action {
             Action::Toolbar(n) => id(scythe_core::menus::open_toolbar_command(n as usize).unwrap_or_default()),
             Action::LoadScreenset(n) => id(scythe_session::actions::LOAD_SCREENSET + n as u32 - 1),
             Action::SaveScreenset(n) => id(scythe_session::actions::SAVE_SCREENSET + n as u32 - 1),
+            Action::Edit(n) => id(n),
         }
     }
 
@@ -511,7 +515,8 @@ impl Action {
             | Action::ToggleMainToolbar
             | Action::Toolbar(_)
             | Action::LoadScreenset(_)
-            | Action::SaveScreenset(_) => None,
+            | Action::SaveScreenset(_)
+            | Action::Edit(_) => None,
         }
     }
 
@@ -808,13 +813,20 @@ impl Action {
                 app.view.cue_dialog = Some(crate::ui::monitor::Wizard::cue_bus(&app.project, app.sel.track));
             }
             Action::ToggleSnap => {
-                app.view.snap = !app.view.snap;
-                let state = if app.view.snap { "on" } else { "off" };
+                crate::ui::editing::run(app, 1157);
+                let state = if app.project.editing.grid.snap { "on" } else { "off" };
                 app.notify(format!("Snap to grid {state}"));
             }
             Action::CycleGrid => {
-                app.view.grid = (app.view.grid + 1) % crate::app::GRID_STEPS.len();
-                app.session.notify(format!("Grid {}", crate::app::GRID_STEPS[app.view.grid].0));
+                let steps = crate::app::GRID_STEPS;
+                let now = steps.iter().position(|d| (d * 4.0 - app.project.editing.grid.qn).abs() < 1e-9);
+                let next = steps[now.map_or(0, |i| (i + 1) % steps.len())];
+                app.edit("Set grid", |p| {
+                    p.editing.grid.qn = next * 4.0;
+                    p.editing.grid.kind = scythe_core::edit::GridKind::Normal;
+                });
+                let label = app.project.editing.grid.label();
+                app.session.notify(format!("Grid {label}"));
             }
             Action::ZoomIn => app.view.px_per_sec = (app.view.px_per_sec * 1.5).min(2000.0),
             Action::ZoomOut => app.view.px_per_sec = (app.view.px_per_sec / 1.5).max(2.0),
@@ -884,6 +896,7 @@ impl Action {
             }
             Action::LoadScreenset(n) => app.load_screenset(n),
             Action::SaveScreenset(n) => app.save_screenset(n),
+            Action::Edit(n) => crate::ui::editing::run(app, n),
             Action::RunLastScript => match app.last_script.clone() {
                 Some(path) => app.run_script(&path),
                 None => app.notify("No script run yet"),

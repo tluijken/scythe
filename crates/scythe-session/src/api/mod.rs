@@ -7,8 +7,8 @@
 pub mod analysis;
 pub mod bay;
 pub mod customize;
-pub mod envelope;
 pub mod editing;
+pub mod envelope;
 pub mod events;
 pub mod explorer;
 pub mod feed;
@@ -100,7 +100,10 @@ impl<'de> Deserialize<'de> for Command {
         if cmd.starts_with("item.stretch_markers") || TIMING.contains(&cmd) {
             return serde_json::from_value(value).map(Command::Timing).map_err(D::Error::custom);
         }
-        if editing::COMMANDS.contains(&cmd) || cmd.starts_with("edit.") || (cmd.starts_with("take.") && !TIMING.contains(&cmd)) {
+        if editing::COMMANDS.contains(&cmd)
+            || cmd.starts_with("edit.")
+            || (cmd.starts_with("take.") && !TIMING.contains(&cmd))
+        {
             return serde_json::from_value(value).map(Command::Editing).map_err(D::Error::custom);
         }
         if RECORDING.contains(&cmd) {

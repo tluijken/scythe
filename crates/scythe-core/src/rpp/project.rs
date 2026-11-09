@@ -887,7 +887,8 @@ fn parse_fade(t: &[String]) -> Fade {
     } else {
         raw.clamp(0.0, 7.0) as u8
     };
-    let mut fade = Fade { length: num(t, 2, 0.0), auto_length: num(t, 3, 0.0), curve: num(t, 6, 0.0), ..Fade::new(0.0) };
+    let mut fade =
+        Fade { length: num(t, 2, 0.0), auto_length: num(t, 3, 0.0), curve: num(t, 6, 0.0), ..Fade::new(0.0) };
     fade.set_api_shape(api);
     fade
 }
@@ -1634,8 +1635,11 @@ pub(crate) fn write_item(it: &Item) -> Chunk {
             }
             // REAPER drops both lines when they are off.
             Node::Line(l) if line_key(l) == "LOCK" => {
-                if it.locked {
-                    c.line(["LOCK", "1"]);
+                let was = num(&tokenize(l), 1, 0.0) as i64 & 1 != 0;
+                match (it.locked, was) {
+                    (true, true) => c.children.push(node.clone()),
+                    (true, false) => c.line(["LOCK", "1"]),
+                    _ => {}
                 }
                 wrote_lock = true;
             }

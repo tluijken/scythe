@@ -3726,7 +3726,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Moves the item to `position` (seconds) and/or onto `track`.\n\nControl API command `item.move`.",
+    "description": "Moves the item to `position` (seconds) and/or onto `track`. Its group moves along and\nlater items ripple as the ripple mode says; a locked item stays.\n\nControl API command `item.move`.",
     "inputSchema": {
       "properties": {
         "item": {
@@ -3780,7 +3780,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Splits the item at `at` (seconds) and answers with both halves.\n\nControl API command `item.split`.",
+    "description": "Splits the item (and its group) at `at` (seconds) and answers with both halves.\n\nControl API command `item.split`.",
     "inputSchema": {
       "properties": {
         "at": {
@@ -3811,7 +3811,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Deletes the item.\n\nControl API command `item.delete`.",
+    "description": "Deletes the item, closing the gap as the ripple mode says. A locked item stays.\n\nControl API command `item.delete`.",
     "inputSchema": {
       "properties": {
         "item": {

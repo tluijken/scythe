@@ -388,8 +388,7 @@ Working:
   With a time selection (drag on the ruler): split items at it (`Shift+S`), remove its contents,
   remove them and close the gap (`Ctrl+Alt+X`, markers and envelopes follow), or insert empty
   space. Takes (`T` cycles), item mute (`U`), marker
-  navigation (`[` `]`), fixed lanes drawn as lanes, snap grid 1/4…1/32 or bars (`Shift+G` cycles,
-  `Alt+G` toggles snap), tracks moved with `Ctrl+↑/↓` and into or out of folders with
+  navigation (`[` `]`), fixed lanes drawn as lanes, tracks moved with `Ctrl+↑/↓` and into or out of folders with
   `Ctrl+→/←`, track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
   track's colour dot for a palette; markers jump on click, rename on double-click and delete on
   right-click. Razor edits: Alt+drag (over items too) marks a time range on every track it
@@ -397,6 +396,29 @@ Working:
   and paste keeps the space before them. `Ctrl+G` glues the selected items of a track into one
   rendered file; "Apply track FX to items as new take" renders each item through its track's
   effects into a new, active take.
+- **Editing tools** (REAPER's actions and project settings, `scythe_core::edit`): switches above
+  the track headers for ripple editing (off, per-track, all tracks: `RIPPLE`), the snap grid
+  (click toggles snap, right-click opens the grid window: 1/128 to 4 whole notes, triplets,
+  swing and measure grids from the project's `GRID`, snapping to item edges and markers too),
+  auto-crossfade (`AUTOXFADE`), locking (`LOCK`, with REAPER's eleven lock modes) and item
+  grouping (`GROUPOVERRIDE`). Ripple follows moves, deletes, cuts, pastes and duplicates as
+  REAPER's does (later items, envelope points with REAPER's edge points, and with all tracks
+  markers and regions); deleting with ripple all tracks removes that time from every track.
+  Item groups (`GROUP`, "Item grouping: Group items" and remove/select): clicking selects the
+  group, moves and splits take the group along. Locked items (`LOCK`, "Item properties:
+  Lock") do not move, split, delete or ripple, and lose their edge and fade handles. Takes:
+  explode across tracks, in place or in order, implode across tracks or on one track, crop to
+  the active take, delete the active take, previous/next take. Fades and crossfades: REAPER's
+  seven fade types for fade-ins, fade-outs and crossfades, crossfade overlapping items or
+  neighbours over the time selection, and a crossfade editor window (shape, curvature, type,
+  length, both sides of a crossfade with their curves drawn); all eight shapes (`5.1` is the
+  sharp S-curve, `1.1` the equal-power one) play as REAPER renders them. Dynamic split
+  (tab-to-transient too) with REAPER's sensitivity and threshold, splitting at the transients
+  or adding stretch markers there. The nudge/set window and REAPER's move-by-grid, "a bit"
+  (one pixel) and edge grow/shrink actions, with every unit of REAPER's nudge dialog. Razor
+  edits also on envelopes (Ctrl+Alt+drag, points removed keeping the envelope's shape) and the
+  razor area move actions. ReaScript: `GetSetProjectGrid`, `SnapToGrid`, `ApplyNudge`,
+  `C_LOCK`, `I_GROUPID`, fade shape 7, and these actions through `Main_OnCommand`.
 - **MIDI editor**: double-click a MIDI item (or `E`) for the docked editor of its active take, in
   three modes: piano roll, named notes (a drum map of the track's note names, REAPER's
   `MIDINOTENAMES`; `.txt` note name files load and save) and the event list (every note,
@@ -924,6 +946,9 @@ compare with scythe's output sample by sample:
 | Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER (41818 and 41819 set `preroll` &1 and &2; a fresh reaper.ini has `preroll=0`, `prerollmeas=2`, `metronome_defout=-1`), saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
 | Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
 | Comping: three lanes, "comp into new empty lane" (42797) and four comp areas made from razor edits (42475), the last overlapping two others; REAPER's saved comp lane against Scythe's swipes of the same ranges (areas, pieces, offsets, fade lines); Scythe playing REAPER's comp project and a DC probe of the cross-fade; REAPER rendering Scythe's swiped project | same lines (`LINKEDLANE`, `LANEREC`, `LANENAME`, fades `1.1 0.01 0.01` between lanes, `0` within one); renders within 1e-5; REAPER's render of Scythe's comp identical to its own; the `1.1` cross-fade is a quartic through the quarter sine (within 4e-8) |
+| Editing (`v` probes): 43 scenarios done in REAPER by Lua (`Main_OnCommand`, `ApplyNudge`, `P_RAZOREDITS`) and in Scythe through the control API from the same project: ripple per-track and all-track deletes and moves (with straddling items, markers, regions and envelopes), group moves and splits, item and global locks, explode (three ways), implode (two ways), crop, delete take, crossfade overlap and time selection, all seven fade and crossfade types, seven nudge/set cases, razor deletes with ripple and on an envelope, dynamic split on two drum recordings; plus the RPP lines of each setting (`RIPPLE`, `GRID`, `LOCK` bits, `AUTOXFADE`, `GROUPOVERRIDE`, item `LOCK`/`GROUP`, fade shape spellings) and `GetSetProjectGrid`/`SnapToGrid` with swing | 39/43 same items, takes, fades, groups, locks, envelope points and markers, and REAPER's renders of its edits null against Scythe's renders of its own (1e-5); the other four are the two dynamic splits and the two envelope cases in "Not there yet" |
+| Fade shapes: 50 renders (shapes 0-6, `5.1`, `1.1`, `7`, curvature -1 to 1) and the equal-power shape at 21 curvatures on a DC source | within 1.6e-4 (the S-curves' fitted warp), the rest exact; `6` = `5.1` and `7` = `1.1` |
+| Tab-to-transient (40375) on three drum recordings at sensitivity 0.25, 0.5 and 0.75 | Scythe finds 66-100 % of REAPER's transients per file (F-measure 0.88 / 0.84 / 0.70 by sensitivity), and those it shares agree to the sample (median 0.03-0.1 ms) |
 | Record settings: `I_RECMODE` 0-16 (each action's code, forced input formats from the recorded files' channel counts), `I_RECMON`, `I_RECMONITEMS`, `I_RECMODE_FLAGS`, `B_AUTO_RECARM` and the project record mode actions (40252/40253/40076) read back from the saved `REC`, `AUTO_RECARM` and `RECMODE` lines; the lane options (43151-43153, 40114) found as `autoxfade` bits | same lines |
 | Recording (REAPER on a dummy JACK device, `Transport: Record` and "stop, save all recorded media" from Lua): linear, repeat from the loop start, from before it and from inside it, short last passes, fixed-lane tracks with and without "new recording adds lanes", item auto-punch, time selection auto-punch on a lane track, recording over an item, output stereo (post-fader and pre-FX) and mono, record mode none, forced input formats | Scythe's placement reproduces the saved items, takes, empty takes, offsets, lanes, `LANESOLO`/`LANEREC` and `RECPASS`; REAPER's output recordings equal the track's signal sample for sample (fader 0.5, pan hard left for mono: the average of both sides); Scythe's output recording on the null engine matches its input times the fader |
 
@@ -979,6 +1004,15 @@ compares the two files.
   ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
   sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
   that address.
+- Editing: REAPER's detector for transients is not reproduced exactly (see the verification
+  table), and the dynamic split dialog's gate and "split at" options other than transients are
+  not there. Envelope points do not move with moved items (REAPER's "move envelope points with
+  media items"), and a locked item does not hold the envelope above it still during a ripple.
+  Snapping to item edges and markers is a window setting (REAPER keeps its snap targets in
+  bits of `GRID` that were not measured); the framerate grid snaps like a plain grid. Ripple
+  of edge trims ("ripple edit when editing media item edges"), ripple of the tempo map,
+  auto-crossfade on split, track media/razor edit grouping and razor copies of envelope areas
+  are not there.
 - MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
   (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
   Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes

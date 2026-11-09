@@ -151,7 +151,7 @@ fn preview(app: &mut ScytheApp) {
 /// and item grouping.
 pub fn switches(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let e = app.project.editing;
-    let h = 24.0;
+    let h = 20.0;
     let y = rect.center().y - h / 2.0;
     let mut x = rect.left() + 6.0;
     let font = theme::semibold(11.0);
@@ -194,8 +194,7 @@ pub fn switches(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     if resp.secondary_clicked() {
         app.view.editing.window = Some(EditWindow::Lock);
     }
-    if chip(ui, "Groups", e.grouping, "Item grouping: grouped items move, split and select together", "group")
-        .clicked()
+    if chip(ui, "Groups", e.grouping, "Item grouping: grouped items move, split and select together", "group").clicked()
     {
         run(app, 1156);
     }
@@ -233,12 +232,14 @@ pub fn snap(app: &ScytheApp, t: f64, bypass: bool) -> f64 {
 }
 
 /// Lock and group badges drawn on an item.
-pub fn item_badges(ui: &Ui, painter: &egui::Painter, rect: Rect, item: &scythe_core::Item) {
+pub fn item_badges(painter: &egui::Painter, rect: Rect, item: &scythe_core::Item) {
     let mut x = rect.right() - 6.0;
     let y = rect.top() + 9.0;
     if item.locked {
-        let r = Rect::from_center_size(pos2(x - 6.0, y), vec2(10.0, 10.0));
-        widgets::paint_icon(ui, r, widgets::Icon::Lock, TEXT, 10.0);
+        let body = Rect::from_center_size(pos2(x - 6.0, y + 2.0), vec2(9.0, 7.0));
+        painter.rect_filled(body, CornerRadius::same(2), TEXT);
+        let shackle = Rect::from_center_size(pos2(x - 6.0, y - 2.0), vec2(6.0, 6.0));
+        painter.rect_stroke(shackle, CornerRadius::same(3), Stroke::new(1.5, TEXT), egui::StrokeKind::Inside);
         x -= 16.0;
     }
     if item.group > 0 {
@@ -260,18 +261,16 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         EditWindow::Grid => "Snap/grid settings",
         EditWindow::Lock => "Lock settings",
     };
-    egui::Window::new(title)
-        .id(Id::unique(("edit-window", title)))
-        .open(&mut open)
-        .frame(frame)
-        .resizable(false)
-        .show(&ctx, |ui| match w {
+    egui::Window::new(title).id(Id::unique(("edit-window", title))).open(&mut open).frame(frame).resizable(false).show(
+        &ctx,
+        |ui| match w {
             EditWindow::Crossfade => crossfade_editor(app, ui),
             EditWindow::DynamicSplit => dynamic_split(app, ui),
             EditWindow::Nudge => nudge_dialog(app, ui),
             EditWindow::Grid => grid_settings(app, ui),
             EditWindow::Lock => lock_settings(app, ui),
-        });
+        },
+    );
     if !open {
         app.view.editing.window = None;
         app.view.editing.preview.clear();

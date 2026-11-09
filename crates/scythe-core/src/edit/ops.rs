@@ -151,8 +151,12 @@ impl Project {
             }
         }
         for env in t.envelopes.iter_mut() {
-            for p in env.points.iter_mut().filter(|p| p.time >= from - EPS) {
-                p.time = (p.time + delta).max(0.0);
+            if delta > 0.0 {
+                open_envelope(env, from, delta);
+            } else {
+                for p in env.points.iter_mut().filter(|p| p.time >= from - EPS) {
+                    p.time = (p.time + delta).max(0.0);
+                }
             }
         }
     }
@@ -245,10 +249,7 @@ impl Project {
             }
             t.items.sort_by(|a, b| a.position.total_cmp(&b.position));
             for env in t.envelopes.iter_mut() {
-                env.points.retain(|p| p.time <= range.start + EPS || p.time >= range.end - EPS);
-                for p in env.points.iter_mut().filter(|p| p.time >= range.end - EPS) {
-                    p.time = (p.time - len).max(0.0);
-                }
+                close_envelope(env, range);
             }
         }
         if track.is_none() {
@@ -275,7 +276,6 @@ impl Project {
                 }
             }
         }
-        self.crossfade_tracks(scope);
     }
 
     /// Makes room for `len` seconds of new material at `at` as the ripple mode says: on
@@ -583,7 +583,7 @@ impl Project {
             match a.envelope {
                 Some(kind) => {
                     if let Some(env) = self.track_mut(a.track).and_then(|t| t.envelope_mut_if(kind)) {
-                        env.points.retain(|p| p.time < a.range.start - EPS || p.time > a.range.end + EPS);
+                        clear_envelope(env, a.range);
                     }
                 }
                 None => match self.editing.ripple {
@@ -606,6 +606,54 @@ impl Track {
     pub fn envelope_mut_if(&mut self, kind: crate::EnvelopeKind) -> Option<&mut crate::Envelope> {
         self.envelopes.iter_mut().find(|e| e.kind == kind)
     }
+}
+
+/// How far before an opened gap REAPER puts the edge point that holds the shape there.
+const EDGE: f64 = 0.0005;
+
+fn insert_point(env: &mut crate::Envelope, time: f64, value: f64) {
+    let at = env.points.partition_point(|p| p.time <= time);
+    env.points.insert(at, crate::EnvPoint::new(time, value));
+}
+
+/// Opens `len` seconds at `at`: later points move right, and edge points keep the envelope's
+/// value up to the gap and across it, as REAPER's "add envelope edge points when ripple
+/// editing" (on by default) does.
+fn open_envelope(env: &mut crate::Envelope, at: f64, len: f64) {
+    let (Some(before), Some(here)) = (env.value_at(at - EDGE), env.value_at(at)) else { return };
+    for p in env.points.iter_mut().filter(|p| p.time >= at - EPS) {
+        p.time += len;
+    }
+    if at - EDGE > 0.0 {
+        insert_point(env, at - EDGE, before);
+    }
+    insert_point(env, at + len, here);
+}
+
+/// Removes `range` from the envelope: points inside go, later ones move left, and edge
+/// points keep the values at both ends of the cut.
+fn close_envelope(env: &mut crate::Envelope, range: TimeRange) {
+    let (Some(start), Some(end)) = (env.value_at(range.start), env.value_at(range.end)) else { return };
+    let had_end = env.points.iter().any(|p| (p.time - range.end).abs() < EPS);
+    env.points.retain(|p| p.time < range.start - EPS || p.time >= range.end - EPS);
+    for p in env.points.iter_mut().filter(|p| p.time >= range.end - EPS) {
+        p.time = (p.time - range.length()).max(0.0);
+    }
+    let at = env.points.partition_point(|p| p.time < range.start - EPS);
+    env.points.insert(at, crate::EnvPoint::new(range.start, start));
+    if !had_end {
+        env.points.insert(at + 1, crate::EnvPoint::new(range.start, end));
+    }
+}
+
+/// Removes the points inside `range` keeping the envelope's shape outside it: the value at
+/// the start holds to the end, where the old value comes back, as a razor delete does.
+fn clear_envelope(env: &mut crate::Envelope, range: TimeRange) {
+    let (Some(start), Some(end)) = (env.value_at(range.start), env.value_at(range.end)) else { return };
+    env.points.retain(|p| p.time < range.start - EPS || p.time > range.end + EPS);
+    insert_point(env, range.start, start);
+    insert_point(env, range.end, start);
+    insert_point(env, range.end + 1e-6, end);
 }
 
 fn dedup(mut ids: Vec<ItemId>) -> Vec<ItemId> {
@@ -750,7 +798,7 @@ mod tests {
         p.delete_items(&[ids[0][1]]);
         assert!(close(&positions(&p, 0), &[0.0, 3.0]));
         assert!(close(&positions(&p, 1), &[0.0, 2.0, 4.0]));
-        assert!(close(&points(&p, 0), &[1.0, 2.5, 5.0]));
+        assert!(close(&points(&p, 0), &[1.0, 2.0, 2.0, 2.5, 5.0]));
         assert!(close(&points(&p, 1), &[1.0, 3.5, 6.0]));
         assert_eq!(p.markers[0].position, 3.5);
 
@@ -759,7 +807,7 @@ mod tests {
         p.delete_items(&[ids[0][1]]);
         // REAPER removes the deleted item's time on every track, other items there included.
         assert!(close(&positions(&p, 1), &[0.0, 3.0]));
-        assert!(close(&points(&p, 1), &[1.0, 2.5, 5.0]));
+        assert!(close(&points(&p, 1), &[1.0, 2.0, 2.0, 2.5, 5.0]));
         assert_eq!((p.markers[0].position, p.markers[1].position, p.markers[1].region_end), (2.5, 5.0, Some(6.0)));
     }
 
@@ -769,7 +817,7 @@ mod tests {
         p.editing.ripple = RippleMode::PerTrack;
         p.move_items(&[ids[0][1]], 0.5);
         assert!(close(&positions(&p, 0), &[0.0, 2.5, 4.5]));
-        assert!(close(&points(&p, 0), &[1.0, 4.0, 6.5]));
+        assert!(close(&points(&p, 0), &[1.0, 1.9995, 2.5, 4.0, 6.5]));
         assert!(close(&positions(&p, 1), &[0.0, 2.0, 4.0]));
 
         let (mut p, ids) = scene();
@@ -921,7 +969,7 @@ mod tests {
         let track = p.tracks[0].id;
         let range = TimeRange::new(3.0, 4.0);
         p.remove_razor(&[RazorArea { track, range, envelope: Some(EnvelopeKind::Volume) }]);
-        assert!(close(&points(&p, 0), &[1.0, 6.0]));
+        assert!(close(&points(&p, 0), &[1.0, 3.0, 4.0, 4.000001, 6.0]));
         assert_eq!(p.tracks[0].items.len(), 3);
 
         let (mut p, _) = scene();
@@ -929,6 +977,6 @@ mod tests {
         let track = p.tracks[0].id;
         p.remove_razor(&[RazorArea { track, range: TimeRange::new(2.5, 3.5), envelope: None }]);
         assert!(close(&positions(&p, 0), &[0.0, 2.0, 3.0]));
-        assert!(close(&points(&p, 0), &[1.0, 2.5, 5.0]));
+        assert!(close(&points(&p, 0), &[1.0, 2.5, 2.5, 5.0]));
     }
 }

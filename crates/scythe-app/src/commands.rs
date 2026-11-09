@@ -65,7 +65,6 @@ impl ScytheApp {
     /// surfaces.
     pub fn refresh_host_toggles(&mut self) {
         let mut states: Vec<(String, bool)> = vec![
-            ("1157".into(), self.view.snap),
             ("40078".into(), self.view.show_mixer),
             ("_SCYTHE_TOGGLE_SETLIST".into(), self.view.setlist),
             ("_SCYTHE_TOGGLE_MONITOR_MIXES".into(), self.view.monitor_page),

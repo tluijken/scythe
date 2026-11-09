@@ -125,11 +125,13 @@ fn follow_playhead(app: &mut ScytheApp, lanes_w: f32) {
 }
 
 fn ruler_header(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
-    let painter = ui.painter();
-    painter.text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, "Tracks", theme::semibold(15.0), TEXT);
     let label = "Add track";
     let w = widgets::text_width(ui, label, theme::semibold(12.0)) + 40.0;
-    let btn = Rect::from_min_size(pos2(rect.right() - 8.0 - w, rect.center().y - 16.0), vec2(w, 32.0));
+    let top = Rect::from_min_max(rect.min, pos2(rect.right(), rect.center().y));
+    crate::ui::editing::switches(app, ui, top);
+    let rect = Rect::from_min_max(pos2(rect.left(), rect.center().y), rect.max);
+    ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, "Tracks", theme::semibold(15.0), TEXT);
+    let btn = Rect::from_min_size(pos2(rect.right() - 8.0 - w, rect.center().y - 11.0), vec2(w, 22.0));
     let resp = ui.allocate_rect(btn, Sense::click()).on_hover_text("Insert new track (Ctrl+T)");
     let bg = if resp.hovered() { RAISED_HI } else { RAISED };
     ui.painter().rect_filled(btn, CornerRadius::same(255), bg);
@@ -157,20 +159,13 @@ fn grid_step(bar_px: f32) -> i64 {
 
 /// Snap-grid lines between bar lines, when they are at least 10 px apart.
 fn sub_lines(app: &ScytheApp, axis: TimeAxis, right: f32) -> Vec<f64> {
-    let tl = app.project.tempo.timeline();
-    let step = crate::app::GRID_STEPS[app.view.grid].1;
-    let (q0, q1) = (tl.qn_at(axis.start.max(0.0)), tl.qn_at(axis.t(right)));
-    let px = (tl.time_at_qn(q0 + step) - tl.time_at_qn(q0)) * axis.pps;
-    if px < 10.0 || (q1 - q0) / step > 600.0 {
+    let p = &app.project;
+    let grid = &p.editing.grid;
+    let px = grid.step_seconds(&p.tempo, axis.start.max(0.0)) * axis.pps;
+    if px < 10.0 {
         return Vec::new();
     }
-    let mut out = Vec::new();
-    let mut q = (q0 / step).floor() * step;
-    while q <= q1 {
-        out.push(tl.time_at_qn(q));
-        q += step;
-    }
-    out
+    grid.lines_between(&p.tempo, axis.start.max(0.0), axis.t(right), 600)
 }
 
 /// Bar numbers and start times of the grid lines visible between `axis.start` and `right`.
@@ -342,12 +337,13 @@ fn razor_dragging(ui: &Ui) -> bool {
 /// it works whichever widget is under it.
 fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: Rect, row_h: f32, scroll: f32) {
     let id = Id::unique(RAZOR_ANCHOR);
-    let (pressed, down, alt, shift, pos) = ui.input(|i| {
+    let (pressed, down, alt, shift, ctrl, pos) = ui.input(|i| {
         (
             i.pointer.primary_pressed(),
             i.pointer.primary_down(),
             i.modifiers.alt,
             i.modifiers.shift,
+            i.modifiers.command,
             i.pointer.interact_pos(),
         )
     });
@@ -376,7 +372,24 @@ fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: R
                     .map(|(_, t)| (t.id, range)),
             );
         }
-        app.razor = areas;
+        if ctrl {
+            // Ctrl+Alt marks the tracks' visible envelopes instead of their items.
+            app.razor_envelopes = areas
+                .iter()
+                .flat_map(|&(t, r)| {
+                    let kinds: Vec<_> = app
+                        .project
+                        .track(t)
+                        .map(|tr| tr.envelopes.iter().filter(|e| e.visible).map(|e| e.kind).collect())
+                        .unwrap_or_default();
+                    kinds.into_iter().map(move |k| (t, k, r))
+                })
+                .collect();
+            app.razor.clear();
+        } else {
+            app.razor = areas;
+            app.razor_envelopes.clear();
+        }
     }
     if !down {
         ui.data_mut(|d| d.remove::<Pos2>(id));
@@ -392,7 +405,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let any_solo = app.project.any_solo();
     let routing = app.project.solo_routing();
     let grid = bar_lines(&app.project.tempo, axis, rows.right());
-    let subs = if app.view.snap { sub_lines(app, axis, rows.right()) } else { Vec::new() };
+    let subs = if app.project.editing.grid.lines { sub_lines(app, axis, rows.right()) } else { Vec::new() };
     let n = app.project.tracks.len();
     let scroll = app.view.track_scroll;
     let row_h = app.view.row_h;
@@ -599,6 +612,13 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         envelopes(app, ui, &lane_painter, lane, axis, track.id);
     }
 
+    for &(track, _, range) in &app.razor_envelopes {
+        let Some(i) = app.project.track_index(track) else { continue };
+        let row = row_rect(i);
+        let r = Rect::from_min_max(pos2(axis.x(range.start), row.top()), pos2(axis.x(range.end), row.bottom()));
+        clip.rect_filled(r, CornerRadius::same(4), with_alpha(theme::YELLOW, 0x28));
+        clip.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, theme::YELLOW), StrokeKind::Inside);
+    }
     for &(track, range) in &app.razor {
         let Some(i) = app.project.track_index(track) else { continue };
         let row = row_rect(i);
@@ -616,6 +636,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         app.sel = Selection { track: Some(track), item: None };
         app.multi.clear();
         app.razor.clear();
+        app.razor_envelopes.clear();
         if let Some(t) = t {
             let bypass = ui.ctx().input(|i| i.modifiers.shift);
             let at = app.snap(t.max(0.0), bypass);
@@ -846,6 +867,8 @@ fn draw_item(
     } else if resp.clicked() || (resp.drag_started() && !app.is_selected(id)) {
         app.multi.clear();
         app.sel = Selection { track: Some(track), item: Some(id) };
+        // Clicking a grouped item selects its whole group, as in REAPER.
+        app.multi.extend(app.project.with_groups(&[id]).into_iter().filter(|i| *i != id));
     } else if resp.drag_started() {
         app.sel = Selection { track: Some(track), item: Some(id) };
     }
@@ -854,9 +877,9 @@ fn draw_item(
     {
         ui.data_mut(|d| d.insert_temp(Id::unique("item-grab"), axis.t(p.x) - item.position));
     }
-    let group = !app.multi.is_empty() && app.is_selected(id);
+    let several = !app.multi.is_empty() && app.is_selected(id);
     if resp.dragged()
-        && group
+        && several
         && let Some(p) = resp.interact_pointer_pos()
     {
         // Moving one of several selected items moves them all in time, each on its own track.
@@ -871,30 +894,24 @@ fn draw_item(
             .fold(f64::INFINITY, f64::min);
         let delta = (new_pos - item.position).max(-earliest);
         app.gesture("Move items", |proj| {
-            for t in &mut proj.tracks {
-                for it in t.items.iter_mut().filter(|it| items.contains(&it.id)) {
-                    it.position += delta;
-                }
-            }
+            proj.move_items(&items, delta);
         });
     }
     if resp.dragged()
-        && !group
+        && !several
         && let Some(p) = resp.interact_pointer_pos()
     {
         let grab: f64 = ui.data(|d| d.get_temp(Id::unique("item-grab"))).unwrap_or(0.0);
         let bypass = ui.ctx().input(|i| i.modifiers.shift);
         let new_pos = app.snap((axis.t(p.x) - grab).max(0.0), bypass);
         let dest = track_under(app, ui, p);
+        let locked = app.project.position_locked(&item);
         app.gesture("Move item", |proj| {
-            if let Some(dest) = dest {
+            if let Some(dest) = dest.filter(|_| !locked) {
                 proj.move_item_to_track(id, dest);
             }
-            for t in &mut proj.tracks {
-                if let Some(it) = t.item_mut(id) {
-                    it.position = new_pos;
-                }
-            }
+            let from = proj.find_item(id).map_or(new_pos, |(_, it)| it.position);
+            proj.move_items(&[id], new_pos - from);
         });
         if let Some(dest) = dest {
             app.sel.track = Some(dest);
@@ -924,6 +941,8 @@ fn draw_item(
         app.open_subproject(id);
     }
     let (x, t) = (|t: f64| axis.x(t), |x: f32| axis.t(x));
+    crate::ui::editing::item_badges(&item_painter, outer, &item);
+    crate::ui::editing::draw_preview(app, &item_painter, outer, item.id, &x);
     crate::ui::stretch_markers::show(app, ui, &item_painter, outer, (&x, &t), track, &item);
     item_handles(app, ui, &item_painter, outer, axis, track, &item);
     if app.view.inline_midi.contains(&item.id) {
@@ -1001,8 +1020,13 @@ fn item_handles(
             Rect::from_center_size(pos2(outer.right() - fade_out_px, outer.top() + 4.0), vec2(12.0, 12.0)),
         ),
     ];
+    let (edges_locked, fades_locked) = (app.project.edges_locked(item), app.project.fades_locked(item));
     for (i, (kind, rect)) in handles.into_iter().enumerate() {
         if !full && matches!(kind, ItemHandle::FadeIn | ItemHandle::FadeOut) {
+            continue;
+        }
+        let fade = matches!(kind, ItemHandle::FadeIn | ItemHandle::FadeOut);
+        if (fade && fades_locked) || (!fade && edges_locked) {
             continue;
         }
         let hit = rect.intersect(painter.clip_rect());

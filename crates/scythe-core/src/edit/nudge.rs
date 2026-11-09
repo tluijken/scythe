@@ -224,7 +224,6 @@ impl Nudge {
                     }
                     if let Some(t) = p.track_mut(track) {
                         t.items.sort_by(|a, b| a.position.total_cmp(&b.position));
-                        p.auto_crossfade(track);
                     }
                 }
                 placed.last().copied().into_iter().collect()

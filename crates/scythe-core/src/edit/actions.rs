@@ -64,9 +64,9 @@ const GRID_SETS: [(u32, f64); 22] = [
 pub const SESSION_IDS: &[u32] = &[
     1155, 40309, 40310, 40311, 41990, 41991, 1135, 40569, 40570, 40567, 40568, 40571, 40572, 40573, 40574, 40575,
     40576, 40577, 40578, 40579, 40580, 40581, 40582, 40583, 40584, 40585, 40586, 40587, 40588, 40589, 40590, 40591,
-    40592, 40593, 40594, 40595, 40596, 40597, 40598, 40599, 40600, 40627, 40628, 40629, 1156, 40041, 41118, 41119, 1157, 40753, 40754, 40145, 40923, 42304,
-    40725, 40783, 40786, 41047, 40774, 41212, 40775, 41213, 42001, 40776, 40777, 42002, 42003, 40778, 42004, 41214,
-    42005, 40779, 42000, 40780, 42007, 40781, 41210, 42006, 41211,
+    40592, 40593, 40594, 40595, 40596, 40597, 40598, 40599, 40600, 40627, 40628, 40629, 1156, 40041, 41118, 41119,
+    1157, 40753, 40754, 40145, 40923, 42304, 40725, 40783, 40786, 41047, 40774, 41212, 40775, 41213, 42001, 40776,
+    40777, 42002, 42003, 40778, 42004, 41214, 42005, 40779, 42000, 40780, 42007, 40781, 41210, 42006, 41211,
 ];
 
 /// The actions here that work on the selected items or razor areas.
@@ -305,11 +305,14 @@ pub fn run(p: &mut Project, ctx: &mut EditContext, id: u32) -> Option<&'static s
             "Remove items"
         }
         40687..=40689 => {
-            p.set_items_locked(&items, match id {
-                40688 => Some(true),
-                40689 => Some(false),
-                _ => None,
-            });
+            p.set_items_locked(
+                &items,
+                match id {
+                    40688 => Some(true),
+                    40689 => Some(false),
+                    _ => None,
+                },
+            );
             "Item lock"
         }
         40032 => {
@@ -406,9 +409,10 @@ pub fn run(p: &mut Project, ctx: &mut EditContext, id: u32) -> Option<&'static s
 }
 
 fn first_crossfade_kind(p: &Project, items: &[ItemId]) -> Option<usize> {
-    items.iter().filter_map(|i| p.find_item(*i)).find_map(|(_, it)| {
-        (it.fade_in.auto_length > 0.0).then(|| it.fade_in.kind(false)).flatten()
-    })
+    items
+        .iter()
+        .filter_map(|i| p.find_item(*i))
+        .find_map(|(_, it)| (it.fade_in.auto_length > 0.0).then(|| it.fade_in.kind(false)).flatten())
 }
 
 /// Splits each item at the given project times (dynamic split), keeping pieces at least

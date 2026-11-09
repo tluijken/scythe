@@ -52,13 +52,12 @@ pub struct ViewState {
     pub row_h: f32,
     /// FX slot whose parameters are shown in the inspector.
     pub expanded_fx: Option<(TrackId, usize)>,
-    /// Index into `GRID_STEPS`.
-    pub grid: usize,
     pub midi_editor: Option<ItemId>,
     pub midi_state: crate::ui::midi_editor::EditorState,
     /// MIDI items whose inline editor is open in the arrange view.
     pub inline_midi: Vec<ItemId>,
-    pub snap: bool,
+    /// The editing windows and snap targets.
+    pub editing: crate::ui::editing::EditState,
     /// Range to zoom the arrange view to on the next frame, once its width is known.
     pub fit: Option<TimeRange>,
     /// The monitor mixes page replaces the arrange view and mixer.
@@ -118,8 +117,8 @@ pub enum RenderKind {
     ProjectSettings,
 }
 
-/// Snap grid choices: label and step in quarter notes.
-pub const GRID_STEPS: [(&str, f64); 5] = [("1/4", 1.0), ("1/8", 0.5), ("1/16", 0.25), ("1/32", 0.125), ("bar", 4.0)];
+/// The grid divisions "Grid: Next grid size" steps through, in whole notes.
+pub const GRID_STEPS: [f64; 6] = [1.0 / 4.0, 1.0 / 8.0, 1.0 / 16.0, 1.0 / 32.0, 1.0 / 24.0, 1.0];
 
 /// The window around a [`Session`]: selection, view, clipboard, editors and scripts. The
 /// session's fields and methods are reachable through `Deref`, so `app.project` and
@@ -135,6 +134,8 @@ pub struct ScytheApp {
     pub multi: HashSet<ItemId>,
     /// Razor edit areas: time ranges on single tracks, made with Alt+drag.
     pub razor: Vec<(TrackId, TimeRange)>,
+    /// Razor edit areas on envelopes, made with Ctrl+Alt+drag.
+    pub razor_envelopes: Vec<(TrackId, scythe_core::EnvelopeKind, TimeRange)>,
     /// Where the copied material starts, so a paste keeps space before the first item.
     clipboard_origin: f64,
     pub last_script: Option<PathBuf>,
@@ -233,11 +234,10 @@ impl ScytheApp {
                 renaming_marker: None,
                 row_h: 72.0,
                 expanded_fx: None,
-                grid: 0,
                 midi_editor: None,
                 midi_state: Default::default(),
                 inline_midi: Vec::new(),
-                snap: true,
+                editing: Default::default(),
                 fit: None,
                 monitor_page: false,
                 monitor_wizard: None,
@@ -263,6 +263,7 @@ impl ScytheApp {
             clipboard: Vec::new(),
             multi: HashSet::new(),
             razor: Vec::new(),
+            razor_envelopes: Vec::new(),
             clipboard_origin: 0.0,
             last_script: None,
             script_console: None,
@@ -393,11 +394,7 @@ impl ScytheApp {
     }
 
     pub fn snap(&self, seconds: f64, bypass: bool) -> f64 {
-        if self.view.snap && !bypass {
-            self.project.tempo.timeline().snap_to(seconds, GRID_STEPS[self.view.grid].1)
-        } else {
-            seconds
-        }
+        crate::ui::editing::snap(self, seconds, bypass)
     }
 
     // ---- project files -------------------------------------------------------------------
@@ -808,14 +805,14 @@ impl ScytheApp {
 
     pub fn delete_selection(&mut self) {
         let items = self.selected_items();
-        if !self.razor.is_empty() {
-            let areas = std::mem::take(&mut self.razor);
-            self.edit("Remove razor edit contents", |p| p.remove_areas(&areas));
+        if !self.razor.is_empty() || !self.razor_envelopes.is_empty() {
+            let areas = crate::ui::editing::razor_areas(self);
+            self.razor.clear();
+            self.razor_envelopes.clear();
+            self.edit("Remove razor edit contents", |p| p.remove_razor(&areas));
         } else if !items.is_empty() {
             self.edit("Delete items", |p| {
-                for t in &mut p.tracks {
-                    t.items.retain(|i| !items.contains(&i.id));
-                }
+                p.delete_items(&items);
             });
             self.sel.item = None;
             self.multi.clear();
@@ -895,7 +892,11 @@ impl ScytheApp {
         let mut placed = Vec::new();
         let mut end = cursor;
         let clip = self.clipboard.clone();
+        let span = clip.iter().map(|(_, it)| it.end()).fold(start, f64::max) - start;
         self.edit("Paste items", |p| {
+            let tracks: Vec<TrackId> =
+                clip.iter().filter_map(|(offset, _)| p.tracks.get(base + offset).map(|t| t.id)).collect();
+            p.ripple_insert(&tracks, cursor, span, &[]);
             for (offset, item) in &clip {
                 let Some(track) = p.tracks.get_mut(base + offset) else { continue };
                 let mut new = item.duplicate();
@@ -923,6 +924,8 @@ impl ScytheApp {
         };
         let mut placed = Vec::new();
         self.edit("Duplicate items", |p| {
+            let tracks: Vec<TrackId> = items.iter().filter_map(|(t, _)| p.tracks.get(*t).map(|t| t.id)).collect();
+            p.ripple_insert(&tracks, end, end - start, &[]);
             for (track, item) in &items {
                 let mut new = item.duplicate();
                 new.position += end - start;
@@ -1527,21 +1530,17 @@ impl ScytheApp {
             return;
         };
         let at = self.position();
-        let mut new_id = None;
-        self.edit("Split item", |p| {
-            for t in &mut p.tracks {
-                let Some(idx) = t.items.iter().position(|i| i.id == item_id) else { continue };
-                if let Some(right) = t.items[idx].split_at(at) {
-                    new_id = Some(right.id);
-                    t.items.insert(idx + 1, right);
-                }
-                return;
-            }
-        });
-        if new_id.is_none() {
+        let items = self.selected_items();
+        let mut right = Vec::new();
+        self.edit("Split item", |p| right = p.split_items(&items, at));
+        if right.is_empty() {
             self.notify("Put the cursor inside the selected item to split it");
+            return;
         }
-        self.sel.item = new_id.or(self.sel.item);
+        // REAPER selects the right halves, the one of the primary item first.
+        let track = self.project.find_item(item_id).map(|(t, _)| t);
+        right.sort_by_key(|r| self.project.find_item(*r).map(|(t, _)| t) != track);
+        crate::ui::editing::select(self, &right);
     }
 }
 

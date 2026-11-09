@@ -349,15 +349,23 @@ impl EditSettings {
             "GROUPOVERRIDE" => &["GROUPOVERRIDE", "0", "0", "0", "0"],
             _ => return None,
         };
+        // Older projects write shorter lines (`RIPPLE 0`); keep them so until a field past
+        // their end has to change.
         let mut t: Vec<String> = match old {
-            Some(o) if o.len() >= default.len() => o.to_vec(),
-            _ => default.iter().map(|s| (*s).to_owned()).collect(),
+            Some(o) => o.to_vec(),
+            None => default.iter().map(|s| (*s).to_owned()).collect(),
         };
+        let min = if key == "GRID" { default.len() } else { 2 };
+        while t.len() < min {
+            t.push(default[t.len()].to_owned());
+        }
         let n = |t: &[String], i: usize| t.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) as i64;
         match key {
             "RIPPLE" => {
                 t[1] = self.ripple.code().to_string();
-                if self.ripple != RippleMode::Off {
+                let changed = old.is_none_or(|o| RippleMode::from_code(n(o, 1)) != self.ripple);
+                if changed && self.ripple != RippleMode::Off {
+                    t.resize(t.len().max(3), "0".to_owned());
                     t[2] = ((self.ripple == RippleMode::AllTracks) as i64).to_string();
                 }
             }
@@ -426,7 +434,8 @@ mod tests {
     #[test]
     fn lines_round_trip_and_keep_unknown_fields() {
         let mut s = EditSettings::default();
-        for line in ["RIPPLE 2 1", "GRID 3455 8 0.5 8 1 0 8 0.5", "LOCK 16387", "AUTOXFADE 128", "GROUPOVERRIDE 1 0 0 0"]
+        for line in
+            ["RIPPLE 2 1", "GRID 3455 8 0.5 8 1 0 8 0.5", "LOCK 16387", "AUTOXFADE 128", "GROUPOVERRIDE 1 0 0 0"]
         {
             assert!(s.read_line(&toks(line)));
         }
@@ -441,6 +450,12 @@ mod tests {
         s.grid.snap = true;
         assert_eq!(line(&s, "GRID", "GRID 3455 8 0.5 8 1 0 8 0.5"), "GRID 3199 8 0.5 8 1 0 64 0.5");
         assert_eq!(s.line("RIPPLE", None).unwrap().join(" "), "RIPPLE 2 1");
+        let d = EditSettings::default();
+        assert_eq!(d.line("RIPPLE", Some(&toks("RIPPLE 0"))).unwrap().join(" "), "RIPPLE 0");
+        assert_eq!(
+            d.line("GROUPOVERRIDE", Some(&toks("GROUPOVERRIDE 0 0 0"))).unwrap().join(" "),
+            "GROUPOVERRIDE 0 0 0"
+        );
     }
 
     #[test]
