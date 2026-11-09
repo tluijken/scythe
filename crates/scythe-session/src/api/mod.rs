@@ -13,6 +13,7 @@ pub mod midi;
 pub mod mix;
 pub mod modulation;
 pub mod project;
+pub mod render;
 pub mod sends;
 pub mod setlist;
 pub mod snapshot;
@@ -51,6 +52,7 @@ pub enum Command {
     Midi(midi::MidiCommand),
     Timing(timing::TimingCommand),
     Modulation(modulation::ModulationCommand),
+    Render(render::RenderCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -84,6 +86,7 @@ impl<'de> Deserialize<'de> for Command {
             "tempo" => serde_json::from_value(value).map(Command::Tempo),
             "surface" => serde_json::from_value(value).map(Command::Surface),
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
+            "render" => serde_json::from_value(value).map(Command::Render),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -108,6 +111,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Midi(c) => midi::execute(session, c),
         Command::Timing(c) => timing::execute(session, c),
         Command::Modulation(c) => modulation::execute(session, c),
+        Command::Render(c) => render::execute(session, c),
     }
 }
 

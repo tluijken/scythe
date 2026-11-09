@@ -10,6 +10,7 @@ pub mod learn;
 mod live;
 mod media;
 mod midi;
+pub mod render;
 mod transport;
 
 pub mod access;

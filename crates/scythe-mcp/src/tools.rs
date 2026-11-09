@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
     fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, midi::MidiCommand,
-    mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand, sends::SendCommand,
+    mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand, render::RenderCommand, sends::SendCommand,
     setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
     transport::TransportCommand,
 };
@@ -99,6 +99,7 @@ fn domains() -> Vec<Value> {
         schema::<MidiCommand>(),
         schema::<TimingCommand>(),
         schema::<ModulationCommand>(),
+        schema::<RenderCommand>(),
     ]
 }
 

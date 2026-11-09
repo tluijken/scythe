@@ -51,69 +51,6 @@ impl eframe::App for Shell {
     }
 }
 
-/// Renders with the project's own render settings, like REAPER's `-renderproject`.
-fn render_with_project_settings(path: &std::path::Path) -> Result<(), String> {
-    use scythe_core::render_settings::{Format, RenderSelection, RenderSettings};
-    let project = scythe_core::rpp::read_project(path).map_err(|e| e.to_string())?;
-    let settings = RenderSettings::from_project(&project);
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let jobs = settings.jobs(&project, &RenderSelection::saved(&project), now)?;
-    if let Format::Other(ref id) = settings.format {
-        eprintln!("note: the project renders to the {id} format; writing 24-bit WAV instead");
-    }
-    let encoding = scythe_engine::bounce::Encoding::from_format(&settings.format);
-    let rate = encoding.sample_rate().or(settings.sample_rate).or(project.sample_rate).unwrap_or(48_000);
-    let pool = load_media(&project, rate, settings.resample);
-    for job in jobs {
-        let (range, out) = (job.range, job.path);
-        let source = scythe_core::render_source::project_for(&project, job.source);
-        if let Some(dir) = out.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        }
-        let finish = scythe_engine::bounce::Finish::from_settings(&settings);
-        let channels = settings.channels;
-        scythe_engine::bounce::bounce_finished(
-            &source,
-            &pool,
-            range,
-            rate,
-            channels,
-            encoding.clone(),
-            &out,
-            finish,
-            |_| {},
-        )
-        .map_err(|e| e.to_string())?;
-        eprintln!("rendered {:.1}-{:.1} s to {}", range.start, range.end, out.display());
-    }
-    Ok(())
-}
-
-pub(crate) fn load_media(
-    project: &scythe_core::Project,
-    rate: u32,
-    resample: scythe_core::render_settings::ResampleMode,
-) -> scythe_engine::MediaPool {
-    use rayon::prelude::*;
-    let pool = scythe_engine::MediaPool::with_resample(resample);
-    let mut files: Vec<std::path::PathBuf> = project
-        .tracks
-        .iter()
-        .flat_map(|t| &t.items)
-        .flat_map(|i| &i.takes)
-        .filter_map(|t| t.source.file().map(|f| scythe_core::rpp::resolve_media_path(project, f)))
-        .collect();
-    files.sort();
-    files.dedup();
-    files.par_iter().for_each(|path| {
-        if let Err(e) = pool.load(path, rate) {
-            eprintln!("warning: {e}");
-        }
-    });
-    pool.prepare_project(project);
-    pool
-}
-
 /// Renders a whole project to a 24-bit WAV without opening a window.
 fn render_headless(
     project: &std::path::Path,
@@ -122,7 +59,7 @@ fn render_headless(
 ) -> Result<(), String> {
     let project = scythe_core::rpp::read_project(project).map_err(|e| e.to_string())?;
     let rate = project.sample_rate.unwrap_or(48_000);
-    let pool = load_media(&project, rate, Default::default());
+    let pool = scythe_session::render::load_media(&project, rate, Default::default());
     let range = range.unwrap_or_else(|| scythe_core::TimeRange::new(0.0, project.length()));
     let started = std::time::Instant::now();
     scythe_engine::bounce::bounce_to_wav(
@@ -208,13 +145,25 @@ fn main() -> eframe::Result {
     let null_audio = args.iter().any(|a| a == "--null-audio");
     let setlist = args.iter().any(|a| a == "--setlist");
 
+    if let Some(at) = args.iter().position(|a| a == "--render-queue") {
+        let dir = args.get(at + 1).filter(|a| !a.starts_with("--")).map(std::path::PathBuf::from);
+        let Some(dir) = dir.or_else(scythe_core::render_queue::default_dir) else {
+            eprintln!("--render-queue needs a folder");
+            std::process::exit(2);
+        };
+        let run = scythe_session::render::run_queue(&dir);
+        for (queued, e) in &run.failed {
+            eprintln!("{}: {e}", queued.display());
+        }
+        std::process::exit(if run.failed.is_empty() { 0 } else { 1 });
+    }
     if args.iter().any(|a| a == "--render-project") {
         let Some(path) = open.as_deref() else {
             eprintln!("--render-project needs a project file");
             std::process::exit(2);
         };
-        match render_with_project_settings(path) {
-            Ok(()) => std::process::exit(0),
+        match scythe_session::render::render_project_file(path) {
+            Ok(_) => std::process::exit(0),
             Err(e) => {
                 eprintln!("render failed: {e}");
                 std::process::exit(1);

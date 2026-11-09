@@ -7633,6 +7633,243 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The files the project's render settings write now, with their time spans and what each\nplays; nothing is rendered.\n\nControl API command `render.jobs`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "render_jobs",
+    "title": "Render jobs"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes the project's render settings; what is left out stays.\n\nControl API command `render.settings`.",
+    "inputSchema": {
+      "properties": {
+        "bounds": {
+          "default": null,
+          "description": "The time span a render covers (REAPER's \"Bounds\").",
+          "enum": [
+            "project",
+            "time_selection",
+            "regions",
+            "selected_items",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file": {
+          "default": null,
+          "description": "Output folder (or file); relative to the project's folder.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "default": null,
+          "description": "File name pattern with wildcards such as `$project`, `$track`, `$region`,\n`$regionnumber`, `$item`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "description": "What a render plays (REAPER's render dialog \"Source\").",
+              "oneOf": [
+                {
+                  "enum": [
+                    "master"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "const": "master_and_stems",
+                  "description": "The master mix and a stem per selected track.",
+                  "type": "string"
+                },
+                {
+                  "const": "stems",
+                  "description": "A stem per selected track: its own output, without folders or the master.",
+                  "type": "string"
+                },
+                {
+                  "const": "tracks_via_master",
+                  "description": "Each selected track soloed through the master.",
+                  "type": "string"
+                },
+                {
+                  "const": "items",
+                  "description": "Each selected item alone through its track.",
+                  "type": "string"
+                },
+                {
+                  "const": "items_via_master",
+                  "description": "Each selected item alone through the master.",
+                  "type": "string"
+                },
+                {
+                  "const": "matrix",
+                  "description": "The region render matrix: per region, the tracks (and the master) ticked for it.",
+                  "type": "string"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "name": "render_settings",
+    "title": "Render settings"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ticks (or unticks) a track, or the master, for a region in the region render matrix.\n\nControl API command `render.matrix`.",
+    "inputSchema": {
+      "properties": {
+        "on": {
+          "type": "boolean"
+        },
+        "region": {
+          "description": "The region's number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track id, name or \"master\"."
+        }
+      },
+      "required": [
+        "region",
+        "track",
+        "on"
+      ],
+      "type": "object"
+    },
+    "name": "render_matrix",
+    "title": "Render matrix"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Renders with the project's render settings in the background.\n\nControl API command `render.project`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "render_project",
+    "title": "Render project"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds the project, as it is now, to the render queue.\n\nControl API command `render.queue`.",
+    "inputSchema": {
+      "properties": {
+        "dir": {
+          "default": null,
+          "description": "The queue folder; REAPER's `QueuedRenders` when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "render_queue",
+    "title": "Render queue"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The queued projects, oldest first.\n\nControl API command `render.queue_list`.",
+    "inputSchema": {
+      "properties": {
+        "dir": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "render_queue_list",
+    "title": "Render queue list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Renders every queued project in the background; each one that renders leaves the queue.\n\nControl API command `render.queue_run`.",
+    "inputSchema": {
+      "properties": {
+        "dir": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "render_queue_run",
+    "title": "Render queue run"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

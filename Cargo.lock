@@ -3826,6 +3826,7 @@ dependencies = [
 name = "scythe-session"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "schemars",
  "scythe-core",
  "scythe-engine",

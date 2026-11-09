@@ -1273,6 +1273,34 @@ fn stretch_markers_channel_modes_and_play_rate() {
         execute_json(&mut s, json!({"cmd": "project.playrate", "rate": 9.0})).unwrap_err().kind,
         ErrorKind::Invalid
     );
+#[test]
+fn render_matrix_settings_and_queue() {
+    let mut s = session();
+    let kick = add_track(&mut s, "Kick");
+    s.project.tracks[0].items.push(Item::new(0.0, 4.0, Take::from_file("kick.wav".into())));
+    ok(&mut s, json!({"cmd": "marker.add", "position": 0.0, "end": 2.0, "name": "Intro"}));
+    ok(&mut s, json!({"cmd": "render.matrix", "region": 1, "track": kick, "on": true}));
+    ok(&mut s, json!({"cmd": "render.matrix", "region": 1, "track": "master", "on": true}));
+    let dir = std::env::temp_dir().join(format!("scythe-render-api-{}", std::process::id()));
+    let jobs = ok(
+        &mut s,
+        json!({"cmd": "render.settings", "source": "matrix", "pattern": "$region-$track", "file": dir.join("out")}),
+    );
+    let names: Vec<_> = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|j| j["path"].as_str().unwrap().rsplit('/').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["Intro-Master.wav", "Intro-Kick.wav"]);
+    assert_eq!(jobs[1]["source"]["kind"], "stem");
+
+    let queued = ok(&mut s, json!({"cmd": "render.queue", "dir": dir}));
+    let path = queued["queued"].as_str().unwrap().to_owned();
+    assert!(std::fs::read_to_string(&path).unwrap().contains("QUEUED_RENDER_OUTFILE"));
+    let list = ok(&mut s, json!({"cmd": "render.queue_list", "dir": dir}));
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

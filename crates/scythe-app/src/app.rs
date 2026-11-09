@@ -445,11 +445,7 @@ impl ScytheApp {
             channels = settings.channels;
             finish = Finish::from_settings(&settings);
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            let selection = scythe_core::render_settings::RenderSelection {
-                tracks: self.sel.track.into_iter().collect(),
-                items: self.selected_items(),
-            };
-            match settings.jobs(&self.project, &selection, now) {
+            match settings.jobs(&self.project, &self.render_selection(), now) {
                 Ok(jobs) => jobs
                     .into_iter()
                     .map(|job| {
@@ -496,7 +492,7 @@ impl ScytheApp {
                 && let Some((project, _)) = jobs.first()
             {
                 rate = fixed.unwrap_or(rate);
-                pool = Arc::new(crate::load_media(project, rate, resample));
+                pool = Arc::new(scythe_session::render::load_media(project, rate, resample));
             }
             let mut last = Ok(PathBuf::new());
             for (i, (project, path)) in jobs.into_iter().enumerate() {
@@ -514,6 +510,26 @@ impl ScytheApp {
             let _ = tx.send(LoaderMsg::Bounced(last));
             ctx.request_repaint();
         });
+    }
+
+    fn render_selection(&self) -> scythe_core::render_settings::RenderSelection {
+        scythe_core::render_settings::RenderSelection {
+            tracks: self.sel.track.into_iter().collect(),
+            items: self.selected_items(),
+        }
+    }
+
+    /// Adds the project, as it is now, to REAPER's render queue.
+    pub fn queue_render(&mut self) {
+        match self.session.queue_render(None, &self.render_selection()) {
+            Ok(path) => self.notify(format!("Queued {}", path.file_name().unwrap_or_default().to_string_lossy())),
+            Err(e) => self.notify(format!("Cannot queue the render: {e}")),
+        }
+    }
+
+    /// Renders every project in REAPER's render queue in the background.
+    pub fn run_render_queue(&mut self) {
+        let _ = scythe_session::api::execute_json(&mut self.session, serde_json::json!({ "cmd": "render.queue_run" }));
     }
 
     /// Glues the selected items of each track into one item playing a render of them.

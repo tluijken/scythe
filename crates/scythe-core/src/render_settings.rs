@@ -567,6 +567,29 @@ pub struct RenderSettings {
     pub metadata: Vec<(String, String)>,
 }
 
+/// Sets field `field` (1-based, after the key) of the project's `key` render line, adding the
+/// line with `defaults` when the project has none.
+pub fn set_project_field(p: &mut Project, key: &str, defaults: &[&str], field: usize, value: &str) {
+    let at =
+        p.extra.iter().position(|n| matches!(n, Node::Line(l) if tokenize(l).first().map(String::as_str) == Some(key)));
+    let mut tokens = match at {
+        Some(i) => match &p.extra[i] {
+            Node::Line(l) => tokenize(l),
+            Node::Chunk(_) => unreachable!(),
+        },
+        None => std::iter::once(key.to_owned()).chain(defaults.iter().map(|d| d.to_string())).collect(),
+    };
+    if tokens.len() <= field {
+        tokens.resize(field + 1, "0".into());
+    }
+    tokens[field] = value.to_owned();
+    let line = Node::Line(crate::rpp::join_tokens(tokens));
+    match at {
+        Some(i) => p.extra[i] = line,
+        None => p.extra.push(line),
+    }
+}
+
 impl RenderSettings {
     pub fn from_project(p: &Project) -> Self {
         let mut s = Self {
