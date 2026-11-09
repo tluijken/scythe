@@ -146,8 +146,9 @@ impl Gate {
             _ => Invert::Off,
         };
         self.preview = p.get(13) >= 0.5;
-        self.midi = (p.get(15) >= 0.5)
-            .then(|| ((p.get(16) * 127.0).round().clamp(0.0, 127.0) as u8, (p.get(17) * 15.0).round().clamp(0.0, 15.0) as u8));
+        self.midi = (p.get(15) >= 0.5).then(|| {
+            ((p.get(16) * 127.0).round().clamp(0.0, 127.0) as u8, (p.get(17) * 15.0).round().clamp(0.0, 15.0) as u8)
+        });
         self.input = DetectorInput::new(p.get(7));
         self.filter = DetectorFilter::new(p.get(5), p.get(6), self.sample_rate);
         let window = (frames(p.get(14), 100.0) as usize).max(1);

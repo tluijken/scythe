@@ -28,8 +28,27 @@ const SPECS: &[Spec] = &[
 
 /// A fresh ReaComp's parameters as REAPER 7.73 stores them.
 const DEFAULTS: [f32; 21] = [
-    1.0, 0.030303, 0.006, 0.02, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.162_277_6e-8, 1.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.25, 0.0,
-    0.0, 0.0,
+    1.0,
+    0.030303,
+    0.006,
+    0.02,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    3.162_277_6e-8,
+    1.0,
+    0.0,
+    0.05,
+    0.0,
+    0.0,
+    0.0,
+    0.25,
+    0.0,
+    0.0,
+    0.0,
 ];
 
 /// Auto release stretches the release to this many ms per dB of gain reduction (48 ms per
