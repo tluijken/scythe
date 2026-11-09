@@ -8,6 +8,7 @@
 //! pitch shifter is cut into pieces of near-constant speed and pitch, each run through the
 //! shifter with some source on either side and joined with short crossfades.
 
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use scythe_core::render_settings::ResampleMode;
@@ -90,9 +91,11 @@ impl<'a> View<'a> {
     /// The file position of view position `p`, `None` where the take is silent.
     fn place(&self, p: f64) -> Option<f64> {
         let p = if self.looped && self.len > 0.0 { p.rem_euclid(self.len) } else { p };
-        (0.0..self.len)
-            .contains(&p)
-            .then(|| if self.reverse { self.start + self.len - 1.0 - p } else { self.start + p })
+        (0.0..self.len).contains(&p).then_some(if self.reverse {
+            self.start + self.len - 1.0 - p
+        } else {
+            self.start + p
+        })
     }
 
     /// View frames `lo..hi`, silent outside the view.
@@ -115,7 +118,7 @@ impl<'a> View<'a> {
 struct Kernels {
     half: usize,
     tabled: bool,
-    built: Vec<(i64, SincKernel)>,
+    built: HashMap<i64, SincKernel>,
 }
 
 impl Kernels {
@@ -124,20 +127,21 @@ impl Kernels {
             ResampleMode::Sinc { half, tabled } => (half as usize, tabled),
             _ => (96, true),
         };
-        Self { half, tabled, built: Vec::new() }
+        Self { half, tabled, built: HashMap::new() }
+    }
+
+    /// The kernel for reading `step` frames apart, by its key in `built`.
+    fn key(&mut self, step: f64) -> i64 {
+        // Steps under 1 all use the full band.
+        let key = (step.max(1.0) * 1e4).round() as i64;
+        let (half, tabled) = (self.half, self.tabled);
+        self.built.entry(key).or_insert_with(|| SincKernel::new(key as f64 / 1e4, half, tabled));
+        key
     }
 
     fn get(&mut self, step: f64) -> &SincKernel {
-        // Steps under 1 all use the full band.
-        let bucket = (step.max(1.0) * 1e4).round() as i64;
-        let i = match self.built.iter().position(|(b, _)| *b == bucket) {
-            Some(i) => i,
-            None => {
-                self.built.push((bucket, SincKernel::new(bucket as f64 / 1e4, self.half, self.tabled)));
-                self.built.len() - 1
-            }
-        };
-        &self.built[i].1
+        let key = self.key(step);
+        &self.built[&key]
     }
 }
 
@@ -152,12 +156,17 @@ pub fn render(base: &AudioData, warp: &Warp, resample: ResampleMode) -> AudioDat
     let source_pos = |rel: f64| take.source_pos(rel);
     let shifts = take.preserve_pitch || take.pitch != 0.0 || take.pitch_envelope().is_some();
     if !shifts {
-        for j in 0..frames {
-            let rel = j as f64 / sr;
-            let Some(at) = view.place(source_pos(rel) * sr) else { continue };
-            let kernel = kernels.get(take.speed_at(rel).abs());
-            for (c, ch) in base.channels.iter().enumerate() {
-                out[c][j] = kernel.sample(ch, at);
+        let reads: Vec<Option<(f64, i64)>> = (0..frames)
+            .map(|j| {
+                let rel = j as f64 / sr;
+                Some((view.place(source_pos(rel) * sr)?, kernels.key(take.speed_at(rel).abs())))
+            })
+            .collect();
+        for (o, ch) in out.iter_mut().zip(&base.channels) {
+            for (s, read) in o.iter_mut().zip(&reads) {
+                if let Some((at, key)) = read {
+                    *s = kernels.built[key].sample(ch, *at);
+                }
             }
         }
         return AudioData { sample_rate: base.sample_rate, channels: out };
@@ -172,7 +181,7 @@ pub fn render(base: &AudioData, warp: &Warp, resample: ResampleMode) -> AudioDat
     for (n, &(a, b)) in pieces.iter().enumerate() {
         let (sa, sb) = (src(a), src(b));
         let speed = (sb - sa) / (b - a) as f64;
-        if !(speed > 1e-6) {
+        if speed.is_nan() || speed <= 1e-6 {
             continue;
         }
         let tail = if n + 1 < count { FADE } else { 0 };

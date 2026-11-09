@@ -1212,7 +1212,7 @@ mod tests {
             (0..3)
                 .map(|n| {
                     let item = api(st, "GetTrackMediaItem", &[Val::Track(st.project.tracks[0].id), Val::Int(n)]).0;
-                    let take = api(st, "GetActiveTake", &[item.clone()]).0;
+                    let take = api(st, "GetActiveTake", std::slice::from_ref(&item)).0;
                     let get =
                         |st: &mut State, k: &str| api(st, "GetMediaItemInfo_Value", &[item.clone(), s(k)]).0.num();
                     let rate = api(st, "GetMediaItemTakeInfo_Value", &[take, s("D_PLAYRATE")]).0.num();

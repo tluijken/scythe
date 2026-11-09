@@ -42,7 +42,7 @@ pub(crate) type StretchKey = (PathBuf, u64);
 /// A processed copy of a file being prepared.
 enum Stretch {
     Processed(scythe_core::Processing),
-    Warped(Warp),
+    Warped(Box<Warp>),
 }
 
 fn hash(value: &impl std::hash::Hash) -> u64 {
@@ -125,7 +125,7 @@ impl Session {
                     jobs.push((path.clone(), Stretch::Processed(p)));
                 }
                 if let Some(w) = Warp::of(item, take, default_mode) {
-                    jobs.push((path, Stretch::Warped(w)));
+                    jobs.push((path, Stretch::Warped(Box::new(w))));
                 }
             }
         }

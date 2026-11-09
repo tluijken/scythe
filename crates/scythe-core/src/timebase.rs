@@ -71,7 +71,7 @@ impl PlayRate {
     pub const MAX: f64 = 4.0;
 
     pub fn is_normal(&self) -> bool {
-        (self.rate - 1.0).abs() < 1e-12 || !(self.rate > 0.0)
+        (self.rate - 1.0).abs() < 1e-12 || self.rate.is_nan() || self.rate <= 0.0
     }
 }
 
