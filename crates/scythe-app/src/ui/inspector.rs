@@ -1,7 +1,8 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
 use scythe_core::midi_route::{MidiDevice, MidiInput, SendMidi};
 use scythe_core::units::format_db;
-use scythe_core::{EnvelopeKind, HwOut, Send, SendMode, TrackId};
+use scythe_core::timebase::Timebase;
+use scythe_core::{ChannelMode, EnvelopeKind, HwOut, Send, SendMode, TrackId};
 use scythe_engine::fx::FxStatus;
 
 use crate::app::{InspectorTab, PresetSource, ScytheApp};
@@ -952,7 +953,7 @@ fn mode_pill(
 }
 
 const ITEM_ROW: f32 = 40.0;
-const ITEM_H: f32 = 16.0 + 30.0 + 8.0 * (ITEM_ROW + 6.0) + 10.0;
+const ITEM_H: f32 = 16.0 + 30.0 + 10.0 * (ITEM_ROW + 6.0) + 10.0;
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let item = app.sel.item.filter(|id| app.project.find_item(*id).is_some());
@@ -964,6 +965,16 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         top += ITEM_H + 10.0;
     }
     track_card(app, ui, Rect::from_min_max(pos2(rect.left(), top), rect.max));
+}
+
+/// A row with a label and a value pill that opens a menu; returns the pill's response.
+fn menu_row(ui: &mut Ui, painter: &egui::Painter, r: Rect, label: &str, value: &str, hint: &str) -> egui::Response {
+    painter.rect_filled(r, CornerRadius::same(12), RAISED);
+    painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(13.0), TEXT);
+    let w = (r.width() - 110.0).clamp(100.0, 200.0);
+    let pill = Rect::from_min_size(pos2(r.right() - 10.0 - w, r.center().y - 12.0), vec2(w, 24.0));
+    let text = widgets::truncate(ui, value, &theme::regular(11.0), w - 12.0);
+    text_pill(ui, pill, &text, theme::regular(11.0), BG, TEXT).on_hover_text(hint)
 }
 
 /// A row with a label and a value pill that changes the value when dragged horizontally.
@@ -1118,6 +1129,56 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
     }
     if resp.drag_stopped() || resp.double_clicked() {
         app.end_gesture();
+    }
+
+    let mode = item.take().map_or(ChannelMode::Normal, |t| t.channel_mode);
+    let resp = menu_row(ui, &painter, row(), "Channels", &mode.label(), "Which source channels play");
+    let mut chosen = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        let mut choose = |ui: &mut Ui, m: ChannelMode| {
+            if ui.selectable_label(mode == m, m.label()).clicked() {
+                chosen = Some(m);
+            }
+        };
+        for m in [ChannelMode::Normal, ChannelMode::ReverseStereo, ChannelMode::Downmix] {
+            choose(ui, m);
+        }
+        for c in 0..2 {
+            choose(ui, ChannelMode::Mono(c));
+        }
+        ui.menu_button("Mono", |ui| (0..16).for_each(|c| choose(ui, ChannelMode::Mono(c))));
+        ui.menu_button("Stereo", |ui| (0..15).for_each(|c| choose(ui, ChannelMode::Stereo(c))));
+    });
+    if let Some(m) = chosen {
+        app.edit("Take channel mode", |p| {
+            if let Some(t) = p.tracks.iter_mut().find_map(|t| t.item_mut(id)).and_then(|it| {
+                let active = it.active_take;
+                it.takes.get_mut(active)
+            }) {
+                t.channel_mode = m;
+            }
+        });
+    }
+
+    let base = item.timebase.map_or("Project default", Timebase::label);
+    let resp = menu_row(ui, &painter, row(), "Timebase", base, "What the item follows when the tempo changes");
+    let mut chosen = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        if ui.selectable_label(item.timebase.is_none(), "Project default").clicked() {
+            chosen = Some(None);
+        }
+        for tb in Timebase::ALL {
+            if ui.selectable_label(item.timebase == Some(tb), tb.label()).clicked() {
+                chosen = Some(Some(tb));
+            }
+        }
+    });
+    if let Some(tb) = chosen {
+        app.edit("Item timebase", |p| {
+            if let Some(it) = p.tracks.iter_mut().find_map(|t| t.item_mut(id)) {
+                it.timebase = tb;
+            }
+        });
     }
 
     let preserve = item.take().is_none_or(|t| t.preserve_pitch);

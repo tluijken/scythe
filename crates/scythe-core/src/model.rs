@@ -269,6 +269,18 @@ impl Take {
         self.stretch_markers.iter_mut().for_each(|m| m.pos += delta);
     }
 
+    /// Pins where item time `rel` plays now with a new stretch marker; `false` when one is there.
+    pub fn add_stretch_marker(&mut self, rel: f64) -> bool {
+        let tau = rel * self.playrate;
+        if self.stretch_markers.iter().any(|m| (m.pos - tau).abs() < 1e-6) {
+            return false;
+        }
+        let src = self.source_pos(rel);
+        self.stretch_markers.push(StretchMarker::new(tau, src));
+        self.stretch_markers.sort_by(|a, b| a.pos.total_cmp(&b.pos));
+        true
+    }
+
     /// Whether the source plays at a rate or pitch that changes over the item: stretch markers or
     /// a pitch envelope.
     pub fn is_warped(&self) -> bool {

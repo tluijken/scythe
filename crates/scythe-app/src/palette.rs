@@ -36,6 +36,8 @@ pub enum Action {
     OpenMidiEditor,
     ExportMidi,
     ToggleItemMute,
+    AddStretchMarker,
+    RemoveStretchMarkers,
     PreviousMarker,
     NextMarker,
     DeleteMarker,
@@ -135,6 +137,8 @@ impl Action {
         Action::OpenMidiEditor,
         Action::ExportMidi,
         Action::ToggleItemMute,
+        Action::AddStretchMarker,
+        Action::RemoveStretchMarkers,
         Action::PreviousMarker,
         Action::NextMarker,
         Action::DeleteMarker,
@@ -230,6 +234,8 @@ impl Action {
             Action::OpenMidiEditor => "Item: Open in MIDI editor",
             Action::ExportMidi => "Item: Export MIDI item to file",
             Action::ToggleItemMute => "Item: Toggle mute",
+            Action::AddStretchMarker => "Item: Add stretch marker at cursor",
+            Action::RemoveStretchMarkers => "Item: Remove all stretch markers",
             Action::PreviousMarker => "Markers: Go to previous marker or region",
             Action::NextMarker => "Markers: Go to next marker or region",
             Action::DeleteMarker => "Markers: Delete marker nearest the cursor",
@@ -378,6 +384,8 @@ impl Action {
             Action::OpenMidiEditor => k(Modifiers::NONE, Key::E),
             Action::ExportMidi => None,
             Action::ToggleItemMute => k(Modifiers::NONE, Key::U),
+            Action::AddStretchMarker => k(Modifiers::NONE, Key::W),
+            Action::RemoveStretchMarkers => None,
             Action::PreviousMarker => k(Modifiers::NONE, Key::OpenBracket),
             Action::NextMarker => k(Modifiers::NONE, Key::CloseBracket),
             Action::DeleteMarker => None,
@@ -521,6 +529,30 @@ impl Action {
                 app.edit("Toggle item mute", |p| {
                     for it in p.tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| items.contains(&it.id)) {
                         it.muted = !it.muted;
+                    }
+                });
+            }
+            Action::AddStretchMarker => {
+                let at = app.position();
+                let items = app.selected_items();
+                app.edit("Add stretch marker", |p| {
+                    for it in p.tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| items.contains(&it.id)) {
+                        let rel = at - it.position;
+                        if rel <= 0.0 || rel >= it.length {
+                            continue;
+                        }
+                        let i = it.active_take;
+                        if let Some(take) = it.takes.get_mut(i) {
+                            take.add_stretch_marker(rel);
+                        }
+                    }
+                });
+            }
+            Action::RemoveStretchMarkers => {
+                let items = app.selected_items();
+                app.edit("Remove stretch markers", |p| {
+                    for it in p.tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| items.contains(&it.id)) {
+                        it.takes.iter_mut().for_each(|t| t.stretch_markers.clear());
                     }
                 });
             }

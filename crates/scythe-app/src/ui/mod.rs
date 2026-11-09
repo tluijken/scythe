@@ -8,6 +8,7 @@ mod mixer;
 pub mod monitor;
 mod nam;
 mod setlist;
+mod stretch_markers;
 pub mod surfaces;
 pub mod widgets;
 
@@ -274,7 +275,8 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 fn tempo_drag(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let resp = ui
         .interact(rect, ui.scope_id().with("tempo"), Sense::click_and_drag())
-        .on_hover_text("Drag to change the tempo at the cursor, double-click to reset to 120");
+        .on_hover_text("Drag to change the tempo at the cursor, double-click to reset to 120, right-click for the timebase and play rate");
+    resp.context_menu(|ui| timing_menu(app, ui));
     let at = app.position();
     let start_id = ui.scope_id().with("tempo-start");
     if resp.drag_started() {
@@ -293,6 +295,41 @@ fn tempo_drag(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     }
     if resp.double_clicked() {
         app.edit("Change tempo", |p| p.change_tempo(|t| t.set_bpm_at(at, 120.0)));
+    }
+}
+
+/// The project timebase and play rate.
+fn timing_menu(app: &mut ScytheApp, ui: &mut Ui) {
+    use scythe_core::timebase::{PlayRate, Timebase};
+    ui.label("Timebase for items, envelopes and markers");
+    let current = app.project.timebase;
+    for tb in Timebase::ALL {
+        if ui.radio(current == tb, tb.label()).clicked() {
+            app.edit("Project timebase", |p| p.timebase = tb);
+        }
+    }
+    let mut follow = app.project.tempo_follows_beats;
+    if ui.checkbox(&mut follow, "Tempo markers keep their beat").changed() {
+        app.edit("Tempo timebase", |p| p.tempo_follows_beats = follow);
+    }
+    ui.separator();
+    let mut rate = app.project.playrate;
+    ui.horizontal(|ui| {
+        ui.label("Play rate");
+        let field = egui::DragValue::new(&mut rate.rate).range(PlayRate::MIN..=PlayRate::MAX).speed(0.005).suffix("×");
+        let r = ui.add(field);
+        if r.changed() {
+            app.gesture("Project play rate", |p| p.playrate.rate = rate.rate);
+        }
+        if r.drag_stopped() || r.lost_focus() {
+            app.end_gesture();
+        }
+        if ui.button("1×").clicked() {
+            app.edit("Project play rate", |p| p.playrate.rate = 1.0);
+        }
+    });
+    if ui.checkbox(&mut rate.preserve_pitch, "Keep pitch at other play rates").changed() {
+        app.edit("Project play rate", |p| p.playrate.preserve_pitch = rate.preserve_pitch);
     }
 }
 
