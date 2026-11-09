@@ -8396,6 +8396,410 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Every action with its command, name, keyboard shortcuts and toggle state (1 on, 0 off,\n-1 none). `query` keeps those whose name has all its words.\n\nControl API command `action.list`.",
+    "inputSchema": {
+      "properties": {
+        "query": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "action_list",
+    "title": "Action list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs an action: a REAPER command id (`40044`), a named command, a custom action or a\nscript's command.\n\nControl API command `action.run`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "action_run",
+    "title": "Action run"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Binds a key to an action in the main section, replacing what the key ran.\n\nControl API command `action.shortcut.add`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "key": {
+          "description": "As REAPER writes it: \"Ctrl+Shift+A\", \"F5\", \"NumPad +\", \"Space\".",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "action_shortcut_add",
+    "title": "Action shortcut.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes a key's binding; with `disable_default`, also turns off Scythe's default\nshortcut on that key (REAPER's command 0).\n\nControl API command `action.shortcut.remove`.",
+    "inputSchema": {
+      "properties": {
+        "disable_default": {
+          "default": false,
+          "type": "boolean"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "action_shortcut_remove",
+    "title": "Action shortcut.remove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a custom action (a macro of other actions) or replaces the one with `id`.\n\nControl API command `action.custom.set`.",
+    "inputSchema": {
+      "properties": {
+        "actions": {
+          "description": "The actions it runs, in order.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "consolidate_undo": {
+          "default": true,
+          "description": "One undo step for the whole custom action.",
+          "type": "boolean"
+        },
+        "id": {
+          "default": null,
+          "description": "Keeps a custom action's id (without or with its `_`); a new one is made otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "actions"
+      ],
+      "type": "object"
+    },
+    "name": "action_custom_set",
+    "title": "Action custom.set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Registers a Lua, EEL2 or Python script as an action (REAPER's `AddRemoveReaScript`).\n\nControl API command `action.script.add`.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "description": "Absolute, or relative to the resource path's `Scripts` folder.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "action_script_add",
+    "title": "Action script.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes a custom action or script action, and its shortcuts.\n\nControl API command `action.remove`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "action_remove",
+    "title": "Action remove"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The shortcut file as a `.ReaperKeyMap`, with custom actions and scripts.\n\nControl API command `action.keymap.export`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "action_keymap_export",
+    "title": "Action keymap.export"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Merges a `.ReaperKeyMap` (or `reaper-kb.ini`) given as text.\n\nControl API command `action.keymap.import`.",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "action_keymap_import",
+    "title": "Action keymap.import"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "A toolbar's buttons: Scythe's default for the main toolbar unless customised.\n\nControl API command `toolbar.get`.",
+    "inputSchema": {
+      "properties": {
+        "toolbar": {
+          "description": "`main`, or a floating toolbar's number from 1 to 32.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolbar"
+      ],
+      "type": "object"
+    },
+    "name": "toolbar_get",
+    "title": "Toolbar get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Customises a toolbar.\n\nControl API command `toolbar.set`.",
+    "inputSchema": {
+      "properties": {
+        "buttons": {
+          "items": {
+            "description": "A toolbar button.",
+            "properties": {
+              "action": {
+                "description": "The action it runs (a command id or named command); `-1` for a separator.",
+                "type": "string"
+              },
+              "icon": {
+                "default": null,
+                "description": "An icon file from REAPER's `Data/toolbar_icons` (`toolbar_add.png`), or `text` for a\ntext button.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "default": "",
+                "description": "Tooltip, and the label of a text button.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "toolbar": {
+          "description": "`main`, or a floating toolbar's number from 1 to 32.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolbar",
+        "buttons"
+      ],
+      "type": "object"
+    },
+    "name": "toolbar_set",
+    "title": "Toolbar set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Back to the default toolbar.\n\nControl API command `toolbar.reset`.",
+    "inputSchema": {
+      "properties": {
+        "toolbar": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "toolbar"
+      ],
+      "type": "object"
+    },
+    "name": "toolbar_reset",
+    "title": "Toolbar reset"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Imports a `.ReaperMenu` or `.ReaperMenuSet` given as text.\n\nControl API command `toolbar.import`.",
+    "inputSchema": {
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "toolbar_import",
+    "title": "Toolbar import"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The mouse modifiers changed from the defaults, or those of one context.\n\nControl API command `mouse.get`.",
+    "inputSchema": {
+      "properties": {
+        "context": {
+          "default": null,
+          "description": "A context such as `MM_CTX_ITEM_DBLCLK`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "mouse_get",
+    "title": "Mouse get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Assigns an action (or a REAPER behaviour as `\"13 m\"`) to a click with modifiers in a\ncontext, as `SetMouseModifier` does; no `action` resets it to the default.\n\nControl API command `mouse.set`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "context": {
+          "description": "A context such as `MM_CTX_ITEM_DBLCLK` or `MM_CTX_TRACK_CLK`.",
+          "type": "string"
+        },
+        "modifiers": {
+          "default": 0,
+          "description": "1 Shift, 2 Ctrl, 4 Alt, 8 Logo, added.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "context"
+      ],
+      "type": "object"
+    },
+    "name": "mouse_set",
+    "title": "Mouse set"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

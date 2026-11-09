@@ -149,3 +149,6 @@
 40481	Screenset: Save window set #08
 40482	Screenset: Save window set #09
 40483	Screenset: Save window set #10
+40252	Record: Set record mode to normal
+40076	Record: Set record mode to time selection auto-punch
+40253	Record: Set record mode to selected item auto-punch

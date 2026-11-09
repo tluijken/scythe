@@ -67,6 +67,9 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("40364", "Options: Toggle metronome", S),
     ("40620", "Toggle external timecode synchronization", S),
     ("_SCYTHE_TOGGLE_AUTO_PUNCH", "Record mode: Toggle time selection auto-punch", S),
+    ("40252", "Record: Set record mode to normal", S),
+    ("40076", "Record: Set record mode to time selection auto-punch", S),
+    ("40253", "Record: Set record mode to selected item auto-punch", S),
     // Edit and file.
     ("40029", "Edit: Undo", S),
     ("40030", "Edit: Redo", S),
@@ -337,10 +340,22 @@ impl Session {
             "1007" => self.is_playing(),
             "1013" => self.is_recording(),
             "40620" => self.project.timecode_sync.enabled(),
+            "40252" | "40076" | "40253" => {
+                use scythe_core::recording::ProjectRecordMode;
+                let want = match c {
+                    "40252" => ProjectRecordMode::Normal,
+                    "40076" => ProjectRecordMode::TimeSelectionPunch,
+                    _ => ProjectRecordMode::ItemPunch,
+                };
+                ProjectRecordMode::of(&self.project) == want
+            }
             "6" => sel.is_some_and(|t| t.muted),
             "7" => sel.is_some_and(|t| t.solo),
             "9" => sel.is_some_and(|t| t.armed),
-            "_SCYTHE_TOGGLE_AUTO_PUNCH" => self.auto_punch,
+            "_SCYTHE_TOGGLE_AUTO_PUNCH" => {
+                scythe_core::recording::ProjectRecordMode::of(&self.project)
+                    == scythe_core::recording::ProjectRecordMode::TimeSelectionPunch
+            }
             "_SCYTHE_TOGGLE_MARKER_ACTIONS" => self.engine.marker_actions(),
             _ => return -1,
         };
@@ -442,12 +457,12 @@ pub(crate) fn run_here(session: &mut Session, c: &str) -> Option<Result<(), ApiE
             exec(session, cmd("setlist.play"))
         }
         "_SCYTHE_TOGGLE_AUTO_PUNCH" => {
-            session.auto_punch ^= true;
-            session.notify(if session.auto_punch {
-                "Record mode: time selection auto-punch"
-            } else {
-                "Record mode: normal"
-            });
+            use scythe_core::recording::ProjectRecordMode;
+            let next = match ProjectRecordMode::of(&session.project) {
+                ProjectRecordMode::TimeSelectionPunch => ProjectRecordMode::Normal,
+                _ => ProjectRecordMode::TimeSelectionPunch,
+            };
+            session.set_record_mode(next);
             Ok(())
         }
         "_SCYTHE_TOGGLE_MARKER_ACTIONS" => {
@@ -579,6 +594,15 @@ fn run_id(session: &mut Session, id: u32) -> Option<Result<(), ApiError>> {
         }
         40364 => {
             session.toggle_metronome();
+            Ok(())
+        }
+        40252 | 40076 | 40253 => {
+            use scythe_core::recording::ProjectRecordMode;
+            session.set_record_mode(match id {
+                40252 => ProjectRecordMode::Normal,
+                40076 => ProjectRecordMode::TimeSelectionPunch,
+                _ => ProjectRecordMode::ItemPunch,
+            });
             Ok(())
         }
         40620 => {
