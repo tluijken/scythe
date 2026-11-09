@@ -60,8 +60,8 @@ pub struct Session {
     pub recording: Option<ActiveRecording>,
     /// The setlist being played and where in it.
     pub live: LiveState,
-    /// Record mode "time selection auto-punch": keep only what falls inside the time selection.
-    pub auto_punch: bool,
+    /// The items "selected item auto-punch" records into: the views' selection.
+    pub record_items: Vec<ItemId>,
     /// Live input (monitoring) is off for the whole session (`--no-input`).
     pub no_input: bool,
     /// What REAPER keeps in reaper.ini: pre-roll, count-in at the bar line, the default
@@ -124,7 +124,7 @@ impl Session {
             engine,
             recording: None,
             live: LiveState::default(),
-            auto_punch: false,
+            record_items: Vec::new(),
             no_input: false,
             prefs: Preferences::default(),
             prefs_file: None,

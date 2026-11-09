@@ -7,9 +7,9 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use scythe_session::api::{
     fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, midi::MidiCommand,
-    mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand, render::RenderCommand, sends::SendCommand,
-    setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
-    transport::TransportCommand,
+    mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand, recording::RecordingCommand,
+    render::RenderCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand,
+    timing::TimingCommand, tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -100,6 +100,7 @@ fn domains() -> Vec<Value> {
         schema::<TimingCommand>(),
         schema::<ModulationCommand>(),
         schema::<RenderCommand>(),
+        schema::<RecordingCommand>(),
     ]
 }
 

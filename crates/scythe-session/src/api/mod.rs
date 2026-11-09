@@ -14,6 +14,7 @@ pub mod mix;
 pub mod modulation;
 pub mod project;
 pub mod render;
+pub mod recording;
 pub mod sends;
 pub mod setlist;
 pub mod snapshot;
@@ -53,10 +54,14 @@ pub enum Command {
     Timing(timing::TimingCommand),
     Modulation(modulation::ModulationCommand),
     Render(render::RenderCommand),
+    Recording(recording::RecordingCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
 const TIMING: &[&str] = &["item.timebase", "take.channel_mode", "project.timebase", "project.playrate"];
+
+/// Commands of the `track` domain that `recording` answers.
+const RECORDING: &[&str] = &["track.record_mode", "track.monitor_mode"];
 
 impl<'de> Deserialize<'de> for Command {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -66,6 +71,9 @@ impl<'de> Deserialize<'de> for Command {
         };
         if cmd.starts_with("item.stretch_markers") || TIMING.contains(&cmd) {
             return serde_json::from_value(value).map(Command::Timing).map_err(D::Error::custom);
+        }
+        if RECORDING.contains(&cmd) {
+            return serde_json::from_value(value).map(Command::Recording).map_err(D::Error::custom);
         }
         let domain = cmd.split_once('.').map_or(cmd, |(d, _)| d).to_owned();
         let parsed = match domain.as_str() {
@@ -87,6 +95,7 @@ impl<'de> Deserialize<'de> for Command {
             "surface" => serde_json::from_value(value).map(Command::Surface),
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             "render" => serde_json::from_value(value).map(Command::Render),
+            "record" | "lanes" => serde_json::from_value(value).map(Command::Recording),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -112,6 +121,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Timing(c) => timing::execute(session, c),
         Command::Modulation(c) => modulation::execute(session, c),
         Command::Render(c) => render::execute(session, c),
+        Command::Recording(c) => recording::execute(session, c),
     }
 }
 

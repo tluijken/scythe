@@ -7958,6 +7958,444 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "What an armed track records, and where output recording taps it. Answers with the\ntrack's recording settings.\n\nControl API command `track.record_mode`.",
+    "inputSchema": {
+      "properties": {
+        "auto_arm": {
+          "default": null,
+          "description": "Arm the track whenever it is selected.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "description": "\"input\" (audio or MIDI as the input is), \"input_mono\", \"input_stereo\",\n\"input_multichannel\", \"input_midi\", \"output_stereo\", \"output_stereo_compensated\",\n\"output_mono\", \"output_mono_compensated\", \"output_multichannel\",\n\"output_multichannel_compensated\", \"midi_output\", \"midi_overdub\", \"midi_replace\",\n\"midi_touch_replace\", \"midi_latch_replace\" or \"disabled\" (monitor only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tap": {
+          "default": null,
+          "description": "Where output recording taps the track: \"post_fader\", \"pre_fx\" or \"post_fx\" (after the\neffects, before the fader).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_record_mode",
+    "title": "Track record mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Input monitoring of an armed track: \"off\", \"on\" or \"auto\" (tape style: while stopped\nor recording, not while playing back). `items` plays the track's own items while it\nrecords (otherwise they fall silent). Answers with the track's recording settings.\n\nControl API command `track.monitor_mode`.",
+    "inputSchema": {
+      "properties": {
+        "items": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_monitor_mode",
+    "title": "Track monitor mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The project's record mode and the recording preferences; what is left out stays.\n\nControl API command `record.options`.",
+    "inputSchema": {
+      "properties": {
+        "lanes_exclusive": {
+          "default": null,
+          "description": "New lanes play alone (else in layers with the lanes above).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "loop_takes": {
+          "default": null,
+          "description": "Loop recording makes takes even when new recording adds lanes.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "description": "\"normal\", \"time_selection_punch\" (keep what falls inside the time selection) or\n\"item_punch\" (record into the selected items as new takes).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "new_lanes": {
+          "default": null,
+          "description": "Recording on a fixed-lane track puts each pass in a new lane (else passes become\ntakes in the lane recorded into).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "record_options",
+    "title": "Record options"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The track's fixed lanes: names, which play, the comp lane and its comp areas.\n\nControl API command `lanes.list`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_list",
+    "title": "Lanes list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Turns fixed item lanes on or off for the track.\n\nControl API command `lanes.fixed`.",
+    "inputSchema": {
+      "properties": {
+        "on": {
+          "type": "boolean"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "on"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_fixed",
+    "title": "Lanes fixed"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds an empty lane at the bottom.\n\nControl API command `lanes.add`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_add",
+    "title": "Lanes add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plays only these lanes (counted from 0 at the top); all lanes when empty.\n\nControl API command `lanes.play`.",
+    "inputSchema": {
+      "properties": {
+        "lanes": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "lanes"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_play",
+    "title": "Lanes play"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Comp into a new empty lane at the top: from now on swiping fills it.\n\nControl API command `lanes.comp`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_comp",
+    "title": "Lanes comp"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends comping; the comp lane stays as an ordinary lane.\n\nControl API command `lanes.comp_off`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_comp_off",
+    "title": "Lanes comp off"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Swipes `start`..`end` (seconds) of `lane` into the comp lane, as dragging across a\nlane does: the new comp area wins its range, neighbours cross-fade into it.\n\nControl API command `lanes.swipe`.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "format": "double",
+          "type": "number"
+        },
+        "lane": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "lane",
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_swipe",
+    "title": "Lanes swipe"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Removes the comp area at `at` seconds, leaving a gap in the comp.\n\nControl API command `lanes.remove_area`.",
+    "inputSchema": {
+      "properties": {
+        "at": {
+          "format": "double",
+          "type": "number"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "at"
+      ],
+      "type": "object"
+    },
+    "name": "lanes_remove_area",
+    "title": "Lanes remove area"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

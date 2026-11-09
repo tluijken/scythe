@@ -1377,4 +1377,84 @@ fn project_tabs() {
     let tabs = ok(&mut s, json!({"cmd": "project.tab_close", "index": 1}));
     assert_eq!(tabs.as_array().unwrap().len(), 1);
     assert_eq!(ok(&mut s, json!({"cmd": "project.tabs"}))[0]["dirty"], true);
+fn record_modes_monitoring_and_lanes() {
+    let mut s = session();
+    let gtr = add_track(&mut s, "Gtr");
+    let r = ok(&mut s, json!({"cmd": "track.record_mode", "track": gtr, "mode": "output_mono", "tap": "pre_fx"}));
+    assert_eq!((r["mode"].as_str(), r["tap"].as_str()), (Some("output_mono"), Some("pre_fx")));
+    let r = ok(&mut s, json!({"cmd": "track.monitor_mode", "track": gtr, "mode": "auto", "items": true}));
+    assert_eq!((r["monitor"].as_str(), r["monitor_items"].as_bool()), (Some("auto"), Some(true)));
+    let t = s.project.track(scythe_core::TrackId(gtr)).unwrap();
+    assert!(t.monitor && t.monitor_auto && t.monitor_items);
+    let o = ok(&mut s, json!({"cmd": "record.options", "mode": "time_selection_punch", "new_lanes": true}));
+    assert_eq!((o["mode"].as_str(), o["new_lanes"].as_bool()), (Some("time_selection_punch"), Some(true)));
+    assert!(s.project.extra.iter().any(|n| matches!(n, scythe_core::rpp::Node::Line(l) if l == "RECMODE 2")));
+    assert!(execute_json(&mut s, json!({"cmd": "track.record_mode", "track": gtr, "mode": "loud"})).is_err());
+
+    // Two lanes with an item each, a comp lane, a swipe from each.
+    let it = |pos: f64, file: &str| {
+        let mut i = Item::new(pos, 4.0, Take::from_file(file.into()));
+        i.ypos = Some((0.0, 1.0));
+        i
+    };
+    let (a, b) = (it(0.0, "a.wav"), it(0.0, "b.wav"));
+    s.edit("items", |p| {
+        let t = p.track_mut(scythe_core::TrackId(gtr)).unwrap();
+        t.items.push(a);
+        t.set_fixed_lanes(true);
+    });
+    ok(&mut s, json!({"cmd": "lanes.add", "track": gtr}));
+    s.edit("lane item", |p| {
+        let t = p.track_mut(scythe_core::TrackId(gtr)).unwrap();
+        let mut b = b.clone();
+        b.ypos = Some((0.5, 0.5));
+        t.items.push(b);
+    });
+    let l = ok(&mut s, json!({"cmd": "lanes.comp", "track": gtr}));
+    assert_eq!((l["comp_lane"].as_u64(), l["names"][0].as_str()), (Some(0), Some("C1")));
+    ok(&mut s, json!({"cmd": "lanes.swipe", "track": gtr, "lane": 1, "start": 0.0, "end": 2.0}));
+    let l = ok(&mut s, json!({"cmd": "lanes.swipe", "track": gtr, "lane": 2, "start": 2.0, "end": 4.0}));
+    assert_eq!(l["areas"].as_array().unwrap().len(), 2);
+    assert_eq!(l["items"], json!([2, 1, 1]));
+    assert_eq!(l["playing"], json!([0]));
+    let rpp = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(rpp.contains("LINKEDLANE 0 2 1 0 -1 0.01 0.01") && rpp.contains("LANENAME C1 1 2"), "{rpp}");
+    assert!(
+        execute_json(&mut s, json!({"cmd": "lanes.swipe", "track": gtr, "lane": 0, "start": 0.0, "end": 1.0})).is_err()
+    );
+    let l = ok(&mut s, json!({"cmd": "lanes.remove_area", "track": gtr, "at": 3.0}));
+    assert_eq!(l["areas"].as_array().unwrap().len(), 1);
+    let l = ok(&mut s, json!({"cmd": "lanes.play", "track": gtr, "lanes": [2]}));
+    assert_eq!(l["playing"], json!([2]));
+}
+
+/// Records a track's output on the null engine: the take lands where recording started, as a
+/// new take of the item it was recorded over (the track's own items fall silent meanwhile).
+#[test]
+fn recording_the_output_adds_a_take() {
+    let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    let mut s = Session::new(Engine::start_null(pool, 48_000, None));
+    let dir = std::env::temp_dir().join(format!("scythe-rec-out-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.project.path = Some(dir.join("p.RPP"));
+    let id = add_track(&mut s, "Bus");
+    ok(&mut s, json!({"cmd": "track.record_mode", "track": id, "mode": "output_stereo"}));
+    ok(&mut s, json!({"cmd": "track.arm", "track": id, "armed": true}));
+    s.edit("item", |p| {
+        let t = p.track_mut(scythe_core::TrackId(id)).unwrap();
+        t.items.push(Item::new(0.0, 4.0, Take::from_file("missing.wav".into())));
+    });
+    s.set_cursor(1.0);
+    s.toggle_record();
+    assert!(s.is_recording());
+    std::thread::sleep(Duration::from_millis(400));
+    s.toggle_record();
+    let t = s.project.track(scythe_core::TrackId(id)).unwrap();
+    let pos: Vec<(f64, usize)> = t.items.iter().map(|i| ((i.position * 1e3).round() / 1e3, i.takes.len())).collect();
+    assert_eq!(pos.len(), 3, "{pos:?}");
+    assert_eq!((pos[0], pos[1].0, pos[1].1), ((0.0, 1), 1.0, 2));
+    let take = &t.items[1].takes[1];
+    assert!(take.name.starts_with("01-Bus-") && take.name.ends_with(".wav"), "{}", take.name);
+    assert_eq!(t.items[1].active_take, 1);
+    std::fs::remove_dir_all(&dir).ok();
 }

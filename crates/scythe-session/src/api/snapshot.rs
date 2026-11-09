@@ -145,6 +145,12 @@ pub struct TrackInfo {
     pub groups: Vec<GroupRole>,
     pub armed: bool,
     pub monitor: bool,
+    /// What recording writes (`track.record_mode` names), "input" by default.
+    #[serde(default)]
+    pub record_mode: String,
+    /// Input monitoring: "off", "on" or "auto" (tape style).
+    #[serde(default)]
+    pub monitor_mode: String,
     /// REAPER's record input (`I_RECINPUT`), inputs from 0: mono input n is n, stereo pair from n is
     /// 1024 + n, MIDI is 4096 + device * 32 + channel; -1 is none.
     pub input: i64,
@@ -429,6 +435,8 @@ pub fn track(session: &Session, t: &Track, index: Option<usize>, level: usize) -
         groups: group_roles(t),
         armed: t.armed,
         monitor: t.monitor,
+        record_mode: t.rec_mode.name().to_owned(),
+        monitor_mode: t.monitor_mode().name().to_owned(),
         input: t.rec_input,
         folder_depth: t.folder_depth,
         level,
