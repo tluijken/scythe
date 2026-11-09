@@ -594,6 +594,63 @@ impl FxChain {
     }
 }
 
+/// A chain with buffers of its own, for audio that joins a track from the side: a take's
+/// effects, a track's input effects, the monitoring effects on the device output.
+pub struct BufferedChain {
+    pub chain: FxChain,
+    pub channels: usize,
+    scratch: Mutex<(Vec<Vec<f32>>, [MidiBlock; 3])>,
+}
+
+impl std::fmt::Debug for BufferedChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferedChain").field("chain", &self.chain).field("channels", &self.channels).finish()
+    }
+}
+
+impl BufferedChain {
+    pub fn new(chain: FxChain, channels: usize) -> Self {
+        Self { chain, channels: channels.max(2), scratch: Mutex::new((buffers(channels), Default::default())) }
+    }
+
+    /// Runs the block of `n` frames at `position`. `io` first fills the chain's channels with
+    /// the input (`ChainIo::Fill`, from the project frame the chain reads at, `chain.latency`
+    /// ahead), then takes the result (`ChainIo::Drain`).
+    pub fn run(&self, n: usize, position: i64, input: &ChainInput, mut io: impl FnMut(ChainIo, &mut [Vec<f32>])) {
+        let Ok(mut scratch) = self.scratch.try_lock() else { return };
+        let (bufs, midi) = &mut *scratch;
+        for b in bufs.iter_mut() {
+            b[..n].fill(0.0);
+        }
+        io(ChainIo::Fill(position + self.chain.latency), bufs);
+        let mut state = MidiState { bufs: Some(midi), has: false };
+        self.chain.process(&mut view(bufs, n), input, position + self.chain.latency, &mut state, None);
+        io(ChainIo::Drain, bufs);
+    }
+}
+
+/// What [`BufferedChain::run`] asks of its caller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChainIo {
+    /// Write the input, read from this project frame on.
+    Fill(i64),
+    /// Take the output.
+    Drain,
+}
+
+/// How long take effects keep running after their item ends, in seconds.
+pub const TAKE_FX_TAIL: f64 = 2.0;
+
+/// The project frames a take's effects run over, for an item at `start` of `length` frames.
+/// REAPER runs them after the item's volume, pan and fades, in 512-frame blocks from the one
+/// the item starts in until two seconds past its end, so effect tails ring on; what they
+/// output before the item starts is dropped.
+pub fn take_fx_span(start: i64, length: i64, sample_rate: u32) -> std::ops::Range<i64> {
+    let tail = (TAKE_FX_TAIL * sample_rate as f64).round() as i64;
+    let end = start + length + tail;
+    start.div_euclid(SLICE) * SLICE..(end + SLICE - 1).div_euclid(SLICE) * SLICE
+}
+
 /// Builds `slots` of `owner` into a chain on `channels` channels, creating instances in the
 /// registry. Offline slots are left unloaded; bypassed ones keep their instance but do not
 /// run.

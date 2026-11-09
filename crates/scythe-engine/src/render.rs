@@ -3,9 +3,9 @@ use std::sync::Arc;
 
 use scythe_core::tempo::Timeline;
 use scythe_core::units::PanLaw;
-use scythe_core::{ChannelMode, Envelope, EnvelopeKind, Fade, HwOut, Project, SendMode, Source, TrackId};
+use scythe_core::{ChannelMode, Envelope, EnvelopeKind, Fade, FxSlot, HwOut, Project, SendMode, Source, TrackId};
 
-use crate::chain::{ChainInput, Channels, FxChain, MidiState};
+use crate::chain::{BufferedChain, ChainInput, ChainIo, Channels, FxChain, MidiState};
 use crate::fx::{FxOwner, FxRegistry, ProcessContext};
 use crate::media::{AudioData, MediaPool};
 use rayon::prelude::*;
@@ -40,6 +40,8 @@ pub struct RenderItem {
     pub audio: ItemAudio,
     /// Take envelopes, in seconds from the item start; they replace `gain_l` and `gain_r`.
     pub automation: Option<Arc<GainAutomation>>,
+    /// The take's own effects, when it has any that run.
+    pub take_fx: Option<Arc<BufferedChain>>,
 }
 
 /// Volume, pan and mute envelopes around a fixed volume and pan, as sends and takes have them.
@@ -325,6 +327,8 @@ pub struct RenderTrack {
     pub notes: Option<Arc<NoteList>>,
     /// Live input channels (left, optional right) for an armed, monitored track.
     pub monitor: Option<(usize, Option<usize>)>,
+    /// The track's input effects, which process the live input before it joins the track.
+    pub input_fx: Option<Arc<BufferedChain>>,
     /// Live MIDI for an armed, monitored track with a MIDI input: the device and channel it
     /// listens to.
     pub midi_input: Option<RecInput>,
@@ -595,6 +599,8 @@ pub struct RenderGraph {
     pub master_meter: Arc<Meter>,
     pub master_loudness: Option<Arc<Loudness>>,
     pub master_chain: Arc<FxChain>,
+    /// The monitoring effects, on what the device plays only (never in renders).
+    pub monitor_chain: Option<Arc<BufferedChain>>,
     /// Master channels; 3 and up live in `master_aux`.
     pub master_channels: usize,
     pub master_aux: Option<Arc<AuxChannels>>,
@@ -680,6 +686,7 @@ impl RenderGraph {
             master_meter: Arc::default(),
             master_loudness: None,
             master_chain: Arc::default(),
+            monitor_chain: None,
             master_channels: 2,
             master_aux: None,
             master_volume: 1.0,
@@ -776,6 +783,19 @@ impl RenderGraph {
                                 }
                             }
                         };
+                        let take_slots = take.fx();
+                        let take_fx = take_slots.iter().any(FxSlot::active).then(|| {
+                            let source_channels = match &audio {
+                                ItemAudio::Media(a) => a.channels.len(),
+                                _ => 2,
+                            };
+                            let channels = take.fx_channels().map_or(source_channels, |c| c as usize).max(2);
+                            let owner = FxOwner::Take(it.id, it.active_take);
+                            Arc::new(BufferedChain::new(
+                                crate::chain::build(fx, &owner, &take_slots, channels),
+                                channels,
+                            ))
+                        });
                         // Take pan never attenuates the centre in REAPER renders, whatever the project law.
                         let (tl, tr) = scythe_core::units::PanLaw::default().gains(take.pan);
                         let src_sr = sr * time;
@@ -802,6 +822,7 @@ impl RenderGraph {
                             section_len: section_len * src_sr,
                             reverse,
                             audio,
+                            take_fx,
                         })
                     })
                     .collect::<Vec<_>>();
@@ -824,7 +845,7 @@ impl RenderGraph {
                     || !midi_sends.is_empty()
                 {
                     let (midi, audio): (Vec<_>, Vec<_>) =
-                        items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)));
+                        items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)) && i.take_fx.is_none());
                     let lists: Vec<&NoteList> = midi
                         .iter()
                         .filter_map(|i| match &i.audio {
@@ -864,6 +885,15 @@ impl RenderGraph {
                 let hw_outs: Vec<RenderSend> =
                     t.hw_outs.iter().filter_map(|o| RenderSend::hw(o, project.pan_law)).collect();
                 let channels = (t.channels as usize).max(2);
+                let monitor = (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0)
+                    .then(|| {
+                        let first = (t.rec_input & 511) as usize;
+                        (first, (t.rec_input & 1024 != 0).then_some(first + 1))
+                    });
+                let input_slots = t.input_fx();
+                let input_fx = (monitor.is_some() && input_slots.iter().any(FxSlot::active)).then(|| {
+                    Arc::new(BufferedChain::new(crate::chain::build(fx, &FxOwner::Input(t.id), &input_slots, 2), 2))
+                });
                 let pre_fx_env = t
                     .envelope(EnvelopeKind::VolumePreFx)
                     .filter(|e| e.active && !e.points.is_empty())
@@ -895,12 +925,8 @@ impl RenderGraph {
                     midi_sends,
                     midi_inbox: None,
                     notes,
-                    monitor: (t.armed && t.monitor && t.rec_input >= 0 && t.rec_input & (512 | 2048 | 4096) == 0).then(
-                        || {
-                            let first = (t.rec_input & 511) as usize;
-                            (first, (t.rec_input & 1024 != 0).then_some(first + 1))
-                        },
-                    ),
+                    monitor,
+                    input_fx,
                     midi_input: (t.armed && t.monitor).then(|| RecInput::from_rec_input(t.rec_input)).flatten(),
                     live_buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(512))),
                     midi_out: t.midi_out,
@@ -957,6 +983,11 @@ impl RenderGraph {
         };
         let metronome = MetronomeRouting::from_project(project, click_output);
         let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
+        let monitor_slots = fx.monitor_fx.clone();
+        let monitor_chain = monitor_slots.iter().any(FxSlot::active).then(|| {
+            let chain = crate::chain::build(fx, &FxOwner::Monitor, &monitor_slots, device_channels);
+            Arc::new(BufferedChain::new(chain, device_channels))
+        });
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
         let linked_fx = tracks.iter().any(|t| t.chain.links_effects());
@@ -976,6 +1007,7 @@ impl RenderGraph {
             master_meter: meters.master.clone(),
             master_loudness: Some(meters.loudness(sample_rate)),
             master_chain,
+            monitor_chain,
             master_channels,
             master_aux: (master_channels > 2).then(|| Arc::new(AuxChannels::new(master_channels - 2))),
             master_volume: mv as f32,
@@ -1241,6 +1273,45 @@ impl RenderGraph {
         true
     }
 
+    /// Runs the monitoring effects over the device output of the block just rendered (frames
+    /// `at..at + n` of `left`, `right` and `extra`), the block starting at project frame
+    /// `position`.
+    pub fn monitor_fx_at(
+        &self,
+        position: i64,
+        at: usize,
+        n: usize,
+        left: &mut [f32],
+        right: &mut [f32],
+        extra: &mut [Vec<f32>],
+    ) {
+        let Some(chain) = &self.monitor_chain else { return };
+        let sr = self.sample_rate as f64;
+        let tempo = |f: i64| self.timeline.bpm_at(f as f64 / sr);
+        let input = ChainInput {
+            sample_rate: self.sample_rate,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            tempo: &tempo,
+            timeline: &self.timeline,
+        };
+        chain.run(n, position, &input, |io, bufs| {
+            let (l, rest) = bufs.split_at_mut(1);
+            let (r, more) = rest.split_at_mut(1);
+            let pairs = [(&mut l[0], &mut left[at..at + n]), (&mut r[0], &mut right[at..at + n])]
+                .into_iter()
+                .chain(more.iter_mut().zip(extra.iter_mut().map(|e| &mut e[at..at + n])));
+            for (b, dev) in pairs {
+                match io {
+                    ChainIo::Fill(_) => b[..n].copy_from_slice(dev),
+                    ChainIo::Drain => dev.copy_from_slice(&b[..n]),
+                }
+            }
+        });
+    }
+
     /// Items, FX and fader of one track, in its own buffer.
     fn process_track(&self, ti: usize, start: i64, tl: &mut [f32], tr: &mut [f32], input: &LiveInput) {
         let track = &self.tracks[ti];
@@ -1266,9 +1337,37 @@ impl RenderGraph {
             && let Some(left) = input.channels.get(cl).copied().flatten()
         {
             let right = cr.and_then(|c| input.channels.get(c).copied().flatten()).unwrap_or(left);
-            for i in 0..n.min(left.len()).min(right.len()) {
-                tl[i] += left[i];
-                tr[i] += right[i];
+            let m = n.min(left.len()).min(right.len());
+            match &track.input_fx {
+                Some(chain) => {
+                    let sr = self.sample_rate as f64;
+                    let tempo = |f: i64| self.timeline.bpm_at(f as f64 / sr);
+                    let chain_input = ChainInput {
+                        sample_rate: self.sample_rate,
+                        playing: input.play_items,
+                        notes: None,
+                        live,
+                        live_channel: track.midi_input.and_then(|i| i.channel),
+                        tempo: &tempo,
+                        timeline: &self.timeline,
+                    };
+                    chain.run(m, start, &chain_input, |io, bufs| match io {
+                        ChainIo::Fill(_) => {
+                            bufs[0][..m].copy_from_slice(&left[..m]);
+                            bufs[1][..m].copy_from_slice(&right[..m]);
+                        }
+                        ChainIo::Drain => {
+                            tl[..m].iter_mut().zip(&bufs[0][..m]).for_each(|(o, s)| *o += s);
+                            tr[..m].iter_mut().zip(&bufs[1][..m]).for_each(|(o, s)| *o += s);
+                        }
+                    });
+                }
+                None => {
+                    for i in 0..m {
+                        tl[i] += left[i];
+                        tr[i] += right[i];
+                    }
+                }
             }
         }
         // Plugin latency downstream is compensated by reading this track's material early.
@@ -1276,6 +1375,10 @@ impl RenderGraph {
         let items: &[RenderItem] = if input.play_items && track.content { &track.items } else { &[] };
         let mut aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
         for item in items {
+            if let Some(take_fx) = &item.take_fx {
+                self.play_take_fx(item, take_fx, read, n, input, (tl, tr), aux.as_deref_mut());
+                continue;
+            }
             match &item.audio {
                 ItemAudio::Media(audio) => {
                     mix_item(item, audio, read, self.sample_rate as f64, tl, tr);
@@ -1466,6 +1569,70 @@ impl RenderGraph {
             }
         }
         track.meter.record(tl, tr);
+    }
+
+    /// Plays an item through its take's effects into the track's channels.
+    #[allow(clippy::too_many_arguments)]
+    fn play_take_fx(
+        &self,
+        item: &RenderItem,
+        take_fx: &BufferedChain,
+        read: i64,
+        n: usize,
+        input: &LiveInput,
+        (tl, tr): (&mut [f32], &mut [f32]),
+        mut aux: Option<&mut Vec<Vec<f32>>>,
+    ) {
+        let span = crate::chain::take_fx_span(item.start, item.length, self.sample_rate);
+        if read + n as i64 <= span.start || read >= span.end {
+            return;
+        }
+        let sr = self.sample_rate as f64;
+        let tempo = |f: i64| self.timeline.bpm_at(f as f64 / sr);
+        let notes = match &item.audio {
+            ItemAudio::Midi(list) if input.play_items => Some(list.as_ref()),
+            _ => None,
+        };
+        let chain_input = ChainInput {
+            sample_rate: self.sample_rate,
+            playing: input.play_items,
+            notes,
+            live: &[],
+            live_channel: None,
+            tempo: &tempo,
+            timeline: &self.timeline,
+        };
+        // The effects run on the frames of their span only, as in REAPER's 512-frame blocks.
+        let lo = (span.start - read).clamp(0, n as i64) as usize;
+        let hi = (span.end - read).clamp(0, n as i64) as usize;
+        let m = hi - lo;
+        // Nothing is heard before the item starts, whatever the effects make of the silence.
+        let from = (item.start - read).clamp(lo as i64, hi as i64) as usize - lo;
+        take_fx.run(m, read + lo as i64, &chain_input, |io, bufs| match io {
+            ChainIo::Fill(at) => {
+                let ItemAudio::Media(audio) = &item.audio else { return };
+                let (l, rest) = bufs.split_at_mut(1);
+                mix_item(item, audio, at, sr, &mut l[0][..m], &mut rest[0][..m]);
+                for (c, out) in rest.iter_mut().enumerate().skip(1).take(audio.channels.len().saturating_sub(2)) {
+                    mix_item_channel(item, audio, c + 1, at, sr, &mut out[..m]);
+                }
+            }
+            ChainIo::Drain => {
+                for (c, b) in bufs.iter().enumerate() {
+                    let out: &mut [f32] = match c {
+                        0 => &mut *tl,
+                        1 => &mut *tr,
+                        c => match aux.as_deref_mut().and_then(|a| a.get_mut(c - 2)) {
+                            Some(a) => &mut a[..n],
+                            None => continue,
+                        },
+                    };
+                    for (o, s) in out[lo + from..hi].iter_mut().zip(&b[from..m]) {
+                        *o += s;
+                    }
+                }
+            }
+        });
     }
 
     /// Hands the MIDI leaving `track`'s chain (`post`), or entering it (`pre`), to the
@@ -2077,6 +2244,7 @@ mod tests {
                     channel_mode: ChannelMode::Normal,
                     audio: ItemAudio::Media(audio.clone()),
                     automation: None,
+                    take_fx: None,
                 })
                 .collect();
         }

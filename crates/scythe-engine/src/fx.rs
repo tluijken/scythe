@@ -688,6 +688,9 @@ pub struct FxRegistry {
     vst3_modules: Mutex<HashMap<PathBuf, Arc<crate::vst3_host::Vst3Module>>>,
     /// NAM models loaded ahead (off the UI thread) for a slot about to switch to them.
     nam_preloaded: Mutex<Vec<(PathBuf, NamModel)>>,
+    /// The monitoring chain: after the master, on what the device plays only. It belongs to
+    /// the setup rather than a project, as REAPER keeps it in `reaper-hwoutfx.ini`.
+    pub monitor_fx: Vec<FxSlot>,
 }
 
 impl FxRegistry {
@@ -703,6 +706,7 @@ impl FxRegistry {
             vst3_cache: Default::default(),
             vst3_modules: Default::default(),
             nam_preloaded: Default::default(),
+            monitor_fx: Vec::new(),
         }
     }
 
@@ -803,129 +807,160 @@ impl FxRegistry {
     /// a save keeps parameter changes. The registry keeps the instances: their stored state now
     /// matches what they hold.
     pub fn store_states(&mut self, project: &mut Project) {
-        use base64::Engine as _;
-        let owners: Vec<(Option<TrackId>, usize)> = std::iter::once((None, usize::MAX))
-            .chain(project.tracks.iter().enumerate().map(|(i, t)| (Some(t.id), i)))
-            .collect();
-        for (owner, ti) in owners {
-            let channels = if ti == usize::MAX { project.master.channels } else { project.tracks[ti].channels };
-            let channels = (channels as usize).max(2);
-            let slots = if ti == usize::MAX { &mut project.master.fx } else { &mut project.tracks[ti].fx };
-            for (i, slot) in slots.iter_mut().enumerate() {
-                let Some(inst) = self.instance(owner, slot, i) else { continue };
-                store_learned_bases(&inst, slot);
-                if let Some(nodes) = inst.with(|e| e.save_nodes()).flatten() {
-                    let Some(Node::Chunk(chunk)) = slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(_))) else {
-                        continue;
-                    };
-                    let key = |n: &Node| match n {
-                        Node::Line(l) => line_key(l).to_owned(),
-                        Node::Chunk(c) => format!("<{}", c.name()),
-                    };
-                    // A JSFX keeps its slider values as the first, unnamed line.
-                    let js = chunk.name() == "JS";
-                    for node in nodes.into_iter().filter(|_| !js) {
-                        let k = key(&node);
-                        match chunk.children.iter_mut().find(|n| key(n) == k) {
-                            Some(existing) => *existing = node,
-                            None => chunk.children.push(node),
-                        }
-                    }
-                    if js
-                        && let Some(Node::Line(values)) =
-                            inst.with(|e| e.save_nodes()).flatten().and_then(|n| n.into_iter().next())
-                    {
-                        match chunk.children.iter_mut().find(|n| matches!(n, Node::Line(_))) {
-                            Some(existing) => *existing = Node::Line(values),
-                            None => chunk.children.insert(0, Node::Line(values)),
-                        }
-                    }
-                    if js && let Some(state) = inst.with(|e| e.save_serialized()).flatten() {
-                        set_js_serialized(slot, &state);
-                    }
-                    let key = (owner.map_or(Owner::Master, Owner::Track), slot_key(slot, i));
-                    if let Some(entry) = self.entries.get_mut(&key) {
-                        entry.state = plugin_state(slot);
-                    }
-                    continue;
-                }
-                let Some(state) = inst.with(|e| e.save_state()).flatten() else { continue };
-                let Some(Node::Chunk(chunk)) =
-                    slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(c) if matches!(c.name(), "CLAP" | "VST")))
-                else {
-                    continue;
-                };
-                if chunk.name() == "VST" {
-                    // REAPER's layout: header, plugin chunk and program, as base64 lines.
-                    let id = chunk.args().get(4).and_then(|a| a.split(['<', '{']).next()?.parse::<u32>().ok());
-                    let Some(id) = id else { continue };
-                    if plugin_state(slot).is_empty() {
+        let master_channels = (project.master.channels as usize).max(2);
+        self.store_chain(&Owner::Master, &mut project.master.fx, master_channels, "");
+        for t in &mut project.tracks {
+            let channels = (t.channels as usize).max(2);
+            self.store_chain(&Owner::Track(t.id), &mut t.fx, channels, "");
+            let mut input = t.input_fx();
+            if !input.is_empty() {
+                self.store_chain(&Owner::Input(t.id), &mut input, 2, "");
+                t.set_input_fx(&input);
+            }
+            for item in &mut t.items {
+                let id = item.id;
+                for (k, take) in item.takes.iter_mut().enumerate() {
+                    let mut slots = take.fx();
+                    if slots.is_empty() {
                         continue;
                     }
-                    let Some(Node::Chunk(chunk)) =
-                        slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(c) if c.name() == "VST"))
-                    else {
-                        continue;
-                    };
-                    let lines: Vec<String> = chunk
-                        .children
-                        .iter()
-                        .filter_map(|n| match n {
-                            Node::Line(l) => Some(l.trim().to_owned()),
-                            Node::Chunk(_) => None,
-                        })
-                        .collect();
-                    let mut new_lines = match ReaperVstState::decode(&lines) {
-                        Some(old) if old.chunk == state => lines.clone(),
-                        Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
-                            crate::builtin::sidechain_vst_lines(id, &state)
-                        }
-                        _ => ReaperVstState::reencode(&lines, &state)
-                            .unwrap_or_else(|| crate::builtin::vst_lines(id, &state)),
-                    };
-                    // REAPER maps the input pins of the plugin's own arrangement and an output
-                    // pin per track channel, growing the map with the track but never shrinking it.
-                    if let Some((inputs, _)) = inst.with(|e| e.default_pins()).flatten()
-                        && let Some(old) = ReaperVstState::decode(&new_lines)
-                        && (old.inputs.len() < inputs || old.outputs.len() < channels)
-                    {
-                        let grow = |mut masks: Vec<u64>, n: usize| {
-                            let from = masks.len();
-                            masks.extend((from..n).map(|p| 1u64 << p.min(63)));
-                            masks
-                        };
-                        let (ins, outs) = (grow(old.inputs, inputs), grow(old.outputs, channels));
-                        if let Some(grown) = ReaperVstState::with_pins(&new_lines, &ins, &outs) {
-                            new_lines = grown;
-                        }
-                    }
-                    if let Some(program) = inst.with(|e| e.program()).flatten()
-                        && let Some(old) = ReaperVstState::decode(&new_lines)
-                        && let Some(l) = ReaperVstState::with_words(
-                            &new_lines,
-                            [old.words[0], old.words[1] & 0xffff_0000 | program as u32],
-                        )
-                    {
-                        new_lines = l;
-                    }
-                    if new_lines == lines {
-                        continue;
-                    }
-                    chunk.children = new_lines.into_iter().map(Node::Line).collect();
-                } else {
-                    chunk.children.retain(|n| !matches!(n, Node::Chunk(c) if c.name() == "STATE"));
-                    let text = base64::engine::general_purpose::STANDARD.encode(&state);
-                    let mut st = Chunk::new("STATE", &[]);
-                    for line in text.as_bytes().chunks(128) {
-                        st.line([String::from_utf8_lossy(line)]);
-                    }
-                    chunk.push_chunk(st);
-                }
-                let key = (owner.map_or(Owner::Master, Owner::Track), slot_key(slot, i));
-                if let Some(entry) = self.entries.get_mut(&key) {
-                    entry.state = plugin_state(slot);
+                    let channels = take.fx_channels().unwrap_or(2) as usize;
+                    self.store_chain(&Owner::Take(id, k), &mut slots, channels, "");
+                    take.set_fx(&slots);
                 }
             }
+        }
+        let mut monitor = std::mem::take(&mut self.monitor_fx);
+        self.store_chain(&Owner::Monitor, &mut monitor, 2, "");
+        self.monitor_fx = monitor;
+    }
+
+    /// Stores the states of a chain's slots, those inside containers included.
+    fn store_chain(&mut self, owner: &FxOwner, slots: &mut [FxSlot], channels: usize, prefix: &str) {
+        for (i, slot) in slots.iter_mut().enumerate() {
+            let key = format!("{prefix}{}", slot_key(slot, i));
+            if slot.is_container() {
+                let mut children = slot.container_children();
+                let inner = slot.container_config().unwrap_or_default().channels as usize;
+                self.store_chain(owner, &mut children, inner.max(2), &format!("{key}/"));
+                slot.set_container_children(&children);
+                continue;
+            }
+            self.store_slot((owner.clone(), key), slot, channels);
+        }
+    }
+
+    fn store_slot(&mut self, entry: (Owner, String), slot: &mut FxSlot, channels: usize) {
+        use base64::Engine as _;
+        let Some(inst) = self.entries.get(&entry).and_then(|e| e.instance.clone()) else { return };
+        store_learned_bases(&inst, slot);
+        if let Some(nodes) = inst.with(|e| e.save_nodes()).flatten() {
+            let Some(Node::Chunk(chunk)) = slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(_))) else {
+                return;
+            };
+            let key = |n: &Node| match n {
+                Node::Line(l) => line_key(l).to_owned(),
+                Node::Chunk(c) => format!("<{}", c.name()),
+            };
+            // A JSFX keeps its slider values as the first, unnamed line.
+            let js = chunk.name() == "JS";
+            for node in nodes.into_iter().filter(|_| !js) {
+                let k = key(&node);
+                match chunk.children.iter_mut().find(|n| key(n) == k) {
+                    Some(existing) => *existing = node,
+                    None => chunk.children.push(node),
+                }
+            }
+            if js
+                && let Some(Node::Line(values)) =
+                    inst.with(|e| e.save_nodes()).flatten().and_then(|n| n.into_iter().next())
+            {
+                match chunk.children.iter_mut().find(|n| matches!(n, Node::Line(_))) {
+                    Some(existing) => *existing = Node::Line(values),
+                    None => chunk.children.insert(0, Node::Line(values)),
+                }
+            }
+            if js && let Some(state) = inst.with(|e| e.save_serialized()).flatten() {
+                set_js_serialized(slot, &state);
+            }
+            let key = entry.clone();
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.state = plugin_state(slot);
+            }
+            return;
+        }
+        let Some(state) = inst.with(|e| e.save_state()).flatten() else { return };
+        let Some(Node::Chunk(chunk)) =
+            slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(c) if matches!(c.name(), "CLAP" | "VST")))
+        else {
+            return;
+        };
+        if chunk.name() == "VST" {
+            // REAPER's layout: header, plugin chunk and program, as base64 lines.
+            let id = chunk.args().get(4).and_then(|a| a.split(['<', '{']).next()?.parse::<u32>().ok());
+            let Some(id) = id else { return };
+            if plugin_state(slot).is_empty() {
+                return;
+            }
+            let Some(Node::Chunk(chunk)) =
+                slot.raw.iter_mut().find(|n| matches!(n, Node::Chunk(c) if c.name() == "VST"))
+            else {
+                return;
+            };
+            let lines: Vec<String> = chunk
+                .children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Line(l) => Some(l.trim().to_owned()),
+                    Node::Chunk(_) => None,
+                })
+                .collect();
+            let mut new_lines = match ReaperVstState::decode(&lines) {
+                Some(old) if old.chunk == state => lines.clone(),
+                Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
+                    crate::builtin::sidechain_vst_lines(id, &state)
+                }
+                _ => ReaperVstState::reencode(&lines, &state).unwrap_or_else(|| crate::builtin::vst_lines(id, &state)),
+            };
+            // REAPER maps the input pins of the plugin's own arrangement and an output
+            // pin per track channel, growing the map with the track but never shrinking it.
+            if let Some((inputs, _)) = inst.with(|e| e.default_pins()).flatten()
+                && let Some(old) = ReaperVstState::decode(&new_lines)
+                && (old.inputs.len() < inputs || old.outputs.len() < channels)
+            {
+                let grow = |mut masks: Vec<u64>, n: usize| {
+                    let from = masks.len();
+                    masks.extend((from..n).map(|p| 1u64 << p.min(63)));
+                    masks
+                };
+                let (ins, outs) = (grow(old.inputs, inputs), grow(old.outputs, channels));
+                if let Some(grown) = ReaperVstState::with_pins(&new_lines, &ins, &outs) {
+                    new_lines = grown;
+                }
+            }
+            if let Some(program) = inst.with(|e| e.program()).flatten()
+                && let Some(old) = ReaperVstState::decode(&new_lines)
+                && let Some(l) =
+                    ReaperVstState::with_words(&new_lines, [old.words[0], old.words[1] & 0xffff_0000 | program as u32])
+            {
+                new_lines = l;
+            }
+            if new_lines == lines {
+                return;
+            }
+            chunk.children = new_lines.into_iter().map(Node::Line).collect();
+        } else {
+            chunk.children.retain(|n| !matches!(n, Node::Chunk(c) if c.name() == "STATE"));
+            let text = base64::engine::general_purpose::STANDARD.encode(&state);
+            let mut st = Chunk::new("STATE", &[]);
+            for line in text.as_bytes().chunks(128) {
+                st.line([String::from_utf8_lossy(line)]);
+            }
+            chunk.push_chunk(st);
+        }
+        let key = entry.clone();
+        if let Some(entry) = self.entries.get_mut(&key) {
+            entry.state = plugin_state(slot);
         }
     }
 

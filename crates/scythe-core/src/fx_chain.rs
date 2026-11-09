@@ -2,7 +2,7 @@
 //! parallel processing and containers. Slots keep their lines verbatim (`FxSlot::raw`), so
 //! these read and edit those lines in place and projects round-trip untouched.
 
-use crate::model::FxSlot;
+use crate::model::{FxSlot, Take, Track};
 use crate::rpp::{Chunk, Node, join_tokens, line_key, tokenize};
 
 /// How a slot joins the one before it (`PARALLEL`).
@@ -378,6 +378,78 @@ impl FxSlot {
     }
 }
 
+/// The slots of the chain chunk `name` among `nodes`, if there is one.
+fn chain_in(nodes: &[Node], name: &str) -> Option<Vec<FxSlot>> {
+    nodes.iter().find_map(|n| match n {
+        Node::Chunk(c) if c.name() == name => Some(split_chain(&c.children).0),
+        _ => None,
+    })
+}
+
+/// Replaces the slots of chain chunk `name` among `nodes` (keeping its window lines), adding
+/// the chunk when missing and dropping it when no slots are left.
+fn set_chain_in(nodes: &mut Vec<Node>, name: &str, slots: &[FxSlot]) {
+    let at = nodes.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == name));
+    if slots.is_empty() {
+        if let Some(i) = at {
+            nodes.remove(i);
+        }
+        return;
+    }
+    let prelude = match at.map(|i| &nodes[i]) {
+        Some(Node::Chunk(c)) => split_chain(&c.children).1,
+        _ => ["SHOW 0", "LASTSEL 0", "DOCKED 0"].map(|l| Node::Line(l.into())).to_vec(),
+    };
+    let mut chunk = Chunk::new(name, &[]);
+    chunk.children = prelude;
+    chunk.children.extend(join_chain(slots));
+    match at {
+        Some(i) => nodes[i] = Node::Chunk(chunk),
+        None => nodes.push(Node::Chunk(chunk)),
+    }
+}
+
+impl Take {
+    /// The take's own effects (`<TAKEFX`), which process it before it reaches the track.
+    pub fn fx(&self) -> Vec<FxSlot> {
+        chain_in(&self.extra, "TAKEFX").unwrap_or_default()
+    }
+
+    pub fn set_fx(&mut self, slots: &[FxSlot]) {
+        set_chain_in(&mut self.extra, "TAKEFX", slots);
+    }
+
+    /// Channels the take's effects run on (`TAKEFX_NCH`); by default as many as the source
+    /// has, at least two.
+    pub fn fx_channels(&self) -> Option<u32> {
+        line_tokens(&self.extra, "TAKEFX_NCH").and_then(|(_, t)| t.get(1)?.parse().ok()).filter(|&n| n >= 2)
+    }
+
+    pub fn set_fx_channels(&mut self, channels: Option<u32>) {
+        let at = line_tokens(&self.extra, "TAKEFX_NCH").map(|(i, _)| i);
+        match (at, channels) {
+            (Some(i), None) => {
+                self.extra.remove(i);
+            }
+            (Some(i), Some(n)) => self.extra[i] = Node::Line(format!("TAKEFX_NCH {n}")),
+            (None, Some(n)) => self.extra.push(Node::Line(format!("TAKEFX_NCH {n}"))),
+            (None, None) => {}
+        }
+    }
+}
+
+impl Track {
+    /// The record input chain (`<FXCHAIN_REC`): effects on what the track records and
+    /// monitors, ahead of the recording.
+    pub fn input_fx(&self) -> Vec<FxSlot> {
+        chain_in(&self.extra, "FXCHAIN_REC").unwrap_or_default()
+    }
+
+    pub fn set_input_fx(&mut self, slots: &[FxSlot]) {
+        set_chain_in(&mut self.extra, "FXCHAIN_REC", slots);
+    }
+}
+
 fn fmt(v: f64) -> String {
     let s = format!("{v:.10}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
@@ -458,6 +530,21 @@ PARALLEL 1
         assert_eq!(again[1].container_children()[0].parallel(), Parallel::Audio);
         assert_eq!(again[1].container_params().len(), 1);
         assert_eq!(again[1].listed_pins(true), Some(vec![1, 4]));
+    }
+
+    #[test]
+    fn take_and_input_chains_live_in_their_chunks() {
+        let mut take = crate::model::Take::from_file("a.wav".into());
+        assert!(take.fx().is_empty());
+        take.set_fx(&[FxSlot::with_plugin(Chunk::new("JS", &["x", ""]))]);
+        take.set_fx_channels(Some(4));
+        assert_eq!((take.fx().len(), take.fx_channels()), (1, Some(4)));
+        take.set_fx(&[]);
+        take.set_fx_channels(None);
+        assert!(take.extra.is_empty());
+        let mut t = crate::model::Track::new("t");
+        t.set_input_fx(&[FxSlot::container()]);
+        assert!(t.input_fx()[0].is_container());
     }
 
     #[test]

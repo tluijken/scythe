@@ -572,6 +572,7 @@ impl Processor {
             graph.render_with(pos, &mut l[..len], &mut r[..len], &mut self.scratch, &live);
             graph.master_extra_at(0, len, &mut self.extra);
             graph.device_out_at(0, len, l, r, &mut self.extra);
+            graph.monitor_fx_at(pos, 0, len, l, r, &mut self.extra);
         } else if n == 0 && (((has_input || has_midi) && graph.monitoring()) || awake) {
             let pos = self.transport.position.load(Ordering::Relaxed);
             let live = LiveInput {
@@ -584,6 +585,7 @@ impl Processor {
             graph.render_with(pos, l, r, &mut self.scratch, &live);
             graph.master_extra_at(0, frames, &mut self.extra);
             graph.device_out_at(0, frames, l, r, &mut self.extra);
+            graph.monitor_fx_at(pos, 0, frames, l, r, &mut self.extra);
         }
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 && counted == 0 { &self.live } else { &[] };
@@ -597,6 +599,7 @@ impl Processor {
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
             graph.master_extra_at(off, len, &mut self.extra);
             graph.device_out_at(off, len, l, r, &mut self.extra);
+            graph.monitor_fx_at(pos, off, len, l, r, &mut self.extra);
         }
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
@@ -1055,6 +1058,12 @@ impl Engine {
     /// for the master); takes effect at the next [`Engine::sync`].
     pub fn set_default_click_output(&mut self, output: i64) {
         self.click_output = output;
+    }
+
+    /// Sets the monitoring effects, which play on the device output only; takes effect at the
+    /// next `sync`.
+    pub fn set_monitor_fx(&mut self, slots: Vec<scythe_core::FxSlot>) {
+        self.fx.monitor_fx = slots;
     }
 
     /// Rebuilds the render graph from `project` and hands it to the audio thread.
