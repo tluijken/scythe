@@ -1083,7 +1083,7 @@ mod tests {
             assert_eq!(Action::from_command(&c), Some(a), "{c}");
         }
         for b in scythe_session::actions::builtin() {
-            if b.runs == scythe_session::actions::Runs::Window {
+            if b.runs == scythe_session::actions::Runs::Window && b.section == scythe_core::keymap::SECTION_MAIN {
                 assert!(Action::from_command(&b.command).is_some(), "{} ({}) has no window action", b.name, b.command);
             }
         }

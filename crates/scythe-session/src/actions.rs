@@ -241,6 +241,11 @@ static BUILTIN: LazyLock<Vec<ActionInfo>> = LazyLock::new(|| {
         out.push(info((LOAD_SCREENSET + n - 1).to_string(), format!("Screenset: Load window set #{n:02}"), W));
         out.push(info((SAVE_SCREENSET + n - 1).to_string(), format!("Screenset: Save window set #{n:02}"), W));
     }
+    let midi = scythe_core::midi::actions::ids().into_iter().filter_map(|id| {
+        let name = scythe_core::midi::actions::name(id)?;
+        Some(ActionInfo { section: keymap::SECTION_MIDI_EDITOR, ..info(id.to_string(), name, W) })
+    });
+    out.extend(midi);
     out
 });
 
@@ -250,7 +255,7 @@ pub fn builtin() -> &'static [ActionInfo] {
 }
 
 fn find_builtin(command: &str) -> Option<&'static ActionInfo> {
-    BUILTIN.iter().find(|a| a.command.eq_ignore_ascii_case(command))
+    BUILTIN.iter().find(|a| a.section == SECTION_MAIN && a.command.eq_ignore_ascii_case(command))
 }
 
 /// `40044` or `_ID` as given; a named command without its `_` gets one.

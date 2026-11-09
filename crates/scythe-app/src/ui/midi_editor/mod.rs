@@ -18,7 +18,7 @@ use scythe_core::midi::groove::{self, Groove};
 use scythe_core::midi::names::NoteNames;
 use scythe_core::midi::scale::{self, KeySnap};
 use scythe_core::midi::view::{EditorMode, EditorView, LaneKind};
-use scythe_core::midi::{MidiSource, ShapeKind};
+use scythe_core::midi::{MidiSource, ShapeKind, actions};
 
 pub use inline::{inline_editor, toggle_inline};
 
@@ -75,6 +75,9 @@ pub struct EditorState {
     pub groove_strength: f64,
     /// Other MIDI items shown behind the active one.
     pub others: Vec<ItemId>,
+    /// The pointer is over the editor: its keyboard shortcuts (REAPER's MIDI editor section)
+    /// come before the main window's.
+    pub hovered: bool,
 }
 
 impl Default for EditorState {
@@ -96,6 +99,7 @@ impl Default for EditorState {
             h_velocity: 10.0,
             groove_strength: 100.0,
             others: Vec::new(),
+            hovered: false,
         }
     }
 }
@@ -210,6 +214,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         }
     }
 
+    state.hovered = ui.rect_contains_pointer(rect);
+    if state.hovered {
+        shortcuts(app, ui, &take, &state);
+    }
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.view.midi_editor = None;
     }
@@ -540,6 +548,35 @@ fn shape_glyph(k: ShapeKind) -> &'static str {
         ShapeKind::FastStart => "⌒",
         ShapeKind::FastEnd => "⌣",
         ShapeKind::Bezier => "~",
+    }
+}
+
+/// Runs the keys bound in REAPER's MIDI editor section (`reaper-kb.ini` section 32060) as the
+/// MIDI editor actions with those ids.
+fn shortcuts(app: &mut ScytheApp, ui: &Ui, take: &Take, state: &EditorState) {
+    let pressed: Vec<(egui::Key, egui::Modifiers)> = ui.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Some((*key, *modifiers)),
+                _ => None,
+            })
+            .collect()
+    });
+    for (key, mods) in pressed {
+        let Some(chord) = crate::keys::chord(key, mods) else { continue };
+        let Some(binding) = app.session.key_command(chord, scythe_core::keymap::SECTION_MIDI_EDITOR) else { continue };
+        let Ok(id) = binding.command.parse::<u32>() else { continue };
+        let ctx = actions::Context { key: Some(state.key_snap()) };
+        if let Some((src, view)) = actions::run(id, &take.src, &take.view, &ctx) {
+            let label = actions::name(id).unwrap_or_else(|| "MIDI editor action".into());
+            app.edit(&label, |p| {
+                p.edit_midi_chunk(take.id, |c| {
+                    *c = src.write_chunk(c);
+                    view.write(c);
+                });
+            });
+        }
     }
 }
 

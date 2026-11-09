@@ -90,6 +90,12 @@ static DEFAULTS: std::sync::LazyLock<Vec<(String, Chord, Action)>> = std::sync::
 /// What a key runs in the main window: the shortcut file's binding (`None` when it disables
 /// the key), else the default action's command.
 pub fn command_for(app: &ScytheApp, key: Chord) -> Option<String> {
+    if app.view.midi_editor.is_some()
+        && app.view.midi_state.hovered
+        && app.session.key_command(key, scythe_core::keymap::SECTION_MIDI_EDITOR).is_some()
+    {
+        return None;
+    }
     if let Some(binding) = app.session.key_command(key, SECTION_MAIN) {
         return (binding.command != "0").then(|| binding.command.clone());
     }
