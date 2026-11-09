@@ -504,12 +504,12 @@ impl Action {
             Action::ToggleMetronome => app.toggle_metronome(),
             Action::Record => app.toggle_record(),
             Action::ToggleAutoPunch => {
-                app.auto_punch ^= true;
-                app.session.notify(if app.session.auto_punch {
-                    "Record mode: time selection auto-punch"
-                } else {
-                    "Record mode: normal"
-                });
+                use scythe_core::recording::ProjectRecordMode;
+                let next = match ProjectRecordMode::of(&app.project) {
+                    ProjectRecordMode::TimeSelectionPunch => ProjectRecordMode::Normal,
+                    _ => ProjectRecordMode::TimeSelectionPunch,
+                };
+                app.session.set_record_mode(next);
             }
             Action::ToggleArm => {
                 if let Some(t) = app.sel.track {

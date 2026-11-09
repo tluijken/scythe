@@ -409,6 +409,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     razor_drag(app, ui, lanes_area, axis, rows, row_h, scroll);
     if marquee.drag_started()
         && !razor_dragging(ui)
+        && !crate::ui::comp::swiping(ui)
         && let Some(p) = marquee.interact_pointer_pos()
     {
         ui.data_mut(|d| d.insert_temp(anchor_id, p));
@@ -512,6 +513,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             if arm.clicked() {
                 crate::ui::groups::toggle(app, track.id, GroupedControl::RecArm);
             }
+            arm.context_menu(|ui| crate::ui::recording::track_menu(app, ui, track.id));
         }
         let fx_label = format!("{} fx", track.fx.len());
         let fx_w = widgets::text_width(ui, &fx_label, theme::mono(10.0));
@@ -568,6 +570,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             let silent = !track.lane_plays(item.lane());
             draw_item(app, ui, &lane_painter, lane, axis, track.id, item.id, color, dim || silent);
         }
+        crate::ui::comp::track_lanes(app, ui, &lane_painter, lane, &|t| axis.x(t), &|x| axis.t(x), track.id);
         if let Some(rec) = app.recording.as_ref().filter(|r| r.tracks.contains(&track.id)) {
             let now = app.engine.transport().position_seconds();
             // After the transport wrapped, the current pass runs from the loop start.
@@ -812,7 +815,7 @@ fn draw_item(
     }
 
     let hit = outer.intersect(painter.clip_rect());
-    if hit.width() <= 0.0 || hit.height() <= 0.0 || razor_dragging(ui) {
+    if hit.width() <= 0.0 || hit.height() <= 0.0 || razor_dragging(ui) || crate::ui::comp::swiping(ui) {
         return;
     }
     let resp = ui.interact(hit, Id::unique(("item", id)), Sense::click_and_drag());

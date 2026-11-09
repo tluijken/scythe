@@ -258,7 +258,7 @@ impl ScytheApp {
         if self.sel.item.is_some_and(|i| self.project.find_item(i).is_none()) {
             self.sel.item = None;
         }
-        self.session.selected_track = self.sel.track;
+        self.session.set_selected_track(self.sel.track);
     }
 
     pub fn poll(&mut self) {
@@ -779,6 +779,12 @@ impl ScytheApp {
             self.sel.track =
                 self.project.tracks.get(idx.min(self.project.tracks.len().saturating_sub(1))).map(|t| t.id);
         }
+    }
+
+    /// Starts or stops recording; selected item auto-punch records into the selected items.
+    pub fn toggle_record(&mut self) {
+        self.session.record_items = self.selected_items();
+        self.session.toggle_record();
     }
 
     /// Every selected item: the primary one and those added with Ctrl+click or a marquee.

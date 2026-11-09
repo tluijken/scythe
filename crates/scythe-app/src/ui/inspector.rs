@@ -82,15 +82,23 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         let next = scythe_core::AutoMode::ALL[(mode.rpp_code() as usize + 1) % scythe_core::AutoMode::ALL.len()];
         app.edit("Automation mode", |p| p.track_mut(track_id).unwrap().auto_mode = next);
     }
-    if text_pill(ui, mon_pill, if track.monitor { "Mon on" } else { "Mon off" }, theme::mono(10.0), BG, mon_fg)
-        .on_hover_text("Hear the input through this track while it is armed")
-        .clicked()
-    {
-        app.edit("Toggle input monitoring", |p| {
-            let t = p.track_mut(track_id).unwrap();
-            t.monitor = !t.monitor;
-        });
+    use scythe_core::recording::MonitorMode;
+    let monitor = track.monitor_mode();
+    let mon_label = match monitor {
+        MonitorMode::Off => "Mon off",
+        MonitorMode::On => "Mon on",
+        MonitorMode::Auto => "Mon auto",
+    };
+    let mon = text_pill(ui, mon_pill, mon_label, theme::mono(10.0), BG, mon_fg).on_hover_text(format!(
+        "Input monitoring while armed: off, on or auto (tape style, not during playback). Records: {}. \
+         Right-click for the record mode, monitoring and lanes.",
+        track.rec_mode.label()
+    ));
+    if mon.clicked() {
+        let next = MonitorMode::ALL[(MonitorMode::ALL.iter().position(|m| *m == monitor).unwrap_or(0) + 1) % 3];
+        app.edit("Set input monitoring", |p| p.track_mut(track_id).unwrap().set_monitor_mode(next));
     }
+    mon.context_menu(|ui| crate::ui::recording::track_menu(app, ui, track_id));
     let input_label = widgets::truncate(ui, &input_label, &theme::mono(11.0), input_pill.width() - 10.0);
     let resp = text_pill(
         ui,

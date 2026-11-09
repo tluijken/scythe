@@ -1,4 +1,5 @@
 mod arrange;
+mod comp;
 pub mod gfx_view;
 pub mod groups;
 mod inspector;
@@ -9,6 +10,7 @@ pub mod modulation;
 pub mod monitor;
 mod nam;
 pub mod regions;
+pub mod recording;
 mod setlist;
 mod stretch_markers;
 pub mod surfaces;

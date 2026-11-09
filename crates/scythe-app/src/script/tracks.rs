@@ -409,7 +409,16 @@ fn track_value(s: &mut State, t: Option<TrackId>, key: &str) -> Val {
         "D_DUALPANR" => t.dual_pan[1],
         "I_RECARM" => t.armed as u8 as f64,
         "I_RECINPUT" => t.rec_input as f64,
-        "I_RECMON" => t.monitor as u8 as f64,
+        "I_RECMON" => match t.monitor_mode() {
+            scythe_core::recording::MonitorMode::Off => 0.0,
+            scythe_core::recording::MonitorMode::On => 1.0,
+            scythe_core::recording::MonitorMode::Auto => 2.0,
+        },
+        "I_RECMODE" => t.rec_mode.code() as f64,
+        "I_RECMODE_FLAGS" => t.rec_tap.code() as f64,
+        "I_RECMONITEMS" => t.monitor_items as u8 as f64,
+        "B_AUTO_RECARM" => t.auto_arm as u8 as f64,
+        "I_NUMFIXEDLANES" => t.lane_count() as f64,
         "B_MAINSEND" => t.main_send as u8 as f64,
         "C_MAINSEND_OFFS" => t.main_send_offset as f64,
         "I_FOLDERDEPTH" => t.folder_depth as f64,
@@ -459,7 +468,13 @@ fn set_track_value(s: &mut State, id: Option<TrackId>, key: &str, v: f64) -> boo
         "D_DUALPANR" => t.dual_pan[1] = v.clamp(-1.0, 1.0),
         "I_RECARM" => t.armed = v != 0.0,
         "I_RECINPUT" => t.rec_input = v as i64,
-        "I_RECMON" => t.monitor = v != 0.0,
+        "I_RECMON" => {
+            (t.monitor, t.monitor_auto) = (v != 0.0, v as i64 == 2);
+        }
+        "I_RECMODE" => t.rec_mode = scythe_core::recording::RecordMode::from_code(v as i64),
+        "I_RECMODE_FLAGS" => t.rec_tap = scythe_core::recording::RecordTap::from_code(v as i64),
+        "I_RECMONITEMS" => t.monitor_items = v != 0.0,
+        "B_AUTO_RECARM" => t.auto_arm = v != 0.0,
         "B_MAINSEND" => t.main_send = v != 0.0,
         "C_MAINSEND_OFFS" => t.main_send_offset = v.max(0.0) as u32,
         "I_FOLDERDEPTH" => t.folder_depth = v as i32,
@@ -467,7 +482,7 @@ fn set_track_value(s: &mut State, id: Option<TrackId>, key: &str, v: f64) -> boo
         "I_NCHAN" => t.channels = ((v.max(2.0) as u32).min(128) + 1) & !1,
         "I_CUSTOMCOLOR" => t.color = color_from_native(v as i64),
         "D_PANLAW" => t.pan_law = v,
-        "I_FREEMODE" => t.fixed_lanes = v as i64 == 2,
+        "I_FREEMODE" => t.set_fixed_lanes(v as i64 == 2),
         "I_MIDIHWOUT" => {
             t.midi_out = (v >= 0.0).then_some(((v as i64 >> 5) as u8, (v as i64 & 31) as u8));
         }
