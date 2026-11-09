@@ -72,6 +72,14 @@ pub enum TrackCommand {
     /// tracks below it, -n makes it the last track of n folders, 0 a plain track.
     #[serde(rename = "track.folder")]
     Folder { track: TrackRef, depth: i32 },
+    /// Whether the track feeds its parent or the master; off for a bus that only plays through
+    /// its hardware outputs. Toggles when `on` is left out.
+    #[serde(rename = "track.main_send")]
+    MainSend {
+        track: TrackRef,
+        #[serde(default)]
+        on: Option<bool>,
+    },
 }
 
 fn info(session: &Session, target: Target) -> Value {
@@ -206,6 +214,10 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
         TrackCommand::Folder { track, depth } => {
             track.track(&session.project)?;
             set(session, &track, "Set folder depth", |t| t.folder_depth = depth)
+        }
+        TrackCommand::MainSend { track, on } => {
+            track.track(&session.project)?;
+            set(session, &track, "Toggle master/parent send", |t| t.main_send = on.unwrap_or(!t.main_send))
         }
     }
 }

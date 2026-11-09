@@ -105,7 +105,8 @@ Working:
   master send off, a hardware output, marked with `P_EXT` values (`scythe_monitor`,
   `scythe_monitor_own`, `scythe_monitor_more_me`); "more me" changes the receive volumes
   themselves, so REAPER plays the mixes the same. The operations are plain functions on the
-  project (`scythe_core::monitor`) for a control surface to call.
+  project (`scythe_core::monitor`), served to remote clients as the control API's `mix.*`
+  commands (hardware outputs as `send.hw_*`, per-mix meters in the `meters` event).
 - **Fades** with REAPER's shapes and curvature, drawn on the items.
 - **Track envelopes** (volume, pre-FX volume, trim, pan, mute) with all point shapes, shown
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter

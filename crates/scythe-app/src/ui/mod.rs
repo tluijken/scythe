@@ -3,8 +3,8 @@ pub mod gfx_view;
 mod inspector;
 pub mod midi_editor;
 mod mixer;
-mod nam;
 pub mod monitor;
+mod nam;
 pub mod widgets;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};

@@ -5,10 +5,9 @@
 use std::path::PathBuf;
 
 use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, Ui, pos2, vec2};
-use scythe_core::monitor::{CueBusOptions, MORE_ME_RANGE, MonitorMix, MonitorOutput, MonitorSource};
-use scythe_core::rpp::{Chunk, Node};
+use scythe_core::monitor::{CueBusOptions, MORE_ME_RANGE, MonitorMix, MonitorOutput, MonitorSource, limiter_slot};
 use scythe_core::units::format_db;
-use scythe_core::{FxSlot, Project, SendMode, TrackId};
+use scythe_core::{Project, SendMode, TrackId};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW, track_color};
@@ -21,8 +20,6 @@ const CARD_GAP: f32 = 12.0;
 const ROW_H: f32 = 40.0;
 /// Device outputs offered when choosing where a mix plays.
 const OUTPUTS: u32 = 16;
-/// The safety limiter monitor mixes get: REAPER's stock "Master Limiter" JSFX.
-const LIMITER: &str = "loser/masterLimiter";
 
 /// State of the "new monitor mix" wizard, which doubles as SWS's cue buss dialog.
 #[derive(Debug, Clone)]
@@ -93,29 +90,6 @@ impl Wizard {
             fx: if self.limiter { vec![limiter_slot()] } else { Vec::new() },
         })
     }
-}
-
-/// REAPER's Master Limiter with its threshold and ceiling at -0.1 dB, so it only catches peaks.
-pub fn limiter_slot() -> FxSlot {
-    let mut js = Chunk::new("JS", &[LIMITER, ""]);
-    let mut params = vec!["-0.1", "200", "100", "0", "250", "-0.1", "0"];
-    params.resize(64, "-");
-    js.line(params);
-    FxSlot {
-        name: LIMITER.to_owned(),
-        enabled: true,
-        raw: vec![
-            Node::Line("BYPASS 0 0 0".into()),
-            Node::Chunk(js),
-            Node::Line("FLOATPOS 0 0 0 0".into()),
-            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
-            Node::Line("WAK 0 0".into()),
-        ],
-    }
-}
-
-fn limiter_index(p: &Project, mix: TrackId) -> Option<usize> {
-    p.track(mix)?.fx.iter().position(|f| f.name == LIMITER)
 }
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
@@ -299,17 +273,12 @@ fn card(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, area
             p.set_monitor_output(id, o);
         });
     }
-    let lim = limiter_index(&app.project, id);
-    let lim_on = lim.is_some_and(|i| track.fx[i].enabled);
+    let lim_on = app.project.monitor_limiter(id) == Some(true);
     painter.text(pos2(right - 46.0, out.center().y), Align2::RIGHT_CENTER, "Limiter", theme::regular(12.0), TEXT_DIM);
     let sw = Rect::from_min_size(pos2(right - 38.0, out.center().y - 11.0), vec2(38.0, 22.0));
     if switch(ui, sw.intersect(visible), lim_on, ACCENT).on_hover_text("Safety limiter at -0.1 dB").clicked() {
         app.edit("Toggle monitor limiter", |p| {
-            let t = p.track_mut(id).unwrap();
-            match lim {
-                Some(i) => t.fx[i].enabled ^= true,
-                None => t.fx.push(limiter_slot()),
-            }
+            p.set_monitor_limiter(id, !lim_on);
         });
     }
     y += 40.0;

@@ -5,6 +5,7 @@
 //! amount), so a project stays a REAPER project and REAPER plays the mixes the same way.
 
 use crate::model::{Color, FxSlot, HwOut, Project, Send, SendMode, TRACK_PALETTE, Track, TrackId, new_guid};
+use crate::rpp::{Chunk, Node};
 use crate::units::db_to_gain;
 
 /// Extension key that marks a monitor mix; the value is the musician's name.
@@ -397,6 +398,46 @@ impl Project {
             }
         }
         Some(id)
+    }
+}
+
+/// The safety limiter monitor mixes get: REAPER's stock "Master Limiter" JSFX.
+pub const LIMITER: &str = "loser/masterLimiter";
+
+/// REAPER's Master Limiter with its threshold and ceiling at -0.1 dB, so it only catches peaks.
+pub fn limiter_slot() -> FxSlot {
+    let mut js = Chunk::new("JS", &[LIMITER, ""]);
+    let mut params = vec!["-0.1", "200", "100", "0", "250", "-0.1", "0"];
+    params.resize(64, "-");
+    js.line(params);
+    FxSlot {
+        name: LIMITER.to_owned(),
+        enabled: true,
+        raw: vec![
+            Node::Line("BYPASS 0 0 0".into()),
+            Node::Chunk(js),
+            Node::Line("FLOATPOS 0 0 0 0".into()),
+            Node::Line(format!("FXID {}", new_guid())),
+            Node::Line("WAK 0 0".into()),
+        ],
+    }
+}
+
+impl Project {
+    /// Whether the mix's safety limiter is on; `None` when it has none.
+    pub fn monitor_limiter(&self, mix: TrackId) -> Option<bool> {
+        self.track(mix)?.fx.iter().find(|f| f.name == LIMITER).map(|f| f.enabled)
+    }
+
+    /// Turns the safety limiter on or off, adding it at the end of the chain when missing.
+    pub fn set_monitor_limiter(&mut self, mix: TrackId, on: bool) -> bool {
+        let Some(t) = self.track_mut(mix) else { return false };
+        match t.fx.iter_mut().find(|f| f.name == LIMITER) {
+            Some(f) => f.enabled = on,
+            None if on => t.fx.push(limiter_slot()),
+            None => {}
+        }
+        true
     }
 }
 

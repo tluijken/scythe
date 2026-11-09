@@ -22,6 +22,9 @@ pub struct Meters {
     /// Left and right peak of the master.
     pub master: (f32, f32),
     pub tracks: Vec<TrackMeter>,
+    /// The monitor mixes' own levels (their tracks' meters), for a page showing one mix.
+    #[serde(default)]
+    pub mixes: Vec<TrackMeter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

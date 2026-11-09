@@ -1,7 +1,7 @@
 //! The project as clients see it: plain JSON-friendly copies of what the model holds.
 
 use scythe_core::units::gain_to_db;
-use scythe_core::{Color, Item, Marker, Track};
+use scythe_core::{Color, HwOut, Item, Marker, SendMode, Track};
 use scythe_engine::fx::FxStatus;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,8 @@ pub struct ProjectSnapshot {
     pub master: TrackInfo,
     pub tracks: Vec<TrackInfo>,
     pub markers: Vec<MarkerInfo>,
+    /// The monitor mixes (`mix.list`).
+    pub mixes: Vec<super::mix::MixInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +71,10 @@ pub struct TrackInfo {
     pub channels: u32,
     pub fx: Vec<FxInfo>,
     pub sends: Vec<SendInfo>,
+    /// Whether the track feeds its parent or the master (`B_MAINSEND`).
+    pub main_send: bool,
+    /// Audio hardware outputs (the master's included).
+    pub hw_outs: Vec<HwOutInfo>,
     pub items: Vec<ItemInfo>,
 }
 
@@ -90,6 +96,60 @@ pub struct SendInfo {
     pub volume_db: f64,
     pub pan: f64,
     pub muted: bool,
+    pub mode: Tap,
+    /// Mixed down to mono before panning.
+    pub mono: bool,
+    /// Polarity inverted.
+    pub phase: bool,
+}
+
+/// Where a send or hardware output takes its track's signal (REAPER's `I_SENDMODE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tap {
+    /// After the fader and pan.
+    PostFader,
+    /// Before the effects.
+    PreFx,
+    /// After the effects, before the fader: what monitor mixes use.
+    PostFx,
+}
+
+impl From<SendMode> for Tap {
+    fn from(m: SendMode) -> Self {
+        match m {
+            SendMode::PostFader => Self::PostFader,
+            SendMode::PreFx => Self::PreFx,
+            SendMode::PostFx | SendMode::PostFxLegacy => Self::PostFx,
+        }
+    }
+}
+
+impl From<Tap> for SendMode {
+    fn from(t: Tap) -> Self {
+        match t {
+            Tap::PostFader => Self::PostFader,
+            Tap::PreFx => Self::PreFx,
+            Tap::PostFx => Self::PostFx,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HwOutInfo {
+    pub index: usize,
+    /// First device output, from 0.
+    pub output: usize,
+    /// The track's channels summed into that one output.
+    pub mono: bool,
+    /// "Out 3/4", "Out 5 (mono)".
+    pub label: String,
+    pub mode: Tap,
+    pub volume: f64,
+    pub volume_db: f64,
+    pub pan: f64,
+    pub muted: bool,
+    pub phase: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,6 +206,7 @@ pub fn snapshot(session: &Session) -> ProjectSnapshot {
         master: track(session, &p.master, None, 0),
         tracks: p.tracks.iter().enumerate().map(|(i, t)| track(session, t, Some(i), levels[i])).collect(),
         markers: p.markers.iter().map(marker).collect(),
+        mixes: super::mix::list(p),
     }
 }
 
@@ -182,6 +243,8 @@ pub fn track(session: &Session, t: &Track, index: Option<usize>, level: usize) -
         channels: t.channels,
         fx: fx_list(session, if index.is_some() { Target::Track(t.id) } else { Target::Master }, t),
         sends: send_list(t),
+        main_send: t.main_send,
+        hw_outs: hw_out_list(t),
         items: t.items.iter().map(|it| item(t, it)).collect(),
     }
 }
@@ -213,8 +276,30 @@ pub fn send_list(t: &Track) -> Vec<SendInfo> {
             volume_db: gain_to_db(s.volume),
             pan: s.pan,
             muted: s.muted,
+            mode: s.mode.into(),
+            mono: s.mono,
+            phase: s.phase,
         })
         .collect()
+}
+
+pub fn hw_out(index: usize, o: &HwOut) -> HwOutInfo {
+    HwOutInfo {
+        index,
+        output: o.first_output(),
+        mono: o.is_mono(),
+        label: o.label(),
+        mode: o.mode.into(),
+        volume: o.volume,
+        volume_db: gain_to_db(o.volume),
+        pan: o.pan,
+        muted: o.muted,
+        phase: o.phase,
+    }
+}
+
+pub fn hw_out_list(t: &Track) -> Vec<HwOutInfo> {
+    t.hw_outs.iter().enumerate().map(|(i, o)| hw_out(i, o)).collect()
 }
 
 pub fn item(t: &Track, it: &Item) -> ItemInfo {

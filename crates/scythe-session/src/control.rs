@@ -107,13 +107,14 @@ impl ControlPump {
         }
         if now.duration_since(self.meters_at) >= EVENT_INTERVAL {
             self.meters_at = now;
-            let tracks = session
-                .project
-                .tracks
-                .iter()
-                .map(|t| TrackMeter { id: t.id.0, peak: session.levels.get(&t.id).copied().unwrap_or_default() })
-                .collect();
-            (self.sink)(&Event::Meters(Meters { master: session.master_level, tracks }));
+            let meter = |t: &scythe_core::Track| TrackMeter {
+                id: t.id.0,
+                peak: session.levels.get(&t.id).copied().unwrap_or_default(),
+            };
+            let tracks: Vec<TrackMeter> = session.project.tracks.iter().map(meter).collect();
+            let mixes =
+                session.project.tracks.iter().filter(|t| session.project.is_monitor_mix(t.id)).map(meter).collect();
+            (self.sink)(&Event::Meters(Meters { master: session.master_level, tracks, mixes }));
         }
     }
 }

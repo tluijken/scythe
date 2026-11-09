@@ -246,3 +246,122 @@ fn the_pump_answers_other_threads_and_publishes_events() {
     assert!(events.iter().any(|e| matches!(e, Event::Transport(t) if !t.playing)));
     assert!(events.iter().any(|e| matches!(e, Event::Meters(m) if m.tracks.len() == 1)));
 }
+
+#[test]
+fn monitor_mixes_through_the_api() {
+    let mut s = session();
+    let ids: Vec<u64> = ["Kick", "Bass", "Vocal", "Click"].iter().map(|n| add_track(&mut s, n)).collect();
+    let mix = ok(&mut s, json!({"cmd": "mix.create", "musician": "Drummer", "own": [ids[0]], "output": 2}));
+    let id = mix["id"].as_u64().unwrap();
+    assert_eq!(mix["name"], "MON Drummer");
+    assert_eq!(mix["output"]["label"], "Out 3/4");
+    assert_eq!(mix["limiter"], true);
+    assert_eq!(mix["sources"].as_array().unwrap().len(), 4);
+    assert!(mix["sources"].as_array().unwrap().iter().all(|x| x["mode"] == "post_fx"));
+    assert_eq!(mix["sources"][0]["own"], true);
+
+    let m = ok(&mut s, json!({"cmd": "mix.level", "mix": id, "source": "Click", "db": -6.0}));
+    assert!((m["sources"][3]["volume_db"].as_f64().unwrap() + 6.0).abs() < 1e-9);
+    ok(&mut s, json!({"cmd": "mix.pan", "mix": "MON Drummer", "source": ids[1], "pan": -0.5}));
+    ok(&mut s, json!({"cmd": "mix.mute", "mix": id, "source": "Vocal"}));
+    let m = ok(&mut s, json!({"cmd": "mix.more_me", "mix": id, "db": 6.0}));
+    assert_eq!(m["more_me"], 6.0);
+    assert!((m["sources"][0]["volume_db"].as_f64().unwrap() - 3.0).abs() < 1e-9);
+    assert!((m["sources"][1]["volume_db"].as_f64().unwrap() + 3.0).abs() < 1e-9);
+    assert_eq!(m["sources"][1]["pan"], -0.5);
+    assert_eq!(m["sources"][2]["muted"], true);
+    let m = ok(&mut s, json!({"cmd": "mix.own", "mix": id, "source": "Bass", "own": true}));
+    assert!((m["sources"][1]["volume_db"].as_f64().unwrap() - 3.0).abs() < 1e-9);
+    let m = ok(&mut s, json!({"cmd": "mix.output", "mix": id, "output": 5, "mono": true}));
+    assert_eq!(m["output"]["label"], "Out 6 (mono)");
+    let m = ok(&mut s, json!({"cmd": "mix.limiter", "mix": id}));
+    assert_eq!(m["limiter"], false);
+    let m = ok(&mut s, json!({"cmd": "mix.volume", "mix": id, "db": -3.0}));
+    assert!((m["volume_db"].as_f64().unwrap() + 3.0).abs() < 1e-9);
+    let m = ok(&mut s, json!({"cmd": "mix.remove_source", "mix": id, "source": "Click"}));
+    assert_eq!(m["sources"].as_array().unwrap().len(), 3);
+    ok(&mut s, json!({"cmd": "mix.add_source", "mix": id, "source": "Click"}));
+    let again = execute_json(&mut s, json!({"cmd": "mix.add_source", "mix": id, "source": "Click"}));
+    assert_eq!(again.unwrap_err().kind, ErrorKind::Invalid);
+
+    let copy = ok(&mut s, json!({"cmd": "mix.copy", "mix": id, "musician": "Singer"}));
+    let copy_id = copy["id"].as_u64().unwrap();
+    assert_eq!(copy["output"]["label"], "Out 3 (mono)", "the copy takes the next free output");
+    ok(&mut s, json!({"cmd": "mix.rename", "mix": copy_id, "musician": "Lead singer"}));
+    let mixes = ok(&mut s, json!({"cmd": "mix.list"}));
+    assert_eq!(mixes.as_array().unwrap().len(), 2);
+    assert_eq!(mixes[1]["musician"], "Lead singer");
+    assert_eq!(ok(&mut s, json!({"cmd": "snapshot"}))["mixes"].as_array().unwrap().len(), 2);
+    let not_a_mix = execute_json(&mut s, json!({"cmd": "mix.get", "mix": "Kick"}));
+    assert_eq!(not_a_mix.unwrap_err().kind, ErrorKind::Invalid);
+
+    // A remote "more me" drag is one undo step.
+    for db in [7.0, 8.0, 9.0] {
+        ok(&mut s, json!({"cmd": "mix.more_me", "mix": copy_id, "db": db}));
+    }
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    assert_eq!(ok(&mut s, json!({"cmd": "mix.get", "mix": copy_id}))["more_me"], 6.0);
+
+    let left = ok(&mut s, json!({"cmd": "mix.delete", "mix": id}));
+    assert_eq!(left.as_array().unwrap().len(), 1);
+    assert!(s.project.tracks.iter().all(|t| t.sends.iter().all(|x| x.dest.0 != id)));
+
+    let bus = ok(
+        &mut s,
+        json!({"cmd": "mix.cue_bus", "sources": ["Bass", "Vocal"], "mode": "pre_fx", "volumes_from_tracks": true, "output": 8}),
+    );
+    assert_eq!(bus["name"], "Cue Buss");
+    assert_eq!(bus["main_send"], false);
+    assert_eq!(bus["hw_outs"][0]["label"], "Out 9/10");
+    let receives = s.project.monitor_sources(scythe_core::TrackId(bus["id"].as_u64().unwrap()));
+    assert_eq!(receives.len(), 2);
+    assert!(receives.iter().all(|r| r.mode == scythe_core::SendMode::PreFx));
+}
+
+#[test]
+fn hardware_outputs_and_send_modes_through_the_api() {
+    let mut s = session();
+    let a = add_track(&mut s, "Click");
+    let b = add_track(&mut s, "Bus");
+    let hw = ok(&mut s, json!({"cmd": "send.hw_add", "track": a, "output": 6, "mono": true}));
+    assert_eq!(hw["label"], "Out 7 (mono)");
+    let set = json!({"cmd": "send.hw_set", "track": "Click", "hw": 0, "mode": "post_fx", "db": -6.0, "pan": 0.25});
+    let hw = ok(&mut s, set);
+    assert_eq!((hw["mode"].as_str(), hw["pan"].as_f64()), (Some("post_fx"), Some(0.25)));
+    assert!((hw["volume_db"].as_f64().unwrap() + 6.0).abs() < 1e-9);
+    let hw = ok(&mut s, json!({"cmd": "send.hw_set", "track": a, "hw": 0, "mono": false, "muted": true}));
+    assert_eq!((hw["label"].as_str(), hw["muted"].as_bool()), (Some("Out 7/8"), Some(true)));
+    let next = ok(&mut s, json!({"cmd": "send.hw_add", "track": b}));
+    assert_eq!(next["output"], 2, "the next pair after the master's 1/2");
+    let t = ok(&mut s, json!({"cmd": "track.main_send", "track": a, "on": false}));
+    assert_eq!(t["main_send"], false);
+    assert_eq!(t["hw_outs"].as_array().unwrap().len(), 1);
+
+    let master = ok(&mut s, json!({"cmd": "send.hw_list", "track": "master"}));
+    assert_eq!(master[0]["label"], "Out 1/2");
+    ok(&mut s, json!({"cmd": "send.hw_add", "track": "master", "output": 10}));
+    ok(&mut s, json!({"cmd": "send.hw_remove", "track": "master", "hw": 0}));
+    assert_eq!(s.project.master.hw_outs[0].first_output(), 10);
+    let missing = execute_json(&mut s, json!({"cmd": "send.hw_remove", "track": a, "hw": 3}));
+    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
+
+    ok(&mut s, json!({"cmd": "send.add", "track": a, "dest": b}));
+    let send = ok(&mut s, json!({"cmd": "send.mode", "track": a, "send": 0, "mode": "pre_fx", "phase": true}));
+    assert_eq!(send["mode"], "pre_fx");
+    assert_eq!((send["phase"].as_bool(), send["mono"].as_bool()), (Some(true), Some(false)));
+    assert_eq!(s.project.tracks[0].sends[0].mode, scythe_core::SendMode::PreFx);
+}
+
+#[test]
+fn meters_carry_the_monitor_mixes() {
+    let mut s = session();
+    add_track(&mut s, "Kick");
+    ok(&mut s, json!({"cmd": "mix.create", "musician": "Drummer"}));
+    let events: Arc<Mutex<Vec<Event>>> = Arc::default();
+    let seen = events.clone();
+    let (_handle, mut pump) =
+        control::channel(Arc::new(|| {}), Arc::new(move |e: &Event| seen.lock().unwrap().push(e.clone())));
+    pump.wait(&mut s, Duration::from_millis(100));
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::Meters(m) if m.tracks.len() == 2 && m.mixes.len() == 1)));
+}

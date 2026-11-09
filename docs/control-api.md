@@ -124,6 +124,51 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 | `send.volume` | `track`, `send`, `volume` or `db` | the send |
 | `send.pan` | `track`, `send`, `pan` | the send |
 | `send.mute` | `track`, `send`, `muted?` | the send |
+| `send.mode` | `track`, `send`, `mode?` (`post_fader`, `pre_fx`, `post_fx`), `mono?`, `phase?` | the send |
+| `send.hw_list` | `track` (or `"master"`) | the hardware outputs |
+| `send.hw_add` | `track`, `output?` (device output from 0; the next free one when left out), `mono?` | the new output |
+| `send.hw_remove` | `track`, `hw` | the remaining outputs |
+| `send.hw_set` | `track`, `hw`, any of `output`, `mono`, `mode`, `volume` or `db`, `pan`, `muted`, `phase` | the output |
+
+`track.main_send` (`track`, `on?`) turns a track's feed to its parent or the master on or off;
+a bus that only plays through hardware outputs has it off.
+
+### Monitor mixes
+
+A monitor mix ("cue bus") is a track named "MON *musician*" that receives its sources
+pre-fader (post-FX), does not feed the master and plays through a hardware output. `mix` and
+`source` are track references like `track`. "More me" changes the receive levels themselves,
+so REAPER plays the mix the same.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `mix.list` | | every mix |
+| `mix.get` | `mix` | the mix |
+| `mix.create` | `musician`, `sources?` (every track that is not a mix or folder parent), `own?`, `output?`, `mono?`, `mode?`, `levels_from_tracks?`, `pans_from_tracks?`, `limiter?` (on) | the new mix |
+| `mix.copy` | `mix`, `musician` | the copy, on the next free output |
+| `mix.rename` | `mix`, `musician` | the mix |
+| `mix.delete` | `mix` | the remaining mixes |
+| `mix.level` | `mix`, `source`, `volume` or `db` | the mix |
+| `mix.pan` | `mix`, `source`, `pan` | the mix |
+| `mix.mute` | `mix`, `source`, `muted?` | the mix |
+| `mix.own` | `mix`, `source`, `own?` | the mix; own sources are what "more me" raises |
+| `mix.more_me` | `mix`, `db` (-24 to 24) | the mix: own sources `db`/2 up, the rest `db`/2 down |
+| `mix.volume` | `mix`, `volume` or `db` | the mix's own level |
+| `mix.output` | `mix`, `output` (from 0, or `null`), `mono?` | the mix |
+| `mix.limiter` | `mix`, `on?` | the mix |
+| `mix.add_source` | `mix`, `source`, `mode?` | the mix |
+| `mix.remove_source` | `mix`, `source` | the mix |
+| `mix.cue_bus` | `sources`, `name?`, `mode?`, `volumes_from_tracks?`, `pans_from_tracks?`, `output?`, `mono?` | the new bus as a track: SWS's "Create cue buss from track selection" |
+
+A mix:
+
+```json
+{"id": 20, "musician": "Drummer", "name": "MON Drummer", "color": "#a6e22e",
+ "volume": 1.0, "volume_db": 0.0, "more_me": 6.0,
+ "output": {"output": 2, "mono": false, "label": "Out 3/4"}, "limiter": true,
+ "sources": [{"track": 12, "name": "Kick", "color": "#66d9ef", "volume": 1.41,
+              "volume_db": 3.0, "pan": 0.0, "muted": false, "mode": "post_fx", "own": true}]}
+```
 
 ### Effects
 
@@ -184,10 +229,15 @@ match wins.
     "volume": 0.6, "volume_db": -4.4, "pan": 0.0, "muted": false, "solo": false,
     "armed": true, "monitor": true, "input": 1024, "folder_depth": 0, "level": 0, "channels": 2,
     "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
-    "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false}],
+    "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
+               "mode": "post_fader", "mono": false, "phase": false}],
+    "main_send": true,
+    "hw_outs": [{"index": 0, "output": 2, "mono": false, "label": "Out 3/4", "mode": "post_fader",
+                 "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false, "phase": false}],
     "items": [{"id": 31, "track": 12, "name": "take.wav", "position": 1.0, "length": 4.0,
                "volume": 1.0, "muted": false, "takes": 1, "active_take": 0, "file": "…/take.wav"}]
   }],
+  "mixes": […monitor mixes, as `mix.list`…],
   "markers": [{"number": 1, "region": true, "name": "Song 1", "position": 10.0, "end": 200.0,
                "color": null}]
 }
@@ -201,7 +251,7 @@ runs (also across undo) but not across opening the project again; names and GUID
 | `event` | Fields | When |
 |---|---|---|
 | `transport` | the transport state | about 20 times a second while playing or recording, and whenever play state, cursor, loop or metronome change |
-| `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]` | about 20 times a second; peaks as gain, falling back like the UI's meters |
+| `meters` | `master: [l, r]`, `tracks: [{"id", "peak": [l, r]}]`, `mixes` (the monitor mixes' own meters, same shape) | about 20 times a second; peaks as gain, falling back like the UI's meters |
 | `project_changed` | `revision` | after any change to the project, from any client or the UI; fetch a new snapshot when yours is older |
 | `notice` | `message` | what the UI shows as a toast: saved, could not open, recording started… |
 
