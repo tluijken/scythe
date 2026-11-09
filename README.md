@@ -26,6 +26,9 @@ made), `--view=START-END`
 (open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).
 A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
 `scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
+Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 2, so a debug
+build plays real projects (a live set's media loads in 10 s instead of 23 s and plays at 5 %
+DSP load instead of 13 %), at about 5 s more per engine rebuild.
 `SCYTHE_UI_SCALE=0.75` scales the UI (0.5–3).
 
 The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`.

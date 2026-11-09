@@ -51,3 +51,8 @@ tokio-tungstenite = "0.29.0"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# The engine's DSP at opt-level 0 makes debug builds unusable with real projects (a live set
+# loads 2.4x slower and renders at 2.4x the load); level 1 costs about 5 s per engine rebuild.
+[profile.dev.package.scythe-engine]
+opt-level = 1
