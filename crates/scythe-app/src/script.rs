@@ -762,6 +762,11 @@ static API: &[Sig] = sigs! {
     "Envelope_SortPoints" Bool [E];
     "Envelope_SortPointsEx" Bool [E, Z];
     "CountAutomationItems" Int [E];
+    "InsertAutomationItem" Int [E, Z, N, N];
+    "GetSetAutomationItemInfo" Num [E, Z, S, N, B];
+    "GetSetAutomationItemInfo_String" Bool [E, Z, S, SIO, B];
+    "GetGlobalAutomationOverride" Int [];
+    "SetGlobalAutomationOverride" Void [Z];
 
     // Items.
     "CountMediaItems" Int [P];

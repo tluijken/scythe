@@ -1,5 +1,7 @@
 //! Tracks, their sends, effects and envelopes.
 
+use scythe_core::automation_item::{AutomationItem, AutomationPool, Scale, capture};
+use scythe_core::model::GlobalAutomation;
 use scythe_core::rpp::{Chunk, Node, line_key, quote, tokenize};
 use scythe_core::{Color, EnvPoint, Envelope, EnvelopeKind, HwOut, PointShape, Project, Send, SendMode, TrackId};
 
@@ -794,7 +796,7 @@ fn envelopes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
     let ex = name.ends_with("Ex") && name.contains("Envelope");
     let (base, ai) = if ex { (1, a.int(1)) } else { (0, -1) };
     if ex && ai >= 0 {
-        return Some(ret(Val::Nil));
+        return Some(item_points(s, name, a, e, ai as usize));
     }
     Some(match name {
         "CountTrackEnvelopes" => {
@@ -935,14 +937,12 @@ fn envelopes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             let Some(env) = envelope(&mut s.project, e) else {
                 return Some((Val::Int(0), vec![Val::Num(0.0); 4]));
             };
-            // REAPER interpolates in the values scripts see, fader positions included.
-            let mut raw = env.clone();
-            if fader_scaled(env) {
-                raw.points.iter_mut().for_each(|p| p.value = scale_to_fader(p.value));
-                raw.fader_scaled = false;
-            }
-            let neutral = if fader_scaled(env) { scale_to_fader(env.kind.neutral()) } else { env.kind.neutral() };
-            let at = |t: f64| raw.value_at(t).unwrap_or(neutral);
+            // Fader-scaled envelopes interpolate in fader position, the values scripts see.
+            let scaled = fader_scaled(env);
+            let raw = |v: f64| if scaled { scale_to_fader(v) } else { v };
+            let neutral = raw(env.kind.neutral());
+            let env = env.clone();
+            let at = |t: f64| env.value_at(t).map(raw).unwrap_or(neutral);
             let step = 1.0 / rate;
             let (v0, v1, v2, v3) = (at(t), at(t + step), at(t + 2.0 * step), at(t + 3.0 * step));
             let d1 = v1 - v0;
@@ -957,9 +957,274 @@ fn envelopes(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             }
             None => ret(Val::Bool(false)),
         },
-        "CountAutomationItems" => ret(Val::Int(0)),
+        "CountAutomationItems" => ret(Val::Int(envelope(&mut s.project, e).map_or(0, |e| e.items.len() as i64))),
+        "InsertAutomationItem" => {
+            let (pool, pos, len) = (a.int(1), a.num(2).max(0.0), a.num(3));
+            let timeline = s.project.tempo.timeline();
+            let Some(env) = envelope(&mut s.project, e) else { return Some(ret(Val::Int(-1))) };
+            if !(len > 0.0) {
+                return Some(ret(Val::Int(-1)));
+            }
+            let (length_qn, points) = capture(env, pos, len, &timeline);
+            let n = env.items.len();
+            let id = if pool >= 0 {
+                // A pool that does not exist yet starts empty.
+                if !s.project.automation_pools.iter().any(|p| p.id == pool) {
+                    s.project.automation_pools.push(AutomationPool::new(pool, length_qn));
+                }
+                pool
+            } else {
+                let id = s.project.next_pool_id();
+                s.project.automation_pools.push(AutomationPool { points, ..AutomationPool::new(id, length_qn) });
+                id
+            };
+            if let Some(env) = envelope(&mut s.project, e) {
+                env.items.push(AutomationItem::new(id, pos, len));
+            }
+            s.project.resolve_automation_items();
+            s.changed = true;
+            ret(Val::Int(n as i64))
+        }
+        "GetSetAutomationItemInfo" => ret(Val::Num(item_info(s, e, a))),
+        "GetSetAutomationItemInfo_String" => {
+            let (i, key, value, set) = (a.int(1), a.text(2), a.text(3), a.bool(4));
+            let pool = envelope(&mut s.project, e).and_then(|env| index(env.items.len(), i).map(|i| env.items[i].pool));
+            let found = pool.and_then(|id| s.project.automation_pools.iter_mut().find(|p| p.id == id));
+            match (found, key.as_str()) {
+                (Some(p), "P_POOL_NAME") => {
+                    if set {
+                        p.name = value;
+                        s.changed = true;
+                    }
+                    (Val::Bool(true), vec![Val::Str(p.name.clone())])
+                }
+                _ => (Val::Bool(false), vec![Val::Str(String::new())]),
+            }
+        }
+        "GetGlobalAutomationOverride" => ret(Val::Int(GlobalAutomation::rpp_code(s.project.global_automation))),
+        "SetGlobalAutomationOverride" => {
+            s.project.global_automation = GlobalAutomation::from_rpp(a.int(0));
+            s.changed = true;
+            ret(Val::Nil)
+        }
         _ => return None,
     })
+}
+
+/// How an automation item shows its pool to scripts, as REAPER 7.73's `…Ex` point calls do:
+/// every pass of the pool inside the item, in project seconds, with the item's baseline and
+/// amplitude applied, in the envelope's raw values (fader positions when fader-scaled).
+struct ItemMap {
+    item: AutomationItem,
+    q0: f64,
+    offset_qn: f64,
+    rate: f64,
+    scale: Scale,
+    timeline: scythe_core::tempo::Timeline,
+}
+
+impl ItemMap {
+    fn new(project: &Project, env: &Envelope, item: &AutomationItem) -> Self {
+        let timeline = project.tempo.timeline();
+        let q0 = timeline.qn_at(item.position);
+        let offset_qn = timeline.qn_at(item.position + item.start_offset) - q0;
+        let rate = if item.rate > 0.0 { item.rate } else { 1.0 };
+        Self { item: item.clone(), q0, offset_qn, rate, scale: Scale::of(env), timeline }
+    }
+
+    fn raw(&self, n: f64) -> f64 {
+        match self.scale {
+            Scale::Fader => n * scale_to_fader(2.0),
+            s => s.denormalize(n),
+        }
+    }
+
+    fn normalized(&self, v: f64) -> f64 {
+        match self.scale {
+            Scale::Fader => v / scale_to_fader(2.0),
+            s => s.normalize(v),
+        }
+    }
+
+    /// The pool time a project time plays, in the pass that covers it.
+    fn pool_time(&self, t: f64, length_qn: f64) -> f64 {
+        let qn = (self.timeline.qn_at(t) - self.q0) * self.rate + self.offset_qn;
+        if self.item.looped && length_qn > 0.0 { qn.rem_euclid(length_qn) } else { qn }
+    }
+
+    fn time_of(&self, qn: f64) -> f64 {
+        self.timeline.time_at_qn(self.q0 + (qn - self.offset_qn) / self.rate)
+    }
+
+    /// (pool point index, project seconds, raw value) for every point the item plays.
+    fn visible(&self, pool: &AutomationPool) -> Vec<(usize, f64, f64)> {
+        let (start, end) = (self.item.position, self.item.end());
+        let shown = |n: f64| self.raw(self.item.baseline + self.item.amplitude * (n - 0.5));
+        let len = pool.length_qn;
+        let passes: Vec<f64> = if self.item.looped && len > 0.0 {
+            let first = (self.offset_qn / len).floor();
+            let last = ((self.pool_time_unwrapped(end)) / len).ceil();
+            (first as i64..=last as i64).map(|k| k as f64 * len).take(10_000).collect()
+        } else {
+            vec![0.0]
+        };
+        passes
+            .into_iter()
+            .flat_map(|base| pool.points.iter().enumerate().map(move |(i, p)| (i, base + p.time, p.value)))
+            .map(|(i, qn, n)| (i, self.time_of(qn), shown(n)))
+            .filter(|&(_, t, _)| t >= start - 1e-9 && t < end - 1e-9)
+            .collect()
+    }
+
+    fn pool_time_unwrapped(&self, t: f64) -> f64 {
+        (self.timeline.qn_at(t) - self.q0) * self.rate + self.offset_qn
+    }
+
+    /// A raw value as the pool stores it, undoing the item's baseline and amplitude.
+    fn stored(&self, v: f64) -> f64 {
+        let n = self.normalized(v);
+        if self.item.amplitude.abs() > 1e-9 { 0.5 + (n - self.item.baseline) / self.item.amplitude } else { 0.5 }
+    }
+}
+
+/// The `…Ex` point calls on automation item `ai` of the envelope: they read and edit its pool.
+fn item_points(s: &mut State, name: &str, a: &Args, e: Option<Env>, ai: usize) -> Ret {
+    let found = envelope(&mut s.project, e).and_then(|env| env.items.get(ai).cloned().map(|i| (env.clone(), i)));
+    let Some((env, item)) = found else { return ret(Val::Bool(false)) };
+    let map = ItemMap::new(&s.project, &env, &item);
+    let Some(pool) = s.project.automation_pools.iter_mut().find(|p| p.id == item.pool) else {
+        return ret(Val::Bool(false));
+    };
+    let visible = map.visible(pool);
+    let empty = || vec![Val::Num(0.0), Val::Num(0.0), Val::Int(0), Val::Num(0.0), Val::Bool(false)];
+    let out = |pool: &AutomationPool, (i, t, v): (usize, f64, f64)| {
+        let p = &pool.points[i];
+        let tension = if let PointShape::Bezier(t) = p.shape { t } else { 0.0 };
+        vec![Val::Num(t), Val::Num(v), Val::Int(p.shape.rpp_code()), Val::Num(tension), Val::Bool(false)]
+    };
+    let sort = |pool: &mut AutomationPool| pool.points.sort_by(|a, b| a.time.total_cmp(&b.time));
+    let result = match name {
+        "CountEnvelopePointsEx" => return ret(Val::Int(visible.len() as i64)),
+        "GetEnvelopePointEx" => match index(visible.len(), a.int(2)) {
+            Some(k) => return (Val::Bool(true), out(pool, visible[k])),
+            None => return (Val::Bool(false), empty()),
+        },
+        "GetEnvelopePointByTimeEx" => {
+            let t = a.num(2);
+            return ret(Val::Int(visible.partition_point(|&(_, pt, _)| pt <= t + 1e-9) as i64 - 1));
+        }
+        "InsertEnvelopePointEx" => {
+            let qn = map.pool_time(a.num(2), pool.length_qn);
+            let shape = PointShape::from_rpp(a.int(4), a.num(5));
+            pool.points.push(EnvPoint { shape, ..EnvPoint::new(qn, map.stored(a.num(3))) });
+            if !a.bool(7) {
+                sort(pool);
+            }
+            (Val::Bool(true), vec![Val::Bool(a.bool(7))])
+        }
+        "SetEnvelopePointEx" => {
+            let Some(k) = index(visible.len(), a.int(2)) else { return ret(Val::Bool(false)) };
+            let (i, t, v) = visible[k];
+            let p = &mut pool.points[i];
+            if let Some(t) = a.opt(3) {
+                p.time = map.pool_time(t, 0.0).rem_euclid(pool.length_qn.max(f64::MIN_POSITIVE));
+            }
+            p.value = map.stored(a.opt(4).unwrap_or(v));
+            if a.opt(5).is_some() || a.opt(6).is_some() {
+                let tension = a.opt(6).unwrap_or(if let PointShape::Bezier(t) = p.shape { t } else { 0.0 });
+                p.shape = PointShape::from_rpp(a.opt(5).map_or(p.shape.rpp_code(), |v| v as i64), tension);
+            }
+            let outs = out(pool, (i, a.opt(3).unwrap_or(t), a.opt(4).unwrap_or(v)));
+            if !a.bool(8) {
+                sort(pool);
+            }
+            (Val::Bool(true), outs.into_iter().chain([Val::Bool(a.bool(8))]).collect())
+        }
+        "DeleteEnvelopePointEx" => match index(visible.len(), a.int(2)) {
+            Some(k) => {
+                pool.points.remove(visible[k].0);
+                ret(Val::Bool(true))
+            }
+            None => return ret(Val::Bool(false)),
+        },
+        "DeleteEnvelopePointRangeEx" => {
+            let (from, to) = (a.num(2), a.num(3));
+            let mut gone: Vec<usize> =
+                visible.iter().filter(|&&(_, t, _)| t >= from && t < to).map(|&(i, _, _)| i).collect();
+            gone.sort_unstable();
+            gone.dedup();
+            for i in gone.into_iter().rev() {
+                pool.points.remove(i);
+            }
+            ret(Val::Bool(true))
+        }
+        "Envelope_SortPointsEx" => {
+            sort(pool);
+            ret(Val::Bool(true))
+        }
+        _ => return ret(Val::Nil),
+    };
+    s.changed = true;
+    s.project.resolve_automation_items();
+    result
+}
+
+/// `GetSetAutomationItemInfo`: reads or sets one of an automation item's values.
+fn item_info(s: &mut State, e: Option<Env>, a: &Args) -> f64 {
+    let (i, key, value, set) = (a.int(1), a.text(2), a.num(3), a.bool(4));
+    let Some(env) = envelope(&mut s.project, e) else { return 0.0 };
+    let Some(i) = index(env.items.len(), i) else { return 0.0 };
+    let item = &mut env.items[i];
+    let pool = item.pool;
+    let got = match key.as_str() {
+        "D_POOL_ID" => {
+            if set {
+                item.pool = value as i64;
+            }
+            item.pool as f64
+        }
+        "D_POSITION" => set_or(&mut item.position, set, value),
+        "D_LENGTH" => set_or(&mut item.length, set, value.max(0.0)),
+        "D_STARTOFFS" => set_or(&mut item.start_offset, set, value),
+        "D_PLAYRATE" => set_or(&mut item.rate, set && value > 0.0, value),
+        "D_BASELINE" => set_or(&mut item.baseline, set, value.clamp(0.0, 1.0)),
+        "D_AMPLITUDE" => set_or(&mut item.amplitude, set, value.clamp(-1.0, 1.0)),
+        "D_LOOPSRC" => {
+            if set {
+                item.looped = value != 0.0;
+            }
+            item.looped as i64 as f64
+        }
+        "D_UISEL" => {
+            if set {
+                item.selected = value != 0.0;
+            }
+            item.selected as i64 as f64
+        }
+        "D_POOL_QNLEN" => {
+            let Some(p) = s.project.automation_pools.iter_mut().find(|p| p.id == pool) else { return 0.0 };
+            if set && value > 0.0 {
+                p.length_qn = value;
+            }
+            let len = p.length_qn;
+            s.changed |= set;
+            s.project.resolve_automation_items();
+            return len;
+        }
+        _ => return 0.0,
+    };
+    if set {
+        s.changed = true;
+        s.project.resolve_automation_items();
+    }
+    got
+}
+
+fn set_or(field: &mut f64, set: bool, value: f64) -> f64 {
+    if set {
+        *field = value;
+    }
+    *field
 }
 
 #[cfg(test)]
@@ -1114,6 +1379,62 @@ mod tests {
         ext_value(&mut extra, "mine", Some("c d".into()));
         assert_eq!(ext_value(&mut extra, "mine", None), "c d");
         assert_eq!(extra.len(), 1);
+    }
+
+    /// Values from the same calls in REAPER 7.73 (`GetSetAutomationItemInfo`,
+    /// `GetEnvelopePointEx` on a looped pooled copy, `Envelope_Evaluate`).
+    #[test]
+    fn automation_items_as_reaper_shows_them() {
+        let mut p = project();
+        let pan = p.tracks[0].envelope_mut(EnvelopeKind::Pan);
+        pan.points = vec![EnvPoint::new(0.0, 0.2), EnvPoint::new(8.0, -0.4)];
+        let tr = Val::Track(p.tracks[0].id);
+        let mut s = state(p);
+        let env = api(&mut s, "GetTrackEnvelopeByName", &[tr, Val::Str("Pan".into())]).0;
+        let call = |s: &mut State, name: &str, args: &[Val]| {
+            let mut all = vec![env.clone()];
+            all.extend_from_slice(args);
+            api(s, name, &all)
+        };
+        assert_eq!(call(&mut s, "InsertAutomationItem", &[Val::Int(-1), Val::Num(1.0), Val::Num(2.0)]).0, Val::Int(0));
+        call(&mut s, "DeleteEnvelopePointRangeEx", &[Val::Int(0), Val::Num(0.0), Val::Num(100.0)]);
+        for (t, v, shape) in [(1.0, -1.0, 0), (2.0, 1.0, 2), (2.5, 0.5, 0)] {
+            let pt = [
+                Val::Int(0),
+                Val::Num(t),
+                Val::Num(v),
+                Val::Int(shape),
+                Val::Num(0.0),
+                Val::Bool(false),
+                Val::Bool(true),
+            ];
+            call(&mut s, "InsertEnvelopePointEx", &pt);
+        }
+        call(&mut s, "Envelope_SortPointsEx", &[Val::Int(0)]);
+        let pool = call(
+            &mut s,
+            "GetSetAutomationItemInfo",
+            &[Val::Int(0), Val::Str("D_POOL_ID".into()), Val::Num(0.0), Val::Bool(false)],
+        )
+        .0;
+        assert_eq!(
+            call(&mut s, "InsertAutomationItem", &[Val::Int(pool.num() as i64), Val::Num(4.0), Val::Num(3.0)]).0,
+            Val::Int(1)
+        );
+        for (key, v) in [("D_PLAYRATE", 1.5), ("D_STARTOFFS", 0.25), ("D_BASELINE", 0.4), ("D_AMPLITUDE", -0.5)] {
+            call(
+                &mut s,
+                "GetSetAutomationItemInfo",
+                &[Val::Int(1), Val::Str(key.into()), Val::Num(v), Val::Bool(true)],
+            );
+        }
+        assert_eq!(call(&mut s, "CountEnvelopePointsEx", &[Val::Int(1)]).0, Val::Int(6));
+        let (_, outs) = call(&mut s, "GetEnvelopePointEx", &[Val::Int(1), Val::Int(1)]);
+        assert!((outs[0].num() - 4.8333).abs() < 1e-4 && (outs[1].num() + 0.45).abs() < 1e-9, "{outs:?}");
+        for (t, want) in [(1.25, -0.5), (2.0, 1.0), (4.5, -0.7), (5.25, 0.175), (7.5, -0.3625)] {
+            let (_, outs) = call(&mut s, "Envelope_Evaluate", &[Val::Num(t), Val::Num(48000.0), Val::Int(1)]);
+            assert!((outs[0].num() - want).abs() < 1e-4, "{t}: {outs:?}");
+        }
     }
 }
 
