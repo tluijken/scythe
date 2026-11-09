@@ -1,11 +1,12 @@
 use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
+use scythe_core::fx_chain::Parallel;
 use scythe_core::midi_route::{MidiDevice, MidiInput, SendMidi};
 use scythe_core::timebase::Timebase;
 use scythe_core::units::format_db;
-use scythe_core::{ChannelMode, EnvelopeKind, HwOut, Send, SendMode, TrackId};
+use scythe_core::{ChannelMode, EnvelopeKind, FxSlot, HwOut, Send, SendMode, TrackId};
 use scythe_engine::fx::FxStatus;
 
-use crate::app::{InspectorTab, PresetSource, ScytheApp};
+use crate::app::{FxTarget, InspectorTab, PresetSource, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, track_color, with_alpha};
 use crate::ui::widgets::{self, Icon, switch, text_pill};
 
@@ -268,6 +269,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             Some(FxStatus::Unavailable(why)) => format!("{kind} · bypassed: {why}"),
             None => format!("{kind} · not loaded"),
         };
+        let status = status + &chain_marks(fx);
         let detail = widgets::truncate(ui, &status, &theme::regular(11.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y + 9.0),
@@ -364,6 +366,8 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 app.export_fx_presets(track_id, i);
                 ui.close();
             }
+            ui.separator();
+            slot_chain_menu(app, ui, track_id, i);
             if ui.button("Remove plugin").clicked() {
                 app.edit("Remove plugin", |p| {
                     p.track_mut(track_id).unwrap().fx.remove(i);
@@ -382,10 +386,15 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             app.view.expanded_fx = if app.view.expanded_fx == Some(key) { None } else { Some(key) };
         }
         *y += ROW_H + 6.0;
+        if fx.is_container() {
+            *y += container_rows(app, ui, painter, inner, *y, track_id, i);
+        }
         if app.view.expanded_fx == Some((track_id, i)) {
             *y += fx_params(app, ui, painter, inner, *y, track_id, i);
         }
     }
+    side_chain_rows(app, ui, painter, inner, y, track_id, FxTarget::Input);
+    side_chain_rows(app, ui, painter, inner, y, track_id, FxTarget::Monitor);
     let add = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 40.0));
     let resp = ui.allocate_rect(add, Sense::click());
     if resp.hovered() {
@@ -404,6 +413,50 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
     }
     *y += 46.0;
     if app.view.plugin_browser {
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 26.0));
+        let third = r.width() / 3.0;
+        for (k, (target, label)) in
+            [(FxTarget::Track, "Track FX"), (FxTarget::Input, "Input FX"), (FxTarget::Monitor, "Monitoring FX")]
+                .into_iter()
+                .enumerate()
+        {
+            let pill = Rect::from_min_size(pos2(r.left() + k as f32 * third, r.top()), vec2(third - 4.0, 24.0));
+            let on = app.view.fx_target == target;
+            let (bg, fg) = if on { (ACCENT, BG) } else { (RAISED, TEXT_DIM) };
+            let tip = match target {
+                FxTarget::Track => "Add to the track's effects",
+                FxTarget::Input => "Add to the record input chain, on the live input the track monitors",
+                FxTarget::Monitor => {
+                    "Add to the monitoring chain after the master: heard on the device, never rendered"
+                }
+            };
+            if text_pill(ui, pill, label, theme::regular(11.0), bg, fg).on_hover_text(tip).clicked() {
+                app.view.fx_target = target;
+            }
+        }
+        *y += 32.0;
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
+        let resp = ui.allocate_rect(r, Sense::click());
+        painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
+        painter.text(
+            r.left_center() + vec2(12.0, 0.0),
+            Align2::LEFT_CENTER,
+            "FX container",
+            theme::regular(12.0),
+            TEXT,
+        );
+        painter.text(
+            r.right_center() - vec2(12.0, 0.0),
+            Align2::RIGHT_CENTER,
+            "routing",
+            theme::regular(11.0),
+            TEXT_DIM,
+        );
+        if resp.on_hover_text("A chain of its own, with its own channels and pin routing").clicked() {
+            add_to_target(app, track_id, FxSlot::container());
+            app.view.plugin_browser = false;
+        }
+        *y += 36.0;
         for builtin in scythe_engine::builtin::Builtin::ALL {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
@@ -423,8 +476,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 TEXT_DIM,
             );
             if resp.clicked() {
-                let slot = builtin.slot();
-                app.edit("Add plugin", |p| p.track_mut(track_id).unwrap().fx.push(slot));
+                add_to_target(app, track_id, builtin.slot());
                 app.view.plugin_browser = false;
             }
             *y += 36.0;
@@ -476,14 +528,323 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
                 TEXT_DIM,
             );
             if resp.clicked() {
-                let slot = plugin.slot();
-                app.edit("Add plugin", |p| p.track_mut(track_id).unwrap().fx.push(slot));
+                add_to_target(app, track_id, plugin.slot());
                 app.view.plugin_browser = false;
             }
             *y += 36.0;
         }
         *y += 8.0;
     }
+}
+
+/// Short marks for how a slot sits in its chain: parallel, wet share, delta, offline.
+fn chain_marks(fx: &FxSlot) -> String {
+    let mut out = String::new();
+    match fx.parallel() {
+        Parallel::Serial => {}
+        Parallel::Audio => out.push_str(" · parallel"),
+        Parallel::MergeMidi => out.push_str(" · parallel, MIDI merged"),
+    }
+    let (wet, delta) = fx.wet();
+    if delta {
+        out.push_str(" · delta");
+    } else if wet < 1.0 {
+        out.push_str(&format!(" · wet {:.0}%", wet * 100.0));
+    }
+    if fx.offline() {
+        out.push_str(" · offline");
+    }
+    out
+}
+
+fn add_to_target(app: &mut ScytheApp, track_id: TrackId, slot: FxSlot) {
+    match app.view.fx_target {
+        FxTarget::Track => app.edit("Add plugin", |p| p.track_mut(track_id).unwrap().fx.push(slot)),
+        FxTarget::Input => app.edit("Add input plugin", |p| {
+            let t = p.track_mut(track_id).unwrap();
+            let mut chain = t.input_fx();
+            chain.push(slot);
+            t.set_input_fx(&chain);
+        }),
+        FxTarget::Monitor => {
+            let mut chain = app.monitor_fx();
+            chain.push(slot);
+            app.set_monitor_fx(chain);
+        }
+    }
+}
+
+/// Wet/dry, parallel, offline and container entries for a slot's context menu.
+fn slot_chain_menu(app: &mut ScytheApp, ui: &mut Ui, track_id: TrackId, i: usize) {
+    let Some(fx) = app.project.track(track_id).and_then(|t| t.fx.get(i)).cloned() else { return };
+    let edit = |app: &mut ScytheApp, label: &str, f: &dyn Fn(&mut FxSlot)| {
+        app.edit(label, |p| {
+            if let Some(s) = p.track_mut(track_id).and_then(|t| t.fx.get_mut(i)) {
+                f(s);
+            }
+        });
+    };
+    let (wet, delta) = fx.wet();
+    let mut percent = wet * 100.0;
+    let slider = ui.add(egui::Slider::new(&mut percent, 0.0..=100.0).suffix(" % wet").fixed_decimals(0));
+    if slider.changed() {
+        edit(app, "FX wet/dry", &|s| s.set_wet(percent / 100.0, delta));
+    }
+    let mut d = delta;
+    if ui.checkbox(&mut d, "Delta solo").on_hover_text("Hear only the difference the effect makes").changed() {
+        edit(app, "FX delta solo", &|s| s.set_wet(wet, d));
+    }
+    ui.add_enabled_ui(i > 0, |ui| {
+        let mut par = fx.parallel() != Parallel::Serial;
+        if ui
+            .checkbox(&mut par, "Run in parallel with previous")
+            .on_hover_text("Takes the same input as the effect before it; their outputs are summed")
+            .changed()
+        {
+            let mode = if par { Parallel::Audio } else { Parallel::Serial };
+            edit(app, "FX parallel", &|s| s.set_parallel(mode));
+        }
+        let mut merge = fx.parallel() == Parallel::MergeMidi;
+        if ui.add_enabled(par, egui::Checkbox::new(&mut merge, "Merge its MIDI output")).changed() {
+            let mode = if merge { Parallel::MergeMidi } else { Parallel::Audio };
+            edit(app, "FX parallel", &|s| s.set_parallel(mode));
+        }
+    });
+    let mut offline = fx.offline();
+    if ui.checkbox(&mut offline, "Offline").on_hover_text("Unload the plugin; audio passes through").changed() {
+        edit(app, "Toggle FX offline", &|s| s.set_offline(offline));
+    }
+    if let Some(mut cfg) = fx.container_config() {
+        let before = cfg;
+        ui.horizontal(|ui| {
+            ui.label("Channels");
+            ui.add(egui::DragValue::new(&mut cfg.channels).range(2..=64));
+            ui.label("in");
+            ui.add(egui::DragValue::new(&mut cfg.inputs).range(0..=cfg.channels));
+            ui.label("out");
+            ui.add(egui::DragValue::new(&mut cfg.outputs).range(0..=cfg.channels));
+        });
+        if cfg != before {
+            cfg.inputs = cfg.inputs.min(cfg.channels);
+            cfg.outputs = cfg.outputs.min(cfg.channels);
+            edit(app, "Container channels", &|s| s.set_container_config(cfg));
+        }
+        for (output, label) in [(false, "Input pins"), (true, "Output pins")] {
+            ui.menu_button(label, |ui| {
+                let count = if output { cfg.outputs } else { cfg.inputs } as usize;
+                let mut masks = fx.listed_pins(output).unwrap_or_default();
+                let from = masks.len();
+                masks.extend((from..count).map(|p| 1u64 << p));
+                masks.truncate(count);
+                let mut changed = false;
+                egui::Grid::new(("pins", track_id, i, output)).show(ui, |ui| {
+                    ui.label("");
+                    for c in 0..2u32.max(app.project.track(track_id).map_or(2, |t| t.channels)) {
+                        ui.label(format!("{}", c + 1));
+                    }
+                    ui.end_row();
+                    for (pin, mask) in masks.iter_mut().enumerate() {
+                        ui.label(format!("Pin {}", pin + 1));
+                        for c in 0..2u32.max(app.project.track(track_id).map_or(2, |t| t.channels)) {
+                            let mut on = *mask & (1 << c) != 0;
+                            if ui.checkbox(&mut on, "").changed() {
+                                *mask ^= 1 << c;
+                                changed = true;
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+                if changed {
+                    edit(app, "Container pins", &|s| s.set_listed_pins(output, &masks));
+                }
+            });
+        }
+    } else {
+        let containers: Vec<(usize, String)> = app
+            .project
+            .track(track_id)
+            .map(|t| {
+                t.fx.iter().enumerate().filter(|(_, s)| s.is_container()).map(|(k, s)| (k, s.name.clone())).collect()
+            })
+            .unwrap_or_default();
+        ui.add_enabled_ui(!containers.is_empty(), |ui| {
+            ui.menu_button("Move into container", |ui| {
+                for (k, name) in &containers {
+                    if ui.button(format!("{} ({})", name, k + 1)).clicked() {
+                        app.edit("Move FX into container", |p| {
+                            let fx = &mut p.track_mut(track_id).unwrap().fx;
+                            let slot = fx.remove(i);
+                            let c = if i < *k { k - 1 } else { *k };
+                            let mut children = fx[c].container_children();
+                            children.push(slot);
+                            fx[c].set_container_children(&children);
+                        });
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if ui.button("Wrap in container").clicked() {
+            app.edit("Wrap FX in container", |p| {
+                let fx = &mut p.track_mut(track_id).unwrap().fx;
+                let slot = fx.remove(i);
+                let mut c = FxSlot::container();
+                c.set_container_children(&[slot]);
+                fx.insert(i, c);
+            });
+            ui.close();
+        }
+    }
+}
+
+/// The effects inside container `i`, indented under its row, each with a bypass switch and a
+/// menu to move it out or run it in parallel. Returns the height used.
+fn container_rows(
+    app: &mut ScytheApp,
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    inner: Rect,
+    top: f32,
+    track_id: TrackId,
+    i: usize,
+) -> f32 {
+    let Some(fx) = app.project.track(track_id).and_then(|t| t.fx.get(i)).cloned() else { return 0.0 };
+    let children = fx.container_children();
+    let mut y = top;
+    let edit_children = |app: &mut ScytheApp, label: &str, f: &dyn Fn(&mut Vec<FxSlot>)| {
+        app.edit(label, |p| {
+            if let Some(s) = p.track_mut(track_id).and_then(|t| t.fx.get_mut(i)) {
+                let mut c = s.container_children();
+                f(&mut c);
+                s.set_container_children(&c);
+            }
+        });
+    };
+    for (k, child) in children.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(inner.left() + 24.0, y), vec2(inner.width() - 24.0, 30.0));
+        painter.rect_filled(r, CornerRadius::same(10), RAISED);
+        let (short, _) = split_plugin_name(&child.name);
+        let text = format!("{short}{}", chain_marks(child));
+        let text = widgets::truncate(ui, &text, &theme::regular(12.0), r.width() - 70.0);
+        painter.text(
+            r.left_center() + vec2(12.0, 0.0),
+            Align2::LEFT_CENTER,
+            text,
+            theme::regular(12.0),
+            if child.enabled { TEXT } else { TEXT_DIM },
+        );
+        let row = ui.interact(r, Id::unique(("fx-child", track_id, i, k)), Sense::click());
+        row.context_menu(|ui| {
+            let mut par = child.parallel() != Parallel::Serial;
+            if ui.add_enabled(k > 0, egui::Checkbox::new(&mut par, "Run in parallel with previous")).changed() {
+                let mode = if par { Parallel::Audio } else { Parallel::Serial };
+                edit_children(app, "FX parallel", &|c| c[k].set_parallel(mode));
+            }
+            let (wet, delta) = child.wet();
+            let mut percent = wet * 100.0;
+            if ui.add(egui::Slider::new(&mut percent, 0.0..=100.0).suffix(" % wet").fixed_decimals(0)).changed() {
+                edit_children(app, "FX wet/dry", &|c| c[k].set_wet(percent / 100.0, delta));
+            }
+            if ui.button("Expose first parameter on the container").clicked() {
+                app.edit("Map container parameter", |p| {
+                    if let Some(s) = p.track_mut(track_id).and_then(|t| t.fx.get_mut(i)) {
+                        s.add_container_param(k, 0);
+                    }
+                });
+                ui.close();
+            }
+            if ui.button("Move out of container").clicked() {
+                app.edit("Move FX out of container", |p| {
+                    let fx = &mut p.track_mut(track_id).unwrap().fx;
+                    let mut c = fx[i].container_children();
+                    let slot = c.remove(k);
+                    fx[i].set_container_children(&c);
+                    fx.insert(i + 1, slot);
+                });
+                ui.close();
+            }
+            if ui.button("Remove plugin").clicked() {
+                edit_children(app, "Remove plugin", &|c| {
+                    c.remove(k);
+                });
+                ui.close();
+            }
+        });
+        let sw = Rect::from_min_size(pos2(r.right() - 44.0, r.center().y - 9.0), vec2(30.0, 18.0));
+        if switch(ui, sw, child.enabled, ACCENT).on_hover_text("Bypass").clicked() {
+            edit_children(app, "Toggle FX bypass", &|c| c[k].enabled = !c[k].enabled);
+        }
+        y += 34.0;
+    }
+    if children.is_empty() {
+        painter.text(
+            pos2(inner.left() + 28.0, y + 10.0),
+            Align2::LEFT_CENTER,
+            "Empty: move effects in from their menu",
+            theme::regular(11.0),
+            TEXT_DIM,
+        );
+        y += 26.0;
+    }
+    y - top + 4.0
+}
+
+/// The record input chain of the track, or the monitoring chain, as a short list under the
+/// track's effects.
+fn side_chain_rows(
+    app: &mut ScytheApp,
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    inner: Rect,
+    y: &mut f32,
+    track_id: TrackId,
+    which: FxTarget,
+) {
+    let (title, slots) = match which {
+        FxTarget::Input => ("Input FX", app.project.track(track_id).map(|t| t.input_fx()).unwrap_or_default()),
+        FxTarget::Monitor => ("Monitoring FX · device only", app.monitor_fx()),
+        FxTarget::Track => return,
+    };
+    if slots.is_empty() {
+        return;
+    }
+    painter.text(pos2(inner.left() + 4.0, *y + 10.0), Align2::LEFT_CENTER, title, theme::semibold(11.0), TEXT_DIM);
+    *y += 22.0;
+    let set = |app: &mut ScytheApp, chain: Vec<FxSlot>| match which {
+        FxTarget::Input => app.edit("Edit input FX", |p| p.track_mut(track_id).unwrap().set_input_fx(&chain)),
+        _ => app.set_monitor_fx(chain),
+    };
+    for (k, slot) in slots.iter().enumerate() {
+        let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 30.0));
+        painter.rect_filled(r, CornerRadius::same(10), RAISED);
+        let (short, _) = split_plugin_name(&slot.name);
+        let text = widgets::truncate(ui, &short, &theme::regular(12.0), r.width() - 70.0);
+        painter.text(
+            r.left_center() + vec2(12.0, 0.0),
+            Align2::LEFT_CENTER,
+            text,
+            theme::regular(12.0),
+            if slot.enabled { TEXT } else { TEXT_DIM },
+        );
+        let row = ui.interact(r, Id::unique(("fx-side", track_id, title, k)), Sense::click());
+        row.context_menu(|ui| {
+            if ui.button("Remove plugin").clicked() {
+                let mut chain = slots.clone();
+                chain.remove(k);
+                set(app, chain);
+                ui.close();
+            }
+        });
+        let sw = Rect::from_min_size(pos2(r.right() - 44.0, r.center().y - 9.0), vec2(30.0, 18.0));
+        if switch(ui, sw, slot.enabled, ACCENT).on_hover_text("Bypass").clicked() {
+            let mut chain = slots.clone();
+            chain[k].enabled = !chain[k].enabled;
+            set(app, chain);
+        }
+        *y += 34.0;
+    }
+    *y += 6.0;
 }
 
 fn envelopes_tab(

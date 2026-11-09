@@ -22,6 +22,15 @@ pub enum InspectorTab {
     Envelopes,
 }
 
+/// The chain the plugin browser adds to: the track's own, its record input chain, or the
+/// monitoring chain on the device output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxTarget {
+    Track,
+    Input,
+    Monitor,
+}
+
 #[derive(Debug)]
 pub struct ViewState {
     /// Project time at the left edge of the lanes, in seconds.
@@ -31,6 +40,8 @@ pub struct ViewState {
     pub show_mixer: bool,
     pub inspector_tab: InspectorTab,
     pub plugin_browser: bool,
+    /// Which chain the plugin browser adds to.
+    pub fx_target: FxTarget,
     /// Track whose colour palette is open, where, and whether it opened this frame.
     pub color_picker: Option<(TrackId, egui::Pos2, bool)>,
     /// Marker being renamed on the ruler, with the text typed so far.
@@ -182,6 +193,7 @@ impl ScytheApp {
                 show_mixer: true,
                 inspector_tab: InspectorTab::Fx,
                 plugin_browser: false,
+                fx_target: FxTarget::Track,
                 color_picker: None,
                 renaming_marker: None,
                 row_h: 72.0,
