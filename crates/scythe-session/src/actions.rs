@@ -730,7 +730,7 @@ mod tests {
     fn builtin_commands_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for a in builtin() {
-            assert!(seen.insert(a.command.to_ascii_uppercase()), "{} twice", a.command);
+            assert!(seen.insert((a.section, a.command.to_ascii_uppercase())), "{} twice", a.command);
         }
     }
 
@@ -744,7 +744,8 @@ mod tests {
             let ours = find_builtin(id).unwrap_or_else(|| panic!("{id} not registered"));
             assert_eq!(ours.name, name, "{id}");
         }
-        let numeric = builtin().iter().filter(|a| a.command.parse::<u32>().is_ok()).count();
+        let numeric =
+            builtin().iter().filter(|a| a.section == SECTION_MAIN && a.command.parse::<u32>().is_ok()).count();
         assert_eq!(measured.lines().count(), numeric);
     }
 }
