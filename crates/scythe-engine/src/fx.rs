@@ -12,7 +12,7 @@ use crate::clap_host::{ClapDescriptor, ClapLibrary, ClapPlugin, ParamInfo};
 use crate::delay::{Limiter, ReaDelayCompat, ReaDelaySettings};
 use crate::dynamics::{Compressor, Gate};
 use crate::midi_io::LiveMidi;
-use crate::nam::NamEffect;
+use crate::nam::{NamControl, NamEffect, NamModel, NamVoice};
 use crate::reaeq::ReaEqCompat;
 use crate::reaverb::{ReaVerbCompat, ReaVerbSettings};
 use crate::sampler::{Rs5kCompat, Rs5kSettings};
@@ -246,6 +246,11 @@ pub trait Effect: Send {
     fn set_named_param(&mut self, _name: &str, _value: f64) -> bool {
         false
     }
+
+    /// The handle that switches a Neural Amp Modeler slot's model and levels while it runs.
+    fn nam_control(&self) -> Option<Arc<crate::nam::NamControl>> {
+        None
+    }
 }
 
 /// What a `PARMENV` drives: the generic bypass, or a parameter by name.
@@ -470,6 +475,8 @@ struct Entry {
     status: FxStatus,
     /// Channels of the track the instance was set up for.
     channels: usize,
+    /// How a Neural Amp Modeler instance takes a new model or levels while it plays.
+    nam: Option<Arc<NamControl>>,
 }
 
 /// Owns every effect instance across graph rebuilds.
@@ -486,6 +493,8 @@ pub struct FxRegistry {
     vst3_cache: std::sync::OnceLock<Vec<crate::vst3_host::Vst3Info>>,
     /// Loaded VST 3 modules, so each library is entered once.
     vst3_modules: Mutex<HashMap<PathBuf, Arc<crate::vst3_host::Vst3Module>>>,
+    /// NAM models loaded ahead (off the UI thread) for a slot about to switch to them.
+    nam_preloaded: Mutex<Vec<(PathBuf, NamModel)>>,
 }
 
 impl FxRegistry {
@@ -500,6 +509,7 @@ impl FxRegistry {
             lv2_cache: Default::default(),
             vst3_cache: Default::default(),
             vst3_modules: Default::default(),
+            nam_preloaded: Default::default(),
         }
     }
 
@@ -525,12 +535,16 @@ impl FxRegistry {
             let state = plugin_state(slot);
             let stale =
                 self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
-            if stale {
+            if stale && !self.update_nam(&key, &state) {
                 let (instance, status) = match self.create(slot, channels) {
                     Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
                     Err(reason) => (None, FxStatus::Unavailable(reason)),
                 };
-                self.entries.insert(key.clone(), Entry { state, instance, status, channels });
+                let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
+                self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam });
+            }
+            if let Some(control) = &self.entries[&key].nam {
+                control.collect();
             }
             if slot.enabled
                 && let Some(inst) = &self.entries[&key].instance
@@ -741,6 +755,67 @@ impl FxRegistry {
         self.clap_cache.get_or_init(crate::clap_host::scan)
     }
 
+    /// The handle that switches the model and levels of a running Neural Amp Modeler slot.
+    pub fn nam_control(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<NamControl>> {
+        let owner = track.map_or(Owner::Master, Owner::Track);
+        self.entries.get(&(owner, slot_key(slot, index))).and_then(|e| e.nam.clone())
+    }
+
+    /// Hands over a model loaded elsewhere, so the slot that switches to `path` next does not
+    /// read it again.
+    pub fn preload_nam(&self, path: PathBuf, model: NamModel) {
+        let mut cache = self.nam_preloaded.lock().unwrap();
+        cache.retain(|(p, _)| *p != path);
+        cache.push((path, model));
+        if cache.len() > 4 {
+            cache.remove(0);
+        }
+    }
+
+    fn load_nam(&self, path: &Path) -> Result<NamModel, crate::nam::NamError> {
+        let mut cache = self.nam_preloaded.lock().unwrap();
+        match cache.iter().position(|(p, _)| p == path) {
+            Some(at) => Ok(cache.remove(at).1),
+            None => {
+                drop(cache);
+                NamModel::load(path)
+            }
+        }
+    }
+
+    fn resolve_nam(&self, model: &str) -> PathBuf {
+        let path = PathBuf::from(model);
+        match (path.is_absolute(), &self.project_dir) {
+            (false, Some(dir)) => dir.join(path),
+            _ => path,
+        }
+    }
+
+    /// Applies a changed model or level to the running NAM instance of `key` instead of
+    /// building a new one, so the sound crossfades rather than restarting. False when the
+    /// slot changed in another way, or the new model cannot be read.
+    fn update_nam(&mut self, key: &(Owner, String), state: &[Node]) -> bool {
+        let Some(entry) = self.entries.get(key) else { return false };
+        let Some(control) = entry.nam.clone() else { return false };
+        let (Some(Node::Chunk(old)), Some(Node::Chunk(new))) = (entry.state.first(), state.first()) else {
+            return false;
+        };
+        if !is_nam_chunk(new) || without_nam_settings(old) != without_nam_settings(new) {
+            return false;
+        }
+        let (before, after) = (nam_settings_of(old), nam_settings_of(new));
+        if before.model != after.model {
+            let Some(model) = &after.model else { return false };
+            let Ok(model) = self.load_nam(&self.resolve_nam(model)) else { return false };
+            control.load(NamVoice::new(model, self.sample_rate));
+        }
+        control.set_levels(after.input_db, after.output_db);
+        let entry = self.entries.get_mut(key).unwrap();
+        entry.state = state.to_vec();
+        entry.status = FxStatus::Native(NAM_RUNNING);
+        true
+    }
+
     fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
         let plugin_chunk = plugin;
@@ -855,36 +930,15 @@ impl FxRegistry {
                 Ok((Box::new(fx), FxStatus::Native("JSFX run from its source")))
             }
             "LV2" if args.first().is_some_and(|n| n.contains("Neural Amp Modeler")) => {
-                let state = plugin_chunk.chunks("STATE").next().ok_or("NAM slot without state")?;
-                let model = state
-                    .children
-                    .iter()
-                    .find_map(|n| match n {
-                        Node::Line(l) if line_key(l) == "P" => {
-                            let t = tokenize(l);
-                            t.get(1).filter(|k| k.ends_with("#model")).and(t.get(2).cloned())
-                        }
-                        _ => None,
-                    })
-                    .ok_or("NAM slot without a model")?;
-                // `P input_level <dB> output_level <dB>` on the plugin chunk itself.
-                let levels = plugin_chunk.find_line("P").unwrap_or_default();
-                let level = |name: &str| {
-                    levels
-                        .iter()
-                        .position(|t| t == name)
-                        .and_then(|i| levels.get(i + 1))
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0.0)
+                let settings = nam_settings_of(plugin_chunk);
+                let Some(model) = &settings.model else {
+                    let nam = NamEffect::empty(settings.input_db, settings.output_db, self.sample_rate);
+                    return Ok((Box::new(nam), FxStatus::Native(NAM_EMPTY)));
                 };
-                let path = PathBuf::from(&model);
-                let path = match (path.is_absolute(), &self.project_dir) {
-                    (false, Some(dir)) => dir.join(path),
-                    _ => path,
-                };
-                let nam = NamEffect::new(&path, level("input_level"), level("output_level"), self.sample_rate)
-                    .map_err(|e| format!("NAM model: {e}"))?;
-                Ok((Box::new(nam), FxStatus::Native("Neural Amp Modeler (built in)")))
+                let path = self.resolve_nam(model);
+                let model = self.load_nam(&path).map_err(|e| format!("NAM model: {e}"))?;
+                let nam = NamEffect::with_model(model, settings.input_db, settings.output_db, self.sample_rate);
+                Ok((Box::new(nam), FxStatus::Native(NAM_RUNNING)))
             }
             "LV2" => {
                 let uri = args.get(1).cloned().ok_or("LV2 slot without a plugin URI")?;
@@ -1240,6 +1294,141 @@ pub fn lv2_slot(info: &crate::lv2::Lv2Info) -> FxSlot {
             Node::Line("WAK 0 0".into()),
         ],
     }
+}
+
+const NAM_RUNNING: &str = "Neural Amp Modeler (built in)";
+const NAM_EMPTY: &str = "Neural Amp Modeler (built in), no model loaded";
+const NAM_URI: &str = "http://github.com/mikeoliphant/neural-amp-modeler-lv2";
+const NAM_DISPLAY: &str = "LV2: Neural Amp Modeler (Mike Oliphant) (Mono)";
+/// The state property holding the model path; the trailing `3` is the type REAPER writes for it.
+const NAM_MODEL_PROPERTY: &str = "http://github.com/mikeoliphant/neural-amp-modeler-lv2#model";
+
+/// A Neural Amp Modeler slot's settings, kept where REAPER keeps them for the LV2 plugin: the
+/// model path as a state property and the levels as its `P` control line.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NamSettings {
+    pub model: Option<String>,
+    pub input_db: f64,
+    pub output_db: f64,
+}
+
+fn is_nam_chunk(c: &Chunk) -> bool {
+    c.name() == "LV2" && c.args().first().is_some_and(|n| n.contains("Neural Amp Modeler"))
+}
+
+pub fn is_nam(slot: &FxSlot) -> bool {
+    slot_plugin(slot).is_some_and(is_nam_chunk)
+}
+
+pub fn nam_settings(slot: &FxSlot) -> Option<NamSettings> {
+    slot_plugin(slot).filter(|c| is_nam_chunk(c)).map(nam_settings_of)
+}
+
+fn nam_settings_of(chunk: &Chunk) -> NamSettings {
+    let model = chunk.chunks("STATE").next().and_then(|state| {
+        state.children.iter().find_map(|n| match n {
+            Node::Line(l) if line_key(l) == "P" => {
+                let t = tokenize(l);
+                t.get(1).filter(|k| k.ends_with("#model")).and(t.get(2).cloned()).filter(|m| !m.is_empty())
+            }
+            _ => None,
+        })
+    });
+    let levels = chunk.find_line("P").unwrap_or_default();
+    let level = |name: &str| {
+        levels
+            .iter()
+            .position(|t| t == name)
+            .and_then(|i| levels.get(i + 1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0)
+    };
+    NamSettings { model, input_db: level("input_level"), output_db: level("output_level") }
+}
+
+/// The plugin chunk without the parts [`NamSettings`] covers.
+fn without_nam_settings(chunk: &Chunk) -> Chunk {
+    let mut c = chunk.clone();
+    c.children.retain(|n| match n {
+        Node::Line(l) => line_key(l) != "P",
+        Node::Chunk(s) => s.name() != "STATE",
+    });
+    c
+}
+
+fn nam_chunk_mut(slot: &mut FxSlot) -> Option<&mut Chunk> {
+    slot.raw.iter_mut().find_map(|n| match n {
+        Node::Chunk(c) if is_nam_chunk(c) => Some(c),
+        _ => None,
+    })
+}
+
+/// Points a NAM slot at another model file, keeping any other state properties.
+pub fn set_nam_model(slot: &mut FxSlot, model: &Path) {
+    let Some(chunk) = nam_chunk_mut(slot) else { return };
+    let line = format!("P {NAM_MODEL_PROPERTY} {} 3", scythe_core::rpp::quote_always(&model.to_string_lossy()));
+    let state = match chunk.children.iter_mut().find_map(|n| match n {
+        Node::Chunk(c) if c.name() == "STATE" => Some(c),
+        _ => None,
+    }) {
+        Some(s) => s,
+        None => {
+            chunk.push_chunk(Chunk::new("STATE", &[]));
+            let Some(Node::Chunk(s)) = chunk.children.last_mut() else { return };
+            s
+        }
+    };
+    match state.children.iter_mut().find(|n| matches!(n, Node::Line(l) if l.contains("#model"))) {
+        Some(existing) => *existing = Node::Line(line),
+        None => state.children.push(Node::Line(line)),
+    }
+}
+
+/// Sets a NAM slot's input and output levels in dB.
+pub fn set_nam_levels(slot: &mut FxSlot, input_db: f64, output_db: f64) {
+    let Some(chunk) = nam_chunk_mut(slot) else { return };
+    let fmt = |v: f64| {
+        let v = (v * 100.0).round() / 100.0;
+        if v == 0.0 { "0".to_owned() } else { v.to_string() }
+    };
+    let line = Node::Line(format!("P input_level {} output_level {}", fmt(input_db), fmt(output_db)));
+    match chunk.children.iter_mut().find(|n| matches!(n, Node::Line(l) if line_key(l) == "P")) {
+        Some(existing) => *existing = line,
+        None => {
+            let at = chunk.children.iter().position(|n| matches!(n, Node::Chunk(c) if c.name() == "STATE"));
+            chunk.children.insert(at.unwrap_or(chunk.children.len()), line);
+        }
+    }
+}
+
+/// A new Neural Amp Modeler slot as REAPER writes one for the LV2 plugin, so REAPER opens it
+/// with the plugin.
+pub fn nam_slot(model: Option<&Path>) -> FxSlot {
+    let mut chunk = Chunk::new("LV2", &[NAM_DISPLAY, NAM_URI, ""]);
+    chunk.line(["CFG", "0", "0", "0", ""]);
+    let mut slot = FxSlot {
+        name: NAM_DISPLAY.to_owned(),
+        enabled: true,
+        raw: vec![
+            Node::Line("BYPASS 0 0 0".into()),
+            Node::Chunk(chunk),
+            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
+            Node::Line("WAK 0 0".into()),
+        ],
+    };
+    set_nam_levels(&mut slot, 0.0, 0.0);
+    if let Some(m) = model {
+        set_nam_model(&mut slot, m);
+    }
+    slot
+}
+
+/// The FXID REAPER keeps for a slot, which stays the same when the slot moves.
+pub fn slot_id(slot: &FxSlot) -> Option<String> {
+    slot.raw.iter().find_map(|n| match n {
+        Node::Line(l) if line_key(l) == "FXID" => tokenize(l).get(1).cloned(),
+        _ => None,
+    })
 }
 
 struct ClapEffect {
@@ -1811,5 +2000,118 @@ mod pin_tests {
         let slot = FxSlot { name: "CLAP".into(), enabled: true, raw: chain.children };
         let map = pin_map(&slot).unwrap();
         assert_eq!((map.inputs, map.outputs), (vec![4, 8], vec![1, 2]));
+    }
+}
+
+#[cfg(test)]
+mod nam_tests {
+    use super::*;
+
+    fn model_file(dir: &Path, name: &str, scale: f32) -> PathBuf {
+        let json = format!(
+            r#"{{"architecture": "WaveNet",
+            "config": {{"layers": [{{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
+              "kernel_size": 2, "dilations": [1], "activation": "Hardtanh", "gated": false, "head_bias": true}}],
+              "head_scale": 1.0}},
+            "weights": [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, {scale}]}}"#
+        );
+        let path = dir.join(name);
+        std::fs::write(&path, json).unwrap();
+        path
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("scythe-fx-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn context() -> ProcessContext<'static> {
+        ProcessContext {
+            sample_rate: 48_000,
+            position: 0,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            aux: None,
+            bpm: 120.0,
+            midi: None,
+            midi_from: 0,
+        }
+    }
+
+    #[test]
+    fn nam_slot_round_trips_its_settings() {
+        let mut slot = nam_slot(None);
+        assert!(is_nam(&slot));
+        assert_eq!(nam_settings(&slot), Some(NamSettings { model: None, input_db: 0.0, output_db: 0.0 }));
+        set_nam_model(&mut slot, Path::new("/models/My Amp.nam"));
+        set_nam_levels(&mut slot, 3.5, -6.0);
+        let settings = nam_settings(&slot).unwrap();
+        assert_eq!(settings.model.as_deref(), Some("/models/My Amp.nam"));
+        assert_eq!((settings.input_db, settings.output_db), (3.5, -6.0));
+        let Node::Chunk(chunk) = &slot.raw[1] else { panic!("no plugin chunk") };
+        assert_eq!(chunk.find_line("P").unwrap(), ["input_level", "3.5", "output_level", "-6"]);
+        let state = chunk.chunks("STATE").next().unwrap();
+        assert_eq!(state.children, [Node::Line(format!("P {NAM_MODEL_PROPERTY} \"/models/My Amp.nam\" 3"))]);
+        let other = crate::lv2::Lv2Info {
+            uri: "urn:x".into(),
+            name: "Other".into(),
+            bundle: PathBuf::new(),
+            binary: PathBuf::new(),
+            ports: Vec::new(),
+            instrument: false,
+            ui: None,
+        };
+        assert!(!is_nam(&lv2_slot(&other)));
+    }
+
+    /// Changing a running slot's model or levels keeps its instance (the model crossfades
+    /// inside it); a model that cannot be read, or any other change, builds a new one.
+    #[test]
+    fn nam_model_changes_keep_the_instance() {
+        let dir = scratch_dir("nam-swap");
+        let a = model_file(&dir, "a.nam", 1.0);
+        let b = model_file(&dir, "b.nam", 0.5);
+        let mut registry = FxRegistry::new(48_000);
+        let mut slots = vec![nam_slot(Some(&a))];
+        let first = registry.chain(None, &slots)[0].clone();
+        assert_eq!(registry.status(None, &slots[0], 0), Some(&FxStatus::Native(NAM_RUNNING)));
+        let control = registry.nam_control(None, &slots[0], 0).unwrap();
+
+        registry.preload_nam(b.clone(), NamModel::load(&b).unwrap());
+        set_nam_model(&mut slots[0], &b);
+        set_nam_levels(&mut slots[0], -3.0, 2.0);
+        let second = registry.chain(None, &slots)[0].clone();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(control.levels(), (-3.0, 2.0));
+        assert!(registry.nam_preloaded.lock().unwrap().is_empty(), "the preloaded model was used");
+
+        set_nam_model(&mut slots[0], &dir.join("missing.nam"));
+        assert!(registry.chain(None, &slots).is_empty());
+        assert!(matches!(registry.status(None, &slots[0], 0), Some(FxStatus::Unavailable(_))));
+
+        set_nam_model(&mut slots[0], &a);
+        let third = registry.chain(None, &slots)[0].clone();
+        assert!(!Arc::ptr_eq(&first, &third));
+        let Some(Node::Chunk(c)) = slots[0].raw.get_mut(1) else { panic!("no plugin chunk") };
+        c.line(["CFG", "1"]);
+        let fourth = registry.chain(None, &slots)[0].clone();
+        assert!(!Arc::ptr_eq(&third, &fourth));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn nam_slot_without_a_model_passes_through() {
+        let mut registry = FxRegistry::new(48_000);
+        let slots = vec![nam_slot(None)];
+        let chain = registry.chain(None, &slots);
+        assert_eq!(registry.status(None, &slots[0], 0), Some(&FxStatus::Native(NAM_EMPTY)));
+        assert!(registry.nam_control(None, &slots[0], 0).is_some());
+        let mut left = vec![0.5f32; 64];
+        let mut right = vec![0.0f32; 64];
+        chain[0].process(&mut left, &mut right, &context());
+        assert!(left.iter().chain(&right).all(|&s| s == 0.5));
     }
 }

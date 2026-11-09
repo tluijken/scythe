@@ -5,6 +5,8 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 
@@ -350,13 +352,330 @@ impl NamModel {
     }
 }
 
-/// The NAM plugin as stored in a project: a model plus input and output levels in dB.
-pub struct NamEffect {
+impl NamModel {
+    /// Samples of past input the output depends on.
+    pub fn receptive_field(&self) -> usize {
+        self.arrays.iter().map(|a| a.backs.iter().sum::<usize>()).sum::<usize>() + 1
+    }
+}
+
+/// What a `.nam` file says about itself: its architecture, rate and the metadata the trainer
+/// wrote (name, who modelled it, the gear), read without building the network.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NamInfo {
+    pub version: Option<String>,
+    pub architecture: String,
+    pub sample_rate: Option<f64>,
+    pub name: Option<String>,
+    pub modeled_by: Option<String>,
+    pub gear_type: Option<String>,
+    pub gear_make: Option<String>,
+    pub gear_model: Option<String>,
+    pub tone_type: Option<String>,
+    pub loudness: Option<f64>,
+    /// The trainer's size preset (standard, lite, feather, nano), from the WaveNet's widths.
+    pub size: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct InfoFile {
+    #[serde(default)]
+    version: Option<String>,
+    architecture: String,
+    #[serde(default)]
+    sample_rate: Option<f64>,
+    #[serde(default)]
+    config: Option<serde_json::Value>,
+    #[serde(default)]
+    metadata: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+impl NamInfo {
+    pub fn read(path: &Path) -> Result<Self, NamError> {
+        Self::from_json(&std::fs::read(path)?)
+    }
+
+    pub fn from_json(json: &[u8]) -> Result<Self, NamError> {
+        let file: InfoFile = serde_json::from_slice(json)?;
+        let meta = file.metadata.unwrap_or_default();
+        let text = |key: &str| match meta.get(key) {
+            Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_owned()),
+            _ => None,
+        };
+        let channels: Vec<u64> = file
+            .config
+            .as_ref()
+            .and_then(|c| c.get("layers"))
+            .and_then(|l| l.as_array())
+            .map(|layers| layers.iter().filter_map(|l| l.get("channels")?.as_u64()).collect())
+            .unwrap_or_default();
+        let size = (file.architecture == "WaveNet")
+            .then(|| match channels.as_slice() {
+                [16, 8] => "standard",
+                [12, 6] => "lite",
+                [8, 4] => "feather",
+                [4, 2] => "nano",
+                _ => "custom",
+            })
+            .map(str::to_owned);
+        Ok(Self {
+            version: file.version,
+            architecture: file.architecture,
+            sample_rate: file.sample_rate,
+            name: text("name"),
+            modeled_by: text("modeled_by"),
+            gear_type: text("gear_type"),
+            gear_make: text("gear_make"),
+            gear_model: text("gear_model"),
+            tone_type: text("tone_type"),
+            loudness: meta.get("loudness").and_then(serde_json::Value::as_f64),
+            size,
+        })
+    }
+}
+
+/// A model running at the project's rate, through a rate bridge when the model has another.
+pub struct NamVoice {
     model: NamModel,
+    bridge: Option<RateBridge>,
+}
+
+impl NamVoice {
+    pub fn new(model: NamModel, sample_rate: u32) -> Self {
+        let model_rate = model.sample_rate.map(|r| r.round() as u32).filter(|&r| r > 0 && r != sample_rate);
+        let bridge = model_rate.map(|r| RateBridge::new(sample_rate, r));
+        Self { model, bridge }
+    }
+
+    fn process(&mut self, buf: &mut [f32]) {
+        match &mut self.bridge {
+            Some(bridge) => bridge.process(&mut self.model, buf),
+            None => self.model.process(buf),
+        }
+    }
+
+    fn latency(&self) -> usize {
+        self.bridge.as_ref().map_or(0, |b| b.latency)
+    }
+
+    /// Frames of project-rate input after which the voice no longer hears the silence it
+    /// started from.
+    fn warmup(&self, sample_rate: u32) -> usize {
+        let field = self.model.receptive_field() as f64;
+        let scale = self.model.sample_rate.filter(|&r| r > 0.0).map_or(1.0, |r| sample_rate as f64 / r);
+        (field * scale).ceil() as usize + self.latency()
+    }
+
+    fn reset(&mut self) {
+        self.model.reset();
+        if let Some(bridge) = &mut self.bridge {
+            bridge.reset();
+        }
+    }
+}
+
+/// Reaches a running [`NamEffect`] from other threads without its lock: new models to switch
+/// to and the input and output levels.
+pub struct NamControl {
+    incoming: Mutex<Option<Box<NamVoice>>>,
+    /// Voices the audio thread is done with, dropped here rather than there.
+    retired: Mutex<Vec<Box<NamVoice>>>,
+    input_db: AtomicU32,
+    output_db: AtomicU32,
+}
+
+const RETIRED_CAPACITY: usize = 8;
+
+impl NamControl {
+    fn new(input_db: f64, output_db: f64) -> Self {
+        Self {
+            incoming: Mutex::new(None),
+            retired: Mutex::new(Vec::with_capacity(RETIRED_CAPACITY)),
+            input_db: AtomicU32::new((input_db as f32).to_bits()),
+            output_db: AtomicU32::new((output_db as f32).to_bits()),
+        }
+    }
+
+    /// Switches to `voice`: it runs alongside the current model until it has heard enough
+    /// input, then the two crossfade.
+    pub fn load(&self, voice: NamVoice) {
+        let replaced = self.incoming.lock().unwrap().replace(Box::new(voice));
+        drop(replaced);
+        self.collect();
+    }
+
+    pub fn set_levels(&self, input_db: f64, output_db: f64) {
+        self.input_db.store((input_db as f32).to_bits(), Ordering::Relaxed);
+        self.output_db.store((output_db as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn levels(&self) -> (f64, f64) {
+        let get = |a: &AtomicU32| f32::from_bits(a.load(Ordering::Relaxed)) as f64;
+        (get(&self.input_db), get(&self.output_db))
+    }
+
+    /// Drops the voices the audio thread retired.
+    pub fn collect(&self) {
+        let old: Vec<_> = self.retired.lock().unwrap().drain(..).collect();
+        drop(old);
+    }
+
+    fn gains(&self) -> (f32, f32) {
+        let (i, o) = self.levels();
+        (db_to_gain(i), db_to_gain(o))
+    }
+}
+
+fn db_to_gain(db: f64) -> f32 {
+    10f64.powf(db / 20.0) as f32
+}
+
+/// How long the old and new model overlap when switching.
+const CROSSFADE_SECONDS: f64 = 0.012;
+
+struct Fade {
+    /// `None` fades in from the dry signal.
+    old: Option<Box<NamVoice>>,
+    at: usize,
+}
+
+struct Pending {
+    voice: Box<NamVoice>,
+    warmup: usize,
+}
+
+/// The NAM plugin as stored in a project: a model plus input and output levels in dB. A new
+/// model swaps in without a click: it first runs silently beside the old one and then the two
+/// crossfade.
+pub struct NamEffect {
+    voice: Option<Box<NamVoice>>,
+    next: Option<Pending>,
+    fade: Option<Fade>,
+    control: Arc<NamControl>,
     input_gain: f32,
     output_gain: f32,
-    /// Conversion to and from the model's rate when the project runs at another.
-    bridge: Option<RateBridge>,
+    sample_rate: u32,
+    fade_len: usize,
+    next_buf: Vec<f32>,
+    old_buf: Vec<f32>,
+    /// A retired voice the control could not take yet.
+    limbo: Option<Box<NamVoice>>,
+}
+
+const CHUNK: usize = crate::render::RenderScratch::MAX_BLOCK;
+
+impl NamEffect {
+    pub fn new(model_path: &Path, input_db: f64, output_db: f64, sample_rate: u32) -> Result<Self, NamError> {
+        let model = NamModel::load(model_path)?;
+        Ok(Self::with_model(model, input_db, output_db, sample_rate))
+    }
+
+    pub fn with_model(model: NamModel, input_db: f64, output_db: f64, sample_rate: u32) -> Self {
+        let mut fx = Self::empty(input_db, output_db, sample_rate);
+        fx.voice = Some(Box::new(NamVoice::new(model, sample_rate)));
+        fx
+    }
+
+    /// A slot without a model, which passes its input through until one is loaded.
+    pub fn empty(input_db: f64, output_db: f64, sample_rate: u32) -> Self {
+        let control = Arc::new(NamControl::new(input_db, output_db));
+        let (input_gain, output_gain) = control.gains();
+        Self {
+            voice: None,
+            next: None,
+            fade: None,
+            control,
+            input_gain,
+            output_gain,
+            sample_rate,
+            fade_len: ((sample_rate as f64 * CROSSFADE_SECONDS).round() as usize).max(1),
+            next_buf: vec![0.0; CHUNK],
+            old_buf: vec![0.0; CHUNK],
+            limbo: None,
+        }
+    }
+
+    pub fn control(&self) -> Arc<NamControl> {
+        self.control.clone()
+    }
+
+    fn receive(&mut self) {
+        let incoming = match self.control.incoming.try_lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        };
+        if let Some(voice) = incoming {
+            let warmup = voice.warmup(self.sample_rate);
+            if let Some(stale) = self.next.replace(Pending { voice, warmup }) {
+                self.retire(stale.voice);
+            }
+        }
+        if let Some(v) = self.limbo.take() {
+            self.retire(v);
+        }
+    }
+
+    fn retire(&mut self, voice: Box<NamVoice>) {
+        match self.control.retired.try_lock() {
+            Ok(mut list) if list.len() < list.capacity() => list.push(voice),
+            _ if self.limbo.is_none() => self.limbo = Some(voice),
+            _ => drop(voice),
+        }
+    }
+
+    fn process_chunk(&mut self, left: &mut [f32]) {
+        let n = left.len();
+        let (input_target, output_target) = self.control.gains();
+        ramp_gain(left, &mut self.input_gain, input_target);
+        if let Some(next) = &mut self.next {
+            self.next_buf[..n].copy_from_slice(left);
+            next.voice.process(&mut self.next_buf[..n]);
+            next.warmup = next.warmup.saturating_sub(n);
+        }
+        if let Some(fade) = &mut self.fade {
+            self.old_buf[..n].copy_from_slice(left);
+            if let Some(old) = &mut fade.old {
+                old.process(&mut self.old_buf[..n]);
+            }
+        }
+        if let Some(voice) = &mut self.voice {
+            voice.process(left);
+        }
+        if let Some(fade) = &mut self.fade {
+            let len = self.fade_len as f32;
+            for (k, (s, o)) in left.iter_mut().zip(&self.old_buf[..n]).enumerate() {
+                let t = ((fade.at + k) as f32 / len).min(1.0);
+                let w = 0.5 - 0.5 * (std::f32::consts::PI * t).cos();
+                *s = *o + (*s - *o) * w;
+            }
+            fade.at += n;
+            if fade.at >= self.fade_len
+                && let Some(done) = self.fade.take()
+                && let Some(old) = done.old
+            {
+                self.retire(old);
+            }
+        }
+        ramp_gain(left, &mut self.output_gain, output_target);
+        if self.fade.is_none() && self.next.as_ref().is_some_and(|p| p.warmup == 0) {
+            let next = self.next.take().unwrap();
+            let old = self.voice.replace(next.voice);
+            self.fade = Some(Fade { old, at: 0 });
+        }
+    }
+}
+
+/// Multiplies by a gain moving linearly from `current` to `target` over the block.
+fn ramp_gain(buf: &mut [f32], current: &mut f32, target: f32) {
+    if *current == target {
+        buf.iter_mut().for_each(|s| *s *= target);
+        return;
+    }
+    let step = (target - *current) / buf.len().max(1) as f32;
+    for (k, s) in buf.iter_mut().enumerate() {
+        *s *= *current + step * (k + 1) as f32;
+    }
+    *current = target;
 }
 
 /// Runs the model at its own sample rate inside a project at another, like the plugin does,
@@ -402,43 +721,41 @@ impl RateBridge {
     }
 }
 
-impl NamEffect {
-    pub fn new(model_path: &Path, input_db: f64, output_db: f64, sample_rate: u32) -> Result<Self, NamError> {
-        let model = NamModel::load(model_path)?;
-        Ok(Self::with_model(model, input_db, output_db, sample_rate))
-    }
-
-    fn with_model(model: NamModel, input_db: f64, output_db: f64, sample_rate: u32) -> Self {
-        let db = |v: f64| 10f64.powf(v / 20.0) as f32;
-        let model_rate = model.sample_rate.map(|r| r.round() as u32).filter(|&r| r > 0 && r != sample_rate);
-        let bridge = model_rate.map(|r| RateBridge::new(sample_rate, r));
-        Self { model, input_gain: db(input_db), output_gain: db(output_db), bridge }
-    }
-}
-
 impl Effect for NamEffect {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
+        self.receive();
         // The plugin runs mono on the left input and feeds both outputs.
-        left.iter_mut().for_each(|s| *s *= self.input_gain);
-        match &mut self.bridge {
-            Some(bridge) => bridge.process(&mut self.model, left),
-            None => self.model.process(left),
+        for chunk in left.chunks_mut(CHUNK) {
+            self.process_chunk(chunk);
         }
-        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-            *l *= self.output_gain;
+        for (l, r) in left.iter().zip(right.iter_mut()) {
             *r = *l;
         }
     }
 
     fn latency(&mut self) -> usize {
-        self.bridge.as_ref().map_or(0, |b| b.latency)
+        self.voice.as_ref().map_or(0, |v| v.latency())
     }
 
     fn reset(&mut self) {
-        self.model.reset();
-        if let Some(bridge) = &mut self.bridge {
-            bridge.reset();
+        self.receive();
+        if let Some(fade) = self.fade.take()
+            && let Some(old) = fade.old
+        {
+            self.retire(old);
         }
+        if let Some(next) = self.next.take()
+            && let Some(old) = self.voice.replace(next.voice)
+        {
+            self.retire(old);
+        }
+        if let Some(voice) = &mut self.voice {
+            voice.reset();
+        }
+    }
+
+    fn nam_control(&self) -> Option<Arc<NamControl>> {
+        Some(self.control())
     }
 }
 
@@ -516,5 +833,112 @@ mod tests {
             "head_size": 1, "channels": 1, "kernel_size": 2, "dilations": [1], "activation": "Tanh", "gated": false,
             "head_bias": false}]}, "weights": [1.0, 2.0]}"#;
         assert!(matches!(NamModel::from_json(json), Err(NamError::WeightCount { .. })));
+    }
+
+    /// A model whose output is its input times `scale` (for inputs within ±1).
+    fn scaled(scale: f32) -> NamModel {
+        let json = format!(
+            r#"{{"architecture": "WaveNet",
+            "config": {{"layers": [{{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
+              "kernel_size": 2, "dilations": [4], "activation": "Hardtanh", "gated": false, "head_bias": true}}],
+              "head_scale": 1.0}},
+            "weights": [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, {scale}]}}"#
+        );
+        NamModel::from_json(json.as_bytes()).unwrap()
+    }
+
+    fn context(sample_rate: u32) -> ProcessContext<'static> {
+        ProcessContext {
+            sample_rate,
+            position: 0,
+            playing: true,
+            notes: None,
+            live: &[],
+            live_channel: None,
+            aux: None,
+            bpm: 120.0,
+            midi: None,
+            midi_from: 0,
+        }
+    }
+
+    /// Switching from a model that passes the signal through to one that inverts and halves it
+    /// changes the output smoothly: no step between neighbouring samples is larger than the
+    /// signal's own slope plus the crossfade's, and the new model takes over completely. A
+    /// hard switch would step by up to 0.75.
+    #[test]
+    fn model_switch_crossfades_without_a_step() {
+        let rate = 48_000;
+        let mut fx = NamEffect::with_model(scaled(1.0), 0.0, 0.0, rate);
+        let control = fx.nam_control().unwrap();
+        let sine = |t: usize| 0.5 * (2.0 * std::f32::consts::PI * 110.0 * t as f32 / rate as f32).sin();
+        let ctx = context(rate);
+        let mut out = Vec::new();
+        let switch_block = 10;
+        for block in 0..60 {
+            if block == switch_block {
+                control.load(NamVoice::new(scaled(-0.5), rate));
+            }
+            let mut left: Vec<f32> = (block * 256..(block + 1) * 256).map(sine).collect();
+            let mut right = vec![0.0; 256];
+            fx.process(&mut left, &mut right, &ctx);
+            assert_eq!(left, right);
+            out.extend(left);
+        }
+        let slope = 2.0 * std::f32::consts::PI * 110.0 * 0.5 / rate as f32;
+        let fade = (rate as f64 * CROSSFADE_SECONDS) as f32;
+        let bound = slope + 0.75 * std::f32::consts::FRAC_PI_2 / fade * 1.05;
+        let worst = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(worst < bound, "largest step {worst}, allowed {bound}");
+        for (t, &y) in out.iter().enumerate().take(switch_block * 256) {
+            assert!((y - sine(t)).abs() < 1e-6, "before the switch, frame {t}");
+        }
+        for (t, &y) in out.iter().enumerate().skip(out.len() - 2048) {
+            assert!((y + 0.5 * sine(t)).abs() < 1e-6, "after the switch, frame {t}");
+        }
+        assert!(fx.fade.is_none() && fx.next.is_none());
+        control.collect();
+        assert!(control.retired.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn levels_ramp_instead_of_jumping() {
+        let rate = 48_000;
+        let mut fx = NamEffect::with_model(scaled(1.0), 0.0, 0.0, rate);
+        let control = fx.nam_control().unwrap();
+        let ctx = context(rate);
+        let mut left = vec![0.25f32; 512];
+        let mut right = vec![0.0; 512];
+        fx.process(&mut left, &mut right, &ctx);
+        control.set_levels(0.0, -6.0);
+        let mut left = vec![0.25f32; 512];
+        fx.process(&mut left, &mut right, &ctx);
+        assert!((left[0] - 0.25).abs() < 1e-3);
+        let target = 0.25 * db_to_gain(-6.0);
+        assert!((left[511] - target).abs() < 1e-6);
+        assert!(left.windows(2).all(|w| w[1] <= w[0]));
+        assert_eq!(control.levels(), (0.0, -6.0));
+    }
+
+    #[test]
+    fn info_reads_trainer_metadata() {
+        let json = br#"{"version": "0.5.4", "architecture": "WaveNet", "sample_rate": 48000,
+            "config": {"layers": [{"channels": 16}, {"channels": 8}], "head_scale": 0.02},
+            "weights": [0.1, 0.2],
+            "metadata": {"date": {"year": 2024}, "loudness": -23.5, "gain": 0.0016, "name": "HB-800B",
+              "modeled_by": "Patrick Sogl", "gear_type": "amp", "gear_make": "Harley Benton",
+              "gear_model": "HB-800B", "tone_type": "clean", "input_level_dbu": null}}"#;
+        let info = NamInfo::from_json(json).unwrap();
+        assert_eq!(info.name.as_deref(), Some("HB-800B"));
+        assert_eq!(info.modeled_by.as_deref(), Some("Patrick Sogl"));
+        assert_eq!(info.gear_make.as_deref(), Some("Harley Benton"));
+        assert_eq!(info.gear_type.as_deref(), Some("amp"));
+        assert_eq!(info.tone_type.as_deref(), Some("clean"));
+        assert_eq!(info.sample_rate, Some(48000.0));
+        assert_eq!(info.loudness, Some(-23.5));
+        assert_eq!(info.size.as_deref(), Some("standard"));
+        assert_eq!(info.version.as_deref(), Some("0.5.4"));
+        let bare = NamInfo::from_json(br#"{"architecture": "LSTM", "config": {}, "weights": []}"#).unwrap();
+        assert_eq!((bare.architecture.as_str(), bare.name, bare.size), ("LSTM", None, None));
     }
 }
