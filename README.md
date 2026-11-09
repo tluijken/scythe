@@ -1,6 +1,3 @@
-| ReaVerbate (`stock_ref`, 28 cases on the program material and an impulse: room size, dampening, width, pre-delay, low/high-pass, wet/dry, all at once) | within 1.2e-7 (28/28) |
-| ReaSynth (`stock_ref`, 41 cases on one note and a grid of chords, extreme keys and velocities, short and overlapping notes: attack, decay, sustain, release, each oscillator and their mixes, pulse width, extra sine and its tuning, detune, volume, legacy mode, pitch wheel) | within 3e-6 (37/41); decay towards a sustain under 0 dB within 2e-4 |
-| ReaControlMIDI (`stock_ref`, 12 cases: what reaches a JSFX that turns each MIDI message into a sample, after transpose, snap to scale with roots, bank/program and volume/pan/pitch sends on one or all channels) | exact (12/12) |
 # Scythe
 
 A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
@@ -554,7 +551,14 @@ Working:
   pitch wheel, REAPER's -80 dB voice gating and 512-frame block behaviour) and ReaControlMIDI
   (transpose, snap to a scale, and the bank/program, volume, pan and pitch-wheel sends at
   playback start) are emulated the same way and offered as the built-ins "Algorithmic reverb",
-  "Synth" and "MIDI control". JSFX run from their own
+  "Synth" and "MIDI control", and so are ReaFIR's EQ mode (REAPER's curve drawing: straight
+  lines in Hz between three or more points, a Bézier in log frequency between two, as a
+  linear-phase FIR of the FFT size; built-in "FFT EQ"), ReaVerb's echo generator and reverse
+  modules, and ReaInsert ("Hardware insert": sends to two device outputs, plays two device
+  inputs back, its delay compensation reported as latency and measured by a ping through the
+  cable; silent in offline renders as in REAPER without a device). Settings an emulation does
+  not cover (ReaFIR's dynamics modes, other ReaVerb modules) run in REAPER's own binary when it
+  is on the VST path. JSFX run from their own
   source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
   user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
   bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
@@ -772,6 +776,12 @@ compare with scythe's output sample by sample:
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
 | Built-in effects written by scythe rendered by REAPER (`builtin_ref`): EQ, delay and convolution, then gate, compressor, multiband compressor and limiter with parameters edited through Scythe | the whole chain within 7e-5 (-95 dB); REAPER reads the stored states as its own ReaEQ/ReaGate/ReaComp/ReaDelay/ReaVerb/ReaXcomp/ReaLimit |
 | Dynamics (`stock_ref`, 109 cases on tones, noise, drums, DC steps, level ramps, impulses and bursts, one parameter at a time, set by REAPER through `TrackFX_SetParam` or a state chunk): ReaComp (every parameter: ratio, attack, release, RMS, knee and legacy knee, pre-comp, detector filters and inputs, filter preview, auto make-up, auto release, classic attack, wet/dry), ReaGate (every parameter but noise, which is random: filters, RMS, hysteresis, hold, pre-open, invert modes, wet/dry, sidechain), ReaLimit (threshold, ceiling, release, isolated peaks, bursts, limiting on a limited level), ReaXcomp (crossovers, every band parameter, feedback detector, bands off, output gain); plus ReaGate's MIDI out turned into audio by a JSFX | ReaComp and ReaGate within 1.2e-7 (49 and 22 cases), ReaXcomp within 1.3e-4 (22), ReaLimit within 2.7e-4 (15 of 16; its "inf" release within 1.8e-2), MIDI notes at the same frames |
+| ReaVerbate (`stock_ref`, 28 cases on the program material and an impulse: room size, dampening, width, pre-delay, low/high-pass, wet/dry, all at once) | within 1.2e-7 (28/28) |
+| ReaSynth (`stock_ref`, 41 cases on one note and a grid of chords, extreme keys and velocities, short and overlapping notes: attack, decay, sustain, release, each oscillator and their mixes, pulse width, extra sine and its tuning, detune, volume, legacy mode, pitch wheel) | within 3e-6 (37/41); decay towards a sustain under 0 dB within 2e-4 |
+| ReaControlMIDI (`stock_ref`, 12 cases: what reaches a JSFX that turns each MIDI message into a sample, after transpose, snap to scale with roots, bank/program and volume/pan/pitch sends on one or all channels) | exact (12/12) |
+| ReaFIR EQ mode (`stock_ref`, 26 cases on the program material and an impulse: straight segments at FFT sizes 1024 to 16384, output gain, a steep eight-point curve, two-point tilts and shelves, one point) | straight segments at 2048 to 8192 within 3e-5 on the material and 4e-7 on the impulse; two-point curves (a Bézier in log frequency), steep many-point curves and other sizes within 6e-3 (2e-4 on the impulse); flat and one-point curves exact |
+| ReaVerb echo generator and reverse modules (`stock_ref`, 14 cases: fractional start and spacing, a floor of -150 dB, two generators summed, reverse at full and half mix, a dense 818-tap response) | within 1.6e-5 (14/14), on the impulse within 1e-8 |
+| ReaInsert through a 300-frame loopback on the null engine (outputs and inputs 3/4, delay compensation 300 frames; a ping through the same cable) | the return lines up sample for sample with a second track playing the same item; the ping measures 300 frames |
 | Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
 | Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels; VST, JSFX and LV2), JSFX with more pins (3-band splitter, 8-into-2 mixer, expander with sidechain) | exact (21 cases) |
 | Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
@@ -996,12 +1006,18 @@ compares the two files.
 - Stock plugins: ReaSynth's portamento (REAPER then glides monophonically) is ignored, and a
   decay towards a sustain below 0 dB is within 2e-4 (REAPER pauses it for a frame at a block
   boundary in a way not modelled). ReaControlMIDI's two user CC sliders are kept but not sent,
-  and its scale type comes only from the stored state. Not emulated yet (Scythe hosts REAPER's own
-  Linux binaries when they are on the VST path, otherwise the slots pass audio through): ReaFIR (measured so far: a zero-phase FFT filter whose curve
-  is smoothed between points, flat curves pass bit-exact), ReaPitch, ReaTune, ReaVocode,
-  ReaVoice, ReaSynDr, ReaSurround/ReaSurroundPan, ReaVerb's generator modules, ReaInsert (renders
-  silence without an audio device in REAPER; a hardware insert needs the live engine),
-  ReaStream, ReaNINJAM and ReaCast (network clients).
+  and its scale type comes only from the stored state. ReaFIR's two-point curves and steep
+  many-point curves are within 2e-4 of REAPER's response (6e-3 on program material), FFT sizes
+  other than 2048 to 8192 within 3e-4; its gate, compressor, subtract and convolve modes and
+  minimum-phase processing are not emulated. ReaVerb's jittered echoes and reverb generator
+  follow REAPER's own random sequence, and its filter, normalise and channel tool modules are
+  not decoded. ReaInsert's ping-detected delay takes effect when the chain is next rebuilt (an
+  edit or reload), and the ping is a -6 dB click detected above -20 dB. Not emulated (Scythe
+  hosts REAPER's own Linux binaries when they are on the VST path, otherwise the slots pass
+  audio through): ReaPitch (its default algorithm is the project's, élastique), ReaTune,
+  ReaVocode, ReaVoice, ReaSynDr (its snare's noise differs between REAPER's own renders, so it
+  cannot null), ReaSurround/ReaSurroundPan, ReaStream, ReaNINJAM and ReaCast (network
+  clients).
 - The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
   it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
   edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null
