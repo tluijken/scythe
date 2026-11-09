@@ -188,6 +188,24 @@ Working:
   playback mode, the 64-point sinc, for playback; every render follows the project's
   `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or two IIR
   low-passes, r8brain free).
+- **Media explorer** (View: Media explorer, 50124): folders and REAPER media databases
+  (`MediaDB/*.ReaperFileList`, the shortcut list in `[reaper_sexplorer]` as reaper.ini keeps
+  it, so REAPER's own can be copied over), columns for length, rate, channels, bit depth or
+  bitrate, BPM, key, title, artist, genre and comment (from Vorbis comments, ID3, MP4 tags,
+  RIFF `INFO`, BWF `bext` and ACID tempo), search (words, `-word`, `"phrases"`, subfolders),
+  favourites (the database's favourite flag), a preview player that plays straight to the
+  device after the master with tempo match (on, /2, x2, pitch kept or not), pitch and volume,
+  and inserting at the edit cursor on the selected or a new track, tempo-matched. The
+  explorer section's actions (preview, tempo match, insert, favourite, scan) have REAPER's ids.
+- **Project bay** (41157) and **clean project directory** (40098): the project's media files
+  (with takes, items and tracks using each, missing ones marked), items and effects;
+  retargeting a file in every take; the unused files of the recording folder listed as REAPER
+  lists them and sent to the trash or deleted.
+- **Themes** (Options: Show theme color controls, 42392): a colour for each of Scythe's 16
+  palette colours in `theme.ScytheTheme`, edited in a window, saved and loaded as files, and
+  REAPER `.ReaperTheme`/`.ReaperThemeZip` colours imported where they mean the same (arrange
+  and panel backgrounds, track lanes, text, the envelope colours). WALTER layouts and images
+  are not read.
 - **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
   meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
   REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
@@ -815,6 +833,9 @@ compare with scythe's output sample by sample:
 | Automation items through ReaScript: one Lua script (`InsertAutomationItem` from the envelope and pooled, the `…Ex` point calls on a looped, rate-shifted copy with baseline and amplitude, `GetSetAutomationItemInfo(_String)`, `Envelope_Evaluate` over items on pan and fader-scaled volume, the global override) run in REAPER 7.73 and in Scythe | same 56 lines, but for three evaluations on a bezier at a loop's wrap (within 0.022) |
 | RPP round trip of automation items made in REAPER (named pools with bezier points, LFO settings, instances with rate, offset, baseline and amplitude, `GLOBAL_AUTO`) | unchanged but for the header line |
 | Reversed sections | exact |
+| Media databases: REAPER 7.73 scanned a folder of WAV (16/24-bit, LIST INFO and BWF tags), FLAC, MP3 and Ogg Vorbis files with BPM, key, title, artist, album, date, genre, comment and description tags, and marked a favourite; Scythe reads that `.ReaperFileList` back, writes it out byte for byte, and its own scan of the folder gives every file the same size, time and metadata tokens (length, rate, channels, bits, file-size bitrate such as `133k`) | identical (6/6 files) |
+| "Clean current project directory" on a scratch project (used and unused media at the top and in `Media/`, peaks files of used, unused and missing files, backups, other projects, text, images, scripts and 40 extensions) with `RECORD_PATH` empty and `Media` | the same files listed ("9 of 16", "1 of 2" and "24 of 38"), the same left alone |
+| Theme colours: REAPER 7.73's `GetThemeColor` for keys of its default theme against the `.ReaperTheme` integers | `COLORREF` (red low), flags above bit 24 |
 | ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate); the alternative band, whose width grows with its gain (the stock "Basic 11 band Kick" preset) | exact (35/35 cases, 10 high-frequency cases, 7 alternative-band cases) |
 | Sample-rate conversion of media: impulses at 44.1, 88.2 and 96 kHz in a 48 kHz project, as items and through the sampler (a Blackman-Harris sinc over 96 input frames each side, cut off at 1/1.03 of the output's Nyquist when going down, read from a 32-step table) | exact |
 | Resample modes (`RENDER_RESAMPLE` 0–9): impulses up (44.1 → 48 kHz) and down (88.2 → 48 kHz) and white noise up (44.1 → 48 kHz) and down (48 → 44.1 kHz) per mode. Sinc: Blackman-Harris over 8/32/96 input frames each side read from a 32-step table (16/64/192 points), over 192/256/384 computed exactly (384/512/768 points); linear; point (the frame before the read position, so exact hits read the previous frame); linear plus an RBJ low-pass (Q 0.707) at 0.693 (one stage) or 0.792 (two stages) of the lower Nyquist frequency, run at the higher rate | within 5e-6 (35/36 cases); point sampling misses one frame of noise (REAPER reads the exact hit at 147 input frames the other way); r8brain (mode 10) is the next row |
@@ -931,6 +952,16 @@ compares the two files.
 
 ### Not there yet
 
+- Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
+  the preview plays through the device directly (REAPER's preview output and its "start on
+  bar" are not there); metadata is not written back to files, and REAPER's custom columns
+  (`USER` lines), loudness columns, waveform and peak display of the preview, image metadata
+  and the explorer's folder-tree view are not there. Folder favourites are Scythe's own list
+  (`explorer-favorites.txt`; REAPER keeps them elsewhere). The bay has no folders, comments,
+  "retain" or move/copy of source media. A theme recolours Scythe's 16 palette colours where
+  they are painted, so an element drawn in a colour outside the palette keeps it, and colours of
+  a REAPER theme without a Scythe counterpart (meters, MIDI editor, routing, groups) are not
+  used.
 - Envelopes and automation items: a bezier point at the wrap of a looped item (the last pool
   point bending into the next pass) takes other tangents in REAPER (renders differ by up to
   0.02-0.04, `Envelope_Evaluate` by 0.01-0.02); an empty pool's end ramp, REAPER's options to
@@ -982,8 +1013,7 @@ compares the two files.
   not acted on; a stem bypasses the master and its folders but keeps the project's solo states.
   Region selection is not kept, so selected-region bounds render every region (as REAPER's
   `-renderproject` does). Project tabs: background projects do not play ("Run background
-  projects" is off, REAPER's default), tabs are not restored on start-up, and the media
-  explorer and project bay are not there.
+  projects" is off, REAPER's default) and tabs are not restored on start-up.
 
 - Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
   partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the
@@ -1113,7 +1143,9 @@ compares the two files.
   audio through): ReaPitch (its default algorithm is the project's, élastique), ReaTune,
   ReaVocode, ReaVoice, ReaSynDr (its snare's noise differs between REAPER's own renders, so it
   cannot null), ReaSurround/ReaSurroundPan, ReaStream, ReaNINJAM and ReaCast (network
-  clients).
+  clients). ReaNINJAM (playing along with others over the internet through a NINJAM server,
+  intervals of encoded audio) and ReaCast (streaming the mix to an Icecast/Shoutcast server or
+  recording it) are network services rather than audio processing and are out of scope.
 - The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
   it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
   edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null

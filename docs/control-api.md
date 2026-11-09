@@ -604,6 +604,70 @@ Admin only: paths name files on the machine running Scythe, anything its process
 An item's length comes from the file's header for WAV, AIFF, CAF and FLAC, and from decoding it
 for codecs with encoder delay (MP3, AAC, Vorbis, Opus), so it matches what REAPER gives the item.
 
+### Media explorer
+
+The media explorer's folders and REAPER media databases. The shortcut list is kept in the
+`[reaper_sexplorer]` section of `preferences.ini` (`NbShortcuts`, `ShortcutN`, `ShortcutTN`) and
+the databases in `MediaDB/NN.ReaperFileList` beside it, in REAPER's own formats, so REAPER's can
+be copied over. A place is `folder` (a path) or `database` (a file name such as
+`00.ReaperFileList`, or the title in the shortcut list).
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `media.shortcuts` | | `{"shortcuts": [{"index", "name", "target", "database"}], "preview": {settings}}` |
+| `media.add_shortcut` / `media.remove_shortcut` | `folder` / `index` | `{"index"}` / `{}` |
+| `media.create_database` | `name`, `folders` | `{"database", "files"}`: the folders and their subfolders scanned |
+| `media.scan_database` | `database`, `rescan?` (read every file again), `remove_missing?` | `{"database", "added", "removed", "files"}` |
+| `media.browse` | `folder` or `database` | `{"entries": [{"path", "name", "folder", "size", "modified", "favorite", "metadata": {"length", "sample_rate", "channels", "bits", "bitrate_kbps", "title", "artist", "album", "date", "genre", "comment", "description", "bpm", "key"}}]}` |
+| `media.search` | `folder` or `database`, `query`, `subfolders?` (folder searches, default on) | as `media.browse`: every word in the file name or metadata, `-word` excluded, `"two words"` together |
+| `media.favorite` | `path`, `on?` (default true), `database?` | `{}`; in a database the `FILE` line's favourite flag, else Scythe's list of favourites |
+| `media.preview_settings` | `tempo_match?` (`off`, `on`, `half`, `double`), `pitch?` (semitones), `volume_db?`, `repeat?`, `preserve_pitch?` | the settings |
+| `media.preview` | `path`, `start?` (seconds) | `{"path", "rate"}`: plays through the preview player, straight to the device after the master (never with `--null-audio`); tempo matched at `rate`, the project tempo at the edit cursor over the file's BPM |
+| `media.preview_stop` / `media.preview_state` | | `{}` / `{"path", "playing", "position", "length"}` |
+| `media.insert` | `path`, `track?` or `new_track?` | `{"track", "item", "position", "length", "playrate"}`: at the edit cursor, on the selected track (else a new one); tempo matched like the preview (the take's rate, pitch kept) |
+| `media.action` | `command` (a media explorer action, keymap section 32063), `path?` (the selected file), `folder?`/`database?` | the preview settings |
+
+The explorer section's actions: 1004 go to parent folder, 1008 preview play, 1009 stop, 1010
+pause, 1068 toggle repeat, 40018 refresh, 40019-40023 tempo match off/on/half/double/toggle,
+40024 play/stop, 40068 preserve pitch, 41000 insert into project, 41001 insert on a new track,
+42006 scan database for new files, 42009 remove missing files, 42084 set as favorite.
+
+### Project bay
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `bay.media` | | `{"media": [{"file", "path", "exists", "takes", "items", "tracks": [{"id", "name"}]}]}` |
+| `bay.items` | | `{"items": [{"item", "track", "track_name", "position", "length", "take", "file"}]}` |
+| `bay.fx` | | `{"fx": [{"name", "instances", "tracks"}]}` |
+| `bay.retarget` | `from`, `to` | `{"takes"}`: every take playing `from` plays `to` (one undo step); a file in the project folder is stored relative |
+| `bay.unused` | | `{"folder", "total", "unused"}`: REAPER's "Clean current project directory" list |
+| `bay.clean` | `files?` (default every unused file), `trash?` (default true: the freedesktop trash) | `{"removed", "trash"}` |
+
+"Clean current project directory" looks in the folder recordings go to (`RECORD_PATH`, the
+project folder when empty), not its subfolders, and lists media and peaks files there the project
+does not use, as REAPER 7.73 does: `wav bwf w64 aif aiff caf sd2 raw pcm flac mp3 mp2 mpg ogg opus
+wv m4a mka mkv mov mp4 m4v qt avi webm wma gif mid midi kar rmi syx rpp-prox reapindex reapeaks`
+(a `.reapeaks` file only when the file it belongs to is unused); projects, backups, text and
+images are left alone.
+
+### Theme
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `theme.get` | | `{"colors": [{"key", "label", "color", "default", "reaper_key"}], "default"}` |
+| `theme.set` | `colors` (`{"accent": "#ff8800", ...}`) | as `theme.get` |
+| `theme.reset` | | Scythe's colours |
+| `theme.load` | `path`: `.ScytheTheme`, `.ReaperTheme` or `.ReaperThemeZip` | as `theme.get`, with `loaded` (the keys taken from the file) |
+| `theme.save` | `path` | `{"path"}` |
+
+The theme is kept in `theme.ScytheTheme` beside the preferences (`[scythe theme]`, `key=#rrggbb`).
+From a REAPER theme only colours are taken: `col_arrangebg` (background), `col_main_bg2` (panels),
+`col_tr1_bg` and `selcol_tr1_bg` (track lanes), `col_main_text2`, `col_tl_fg`, `col_tl_fg2`
+(text), and the envelope colours `col_env1` (volume, green), `env_trim_vol` (trim, yellow),
+`col_env3` (pan, the orange accent), `env_track_mute` (mute, pink); button shades are derived from
+the panel and text colours. REAPER stores colours as `COLORREF` (red in the low byte; bits above
+24 are flags), which REAPER 7.73's `GetThemeColor` confirms.
+
 ### Analysis
 
 Measuring takes seconds, so these commands start a job on a thread of its own and answer at
