@@ -193,6 +193,8 @@ or `none`, with `reason` saying why.
 | `track.add` | `name?`, `index?` (end when left out) | the new track |
 | `track.delete` | `track` | `{}` |
 | `track.rename` | `track`, `name` | the track |
+| `track.freeze` | `track` | `{"file", "levels"}`: renders the items through the effects (pre-fader, one second of tail) beside the saved project and plays that instead; again stacks a level |
+| `track.unfreeze` | `track` | `{"levels"}`: the last level's effects and items are back |
 | `track.move` | `track`, `index` | the track |
 | `track.volume` | `track`, `volume` or `db` | the track; volume groups follow (a dB offset, reversed followers the other way) |
 | `track.pan` | `track`, `pan` | the track; pan groups follow (an offset) |
@@ -289,17 +291,32 @@ A mix:
 
 ### Effects
 
-Effects are numbered from 0 per chain; `track` may be `"master"`.
+Effects are numbered from 0 per chain; `track` may be `"master"`. Every `fx.*` command that
+names a chain also takes `chain` (`track`, the default; `input`, the track's record input chain
+on the live input it monitors; `take`, with `item` and `take?`, the active take when left out;
+`monitor`, the monitoring chain after the master, heard on the device only, never rendered, and
+saved as `reaper-hwoutfx.ini` beside the preferences) and `inside`, the positions of the
+container the effect sits in (each one inside the container before it; left out for the chain
+itself).
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
-| `fx.list` | `track` | `[{"index", "name", "enabled", "running"}]` (`running`: processing audio, not passed through) |
+| `fx.list` | `track` | `[{"index", "name", "enabled", "running", "offline", "wet", "delta", "parallel", "container"}]` (`running`: processing audio, not passed through; `parallel`: `serial`, `parallel` or `merge_midi`; `container`: `{"channels", "inputs", "outputs", "effects"}` for an FX container) |
 | `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case) | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
 | `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`; the built-ins are `equalizer`, `gate`, `compressor`, `delay`, `convolution-reverb`, `limiter` and `multiband-compressor`; or an exact name), `index?` | the chain |
 | `fx.remove` | `track`, `index` | the chain |
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |
 | `fx.params` | `track`, `index` | `[{"id", "name", "value", "text", "min", "max", "default"}]` of a hosted plugin |
 | `fx.param` | `track`, `index`, `param` (an id from `fx.params`), `value` (clamped to the range) | the parameter |
+| `fx.wet` | `track`, `index`, `wet?` (0-1), `delta?` (play only the difference the effect makes) | the chain |
+| `fx.parallel` | `track`, `index`, `mode` (`serial`, `parallel`: on the same input as the effect before, outputs summed; `merge_midi`: also merging its MIDI output) | the chain |
+| `fx.offline` | `track`, `index`, `offline?` (toggles when left out) | the chain |
+| `fx.container.move_in` | `track`, `index` (the effect), `container` (the container's index), `position?` | the chain |
+| `fx.container.move_out` | `track`, `index` (the container), `child` | the chain, the effect just after the container |
+| `fx.container.config` | `track`, `index`, `channels?` (2-64), `inputs?`, `outputs?` (pins to the chain around it) | the chain |
+| `fx.container.pins` | `track`, `index`, `output?` (output pins rather than input pins), `pins` (per pin, the outer channels from 1) | the chain |
+| `fx.container.map` | `track`, `index`, `child`, `param` (position in the child's parameters) | `{"id"}` of the container parameter |
+| `fx.take_channels` | `item`, `take?`, `channels?` (2-64; `null` follows the source) | `{"channels"}` |
 
 Plugin parameters live in the running plugin, as with the inspector's sliders: they mark the
 project unsaved and are stored on save, but are not undo steps.

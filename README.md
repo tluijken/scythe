@@ -454,6 +454,20 @@ Working:
   strings, `RPR_defer("step()")` taking code or a function. As in REAPER, `print` goes to
   Scythe's standard output, not the console, and what a script writes to `sys.stderr` is shown
   above the traceback only when it fails.
+- **FX chain graph**: per-slot wet/dry (`WET`, with delta solo and wet/dry envelopes, ramped a
+  block late as REAPER does unless the slot is sample-accurate), offline slots (unloaded,
+  passing audio), effects running in parallel with the one before (`PARALLEL`, outputs summed,
+  MIDI merged when asked) and FX containers (`<CONTAINER`) with their own channel count, input
+  and output pin routing, parallel or serial children, nesting and container parameters that
+  drive a child's; latency compensated through all of it. Take FX (`<TAKEFX`) process their
+  take after its volume and fades on the take's channel count (`TAKEFX_NCH`), with two seconds
+  of tail past the item; input FX (`<FXCHAIN_REC`) process a monitored track's live input; the
+  monitoring chain processes only what the device plays and is kept in `reaper-hwoutfx.ini`
+  beside the preferences. Freeze (actions 41223/41644, `track.freeze`) renders a track through
+  its effects to `reaper_freeze_<name>.wav` and keeps the effects and items in a `<FREEZE`
+  level, stacking and unfreezing as REAPER does. The inspector has wet, delta, parallel, offline
+  and container controls in each slot's menu, the container's effects under it, and adds to the
+  track, input or monitoring chain.
 - **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
   load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
   between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
@@ -682,6 +696,9 @@ compare with scythe's output sample by sample:
 | FX parameter envelopes on an LV2 gain: linear, square, bezier and fast/slow shapes, points on and a rounding error short of block boundaries, several points in a block (REAPER sends a block's start value, or, when the block holds points, the value at its first point's frame, the offset floored from the point's distance to the block's start time) | exact (3 cases) |
 | JSFX arithmetic with NaN, infinities and subnormals: 394 expressions over 9 probes (assignment checks per operator and function, constant folding, simplifications, comparisons, integer conversions and shifts, `min`/`max`, user function parameters, memory, `loop`/`while` values) | exact |
 | FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
+| FX chain graph (WP6 probes: JSFX gain, swap, delay with and without PDC, a 4-pin mixer, MIDI note senders into a DC synth): wet/dry and delta, wet envelopes per block and sample-accurate, offline, parallel groups (with bypassed, delta, wet, latency-differing and MIDI-merging members), containers (serial, parallel, nested, wet, bypassed, pin routing in and out, 1-pin inputs and outputs, 4-channel containers on 2- and 4-channel tracks, mapped parameter envelopes, nested mappings), master chains | 72 of 72 exact (within 1e-5) |
+| Take FX: gain, DC added after item and take volume and fades, latency compensated, tails past the item end, a running counter showing when they start, 4 take channels, parallel inside, reversed sections | 9 of 14 exact; the other 5 differ only in the item's last sample, which REAPER drops in its take-FX path for some item positions |
+| Freeze (action 41223 on a JSFX chain) | the render bit-identical to REAPER's, same file name, length (one second of tail) and `<FREEZE` layout |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
 | Built-in effects written by scythe rendered by REAPER (`builtin_ref`): EQ, delay and convolution, then gate, compressor, multiband compressor and limiter with parameters edited through Scythe | the whole chain within 7e-5 (-95 dB); REAPER reads the stored states as its own ReaEQ/ReaGate/ReaComp/ReaDelay/ReaVerb/ReaXcomp/ReaLimit |
 | Dynamics (`stock_ref`, 109 cases on tones, noise, drums, DC steps, level ramps, impulses and bursts, one parameter at a time, set by REAPER through `TrackFX_SetParam` or a state chunk): ReaComp (every parameter: ratio, attack, release, RMS, knee and legacy knee, pre-comp, detector filters and inputs, filter preview, auto make-up, auto release, classic attack, wet/dry), ReaGate (every parameter but noise, which is random: filters, RMS, hysteresis, hold, pre-open, invert modes, wet/dry, sidechain), ReaLimit (threshold, ceiling, release, isolated peaks, bursts, limiting on a limited level), ReaXcomp (crossovers, every band parameter, feedback detector, bands off, output gain); plus ReaGate's MIDI out turned into audio by a JSFX | ReaComp and ReaGate within 1.2e-7 (49 and 22 cases), ReaXcomp within 1.3e-4 (22), ReaLimit within 2.7e-4 (15 of 16; its "inf" release within 1.8e-2), MIDI notes at the same frames |
@@ -807,6 +824,14 @@ compares the two files.
   primary volume; REAPER's click sounds, patterns and secondary volume are kept in the project
   but not played.
 
+- FX chain graph: a bypass envelope on a container (rather than an effect) is not followed, nor
+  REAPER's FX oversampling. Take FX play the item's last sample where REAPER's take-FX path
+  drops it for some positions, and their state is not reset on seeking. Input FX process the
+  monitored input only: recordings are taken before them, where REAPER records through them.
+  The monitoring chain's file is Scythe's FX chain text; REAPER's own `reaper-hwoutfx.ini` was
+  not available to compare with. Freeze renders only the track's own items (not what other
+  tracks send it or folder children), in stereo; REAPER's mono and multichannel freezes and
+  "freeze to the last FX" are not there, and a freeze needs the project saved first.
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: master channels go to the audio device's outputs in order, as many as the
