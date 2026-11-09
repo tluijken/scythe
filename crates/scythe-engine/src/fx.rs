@@ -793,6 +793,37 @@ impl FxRegistry {
         entry.instance.clone()
     }
 
+    /// The instance of the slot at `path` in `owner`'s chain `slots`: an index, then indices
+    /// into containers.
+    pub fn instance_at(&self, owner: &FxOwner, slots: &[FxSlot], path: &[usize]) -> Option<Arc<FxInstance>> {
+        let (mut slots, mut key) = (slots.to_vec(), String::new());
+        for (depth, &i) in path.iter().enumerate() {
+            let slot = slots.get(i)?.clone();
+            key.push_str(&slot_key(&slot, i));
+            if depth + 1 == path.len() {
+                return self.instance_by_key(owner, &key);
+            }
+            key.push('/');
+            slots = slot.container_children();
+        }
+        None
+    }
+
+    /// How the slot at `path` (as for `instance_at`) is played.
+    pub fn status_at(&self, owner: &FxOwner, slots: &[FxSlot], path: &[usize]) -> Option<&FxStatus> {
+        let (mut slots, mut key) = (slots.to_vec(), String::new());
+        for (depth, &i) in path.iter().enumerate() {
+            let slot = slots.get(i)?.clone();
+            key.push_str(&slot_key(&slot, i));
+            if depth + 1 == path.len() {
+                return self.entries.get(&(owner.clone(), key)).map(|e| &e.status);
+            }
+            key.push('/');
+            slots = slot.container_children();
+        }
+        None
+    }
+
     /// The instance of a slot inside a chain, keyed as `chain::FxChain` keys nested slots.
     pub fn instance_by_key(&self, owner: &FxOwner, key: &str) -> Option<Arc<FxInstance>> {
         self.entries.get(&(owner.clone(), key.to_owned())).and_then(|e| e.instance.clone())

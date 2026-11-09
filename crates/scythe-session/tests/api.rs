@@ -142,6 +142,48 @@ fn effects_are_added_bypassed_and_removed() {
 }
 
 #[test]
+fn chains_take_wet_parallel_and_containers() {
+    let mut s = session();
+    let t = add_track(&mut s, "Bass");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "container"}));
+    let chain = ok(&mut s, json!({"cmd": "fx.container.move_in", "track": t, "index": 0, "container": 1}));
+    assert_eq!(chain.as_array().unwrap().len(), 1);
+    assert_eq!(chain[0]["container"]["effects"][0]["name"], "VST: ReaComp (Cockos)");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "Equalizer", "inside": [0]}));
+    let chain = ok(&mut s, json!({"cmd": "fx.parallel", "track": t, "index": 1, "mode": "parallel", "inside": [0]}));
+    assert_eq!(chain[0]["container"]["effects"][1]["parallel"], "parallel");
+    let chain = ok(&mut s, json!({"cmd": "fx.wet", "track": t, "index": 0, "wet": 0.25, "inside": [0]}));
+    assert_eq!(chain[0]["container"]["effects"][0]["wet"], 0.25);
+    let chain = ok(&mut s, json!({"cmd": "fx.container.config", "track": t, "index": 0, "channels": 4}));
+    assert_eq!(chain[0]["container"]["channels"], 4);
+    ok(&mut s, json!({"cmd": "fx.container.pins", "track": t, "index": 0, "pins": [[2], [1]]}));
+    assert_eq!(s.project.tracks[0].fx[0].listed_pins(false), Some(vec![2, 1]));
+    let chain = ok(&mut s, json!({"cmd": "fx.offline", "track": t, "index": 1, "inside": [0]}));
+    assert_eq!(chain[0]["container"]["effects"][1]["offline"], true);
+    let first = execute_json(&mut s, json!({"cmd": "fx.parallel", "track": t, "index": 0, "mode": "parallel"}));
+    assert_eq!(first.unwrap_err().kind, ErrorKind::Invalid);
+    let chain = ok(&mut s, json!({"cmd": "fx.container.move_out", "track": t, "index": 0, "child": 0}));
+    assert_eq!(chain.as_array().unwrap().len(), 2);
+
+    let input = ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor", "chain": "input"}));
+    assert_eq!(input.as_array().unwrap().len(), 1);
+    assert_eq!(s.project.tracks[0].input_fx().len(), 1);
+    let item = Item::new(0.0, 1.0, Take::from_file("/nonexistent/take.wav".into()));
+    let id = item.id.0;
+    s.edit("Add item", |p| p.tracks[0].items.push(item));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor", "chain": "take", "item": id}));
+    assert_eq!(s.project.tracks[0].items[0].takes[0].fx().len(), 1);
+    ok(&mut s, json!({"cmd": "fx.take_channels", "item": id, "channels": 4}));
+    assert_eq!(s.project.tracks[0].items[0].takes[0].fx_channels(), Some(4));
+    let monitor =
+        ok(&mut s, json!({"cmd": "fx.add", "track": "master", "plugin": "builtin:compressor", "chain": "monitor"}));
+    assert_eq!(monitor.as_array().unwrap().len(), 1);
+    assert_eq!(s.monitor_fx().len(), 1);
+    assert!(s.project.master.fx.is_empty());
+}
+
+#[test]
 fn items_move_split_and_go() {
     let mut s = session();
     let a = add_track(&mut s, "A");

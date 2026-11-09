@@ -2037,6 +2037,51 @@
     "description": "The effects on `track` (`\"master\"` for the master).\n\nControl API command `fx.list`.",
     "inputSchema": {
       "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "track": {
           "anyOf": [
             {
@@ -2091,6 +2136,21 @@
     "description": "Adds the effect `plugin` names (a catalog `id` or exact `name`) at `index`, at the end\nof the chain when left out.\n\nControl API command `fx.add`.",
     "inputSchema": {
       "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "index": {
           "default": null,
           "description": "Position in the chain, from 0.",
@@ -2101,9 +2161,39 @@
             "null"
           ]
         },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "plugin": {
-          "description": "A catalog id such as `builtin:compressor`, or an exact name.",
+          "description": "A catalog id such as `builtin:compressor`, `container` for an empty FX container,\nor an exact name.",
           "type": "string"
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "track": {
           "anyOf": [
@@ -2138,11 +2228,56 @@
     "description": "Removes the effect at `index` in the chain.\n\nControl API command `fx.remove`.",
     "inputSchema": {
       "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "index": {
           "description": "Position in the chain, from 0.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "track": {
           "anyOf": [
@@ -2184,11 +2319,56 @@
             "null"
           ]
         },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "index": {
           "description": "Position in the chain, from 0.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "track": {
           "anyOf": [
@@ -2221,11 +2401,56 @@
     "description": "The parameters of a running effect with their values.\n\nControl API command `fx.params`.",
     "inputSchema": {
       "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "index": {
           "description": "Position in the chain, from 0.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "track": {
           "anyOf": [
@@ -2260,17 +2485,62 @@
     "description": "Sets parameter `param` (an id from `fx.params`) to `value`, within its range.\n\nControl API command `fx.param`.",
     "inputSchema": {
       "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "index": {
           "description": "Position in the chain, from 0.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
         },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "param": {
           "description": "A parameter id from `fx.params`.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "track": {
           "anyOf": [
@@ -2301,6 +2571,845 @@
     },
     "name": "fx_param",
     "title": "FX param"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the effect's wet/dry mix and delta solo (playing only the difference it makes).\n\nControl API command `fx.wet`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "delta": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "wet": {
+          "default": null,
+          "description": "Wet share, 0 (dry) to 1 (wet).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_wet",
+    "title": "FX wet"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs the effect in parallel with the one before it (on the same input, the outputs\nsummed), or in series again.\n\nControl API command `fx.parallel`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0; the first effect cannot be parallel.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "oneOf": [
+            {
+              "enum": [
+                "serial",
+                "parallel"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "merge_midi",
+              "description": "In parallel, its MIDI output merged with the previous effect's.",
+              "type": "string"
+            }
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "mode"
+      ],
+      "type": "object"
+    },
+    "name": "fx_parallel",
+    "title": "FX parallel"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Takes the effect offline (unloaded, passing audio through) or back online; toggles when\n`offline` is left out.\n\nControl API command `fx.offline`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "offline": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_offline",
+    "title": "FX offline"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the effect at `index` into the container at `container` (at `position` there,\nat the end when left out), both in the chain `at` names.\n\nControl API command `fx.container.move_in`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "container": {
+          "description": "The container to move it into.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "index": {
+          "description": "The effect to move.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "position": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "container"
+      ],
+      "type": "object"
+    },
+    "name": "fx_container_move_in",
+    "title": "FX container.move in"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves effect `child` out of the container at `index`, to just after the container.\n\nControl API command `fx.container.move_out`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "child": {
+          "description": "Position of the effect inside it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "index": {
+          "description": "The container.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "child"
+      ],
+      "type": "object"
+    },
+    "name": "fx_container_move_out",
+    "title": "FX container.move out"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets a container's channel count and how many input and output pins connect it to the\nchain around it.\n\nControl API command `fx.container.config`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channels": {
+          "default": null,
+          "description": "The container's own channels, 2-64.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position of the container in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inputs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputs": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_container_config",
+    "title": "FX container.config"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Routes a container's pins: per pin, the outer channels (from 1) it takes its input\nfrom, or feeds its output to.\n\nControl API command `fx.container.pins`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position of the container in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "default": false,
+          "description": "Output pins rather than input pins.",
+          "type": "boolean"
+        },
+        "pins": {
+          "description": "One list of channels per pin, from pin 1.",
+          "items": {
+            "items": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "pins"
+      ],
+      "type": "object"
+    },
+    "name": "fx_container_pins",
+    "title": "FX container.pins"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Exposes parameter `param` of the container's effect `child` as a parameter of the\ncontainer, so envelopes and controls on the container drive it.\n\nControl API command `fx.container.map`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "child": {
+          "description": "Position of the effect inside the container.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "index": {
+          "description": "Position of the container in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "param": {
+          "description": "The parameter's position in the effect's parameter list.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "child",
+        "param"
+      ],
+      "type": "object"
+    },
+    "name": "fx_container_map",
+    "title": "FX container.map"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets how many channels a take's effects run on (2-64); `null` follows the source.\n\nControl API command `fx.take_channels`.",
+    "inputSchema": {
+      "properties": {
+        "channels": {
+          "default": null,
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "Item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "take": {
+          "default": null,
+          "description": "Take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "fx_take_channels",
+    "title": "FX take channels"
   },
   {
     "annotations": {

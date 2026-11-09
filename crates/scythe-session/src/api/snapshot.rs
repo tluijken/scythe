@@ -190,6 +190,24 @@ pub struct FxInfo {
     pub enabled: bool,
     /// Whether it processes audio (built in or hosted) rather than passing it through.
     pub running: bool,
+    /// Unloaded, passing audio through.
+    pub offline: bool,
+    /// Wet share, 0-1.
+    pub wet: f64,
+    /// Plays only the difference it makes.
+    pub delta: bool,
+    /// `serial`, `parallel` (with the effect before it) or `merge_midi`.
+    pub parallel: String,
+    /// For an FX container: its channels and pins and the effects inside.
+    pub container: Option<ContainerInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContainerInfo {
+    pub channels: u32,
+    pub inputs: u32,
+    pub outputs: u32,
+    pub effects: Vec<FxInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -424,19 +442,56 @@ pub fn track(session: &Session, t: &Track, index: Option<usize>, level: usize) -
 }
 
 pub fn fx_list(session: &Session, target: Target, t: &Track) -> Vec<FxInfo> {
-    let track = match target {
-        Target::Master => None,
-        Target::Track(id) => Some(id),
+    let owner = match target {
+        Target::Master => scythe_engine::fx::FxOwner::Master,
+        Target::Track(id) => scythe_engine::fx::FxOwner::Track(id),
     };
-    t.fx.iter()
-        .enumerate()
-        .map(|(i, slot)| FxInfo {
-            index: i,
-            name: slot.name.clone(),
-            enabled: slot.enabled,
-            running: !matches!(session.engine.fx().status(track, slot, i), None | Some(FxStatus::Unavailable(_))),
-        })
-        .collect()
+    chain_info(session, &owner, &t.fx)
+}
+
+/// The effects of a chain, those inside containers included.
+pub fn chain_info(session: &Session, owner: &scythe_engine::fx::FxOwner, slots: &[scythe_core::FxSlot]) -> Vec<FxInfo> {
+    fn walk(
+        session: &Session,
+        owner: &scythe_engine::fx::FxOwner,
+        top: &[scythe_core::FxSlot],
+        slots: &[scythe_core::FxSlot],
+        path: &mut Vec<usize>,
+    ) -> Vec<FxInfo> {
+        slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| {
+                path.push(i);
+                let status = session.engine.fx().status_at(owner, top, path);
+                let (wet, delta) = slot.wet();
+                let container = slot.container_config().map(|cfg| ContainerInfo {
+                    channels: cfg.channels,
+                    inputs: cfg.inputs,
+                    outputs: cfg.outputs,
+                    effects: walk(session, owner, top, &slot.container_children(), path),
+                });
+                path.pop();
+                FxInfo {
+                    index: i,
+                    name: slot.name.clone(),
+                    enabled: slot.enabled,
+                    running: container.is_some() || !matches!(status, None | Some(FxStatus::Unavailable(_))),
+                    offline: slot.offline(),
+                    wet,
+                    delta,
+                    parallel: match slot.parallel() {
+                        scythe_core::fx_chain::Parallel::Serial => "serial",
+                        scythe_core::fx_chain::Parallel::Audio => "parallel",
+                        scythe_core::fx_chain::Parallel::MergeMidi => "merge_midi",
+                    }
+                    .into(),
+                    container,
+                }
+            })
+            .collect()
+    }
+    walk(session, owner, slots, slots, &mut Vec::new())
 }
 
 pub fn send_list(t: &Track) -> Vec<SendInfo> {

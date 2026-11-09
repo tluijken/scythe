@@ -332,7 +332,38 @@ impl Session {
         self.prefs_file = Some(path);
         self.load_action_bindings();
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
+        if let Some(file) = self.monitor_fx_file()
+            && let Ok(text) = std::fs::read_to_string(&file)
+        {
+            match scythe_core::rpp::parse(&format!("<FXCHAIN\n{text}\n>\n")) {
+                Ok(chunk) => self.engine.set_monitor_fx(scythe_core::fx_chain::split_chain(&chunk.children).0),
+                Err(e) => self.notify(format!("Cannot read {}: {e}", file.display())),
+            }
+        }
         self.rescan_midi_devices();
+    }
+
+    /// Where the monitoring effects are kept: `reaper-hwoutfx.ini` beside the preferences, as
+    /// in REAPER's resource folder.
+    fn monitor_fx_file(&self) -> Option<PathBuf> {
+        Some(self.prefs_file.as_deref()?.with_file_name("reaper-hwoutfx.ini"))
+    }
+
+    /// The monitoring effects: after the master, on what the device plays only.
+    pub fn monitor_fx(&self) -> Vec<scythe_core::FxSlot> {
+        self.engine.fx().monitor_fx.clone()
+    }
+
+    /// Replaces the monitoring effects and saves them with the preferences (not the project).
+    pub fn set_monitor_fx(&mut self, slots: Vec<scythe_core::FxSlot>) {
+        let body = scythe_core::rpp::write_body(&scythe_core::fx_chain::join_chain(&slots));
+        self.engine.set_monitor_fx(slots);
+        self.sync();
+        let Some(file) = self.monitor_fx_file() else { return };
+        let written = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&file, body));
+        if let Err(e) = written {
+            self.notify(format!("Cannot save the monitoring FX to {}: {e}", file.display()));
+        }
     }
 
     /// Changes the preferences and saves them, keeping whatever else their file holds.
