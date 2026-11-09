@@ -1,6 +1,7 @@
 //! Setlists: the songs found in the project's markers, the setlists made from them, and
 //! playing through one (see `scythe_core::setlist`).
 
+use schemars::JsonSchema;
 use scythe_core::setlist::{Setlist, Song, SongEnd, SongRef};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,7 +11,7 @@ use crate::Session;
 
 /// A setlist by its index (from `setlist.list`) or exact name. Left out, the setlist being
 /// played.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SetlistRef {
     Index(usize),
@@ -18,14 +19,17 @@ pub enum SetlistRef {
 }
 
 /// A song by its index in `setlist.songs`, or by its start marker's `{GUID}` or name.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum SongSel {
     Index(usize),
     Text(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `setlist` names a setlist by its index from `setlist.list` or its exact name; left out, the
+/// setlist being played. Songs are an index from `setlist.songs`, or the start marker's
+/// `{GUID}` or name. `entry` is a position in the setlist, from 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum SetlistCommand {
     /// The songs derived from the markers.
@@ -34,6 +38,7 @@ pub enum SetlistCommand {
     /// Every setlist, which one is played, and the options.
     #[serde(rename = "setlist.list")]
     List,
+    /// One setlist with its entries and durations.
     #[serde(rename = "setlist.get")]
     Get {
         #[serde(default)]
@@ -47,17 +52,20 @@ pub enum SetlistCommand {
         #[serde(default)]
         songs: Vec<SongSel>,
     },
+    /// Renames the setlist (a name already used gets a number).
     #[serde(rename = "setlist.rename")]
     Rename {
         #[serde(default)]
         setlist: Option<SetlistRef>,
         name: String,
     },
+    /// Deletes the setlist.
     #[serde(rename = "setlist.delete")]
     Delete {
         #[serde(default)]
         setlist: Option<SetlistRef>,
     },
+    /// Copies the setlist, placing the copy after it.
     #[serde(rename = "setlist.duplicate")]
     Duplicate {
         #[serde(default)]
@@ -77,12 +85,15 @@ pub enum SetlistCommand {
     Move {
         #[serde(default)]
         setlist: Option<SetlistRef>,
+        /// Entry position, from 0.
         from: usize,
+        /// Entry position, from 0.
         to: usize,
     },
     /// Adds a setlist from text: a title line, then one song per line (numbering optional).
     #[serde(rename = "setlist.import")]
     Import { text: String },
+    /// The setlist as text, in the form `setlist.import` takes.
     #[serde(rename = "setlist.export")]
     Export {
         #[serde(default)]
@@ -93,20 +104,28 @@ pub enum SetlistCommand {
     Select { setlist: SetlistRef },
     /// Makes `entry` play next; when stopped the edit cursor moves to it.
     #[serde(rename = "setlist.cue")]
-    Cue { entry: usize },
+    Cue {
+        /// Position in the setlist, from 0.
+        entry: usize,
+    },
     /// Plays `entry` (the current one when left out) from its marker.
     #[serde(rename = "setlist.play")]
     Play {
+        /// Position in the setlist, from 0.
         #[serde(default)]
         entry: Option<usize>,
     },
+    /// Stops playback.
     #[serde(rename = "setlist.stop")]
     Stop,
     /// The next song: cued when stopped, played when playing.
     #[serde(rename = "setlist.next")]
     Next,
+    /// The previous song: cued when stopped, played when playing.
     #[serde(rename = "setlist.previous")]
     Previous,
+    /// Whether the next song is cued after a song stops at its stop marker; toggles when
+    /// `enabled` is left out.
     #[serde(rename = "setlist.auto_advance")]
     AutoAdvance {
         #[serde(default)]
@@ -118,6 +137,7 @@ pub enum SetlistCommand {
         #[serde(default)]
         enabled: Option<bool>,
     },
+    /// The setlist played, its current and next song, elapsed and remaining time.
     #[serde(rename = "setlist.status")]
     Status,
 }

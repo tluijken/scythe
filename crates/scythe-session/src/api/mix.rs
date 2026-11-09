@@ -2,6 +2,7 @@
 //! tablet page uses to build its own mix. The mixes are plain REAPER tracks; see
 //! `scythe_core::monitor`.
 
+use schemars::JsonSchema;
 use scythe_core::monitor::{CueBusOptions, MonitorMix, MonitorOutput};
 use scythe_core::units::gain_to_db;
 use scythe_core::{Project, SendMode, TrackId};
@@ -12,12 +13,16 @@ use super::snapshot::Tap;
 use super::{ApiError, TrackRef, json, level, pan};
 use crate::Session;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// `mix` names a monitor mix by its track's id or name ("MON Drummer"); `source` is a track it
+/// receives. `mode` is where sources are tapped: `post_fx` (pre-fader, the default for mixes),
+/// `pre_fx` or `post_fader`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum MixCommand {
     /// Every monitor mix, with its sources.
     #[serde(rename = "mix.list")]
     List,
+    /// One monitor mix with its sources.
     #[serde(rename = "mix.get")]
     Get { mix: TrackRef },
     /// A mix for `musician` from `sources` (every track that is not a monitor mix or folder
@@ -27,18 +32,23 @@ pub enum MixCommand {
     #[serde(rename = "mix.create")]
     Create {
         musician: String,
+        /// The tracks the mix receives.
         #[serde(default)]
         sources: Option<Vec<TrackRef>>,
+        /// Sources that are the musician's own, which "more me" raises.
         #[serde(default)]
         own: Vec<TrackRef>,
+        /// The first device output, from 0.
         #[serde(default)]
         output: Option<usize>,
         #[serde(default)]
         mono: bool,
         #[serde(default)]
         mode: Option<Tap>,
+        /// Start each source at its track's fader level instead of 0 dB.
         #[serde(default)]
         levels_from_tracks: bool,
+        /// Start each source at its track's pan instead of centre.
         #[serde(default)]
         pans_from_tracks: bool,
         #[serde(default)]
@@ -47,22 +57,34 @@ pub enum MixCommand {
     /// A copy of `mix` for another musician, on the next free output.
     #[serde(rename = "mix.copy")]
     Copy { mix: TrackRef, musician: String },
+    /// Renames the mix for another musician.
     #[serde(rename = "mix.rename")]
     Rename { mix: TrackRef, musician: String },
+    /// Deletes the mix (its track and the sends feeding it).
     #[serde(rename = "mix.delete")]
     Delete { mix: TrackRef },
     /// The level of one source in the mix.
     #[serde(rename = "mix.level")]
     Level {
         mix: TrackRef,
+        /// The source track.
         source: TrackRef,
+        /// Gain: 1.0 is 0 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
     },
+    /// The pan of one source in the mix.
     #[serde(rename = "mix.pan")]
-    Pan { mix: TrackRef, source: TrackRef, pan: f64 },
+    Pan {
+        mix: TrackRef,
+        /// The source track.
+        source: TrackRef,
+        /// From -1 (left) to 1 (right).
+        pan: f64,
+    },
     /// Mutes a source in the mix, or toggles it when `muted` is left out.
     #[serde(rename = "mix.mute")]
     Mute {
@@ -82,13 +104,19 @@ pub enum MixCommand {
     /// Raises the musician's own sources `db` / 2 above the levels and the rest `db` / 2 below
     /// (-24 to 24).
     #[serde(rename = "mix.more_me")]
-    MoreMe { mix: TrackRef, db: f64 },
+    MoreMe {
+        mix: TrackRef,
+        /// -24 to 24; 0 is the levels as set.
+        db: f64,
+    },
     /// The whole mix's level (its track fader).
     #[serde(rename = "mix.volume")]
     Volume {
         mix: TrackRef,
+        /// Gain: 1.0 is 0 dB.
         #[serde(default)]
         volume: Option<f64>,
+        /// Level in dB, instead of `volume`.
         #[serde(default)]
         db: Option<f64>,
     },
@@ -100,12 +128,14 @@ pub enum MixCommand {
         #[serde(default)]
         mono: bool,
     },
+    /// Turns the mix's safety limiter on or off; toggles when `on` is left out.
     #[serde(rename = "mix.limiter")]
     Limiter {
         mix: TrackRef,
         #[serde(default)]
         on: Option<bool>,
     },
+    /// Adds a track to the mix.
     #[serde(rename = "mix.add_source")]
     AddSource {
         mix: TrackRef,
@@ -113,6 +143,7 @@ pub enum MixCommand {
         #[serde(default)]
         mode: Option<Tap>,
     },
+    /// Takes a track out of the mix.
     #[serde(rename = "mix.remove_source")]
     RemoveSource { mix: TrackRef, source: TrackRef },
     /// SWS's "Create cue buss from track selection": a bus named `name` receiving `sources`,
