@@ -250,7 +250,9 @@ fn tempo_point_line(pt: &TempoPoint) -> Vec<String> {
     if sig != (old_sig & 0xffff_ffff) {
         set.push((4, sig.to_string()));
     }
-    line_from(&LineMemo::from([("PT".to_owned(), pt.raw.clone())]), "PT", &["PT"], &set)
+    // A point made in Scythe has no line of its own to keep fields of.
+    let memo = if pt.raw.is_empty() { LineMemo::new() } else { LineMemo::from([("PT".to_owned(), pt.raw.clone())]) };
+    line_from(&memo, "PT", &["PT"], &set)
 }
 
 fn write_tempo_env(original: Option<&Chunk>, points: &[TempoPoint]) -> Chunk {
@@ -1403,6 +1405,19 @@ mod tests {
         assert!(p2.tracks[0].fx[1].enabled);
         assert!(!p2.tracks[0].armed);
         assert_eq!(p2.tracks[0].items[0].position, 70.0);
+    }
+
+    #[test]
+    fn tempo_points_made_here_are_written() {
+        let mut p = project_from_rpp(super::tests::SAMPLE).unwrap();
+        p.tempo.insert_point(8.0);
+        p.tempo.points.push(TempoPoint { time_sig: Some((7, 8)), ..TempoPoint::new(16.0, 140.0) });
+        let text = project_to_rpp(&p);
+        assert!(text.contains("PT 8 168 1"), "{text}");
+        let p2 = project_from_rpp(&text).unwrap();
+        assert_eq!(p2.tempo.points.len(), 3);
+        assert_eq!(p2.tempo.points[2].time_sig, Some((7, 8)));
+        assert_eq!(p2.tempo.points[2].bpm, 140.0);
     }
 
     #[test]

@@ -799,3 +799,18 @@ mod scopes {
         assert_eq!(rx.recv().unwrap().unwrap()["name"], "Admin");
     }
 }
+
+#[test]
+fn tempo_markers_survive_saving() {
+    let dir = std::env::temp_dir().join(format!("scythe-tempo-save-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tempo.RPP");
+    let mut s = session();
+    ok(&mut s, json!({"cmd": "tempo.add", "time": 4.0, "bpm": 90.0}));
+    ok(&mut s, json!({"cmd": "tempo.add", "time": 9.0, "time_signature": [7, 8]}));
+    let before = ok(&mut s, json!({"cmd": "tempo.list"}));
+    ok(&mut s, json!({"cmd": "project.save", "path": path}));
+    ok(&mut s, json!({"cmd": "project.open", "path": path}));
+    assert_eq!(ok(&mut s, json!({"cmd": "tempo.list"})), before);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
