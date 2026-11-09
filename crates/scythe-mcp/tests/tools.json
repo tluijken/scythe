@@ -6563,6 +6563,1452 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The notes of a MIDI item's active take, in start order, with their numbers for the other\nnote commands.\n\nControl API command `midi.notes.list`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_notes_list",
+    "title": "Midi notes.list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds notes and answers with all notes.\n\nControl API command `midi.notes.add`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "notes": {
+          "items": {
+            "properties": {
+              "channel": {
+                "default": null,
+                "description": "1 to 16 (the editor's channel for new events when left out).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "end": {
+                "default": null,
+                "description": "Quarter notes; `start + length` when left out.",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "key": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "length": {
+                "default": null,
+                "description": "Quarter notes (the editor's grid when neither `end` nor `length` is given).",
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "muted": {
+                "default": null,
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "start": {
+                "description": "Quarter notes from the source start.",
+                "format": "double",
+                "type": "number"
+              },
+              "velocity": {
+                "default": null,
+                "description": "1 to 127 (100 when left out).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "start",
+              "key"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "item",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_notes_add",
+    "title": "Midi notes.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes notes; fields left out stay. Answers with all notes.\n\nControl API command `midi.notes.set`.",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "default": null,
+          "description": "MIDI channel, 1 to 16.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end": {
+          "default": null,
+          "description": "New end in quarter notes.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "indexes": {
+          "description": "The notes' numbers from `midi.notes.list`.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "default": null,
+          "description": "MIDI note number, 0 to 127.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "muted": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "selected": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "start": {
+          "default": null,
+          "description": "New start in quarter notes (the length stays).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "velocity": {
+          "default": null,
+          "description": "1 to 127.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "indexes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_notes_set",
+    "title": "Midi notes.set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes notes and answers with the rest.\n\nControl API command `midi.notes.delete`.",
+    "inputSchema": {
+      "properties": {
+        "indexes": {
+          "description": "The notes' numbers from `midi.notes.list`.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "indexes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_notes_delete",
+    "title": "Midi notes.delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Selects exactly these notes (none when empty). The editing commands work on the\nselected notes, or on all notes when none is selected.\n\nControl API command `midi.notes.select`.",
+    "inputSchema": {
+      "properties": {
+        "indexes": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "indexes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_notes_select",
+    "title": "Midi notes.select"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Quantizes the selected notes (all when none is selected) as REAPER's quantize dialog.\n\nControl API command `midi.quantize`.",
+    "inputSchema": {
+      "properties": {
+        "grid": {
+          "default": null,
+          "description": "Grid in quarter notes: 0.25 for 1/16, 1/3 for 1/8 triplets. The editor's grid of\nthe take when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "strength": {
+          "default": null,
+          "description": "0 to 100 percent (100 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "swing": {
+          "default": null,
+          "description": "Swing, -1 to 1: every second grid line moves by half of it times the grid. The\ntake's swing when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "what": {
+          "default": null,
+          "description": "`position` (default; keeps lengths), `position_and_end`, `end` or `length`.",
+          "enum": [
+            "position",
+            "position_and_end",
+            "end",
+            "length",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window_max": {
+          "default": null,
+          "description": "Only notes at most this far from a grid line, percent of the grid (100 when left\nout).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "window_min": {
+          "default": null,
+          "description": "Only notes at least this far from a grid line, percent of the grid (0 when left\nout).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_quantize",
+    "title": "Midi quantize"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves the selected notes (all when none) by random amounts.\n\nControl API command `midi.humanize`.",
+    "inputSchema": {
+      "properties": {
+        "grid": {
+          "default": null,
+          "description": "Grid in quarter notes; the take's grid when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "seed": {
+          "default": null,
+          "description": "Seed for repeatable results.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timing": {
+          "default": null,
+          "description": "Largest shift of a start, percent of the grid.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "velocity": {
+          "default": null,
+          "description": "Largest velocity change, percent of the full range.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_humanize",
+    "title": "Midi humanize"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Transposes the selected notes (all when none).\n\nControl API command `midi.transpose`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "default": null,
+          "description": "The scale's root, 0 (C) to 11.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scale": {
+          "default": null,
+          "description": "Move in scale steps of this scale (`midi.scales` lists them).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "semitones": {
+          "description": "Semitones, or scale steps with `scale`.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "semitones"
+      ],
+      "type": "object"
+    },
+    "name": "midi_transpose",
+    "title": "Midi transpose"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "One of the MIDI editor's note commands on the selected notes (all when none).\n\nControl API command `midi.edit`.",
+    "inputSchema": {
+      "properties": {
+        "grid": {
+          "default": null,
+          "description": "`split_grid`: the grid in quarter notes (the take's grid when left out);\n`force_key`: the scale root 0-11.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "op": {
+          "oneOf": [
+            {
+              "enum": [
+                "velocity",
+                "channel",
+                "mute",
+                "unmute",
+                "toggle_mute",
+                "select_all",
+                "select_none"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "legato",
+              "description": "Ends each note where the next begins.",
+              "type": "string"
+            },
+            {
+              "const": "split_grid",
+              "description": "Splits notes at every grid line.",
+              "type": "string"
+            },
+            {
+              "const": "split",
+              "description": "Splits notes at `value`.",
+              "type": "string"
+            },
+            {
+              "const": "join",
+              "description": "Joins notes of the same key into one.",
+              "type": "string"
+            },
+            {
+              "const": "length",
+              "description": "Sets lengths to `value` quarter notes.",
+              "type": "string"
+            },
+            {
+              "const": "lengthen",
+              "description": "Lengthens (negative: shortens) by `value` quarter notes.",
+              "type": "string"
+            },
+            {
+              "const": "move",
+              "description": "Moves by `value` quarter notes.",
+              "type": "string"
+            },
+            {
+              "const": "duplicate",
+              "description": "Copies the notes `value` semitones away (an octave up when left out).",
+              "type": "string"
+            },
+            {
+              "const": "force_key",
+              "description": "Moves notes onto the nearest key of `scale` with root `grid`.",
+              "type": "string"
+            }
+          ]
+        },
+        "relative": {
+          "default": null,
+          "description": "`velocity`: add `value` instead of setting it.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "scale": {
+          "default": null,
+          "description": "`force_key`: the scale.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "default": null,
+          "description": "`length`, `lengthen` and `move`: quarter notes; `velocity`: the value (or change\nwith `relative`); `channel`: 1-16; `split`: quarter notes from the source start;\n`duplicate`: semitones (12 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "op"
+      ],
+      "type": "object"
+    },
+    "name": "midi_edit",
+    "title": "Midi edit"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Runs a MIDI editor action on the item, by its command id in REAPER's MIDI editor section\n(32060): 40469 quantizes note positions to the take's grid, 40765 makes notes legato,\n42471 toggles key snap and so on (`midi.actions` lists them).\n\nControl API command `midi.action`.",
+    "inputSchema": {
+      "properties": {
+        "command": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "root": {
+          "default": null,
+          "description": "Key snap's root, 0 (C) to 11.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scale": {
+          "default": null,
+          "description": "Key snap's scale for the actions that follow the key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "command"
+      ],
+      "type": "object"
+    },
+    "name": "midi_action",
+    "title": "Midi action"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The MIDI editor actions `midi.action` runs, with REAPER's names.\n\nControl API command `midi.actions`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "midi_actions",
+    "title": "Midi actions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The scales key snap and `midi.transpose` know: Scythe's own and those of `.reascale`\nfiles given by path.\n\nControl API command `midi.scales`.",
+    "inputSchema": {
+      "properties": {
+        "files": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "midi_scales",
+    "title": "Midi scales"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The events of a controller lane, with their numbers for `midi.cc.delete`.\n\nControl API command `midi.cc.list`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lane": {
+          "default": null,
+          "description": "`cc1`…`cc127`, `cc14:1` (14-bit MSB 1 with LSB 33), `pitch`, `program`,\n`pressure` (channel aftertouch) or `poly` (poly aftertouch). Every lane that holds\nevents is listed when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_cc_list",
+    "title": "Midi cc.list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets lane values: replaces the lane's events between `from` and `to` (or the points'\nspan) by `points`.\n\nControl API command `midi.cc.set`.",
+    "inputSchema": {
+      "properties": {
+        "from": {
+          "default": null,
+          "description": "Quarter notes; the first point when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "points": {
+          "items": {
+            "properties": {
+              "at": {
+                "description": "Quarter notes from the source start.",
+                "format": "double",
+                "type": "number"
+              },
+              "channel": {
+                "default": null,
+                "description": "1 to 16 (1 when left out).",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "key": {
+                "default": null,
+                "description": "`poly` lane: the note number.",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "shape": {
+                "default": null,
+                "description": "CC shape towards the next point.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tension": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "value": {
+                "description": "0-127, or 0-16383 for pitch bend and 14-bit lanes.",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "at",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "to": {
+          "default": null,
+          "description": "Quarter notes; the last point when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "lane",
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "midi_cc_set",
+    "title": "Midi cc.set"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Draws a line or curve: two events at `from` and `to` joined by a CC shape (as REAPER 7\ndoes), replacing the lane's events in between.\n\nControl API command `midi.cc.line`.",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "default": null,
+          "description": "MIDI channel 1-16 (1 when left out).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "end_value": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "from": {
+          "format": "double",
+          "type": "number"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "shape": {
+          "default": null,
+          "description": "`linear` (default), `slow_start_end`, `fast_start`, `fast_end`, `bezier` or `square`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "start_value": {
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tension": {
+          "default": null,
+          "description": "Bezier tension, -1 to 1.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "to": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "item",
+        "lane",
+        "from",
+        "to",
+        "start_value",
+        "end_value"
+      ],
+      "type": "object"
+    },
+    "name": "midi_cc_line",
+    "title": "Midi cc.line"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the CC shape of lane events (by their numbers from `midi.cc.list`).\n\nControl API command `midi.cc.shape`.",
+    "inputSchema": {
+      "properties": {
+        "indexes": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lane": {
+          "type": "string"
+        },
+        "shape": {
+          "type": "string"
+        },
+        "tension": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "lane",
+        "indexes",
+        "shape"
+      ],
+      "type": "object"
+    },
+    "name": "midi_cc_shape",
+    "title": "Midi cc.shape"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes lane events by their numbers from `midi.cc.list`.\n\nControl API command `midi.cc.delete`.",
+    "inputSchema": {
+      "properties": {
+        "indexes": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lane": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "item",
+        "lane",
+        "indexes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_cc_delete",
+    "title": "Midi cc.delete"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The take's system exclusive, text and notation events.\n\nControl API command `midi.sysex.list`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_sysex_list",
+    "title": "Midi sysex.list"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a system exclusive message (`hex`, with or without F0/F7) or a text event (`text`\nwith its meta `kind`: 1 text, 3 track name, 5 lyric, 6 marker, 7 cue point).\n\nControl API command `midi.sysex.add`.",
+    "inputSchema": {
+      "properties": {
+        "at": {
+          "format": "double",
+          "type": "number"
+        },
+        "hex": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "default": null,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "text": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item",
+        "at"
+      ],
+      "type": "object"
+    },
+    "name": "midi_sysex_add",
+    "title": "Midi sysex.add"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes system exclusive and text events by their numbers from `midi.sysex.list`.\n\nControl API command `midi.sysex.delete`.",
+    "inputSchema": {
+      "properties": {
+        "indexes": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item",
+        "indexes"
+      ],
+      "type": "object"
+    },
+    "name": "midi_sysex_delete",
+    "title": "Midi sysex.delete"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Moves notes (`target` `notes`, of the item) or item positions (`items`) towards a groove\ntemplate (an `.rgt` file).\n\nControl API command `midi.groove`.",
+    "inputSchema": {
+      "properties": {
+        "file": {
+          "default": null,
+          "description": "Path of the `.rgt` file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "groove": {
+          "default": null,
+          "description": "The groove file's text, instead of `file`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "items": {
+          "description": "The items: one MIDI item for `notes`, any items for `items`.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "strength": {
+          "default": null,
+          "description": "0 to 100 percent (100 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "target": {
+          "default": null,
+          "description": "`notes` (default) or `items`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "velocity_strength": {
+          "default": null,
+          "description": "Notes: how far velocities follow the groove's levels, 0 to 100 percent (0 when left\nout).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "name": "midi_groove",
+    "title": "Midi groove"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Makes a groove template from the item's notes (`beats` long) and answers with its\n`.rgt` text; saves it when `file` is given.\n\nControl API command `midi.groove.extract`.",
+    "inputSchema": {
+      "properties": {
+        "beats": {
+          "default": null,
+          "description": "The pattern's length in quarter notes (4 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "file": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_groove_extract",
+    "title": "Midi groove.extract"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The MIDI editor settings REAPER keeps with the take.\n\nControl API command `midi.editor.get`.",
+    "inputSchema": {
+      "properties": {
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_editor_get",
+    "title": "Midi editor.get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes the take's MIDI editor settings; fields left out stay.\n\nControl API command `midi.editor.set`.",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "default": null,
+          "description": "Channel for new events, 1-16.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grid": {
+          "default": null,
+          "description": "Grid in quarter notes.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "item": {
+          "description": "The item's id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key_snap": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "lanes": {
+          "default": null,
+          "description": "The controller lanes, by the names `midi.cc.list` takes plus `velocity`,\n`off_velocity`, `sysex` and `text`.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "mode": {
+          "default": null,
+          "description": "`piano_roll`, `named_notes` (drum map) or `event_list`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "show_channels": {
+          "default": null,
+          "description": "Channels shown (1-16); empty shows all.",
+          "items": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "swing": {
+          "default": null,
+          "description": "Swing -1 to 1; 0 for a straight grid.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "name": "midi_editor_set",
+    "title": "Midi editor.set"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The track's note names (as REAPER keeps them in `MIDINOTENAMES`).\n\nControl API command `midi.note_names.get`.",
+    "inputSchema": {
+      "properties": {
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "midi_note_names_get",
+    "title": "Midi note names.get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Names notes of a track, or loads a note name file (`60 Kick`, `CC7 Volume`); an empty\nname clears one.\n\nControl API command `midi.note_names.set`.",
+    "inputSchema": {
+      "properties": {
+        "file": {
+          "default": null,
+          "description": "A note name file to load (replacing the track's names).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "names": {
+          "default": [],
+          "items": {
+            "properties": {
+              "channel": {
+                "default": null,
+                "description": "1 to 16; all channels when left out.",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "key": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "key",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "midi_note_names_set",
+    "title": "Midi note names.set"
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,

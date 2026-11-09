@@ -10,10 +10,10 @@ use scythe_session::access::AccessCommand;
 use scythe_session::api::{
     analysis::AnalysisCommand, customize::CustomizeCommand, envelope::EnvelopeCommand, feed::EventsCommand,
     fx::FxCommand, groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, media::MediaCommand,
-    midi::MidiCommand, mix::MixCommand, modulation::ModulationCommand, project::ProjectCommand,
-    recording::RecordingCommand, render::RenderCommand, script::ScriptCommand, sends::SendCommand,
-    setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand, tracks::TrackCommand,
-    transport::TransportCommand,
+    midi::MidiCommand, midi_edit::MidiEditCommand, mix::MixCommand, modulation::ModulationCommand,
+    project::ProjectCommand, recording::RecordingCommand, render::RenderCommand, script::ScriptCommand,
+    sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, timing::TimingCommand,
+    tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -106,6 +106,7 @@ fn domains() -> Vec<Value> {
         schema::<TempoCommand>(),
         schema::<SurfaceCommand>(),
         schema::<MidiCommand>(),
+        schema::<MidiEditCommand>(),
         schema::<TimingCommand>(),
         schema::<ModulationCommand>(),
         schema::<RenderCommand>(),

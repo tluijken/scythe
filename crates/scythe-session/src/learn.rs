@@ -117,6 +117,9 @@ pub struct LearnState {
     /// (track or `None` for the master, chain position).
     pub open_fx: Vec<(Option<TrackId>, usize)>,
     pub focused_fx: Option<(Option<TrackId>, usize)>,
+    /// MIDI editor step input: note-ons from the MIDI inputs and the virtual keyboard wait
+    /// here for the editor while it is on.
+    pub step_input: Option<Vec<[u8; 3]>>,
 }
 
 impl LearnState {
@@ -255,6 +258,7 @@ impl Session {
     /// Whether the MIDI inputs enabled for control need to be open.
     pub(crate) fn control_inputs_wanted(&self) -> bool {
         self.learn.listening
+            || self.learn.step_input.is_some()
             || self.learn.bindings.iter().any(|b| matches!(b.trigger, Trigger::Midi { .. }))
             || slots(&self.project).any(|(_, _, s)| modulation::learns(s).iter().any(|l| l.status() >= 0x80))
     }
@@ -268,6 +272,12 @@ impl Session {
                 continue;
             }
             let msg = m.bytes;
+            if let Some(steps) = &mut self.learn.step_input
+                && msg[0] & 0xf0 == 0x90
+                && msg[2] > 0
+            {
+                steps.push(msg);
+            }
             if self.learn.listening {
                 let kind = msg[0] & 0xf0;
                 if kind == 0x80 || kind == 0x90 && msg[2] == 0 {

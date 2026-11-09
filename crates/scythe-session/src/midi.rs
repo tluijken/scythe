@@ -141,7 +141,26 @@ impl Session {
     /// Plays a message on the virtual MIDI keyboard (device 62): tracks armed with it as their
     /// input hear it, and it records like any MIDI input.
     pub fn virtual_keyboard(&mut self, bytes: [u8; 3]) {
+        if let Some(steps) = &mut self.learn.step_input
+            && bytes[0] & 0xf0 == 0x90
+            && bytes[2] > 0
+        {
+            steps.push(bytes);
+        }
         self.engine.virtual_keyboard(bytes);
+    }
+
+    /// Turns MIDI editor step input on or off; while on, [`Session::take_step_notes`] hands
+    /// over the note-ons played since it was last called.
+    pub fn set_step_input(&mut self, on: bool) {
+        if on != self.learn.step_input.is_some() {
+            self.learn.step_input = on.then(Vec::new);
+            self.sync();
+        }
+    }
+
+    pub fn take_step_notes(&mut self) -> Vec<[u8; 3]> {
+        self.learn.step_input.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Whether some armed track listens to the virtual keyboard.

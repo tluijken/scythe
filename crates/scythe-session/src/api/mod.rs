@@ -15,6 +15,7 @@ pub mod items;
 pub mod markers;
 pub mod media;
 pub mod midi;
+pub mod midi_edit;
 pub mod mix;
 pub mod modulation;
 pub mod project;
@@ -57,6 +58,7 @@ pub enum Command {
     Tempo(tempo::TempoCommand),
     Surface(surface::SurfaceCommand),
     Midi(midi::MidiCommand),
+    MidiEdit(midi_edit::MidiEditCommand),
     Timing(timing::TimingCommand),
     Modulation(modulation::ModulationCommand),
     Render(render::RenderCommand),
@@ -71,6 +73,9 @@ pub enum Command {
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
 const TIMING: &[&str] = &["item.timebase", "take.channel_mode", "project.timebase", "project.playrate"];
+
+/// Commands of the `midi` domain about devices; `midi_edit` answers the rest.
+const MIDI_DEVICES: &[&str] = &["midi.devices", "midi.rescan", "midi.device", "midi.keyboard"];
 
 /// Commands of the `track` domain that `recording` answers.
 const RECORDING: &[&str] = &["track.record_mode", "track.monitor_mode"];
@@ -107,6 +112,7 @@ impl<'de> Deserialize<'de> for Command {
             "tempo" => serde_json::from_value(value).map(Command::Tempo),
             "envelope" => serde_json::from_value(value).map(Command::Envelope),
             "surface" => serde_json::from_value(value).map(Command::Surface),
+            "midi" if !MIDI_DEVICES.contains(&cmd) => serde_json::from_value(value).map(Command::MidiEdit),
             "midi" | "sync" => serde_json::from_value(value).map(Command::Midi),
             "render" => serde_json::from_value(value).map(Command::Render),
             "record" | "lanes" => serde_json::from_value(value).map(Command::Recording),
@@ -136,6 +142,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Tempo(c) => tempo::execute(session, c),
         Command::Surface(c) => surface::execute(session, c),
         Command::Midi(c) => midi::execute(session, c),
+        Command::MidiEdit(c) => midi_edit::execute(session, c),
         Command::Timing(c) => timing::execute(session, c),
         Command::Modulation(c) => modulation::execute(session, c),
         Command::Render(c) => render::execute(session, c),
