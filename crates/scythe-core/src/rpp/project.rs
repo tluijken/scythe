@@ -852,8 +852,9 @@ fn empty_take() -> Take {
     }
 }
 
-/// Sources read from one media file. `VIDEO` items play their file's audio stream as well.
-const FILE_SOURCE_TYPES: &[&str] = &["WAVE", "MP3", "FLAC", "VORBIS", "OPUS", "WAVPACK", "VIDEO"];
+/// Sources read from one media file. `VIDEO` items play their file's audio stream as well,
+/// `RPP_PROJECT` items (subprojects) the render of another project.
+const FILE_SOURCE_TYPES: &[&str] = &["WAVE", "MP3", "FLAC", "VORBIS", "OPUS", "WAVPACK", "VIDEO", "RPP_PROJECT"];
 
 fn parse_source(c: &Chunk) -> Source {
     let kind = c.args().into_iter().next().unwrap_or_default();
@@ -939,6 +940,7 @@ fn source_kind_for(path: &Path) -> &'static str {
         Some("ogg") => "VORBIS",
         Some("opus") => "OPUS",
         Some("wv") => "WAVPACK",
+        Some("rpp") => "RPP_PROJECT",
         Some("mp4" | "m4v" | "mov" | "mkv" | "webm" | "avi" | "mpg" | "mpeg" | "wmv" | "flv" | "ogv" | "mxf") => {
             "VIDEO"
         }

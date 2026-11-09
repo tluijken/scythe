@@ -52,8 +52,55 @@ fn decode_audio(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
     match extension(path).as_deref() {
         Some("opus") => decode_opus(path),
         Some("wv") => decode_with_ffmpeg(path),
+        Some("rpp") => decode_subproject(path),
         _ => decode(path, gapless).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) }),
     }
+}
+
+/// The proxy a subproject plays from: REAPER renders the project's master mix next to it as
+/// `<file>-PROX`, a 32-bit float WAV at the subproject's sample rate.
+pub fn subproject_proxy(path: &Path) -> PathBuf {
+    let mut proxy = path.as_os_str().to_owned();
+    proxy.push("-PROX");
+    PathBuf::from(proxy)
+}
+
+/// A subproject (`RPP_PROJECT` source) plays its proxy, rendered first when it is missing, as
+/// REAPER does on load. A proxy that exists is played as it is, even if the project changed
+/// since: REAPER renders it again when the subproject is saved.
+fn decode_subproject(path: &Path) -> Result<AudioData, MediaError> {
+    let proxy = subproject_proxy(path);
+    if !proxy.exists() {
+        render_subproject(path)?;
+    }
+    decode(&proxy, false)
+}
+
+/// Renders the subproject at `path` to its proxy: the master mix from 0 to the project's end.
+pub fn render_subproject(path: &Path) -> Result<(), MediaError> {
+    static RENDERING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    let decode_err = |message: String| MediaError::Decode { path: path.to_owned(), message };
+    let project = scythe_core::rpp::read_project(path).map_err(|e| decode_err(e.to_string()))?;
+    let rate = project.sample_rate.unwrap_or(48_000);
+    {
+        let mut rendering = RENDERING.lock().unwrap();
+        if rendering.iter().any(|p| p == path) {
+            return Err(decode_err("the subproject contains itself".into()));
+        }
+        rendering.push(path.to_owned());
+    }
+    let pool = MediaPool::with_resample(scythe_core::render_settings::RenderSettings::from_project(&project).resample);
+    for take in project.tracks.iter().flat_map(|t| &t.items).flat_map(|i| &i.takes) {
+        if let Some(file) = take.source.file() {
+            let _ = pool.load(&scythe_core::rpp::resolve_media_path(&project, file), rate);
+        }
+    }
+    pool.prepare_project(&project);
+    let range = scythe_core::TimeRange::new(0.0, project.length());
+    let encoding = crate::bounce::Encoding::wav(crate::bounce::BitDepth::Float32);
+    let result = crate::bounce::bounce(&project, &pool, range, rate, 2, encoding, &subproject_proxy(path), |_| {});
+    RENDERING.lock().unwrap().retain(|p| p != path);
+    result.map_err(|e| decode_err(format!("rendering the subproject: {e}")))
 }
 
 fn extension(path: &Path) -> Option<String> {
@@ -881,6 +928,14 @@ impl MediaPool {
         result
     }
 
+    /// Drops a file's decoded audio and its processed copies, so the next load reads it again
+    /// (a subproject whose proxy was rendered anew).
+    pub fn forget(&self, path: &Path) {
+        self.entries.lock().unwrap().remove(path);
+        self.processed.lock().unwrap().retain(|k, _| k.0 != path);
+        self.warped.lock().unwrap().retain(|k, _| k.0 != path);
+    }
+
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
         self.processed.lock().unwrap().clear();
@@ -960,6 +1015,27 @@ mod tests {
             .map(|(a, b)| (a - b * half).abs())
             .fold(0.0, f32::max);
         assert!(err < 0.05, "{err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_subproject_plays_its_proxy_and_renders_a_missing_one() {
+        let dir = std::env::temp_dir().join(format!("scythe-subproject-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tone = sine(44100, 440.0, 0.5);
+        write_wav(&dir.join("tone.wav"), 44100, &[tone.clone(), tone.clone()]);
+        let sub = dir.join("sub.RPP");
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  SAMPLERATE 44100 1 0\n  MASTER_VOLUME 0.5 0 -1 -1 1\n  <TRACK\n    <ITEM\n      POSITION 0.25\n      LENGTH 0.5\n      FADEIN 1 0 0 1 0 0 0\n      FADEOUT 1 0 0 1 0 0 0\n      <SOURCE WAVE\n        FILE \"tone.wav\"\n      >\n    >\n  >\n>\n";
+        std::fs::write(&sub, text).unwrap();
+
+        let data = decode_file(&sub).unwrap();
+        assert!(subproject_proxy(&sub).exists());
+        assert_eq!((data.sample_rate, data.frames()), (44100, 33075));
+        assert_eq!(data.channels[0][..11025].iter().fold(0.0f32, |m, s| m.max(s.abs())), 0.0);
+        assert!((data.channels[0][11025 + 100] - tone[100] * 0.5).abs() < 1e-6);
+
+        write_wav(&subproject_proxy(&sub), 44100, &[vec![0.25; 10], vec![0.25; 10]]);
+        assert_eq!(decode_file(&sub).unwrap().frames(), 10);
         std::fs::remove_dir_all(&dir).ok();
     }
 

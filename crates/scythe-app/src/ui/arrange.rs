@@ -901,6 +901,9 @@ fn draw_item(
     {
         app.view.midi_editor = Some(id);
     }
+    if resp.double_clicked() {
+        app.open_subproject(id);
+    }
     let (x, t) = (|t: f64| axis.x(t), |x: f32| axis.t(x));
     crate::ui::stretch_markers::show(app, ui, &item_painter, outer, (&x, &t), track, &item);
     item_handles(app, ui, &item_painter, outer, axis, track, &item);

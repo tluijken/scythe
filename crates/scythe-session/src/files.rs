@@ -50,6 +50,21 @@ impl Session {
         }
     }
 
+    /// A project used as a subproject (it has a `-PROX` proxy next to it, as REAPER keeps one)
+    /// renders its proxy again in the background when it is saved, so the projects that hold it
+    /// play the new version.
+    fn render_subproject_proxy(&mut self, path: &Path) {
+        if !scythe_engine::media::subproject_proxy(path).exists() {
+            return;
+        }
+        let (path, pool, tx) = (path.to_owned(), self.engine.pool().clone(), self.loader_tx.clone());
+        std::thread::spawn(move || {
+            let result = scythe_engine::media::render_subproject(&path).map_err(|e| e.to_string());
+            pool.forget(&path);
+            let _ = tx.send(crate::LoaderMsg::SubprojectRendered(path, result));
+        });
+    }
+
     /// Every few minutes, writes unsaved changes to a timestamped file in the project's
     /// `Backups` folder (see [`autosave_due`]). The project file itself is only written by an
     /// explicit save.
@@ -93,6 +108,7 @@ impl Session {
                 self.saved_at = Some(Instant::now());
                 self.notify(format!("Saved {}", path.display()));
                 self.remember_tabs();
+                self.render_subproject_proxy(path);
                 Ok(())
             }
             Err(e) => {

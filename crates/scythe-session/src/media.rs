@@ -18,6 +18,8 @@ pub enum LoaderMsg {
         place: Option<(TrackId, f64)>,
     },
     Bounced(Result<PathBuf, String>),
+    /// A saved subproject's proxy was rendered again.
+    SubprojectRendered(PathBuf, Result<(), String>),
     /// Isolated items were rendered to `path` for gluing or applying track FX.
     ItemsRendered {
         path: PathBuf,
@@ -270,6 +272,13 @@ impl Session {
                         Err(e) => self.notify(format!("Render failed: {e}")),
                     }
                 }
+                LoaderMsg::SubprojectRendered(path, result) => match result {
+                    Ok(()) => {
+                        self.notify(format!("Rendered subproject proxy for {}", path.display()));
+                        self.sync();
+                    }
+                    Err(e) => self.notify(format!("Subproject render failed: {e}")),
+                },
                 LoaderMsg::Bounced(result) => {
                     self.busy = None;
                     match result {

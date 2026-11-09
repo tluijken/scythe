@@ -243,6 +243,7 @@ fn file_type(path: &std::path::Path) -> String {
         "ogg" => "VORBIS".into(),
         "opus" => "OPUS".into(),
         "wv" => "WAVPACK".into(),
+        "rpp" => "RPP_PROJECT".into(),
         "mid" | "midi" => "MIDI".into(),
         "mp4" | "mov" | "mkv" | "webm" | "avi" => "VIDEO".into(),
         "" => "WAVE".into(),

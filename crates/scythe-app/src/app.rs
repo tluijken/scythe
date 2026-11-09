@@ -386,6 +386,24 @@ impl ScytheApp {
         }
     }
 
+    /// Opens the subproject an item plays in a new tab (or switches to the tab that has it),
+    /// as double-clicking one does in REAPER; saving it there renders its proxy again.
+    pub fn open_subproject(&mut self, item: ItemId) {
+        let Some(file) = self.project.find_item(item).and_then(|(_, i)| i.take()).and_then(|t| t.source.file()) else {
+            return;
+        };
+        if !file.extension().is_some_and(|e| e.eq_ignore_ascii_case("rpp")) {
+            return;
+        }
+        let path = scythe_core::rpp::resolve_media_path(&self.project, file);
+        if let Some(tab) = self.session.tabs().into_iter().find(|t| t.path.as_deref() == Some(path.as_path())) {
+            self.switch_tab(tab.index);
+            return;
+        }
+        let _ = self.session.open_in_new_tab(&path);
+        self.follow_session();
+    }
+
     pub fn switch_tab(&mut self, index: usize) {
         if self.session.switch_tab(index) {
             self.follow_session();
