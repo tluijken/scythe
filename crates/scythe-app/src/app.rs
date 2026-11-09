@@ -72,6 +72,8 @@ pub struct ViewState {
     pub keyboard_open: bool,
     pub keyboard: crate::ui::midi_devices::KeyboardState,
     pub midi_devices_open: bool,
+    /// The region/marker manager window, while open, on this page.
+    pub regions: Option<crate::ui::regions::RegionsTab>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -213,6 +215,7 @@ impl ScytheApp {
                 keyboard_open: false,
                 keyboard: Default::default(),
                 midi_devices_open: false,
+                regions: None,
             },
             palette: None,
             clipboard: Vec::new(),

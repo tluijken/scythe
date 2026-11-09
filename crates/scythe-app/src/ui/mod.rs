@@ -8,6 +8,7 @@ mod mixer;
 pub mod modulation;
 pub mod monitor;
 mod nam;
+pub mod regions;
 mod setlist;
 mod stretch_markers;
 pub mod surfaces;
@@ -139,6 +140,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     midi_devices::show(app, ui);
     monitor::wizards(app, ui);
     groups::show(app, ui);
+    regions::show(app, ui);
     palette::show(app, ui);
 }
 
