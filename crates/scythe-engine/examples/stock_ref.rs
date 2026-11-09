@@ -188,8 +188,9 @@ fn template(dir: &Path, name: &str, seconds: usize, sidechain: bool) -> String {
 /// and 120 bpm: a single long note, and a grid of chords, extremes of pitch and velocity, short
 /// and overlapping notes.
 type Notes = Vec<(u32, u32, u8, u8)>;
+type RawEvents = Vec<(u32, &'static str)>;
 
-fn note_grids() -> Vec<(&'static str, Notes, Vec<(u32, &'static str)>)> {
+fn note_grids() -> Vec<(&'static str, Notes, RawEvents)> {
     vec![
         ("note", vec![(192, 1920, 69, 100)], vec![]),
         ("bend", vec![(192, 1920, 69, 100)], vec![(960, "e0 00 60"), (1500, "e0 7f 20"), (1800, "e0 00 40")]),
@@ -253,7 +254,7 @@ s += 1;
 
 /// Every pitch class from C4 and the extremes, two channels, a controller, the pitch wheel
 /// and a program change, for the MIDI probe.
-fn probe_events() -> (Notes, Vec<(u32, &'static str)>) {
+fn probe_events() -> (Notes, RawEvents) {
     let mut notes: Notes = (0..12).map(|k| (100 + k * 100, 50, 60 + k as u8, 100)).collect();
     notes.extend([(1500, 50, 127, 100), (1600, 50, 0, 100)]);
     (notes, vec![(400, "b0 07 50"), (500, "e0 00 50"), (1010, "91 40 30"), (1110, "81 40 00"), (1200, "c0 05 00")])
