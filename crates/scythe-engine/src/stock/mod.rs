@@ -6,6 +6,7 @@ pub(crate) mod params;
 pub mod reacomp;
 pub mod reagate;
 pub mod realimit;
+pub mod reaxcomp;
 
 use std::path::Path;
 
@@ -116,6 +117,14 @@ pub static PLUGINS: &[StockPlugin] = &[
         "5653547265636D726561636F6D700000",
         "ReaComp-compatible compressor",
         |chunk, cx| boxed(reacomp::Compressor::from_reacomp(chunk, cx.sample_rate), "ReaComp")
+    ),
+    stock!(
+        "ReaXcomp",
+        "reaxcomp.vst.so",
+        1919252579,
+        "5653547265786372656178636F6D7000",
+        "ReaXcomp-compatible multiband compressor",
+        |chunk, cx| boxed(reaxcomp::MultibandCompressor::from_reaxcomp(chunk, cx.sample_rate), "ReaXcomp")
     ),
     stock!(
         "ReaVerb",
@@ -264,6 +273,12 @@ impl Biquad {
     pub fn reset(&mut self) {
         self.z = [0.0; 2];
     }
+
+    /// Takes `other`'s coefficients, keeping the filter's memory.
+    pub fn retune(&mut self, other: &Biquad) {
+        self.b = other.b;
+        self.a = other.a;
+    }
 }
 
 /// The detector's low- and high-pass filters (ReaComp and ReaGate), one pair per channel;
@@ -306,6 +321,10 @@ pub(crate) struct Rms {
 impl Rms {
     pub fn new(frames: usize) -> Self {
         Self { squares: vec![[0.0; 2]; frames.max(1)], sum: [0.0; 2], at: 0 }
+    }
+
+    pub fn window(&self) -> usize {
+        self.squares.len()
     }
 
     pub fn run(&mut self, l: f64, r: f64) -> f64 {

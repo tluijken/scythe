@@ -36,8 +36,69 @@ const DEFAULTS: [f32; 21] = [
 /// halving of the gain).
 const AUTO_RELEASE_MS_PER_DB: f64 = 48.0 / 6.020_599_913_279_624;
 
-/// The gain computer and timing derived from the parameters.
+/// The parameters as the compressor uses them.
 struct Settings {
+    curve: Curve,
+    dry: f32,
+    wet: f32,
+    preview: bool,
+}
+
+impl Settings {
+    fn new(p: &Params, sample_rate: u32) -> Self {
+        let ratio = 1.0 + p.get(1) as f64 * 99.0;
+        let legacy = p.get(17);
+        let curve = CurveSpec {
+            threshold: p.get(0) as f64,
+            ratio: if ratio >= 99.0 { 10000.0 } else { ratio },
+            knee_db: p.get(14) as f64 * 24.0,
+            soft_knee: (legacy * 4.0) as i32 & 1 == 1,
+            classic_attack: legacy > 0.5,
+            attack_frames: p.get(2) as f64 * 500.0 * 0.001 * sample_rate as f64,
+            release_ms: p.get(3) as f64 * 5000.0,
+            auto_release: p.get(16) >= 0.5,
+            auto_makeup: p.get(15) >= 0.5,
+        };
+        Self { curve: curve.build(sample_rate), dry: p.get(10), wet: p.get(11), preview: p.get(12) >= 0.5 }
+    }
+}
+
+/// What a [`Curve`] is made from.
+pub(crate) struct CurveSpec {
+    pub threshold: f64,
+    pub ratio: f64,
+    pub knee_db: f64,
+    pub soft_knee: bool,
+    pub classic_attack: bool,
+    pub attack_frames: f64,
+    pub release_ms: f64,
+    pub auto_release: bool,
+    pub auto_makeup: bool,
+}
+
+impl CurveSpec {
+    pub fn build(self, sample_rate: u32) -> Curve {
+        let threshold = self.threshold.max(1e-12);
+        let slope = 1.0 - 1.0 / self.ratio;
+        Curve {
+            threshold,
+            slope,
+            knee_db: self.knee_db,
+            knee: 10f64.powf(self.knee_db / 20.0),
+            soft_knee: self.soft_knee,
+            classic_attack: self.classic_attack,
+            attack: coefficient(self.attack_frames),
+            release_ms: self.release_ms,
+            auto_release: self.auto_release,
+            // ReaXcomp ratios under 1:1 expand, and make up nothing.
+            makeup: if self.auto_makeup && slope > 0.0 { 10f64.powf(-slope * threshold.log10() / 2.0) } else { 1.0 },
+            sample_rate,
+        }
+    }
+}
+
+/// ReaComp's gain computer and envelope timing; ReaXcomp's bands use the same.
+pub(crate) struct Curve {
     threshold: f64,
     /// 1 - 1/ratio.
     slope: f64,
@@ -49,9 +110,6 @@ struct Settings {
     release_ms: f64,
     auto_release: bool,
     makeup: f64,
-    dry: f32,
-    wet: f32,
-    preview: bool,
     sample_rate: u32,
 }
 
@@ -59,31 +117,32 @@ fn coefficient(frames: f64) -> f64 {
     if frames <= 0.0 { 0.0 } else { (-1.0 / frames).exp() }
 }
 
-impl Settings {
-    fn new(p: &Params, sample_rate: u32) -> Self {
-        let threshold = (p.get(0) as f64).max(1e-12);
-        let ratio = 1.0 + p.get(1) as f64 * 99.0;
-        let slope = 1.0 - 1.0 / if ratio >= 99.0 { 10000.0 } else { ratio };
-        let knee_db = p.get(14) as f64 * 24.0;
-        let legacy = p.get(17);
-        Self {
-            threshold,
-            slope,
-            knee_db,
-            knee: 10f64.powf(knee_db / 20.0),
-            soft_knee: (legacy * 4.0) as i32 & 1 == 1,
-            classic_attack: legacy > 0.5,
-            attack: coefficient(p.get(2) as f64 * 500.0 * 0.001 * sample_rate as f64),
-            release_ms: p.get(3) as f64 * 5000.0,
-            auto_release: p.get(16) >= 0.5,
-            makeup: if p.get(15) >= 0.5 { 10f64.powf(-slope * threshold.log10() / 2.0) } else { 1.0 },
-            dry: p.get(10),
-            wet: p.get(11),
-            preview: p.get(12) >= 0.5,
-            sample_rate,
-        }
-    }
+/// The envelope a [`Curve`] drives.
+#[derive(Default)]
+pub(crate) struct Envelope {
+    env: f64,
+    reduction_db: f64,
+}
 
+impl Envelope {
+    /// Follows detector level `level` for one frame; returns the gain, make-up included.
+    pub fn step(&mut self, c: &Curve, level: f64) -> f64 {
+        if level > self.env {
+            // Rising levels start from where reduction begins: below it the envelope is
+            // irrelevant (unless the legacy options ask for the classic attack).
+            if !c.classic_attack {
+                self.env = self.env.max(c.onset());
+            }
+            self.env = level + c.attack * (self.env - level);
+        } else {
+            self.env = level + c.release(self.reduction_db) * (self.env - level);
+        }
+        self.reduction_db = c.reduction_db(self.env);
+        10f64.powf(-self.reduction_db / 20.0) * c.makeup
+    }
+}
+
+impl Curve {
     /// Gain reduction in dB for envelope level `env`.
     fn reduction_db(&self, env: f64) -> f64 {
         let x = env / self.threshold;
@@ -130,8 +189,7 @@ pub struct Compressor {
     audio: Vec<[f32; 2]>,
     levels: Vec<f64>,
     at: usize,
-    env: f64,
-    reduction_db: f64,
+    envelope: Envelope,
 }
 
 impl Compressor {
@@ -151,8 +209,7 @@ impl Compressor {
             audio: Vec::new(),
             levels: Vec::new(),
             at: 0,
-            env: 0.0,
-            reduction_db: 0.0,
+            envelope: Envelope::default(),
             params,
             sample_rate,
         };
@@ -235,18 +292,7 @@ impl Effect for Compressor {
                 *r = fr as f32;
                 continue;
             }
-            if level > self.env {
-                // Rising levels start from where reduction begins: below it the envelope is
-                // irrelevant (unless the legacy options ask for the classic attack).
-                if !s.classic_attack {
-                    self.env = self.env.max(s.onset());
-                }
-                self.env = level + s.attack * (self.env - level);
-            } else {
-                self.env = level + s.release(self.reduction_db) * (self.env - level);
-            }
-            self.reduction_db = s.reduction_db(self.env);
-            let g = 10f64.powf(-self.reduction_db / 20.0) * s.makeup;
+            let g = self.envelope.step(&s.curve, level);
             let gain = s.dry + s.wet * g as f32;
             *l = out_l * gain;
             *r = out_r * gain;
@@ -254,8 +300,7 @@ impl Effect for Compressor {
     }
 
     fn reset(&mut self) {
-        self.env = 0.0;
-        self.reduction_db = 0.0;
+        self.envelope = Envelope::default();
         self.rms.reset();
         self.filter.reset();
         self.audio.fill([0.0; 2]);
@@ -297,9 +342,9 @@ mod tests {
         let mut params = DEFAULTS.to_vec();
         (params[0], params[1], params[14]) = (0.2512, 1.0, 0.5);
         let comp = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
-        assert!((comp.settings.reduction_db(0.2512) - 4.0735).abs() < 1e-3);
+        assert!((comp.settings.curve.reduction_db(0.2512) - 4.0735).abs() < 1e-3);
         params[17] = 0.0;
         let legacy = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
-        assert!((legacy.settings.reduction_db(0.2512) - 2.4089).abs() < 1e-3);
+        assert!((legacy.settings.curve.reduction_db(0.2512) - 2.4089).abs() < 1e-3);
     }
 }
