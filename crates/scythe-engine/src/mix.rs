@@ -179,6 +179,10 @@ impl Automation {
                     lo = lo.max(v0);
                     hi = hi.min(v1);
                 }
+                if let Some((e0, e1)) = env.item_edges_around(t) {
+                    lo = lo.max(e0);
+                    hi = hi.min(e1);
+                }
             }
             if hi <= lo {
                 self.pan_matrix(t)
@@ -199,7 +203,7 @@ impl Automation {
         let near = |e: &Envelope, t0: f64| {
             let i = e.points.partition_point(|p| p.time <= t0);
             let in_bezier = i > 0 && i < e.points.len() && matches!(e.points[i - 1].shape, PointShape::Bezier(_));
-            in_bezier || e.points.get(i).is_some_and(|p| p.time <= t1)
+            in_bezier || e.points.get(i).is_some_and(|p| p.time <= t1) || e.items_between(t0, t1)
         };
         self.gains.iter().chain(self.pan_like()).any(|e| near(e, t0))
             || self.mutes.iter().any(|e| near(e, t0 - MUTE_FADE))

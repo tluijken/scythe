@@ -1,3 +1,4 @@
+pub mod automation_item;
 pub mod envelope;
 pub mod ext_state;
 pub mod fade;
@@ -37,7 +38,7 @@ pub mod units;
 pub use envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 pub use fade::Fade;
 pub use model::{
-    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, ItemId, LineMemo, Marker, Processing, Project, Section, Send,
-    SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId,
+    AutoMode, ChannelMode, Color, FxSlot, GlobalAutomation, HwOut, Item, ItemId, LineMemo, Marker, Processing, Project,
+    Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId,
 };
 pub use tempo::TempoMap;

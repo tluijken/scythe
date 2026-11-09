@@ -7,7 +7,8 @@ use crate::fader::PanMode;
 use crate::groups::GroupFlags;
 use crate::lanes::{COMP_FADE, CompArea};
 use crate::model::{
-    AutoMode, ChannelMode, Color, FxSlot, HwOut, Item, LineMemo, Marker, Processing, Project, RegionRenderTrack,
+    AutoMode, ChannelMode, Color, FxSlot, GlobalAutomation, HwOut, Item, LineMemo, Marker, Processing, Project,
+    RegionRenderTrack,
     Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
 };
 use crate::recording::{RecordMode, RecordTap};
@@ -241,6 +242,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         p.timecode_sync = crate::midi_route::TimecodeSync::parse(&t[1..]);
                         p.extra.push(node.clone());
                     }
+                    "GLOBAL_AUTO" => {
+                        p.global_automation = GlobalAutomation::from_rpp(num(&t, 1, -1.0) as i64);
+                        p.extra.push(node.clone());
+                    }
                     _ => p.extra.push(node.clone()),
                 }
             }
@@ -257,6 +262,12 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
             Node::Chunk(c) if c.name() == "METRONOME" => {
                 parse_metronome(c, &mut p.metronome);
                 p.extra.push(node.clone());
+            }
+            Node::Chunk(c) if c.name() == "POOLEDENV" => {
+                if p.automation_pools.is_empty() {
+                    p.extra.push(node.clone());
+                }
+                p.automation_pools.push(crate::automation_item::AutomationPool::parse(c));
             }
             Node::Chunk(c) if c.name() == "MASTERFXLIST" => {
                 let (fx, prelude) = parse_fx_chain(c);
@@ -301,6 +312,7 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
     p.markers.extend(region_starts);
     p.markers.sort_by(|a, b| a.position.total_cmp(&b.position).then(a.index.cmp(&b.index)));
     p.time_selection = selection;
+    p.resolve_automation_items();
     Ok(p)
 }
 
@@ -651,6 +663,7 @@ fn parse_envelope(kind: EnvelopeKind, c: &Chunk) -> Envelope {
             "ACT" => env.active = flag(&t, 1),
             "VIS" => env.visible = flag(&t, 1),
             "VOLTYPE" => env.fader_scaled = kind.is_volume() && num(&t, 1, 0.0) as i64 == 1,
+            "POOLEDENVINST" => env.items.push(crate::automation_item::AutomationItem::parse(&t)),
             "PT" => env.points.push(EnvPoint {
                 time: num(&t, 1, 0.0),
                 value: num(&t, 2, 0.0),
@@ -713,6 +726,7 @@ fn write_envelope_named(env: &Envelope, name: &str) -> Chunk {
     });
     let at = at.min(c.children.len());
     c.children.splice(at..at, points);
+    crate::automation_item::write_instances(&mut c, &env.items);
     c
 }
 
@@ -1017,6 +1031,7 @@ pub fn project_to_rpp(p: &Project) -> String {
     let (mut wrote_pan_mode, mut wrote_group_names) = (false, false);
     let mut wrote_metronome = false;
     let mut wrote_sync = false;
+    let (mut wrote_global_auto, mut wrote_pools) = (false, false);
     let (mut wrote_timebase, mut wrote_tempo_lock, mut wrote_playrate) = (false, false, false);
     for node in &p.extra {
         match node {
@@ -1057,6 +1072,16 @@ pub fn project_to_rpp(p: &Project) -> String {
                 write_group_names(&mut root, p);
                 wrote_group_names = true;
             }
+            Node::Line(l) if line_key(l) == "GLOBAL_AUTO" => {
+                root.line(["GLOBAL_AUTO".to_owned(), GlobalAutomation::rpp_code(p.global_automation).to_string()]);
+                wrote_global_auto = true;
+            }
+            Node::Chunk(c) if c.name() == "POOLEDENV" => {
+                if !wrote_pools {
+                    p.automation_pools.iter().for_each(|pool| root.push_chunk(pool.write()));
+                }
+                wrote_pools = true;
+            }
             Node::Line(l) if line_key(l) == "SMPTESYNC" => {
                 let mut toks = p.timecode_sync.tokens();
                 let old = tokenize(l);
@@ -1095,6 +1120,12 @@ pub fn project_to_rpp(p: &Project) -> String {
             }
             _ => root.children.push(node.clone()),
         }
+    }
+    if !wrote_global_auto && p.global_automation.is_some() {
+        root.line(["GLOBAL_AUTO".to_owned(), GlobalAutomation::rpp_code(p.global_automation).to_string()]);
+    }
+    if !wrote_pools {
+        p.automation_pools.iter().for_each(|pool| root.push_chunk(pool.write()));
     }
     if !wrote_hw && !p.master_default_output() {
         write_master_hw_outs(&mut root, &m.hw_outs);

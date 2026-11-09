@@ -1,3 +1,4 @@
+use crate::automation_item::{AutomationItem, value_with_items};
 use crate::fader::{envelope_gain, envelope_position};
 use crate::rpp::Chunk;
 
@@ -245,17 +246,41 @@ pub struct Envelope {
     /// A volume envelope in fader scaling (`VOLTYPE 1`): it moves linearly in fader position
     /// rather than in gain between points. REAPER makes new volume envelopes so.
     pub fader_scaled: bool,
+    /// Value range of a parameter envelope (`PARMENV … <min> <max>`); track, send and take
+    /// envelopes take their kind's.
+    pub range: Option<(f64, f64)>,
+    /// Automation items (`POOLEDENVINST`), in the order they are stored.
+    pub items: Vec<AutomationItem>,
     /// The original chunk, so its other lines survive a save.
     pub raw: Option<Chunk>,
 }
 
 impl Envelope {
     pub fn new(kind: EnvelopeKind) -> Self {
-        Self { kind, active: true, visible: true, points: Vec::new(), fader_scaled: false, raw: None }
+        Self {
+            kind,
+            active: true,
+            visible: true,
+            points: Vec::new(),
+            fader_scaled: false,
+            range: None,
+            items: Vec::new(),
+            raw: None,
+        }
     }
 
-    /// Envelope value at `t` seconds, or `None` when it has no points.
+    /// Envelope value at `t` seconds, automation items included, or `None` when it has no
+    /// points (REAPER then ignores its items too).
     pub fn value_at(&self, t: f64) -> Option<f64> {
+        let under = self.curve_at(t)?;
+        if self.items.is_empty() {
+            return Some(under);
+        }
+        Some(value_with_items(&self.items, t, |t| self.curve_at(t).unwrap_or(under)))
+    }
+
+    /// The value of the points alone, without automation items.
+    pub fn curve_at(&self, t: f64) -> Option<f64> {
         let first = self.points.first()?;
         let i = self.points.partition_point(|p| p.time <= t);
         if i == 0 {
@@ -304,7 +329,9 @@ impl Envelope {
         let chord = (next.value - p.value) / span;
         let is_bezier = |q: &EnvPoint| matches!(q.shape, PointShape::Bezier(_));
         let central = |a: &EnvPoint, b: &EnvPoint| (b.value - a.value) / (b.time - a.time) / chord;
-        let s0 = match i.checked_sub(2).map(|j| &self.points[j]) {
+        // A point at the same time as the start (the wrap of a looped automation item) is not
+        // the neighbour before; the one before it is.
+        let s0 = match self.points[..i - 1].iter().rev().find(|q| q.time < p.time) {
             Some(before) if is_bezier(before) && next.time > before.time => central(before, next),
             _ => 1.0,
         };
@@ -317,6 +344,31 @@ impl Envelope {
 
     pub fn sort(&mut self) {
         self.points.sort_by(|a, b| a.time.total_cmp(&b.time));
+    }
+
+    /// Whether an automation item (with its lead-in) covers part of `(t0, t1]`: item values
+    /// change at its own points and edges, so they are worked out frame by frame.
+    pub fn items_between(&self, t0: f64, t1: f64) -> bool {
+        self.items.iter().any(|i| i.position - 1e-5 <= t1 && i.end() > t0)
+    }
+
+    /// The automation item edges (starts, ends and the ends of their transitions) around `t`:
+    /// the last at or before it and the first after it, when `t` is between two. REAPER works
+    /// out per-block values (pan) at these as well as at block boundaries.
+    pub fn item_edges_around(&self, t: f64) -> Option<(f64, f64)> {
+        let edges = self.items.iter().flat_map(|i| {
+            let tr = i.transition.clamp(0.0, i.length / 2.0);
+            [i.position, i.position + tr, i.end() - tr, i.end()].into_iter().chain(i.point_times())
+        });
+        let (mut lo, mut hi) = (f64::NEG_INFINITY, f64::INFINITY);
+        for e in edges {
+            if e <= t {
+                lo = lo.max(e);
+            } else {
+                hi = hi.min(e);
+            }
+        }
+        (lo.is_finite() || hi.is_finite()).then_some((lo, hi))
     }
 }
 

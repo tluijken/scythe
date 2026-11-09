@@ -8,7 +8,8 @@
 
 use std::borrow::Cow;
 
-use crate::model::{Item, Project, Source, Take};
+use crate::model::{GlobalAutomation, Item, Project, Source, Take};
+use crate::rpp::{Node, join_tokens, tokenize};
 use crate::tempo::{TempoMap, TempoPoint};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -160,19 +161,14 @@ impl Project {
             }
             if track_base != Timebase::Time {
                 let envelopes = track.envelopes.iter_mut().chain(track.sends.iter_mut().flat_map(|s| &mut s.envelopes));
-                for env in envelopes {
-                    for p in &mut env.points {
-                        p.time = map(p.time);
-                    }
+                envelopes.for_each(|e| map_envelope(e, &map));
+                for slot in &mut track.fx {
+                    edit_parameter_envelopes(&mut slot.raw, &map, false, false);
                 }
             }
         }
         if project != Timebase::Time {
-            for env in &mut self.master.envelopes {
-                for p in &mut env.points {
-                    p.time = map(p.time);
-                }
-            }
+            self.master.envelopes.iter_mut().for_each(|e| map_envelope(e, &map));
             for m in &mut self.markers {
                 m.position = map(m.position);
                 m.region_end = m.region_end.map(map);
@@ -180,16 +176,44 @@ impl Project {
         }
     }
 
-    /// The project as it plays at its play rate: every time divided by the rate and every take
-    /// sped up by it. Unchanged at rate 1.
+    /// The project as it plays: at its play rate (every time divided by the rate and every take
+    /// sped up by it), with every envelope off under the global "bypass all automation"
+    /// override, and its automation items resolved. Unchanged at rate 1 without either.
     pub fn at_playrate(&self) -> Cow<'_, Project> {
-        if self.playrate.is_normal() {
+        let bypass = self.global_automation == Some(GlobalAutomation::Bypass);
+        if self.playrate.is_normal() && !bypass && !self.has_automation_items() {
             return Cow::Borrowed(self);
         }
         let mut p = self.clone();
-        let rate = self.playrate.rate;
-        let preserve = self.playrate.preserve_pitch;
+        if !self.playrate.is_normal() {
+            p.scale_to_playrate();
+        }
+        if bypass {
+            for env in p.envelopes_mut() {
+                env.active = false;
+            }
+            for slot in std::iter::once(&mut p.master).chain(p.tracks.iter_mut()).flat_map(|t| t.fx.iter_mut()) {
+                edit_parameter_envelopes(&mut slot.raw, &|t| t, false, true);
+            }
+        }
+        p.resolve_automation_items();
+        Cow::Owned(p)
+    }
+
+    fn scale_to_playrate(&mut self) {
+        let p = self;
+        let rate = p.playrate.rate;
+        let preserve = p.playrate.preserve_pitch;
         let scale = |t: &mut f64| *t /= rate;
+        let scale_env = |env: &mut crate::Envelope| {
+            env.points.iter_mut().for_each(|pt| scale(&mut pt.time));
+            for item in &mut env.items {
+                scale(&mut item.position);
+                scale(&mut item.length);
+                scale(&mut item.start_offset);
+                scale(&mut item.transition);
+            }
+        };
         p.tempo.bpm *= rate;
         for pt in &mut p.tempo.points {
             scale(&mut pt.time);
@@ -208,8 +232,9 @@ impl Project {
         scale(&mut p.cursor);
         for track in std::iter::once(&mut p.master).chain(p.tracks.iter_mut()) {
             let envelopes = track.envelopes.iter_mut().chain(track.sends.iter_mut().flat_map(|s| &mut s.envelopes));
-            for env in envelopes {
-                env.points.iter_mut().for_each(|pt| scale(&mut pt.time));
+            envelopes.for_each(scale_env);
+            for slot in &mut track.fx {
+                edit_parameter_envelopes(&mut slot.raw, &|t| t / rate, true, false);
             }
             for item in &mut track.items {
                 scale(&mut item.position);
@@ -217,9 +242,7 @@ impl Project {
                 scale(&mut item.fade_in.length);
                 scale(&mut item.fade_out.length);
                 for take in &mut item.takes {
-                    for env in &mut take.envelopes {
-                        env.points.iter_mut().for_each(|pt| scale(&mut pt.time));
-                    }
+                    take.envelopes.iter_mut().for_each(scale_env);
                     if is_midi(&take.source) {
                         continue;
                     }
@@ -239,7 +262,59 @@ impl Project {
             }
         }
         p.playrate = PlayRate::default();
-        Cow::Owned(p)
+    }
+}
+
+/// Moves an envelope's points and automation items to `map(time)`; items keep their ends.
+fn map_envelope(env: &mut crate::Envelope, map: &dyn Fn(f64) -> f64) {
+    for p in &mut env.points {
+        p.time = map(p.time);
+    }
+    for item in &mut env.items {
+        let (start, end) = (map(item.position), map(item.end()));
+        item.position = start;
+        item.length = end - start;
+    }
+}
+
+/// Walks the `PARMENV` chunks in an effect's chunk (containers included): `map` moves every
+/// point and automation item (`scale_offsets` for a play rate, which scales the items' start
+/// offsets too), `bypass` turns them off.
+fn edit_parameter_envelopes(nodes: &mut [Node], map: &dyn Fn(f64) -> f64, scale_offsets: bool, bypass: bool) {
+    let fmt = crate::rpp::project::fmt_num;
+    for node in nodes {
+        let Node::Chunk(c) = node else { continue };
+        if c.name() != "PARMENV" {
+            edit_parameter_envelopes(&mut c.children, map, scale_offsets, bypass);
+            continue;
+        }
+        for child in &mut c.children {
+            let Node::Line(l) = child else { continue };
+            let mut t = tokenize(l);
+            let num = |t: &[String], i: usize| t.get(i).and_then(|v| v.parse::<f64>().ok());
+            match t[0].as_str() {
+                "PT" if !bypass => {
+                    if let Some(v) = num(&t, 1) {
+                        t[1] = fmt(map(v));
+                    }
+                }
+                "POOLEDENVINST" if !bypass => {
+                    let (Some(pos), Some(len)) = (num(&t, 2), num(&t, 3)) else { continue };
+                    let start = map(pos);
+                    t[2] = fmt(start);
+                    t[3] = fmt(map(pos + len) - start);
+                    if let Some(offs) = num(&t, 4).filter(|_| scale_offsets) {
+                        t[4] = fmt(map(offs));
+                    }
+                }
+                "ACT" if bypass => {
+                    t.resize(t.len().max(2), "0".into());
+                    t[1] = "0".into();
+                }
+                _ => continue,
+            }
+            *l = join_tokens(t);
+        }
     }
 }
 

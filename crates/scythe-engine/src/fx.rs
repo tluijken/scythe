@@ -352,7 +352,10 @@ pub struct ParamAutomation {
 }
 
 /// `<PARMENV <index>:<name> <min> <max> <default> "label"` chunks of a slot, with their points.
-pub(crate) fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
+pub(crate) fn parameter_envelopes(
+    slot: &FxSlot,
+    ctx: &scythe_core::automation_item::AutomationContext,
+) -> Vec<ParamAutomation> {
     slot.raw
         .iter()
         .filter_map(|n| match n {
@@ -381,6 +384,7 @@ pub(crate) fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
                 let num = |i: usize| t.get(i).and_then(|v| v.parse::<f64>().ok());
                 match t[0].as_str() {
                     "ACT" => envelope.active = num(1).is_none_or(|v| v != 0.0),
+                    "POOLEDENVINST" => envelope.items.push(scythe_core::automation_item::AutomationItem::parse(&t)),
                     "PT" => envelope.points.push(scythe_core::EnvPoint {
                         time: num(1)?,
                         value: num(2)?,
@@ -391,6 +395,8 @@ pub(crate) fn parameter_envelopes(slot: &FxSlot) -> Vec<ParamAutomation> {
                 }
             }
             envelope.sort();
+            envelope.range = Some(range);
+            ctx.resolve(&mut envelope);
             (envelope.active && !envelope.points.is_empty()).then_some(ParamAutomation {
                 target,
                 envelope,
@@ -413,9 +419,15 @@ fn envelope_base(automation: &[ParamAutomation], index: usize, t: f64) -> Option
 
 /// A slot's parameter envelopes, with the parameter each falls back to by position for
 /// effects that do not know the envelope's parameter by name.
-pub(crate) fn slot_automation(slot: &FxSlot, inst: &FxInstance) -> Vec<ParamAutomation> {
-    let mut envs: Vec<ParamAutomation> =
-        parameter_envelopes(slot).into_iter().filter(|a| !matches!(a.target, Target::Wet | Target::Delta)).collect();
+pub(crate) fn slot_automation(
+    slot: &FxSlot,
+    inst: &FxInstance,
+    ctx: &scythe_core::automation_item::AutomationContext,
+) -> Vec<ParamAutomation> {
+    let mut envs: Vec<ParamAutomation> = parameter_envelopes(slot, ctx)
+        .into_iter()
+        .filter(|a| !matches!(a.target, Target::Wet | Target::Delta))
+        .collect();
     if envs.iter().any(|a| matches!(a.target, Target::Named(_))) {
         let params = inst.with(|e| e.params()).unwrap_or_default();
         for a in &mut envs {
@@ -687,6 +699,8 @@ pub struct FxRegistry {
     jsfx_paths: std::sync::OnceLock<Vec<PathBuf>>,
     /// Relative file references in plugin state (impulse responses) resolve against this.
     pub project_dir: Option<PathBuf>,
+    /// Automation item pools and the tempo map, for items on parameter envelopes.
+    pub automation: scythe_core::automation_item::AutomationContext,
     clap_cache: std::sync::OnceLock<Vec<ClapDescriptor>>,
     lv2_cache: std::sync::OnceLock<Vec<crate::lv2::Lv2Info>>,
     vst3_cache: std::sync::OnceLock<Vec<crate::vst3_host::Vst3Info>>,
@@ -709,6 +723,7 @@ impl FxRegistry {
             search_paths: vst_search_paths(),
             jsfx_paths: Default::default(),
             project_dir: None,
+            automation: Default::default(),
             clap_cache: Default::default(),
             lv2_cache: Default::default(),
             vst3_cache: Default::default(),
@@ -744,7 +759,7 @@ impl FxRegistry {
             if slot.enabled
                 && let Some(inst) = inst
             {
-                automation.push(slot_automation(slot, &inst));
+                automation.push(slot_automation(slot, &inst, &self.automation));
                 out.push(inst);
             }
         }

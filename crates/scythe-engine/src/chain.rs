@@ -127,10 +127,10 @@ pub struct WetDry {
 }
 
 impl WetDry {
-    pub fn of(slot: &FxSlot) -> Self {
+    pub fn of(slot: &FxSlot, ctx: &scythe_core::automation_item::AutomationContext) -> Self {
         let (wet, delta) = slot.wet();
         let mut w = Self { wet, delta, sample_accurate: slot.sample_accurate_wet(), ..Self::default() };
-        for a in parameter_envelopes(slot) {
+        for a in parameter_envelopes(slot, ctx) {
             match a.target {
                 Target::Wet => w.wet_envelope = Some(a.envelope),
                 Target::Delta => w.delta_envelope = Some(a.envelope),
@@ -704,7 +704,7 @@ fn build_at(
             slot.enabled.then(|| NodeKind::Container(Box::new(container(registry, owner, slot, &key, extra))))
         } else {
             instances[i].clone().filter(|_| slot.enabled).map(|fx| {
-                let mut automation = slot_automation(slot, &fx);
+                let mut automation = slot_automation(slot, &fx, &registry.automation);
                 if !extra.is_empty() {
                     let params = fx.with(|e| e.params()).unwrap_or_default();
                     automation.extend(extra.into_iter().map(|mut a| {
@@ -719,7 +719,10 @@ fn build_at(
                 NodeKind::Fx(FxNode { fx, automation, pins, key, mods, own, level: level.clone() })
             })
         };
-        entries.push((parallel, kind.map(|k| ChainNode::new(k, WetDry::of(slot), parallel, channels, serial))));
+        entries.push((
+            parallel,
+            kind.map(|k| ChainNode::new(k, WetDry::of(slot, &registry.automation), parallel, channels, serial)),
+        ));
     }
     let mut steps = Vec::new();
     let mut entries = entries.into_iter().peekable();
@@ -762,7 +765,7 @@ fn container(
     let children = slot.container_children();
     let params = slot.container_params();
     let mut mapped: Vec<Vec<ParamAutomation>> = vec![Vec::new(); children.len()];
-    let own = parameter_envelopes(slot).into_iter().filter_map(|mut a| {
+    let own = parameter_envelopes(slot, &registry.automation).into_iter().filter_map(|mut a| {
         let Target::Named(ident) = &a.target else { return None };
         a.index = ident.parse::<u32>().ok().and_then(|id| params.iter().position(|p| p.id == id)).unwrap_or(a.index);
         Some(a)

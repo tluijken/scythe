@@ -754,6 +754,7 @@ impl RenderGraph {
         sample_rate: u32,
         click_output: i64,
     ) -> Self {
+        fx.automation = project.automation_context();
         let sr = sample_rate as f64;
         let index: HashMap<TrackId, usize> = project.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let timeline = Arc::new(project.tempo.timeline());

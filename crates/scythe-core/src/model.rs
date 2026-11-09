@@ -767,6 +767,64 @@ impl AutoMode {
     pub fn writes(self) -> bool {
         matches!(self, Self::Touch | Self::Write | Self::Latch)
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::TrimRead => "trim_read",
+            Self::Read => "read",
+            Self::Touch => "touch",
+            Self::Write => "write",
+            Self::Latch => "latch",
+            Self::LatchPreview => "latch_preview",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.name() == name)
+    }
+}
+
+/// The global automation override (`GLOBAL_AUTO`, `GetGlobalAutomationOverride`): one mode
+/// for every track, or all automation bypassed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalAutomation {
+    Mode(AutoMode),
+    /// Code 6: no envelope plays.
+    Bypass,
+}
+
+impl GlobalAutomation {
+    pub fn from_rpp(code: i64) -> Option<Self> {
+        match code {
+            6 => Some(Self::Bypass),
+            0..=5 => Some(Self::Mode(AutoMode::from_rpp(code))),
+            _ => None,
+        }
+    }
+
+    pub fn rpp_code(over: Option<Self>) -> i64 {
+        match over {
+            None => -1,
+            Some(Self::Bypass) => 6,
+            Some(Self::Mode(m)) => m.rpp_code(),
+        }
+    }
+
+    pub fn name(over: Option<Self>) -> &'static str {
+        match over {
+            None => "none",
+            Some(Self::Bypass) => "bypass",
+            Some(Self::Mode(m)) => m.name(),
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Option<Self>> {
+        match name {
+            "none" => Some(None),
+            "bypass" => Some(Some(Self::Bypass)),
+            _ => AutoMode::from_name(name).map(|m| Some(Self::Mode(m))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1053,6 +1111,11 @@ pub struct Project {
     pub metronome: crate::metronome::Metronome,
     /// External timecode synchronization (`SMPTESYNC`).
     pub timecode_sync: crate::midi_route::TimecodeSync,
+    /// Automation item pools (`<POOLEDENV`), which items on envelopes play.
+    pub automation_pools: Vec<crate::automation_item::AutomationPool>,
+    /// The global automation override (`GLOBAL_AUTO`): `None` lets every track use its own
+    /// mode.
+    pub global_automation: Option<GlobalAutomation>,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
@@ -1078,6 +1141,8 @@ impl Default for Project {
             cursor: 0.0,
             metronome: Default::default(),
             timecode_sync: Default::default(),
+            automation_pools: Vec::new(),
+            global_automation: None,
             lines: LineMemo::new(),
             extra: Vec::new(),
         }
@@ -1096,6 +1161,53 @@ impl Project {
     /// The pan law that applies to `track`.
     pub fn pan_law_for(&self, track: &Track) -> PanLaw {
         if track.pan_law > 0.0 { PanLaw { law: track.pan_law, ..self.pan_law } } else { self.pan_law }
+    }
+
+    /// The automation mode `track` works in: the global override's, or its own.
+    pub fn auto_mode_of(&self, track: &Track) -> AutoMode {
+        match self.global_automation {
+            Some(GlobalAutomation::Mode(m)) => m,
+            _ => track.auto_mode,
+        }
+    }
+
+    /// Every track, send and take envelope (the master's included).
+    pub fn envelopes_mut(&mut self) -> impl Iterator<Item = &mut Envelope> {
+        std::iter::once(&mut self.master).chain(self.tracks.iter_mut()).flat_map(|t| {
+            t.envelopes
+                .iter_mut()
+                .chain(t.sends.iter_mut().flat_map(|s| s.envelopes.iter_mut()))
+                .chain(t.items.iter_mut().flat_map(|i| i.takes.iter_mut().flat_map(|tk| tk.envelopes.iter_mut())))
+        })
+    }
+
+    pub fn has_automation_items(&self) -> bool {
+        std::iter::once(&self.master).chain(&self.tracks).any(|t| {
+            t.envelopes.iter().chain(t.sends.iter().flat_map(|s| &s.envelopes)).any(|e| !e.items.is_empty())
+                || t.items.iter().flat_map(|i| &i.takes).flat_map(|tk| &tk.envelopes).any(|e| !e.items.is_empty())
+        })
+    }
+
+    /// The pools and tempo map items resolve against.
+    pub fn automation_context(&self) -> crate::automation_item::AutomationContext {
+        crate::automation_item::AutomationContext::new(&self.automation_pools, &self.tempo)
+    }
+
+    /// Works out what every automation item plays from its pool and the tempo map; needed
+    /// after pools, items or the tempo change.
+    pub fn resolve_automation_items(&mut self) {
+        if !self.has_automation_items() {
+            return;
+        }
+        let ctx = self.automation_context();
+        for env in self.envelopes_mut() {
+            ctx.resolve(env);
+        }
+    }
+
+    /// A pool id no pool uses yet.
+    pub fn next_pool_id(&self) -> i64 {
+        self.automation_pools.iter().map(|p| p.id).max().unwrap_or(0) + 1
     }
 
     pub fn track(&self, id: TrackId) -> Option<&Track> {
