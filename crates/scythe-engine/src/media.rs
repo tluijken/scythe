@@ -478,24 +478,67 @@ impl PhaseTable {
     }
 
     fn convert(&self, kernel: &SincKernel, input: &[f32], from: u64, to: u64, frames: usize) -> Vec<f32> {
+        use rayon::prelude::*;
+        const CHUNK: usize = 1 << 16;
+        let mut out = vec![0.0; frames];
+        out.par_chunks_mut(CHUNK).enumerate().for_each(|(i, chunk)| {
+            self.convert_into(kernel, input, from, to, (i * CHUNK) as u64, chunk);
+        });
+        out
+    }
+
+    /// Output frames `start..` into `out`. Away from the input's ends, frames go four at a
+    /// time with an accumulator each: every sum still adds its taps in order, so the samples
+    /// match converting one frame at a time, without each addition waiting on the last.
+    fn convert_into(&self, kernel: &SincKernel, input: &[f32], from: u64, to: u64, start: u64, out: &mut [f32]) {
         let width = 2 * kernel.half;
-        (0..frames as u64)
-            .map(|j| {
-                let (base, rem) = ((j * from / to) as i64, j * from % to);
-                if self.weights.is_empty() {
-                    return kernel.sample(input, base as f64 + rem as f64 / to as f64);
+        let place = |j: u64| ((j * from / to) as i64 - kernel.half as i64 + 1, j * from % to);
+        let row = |rem: u64| &self.weights[(rem / self.unit) as usize * width..][..width];
+        let one = |j: u64| {
+            let (first, rem) = place(j);
+            if self.weights.is_empty() {
+                return kernel.sample(input, (first + kernel.half as i64 - 1) as f64 + rem as f64 / to as f64);
+            }
+            let row = row(rem);
+            let lo = (-first).max(0) as usize;
+            let hi = (input.len() as i64 - first).clamp(0, width as i64) as usize;
+            let mut acc = 0.0f64;
+            for k in lo..hi {
+                acc += input[(first + k as i64) as usize] as f64 * row[k];
+            }
+            acc as f32
+        };
+        let inside = |(first, _): (i64, u64)| first >= 0 && first as usize + width <= input.len();
+        // Each input frame is read by many output frames; widening it once is cheaper.
+        let span = place(start).0.clamp(0, input.len() as i64) as usize
+            ..(place(start + out.len() as u64).0 + width as i64).clamp(0, input.len() as i64) as usize;
+        let wide: Vec<f64> = input[span.clone()].iter().map(|&x| x as f64).collect();
+        let mut j = start;
+        let (quads, rest) = out.as_chunks_mut::<4>();
+        for quad in quads {
+            let places: [(i64, u64); 4] = std::array::from_fn(|l| place(j + l as u64));
+            if self.weights.is_empty() || !places.into_iter().all(inside) {
+                for (l, s) in quad.iter_mut().enumerate() {
+                    *s = one(j + l as u64);
                 }
-                let row = &self.weights[(rem / self.unit) as usize * width..][..width];
-                let first = base - kernel.half as i64 + 1;
-                let lo = (-first).max(0) as usize;
-                let hi = (input.len() as i64 - first).clamp(0, width as i64) as usize;
-                let mut acc = 0.0f64;
-                for k in lo..hi {
-                    acc += input[(first + k as i64) as usize] as f64 * row[k];
+            } else {
+                let [r0, r1, r2, r3] = places.map(|(_, rem)| row(rem));
+                let [x0, x1, x2, x3] = places.map(|(first, _)| &wide[first as usize - span.start..][..width]);
+                let (mut a0, mut a1, mut a2, mut a3) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+                for k in 0..width {
+                    a0 += x0[k] * r0[k];
+                    a1 += x1[k] * r1[k];
+                    a2 += x2[k] * r2[k];
+                    a3 += x3[k] * r3[k];
                 }
-                acc as f32
-            })
-            .collect()
+                *quad = [a0 as f32, a1 as f32, a2 as f32, a3 as f32];
+            }
+            j += 4;
+        }
+        for s in rest {
+            *s = one(j);
+            j += 1;
+        }
     }
 }
 
@@ -627,6 +670,27 @@ pub enum MediaState {
     Failed(String),
 }
 
+/// The threads media decodes and converts on: one core is left free and they run at a lower
+/// priority, so loading a set while it plays leaves the audio and the UI their time.
+fn media_threads() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cores.saturating_sub(1).max(1))
+            .thread_name(|i| format!("scythe-media-{i}"))
+            // Per thread on Linux only; elsewhere it would lower the whole process.
+            .start_handler(|_| {
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                }
+            })
+            .build()
+            .expect("spawn media threads")
+    })
+}
+
 /// Decoded media keyed by path. Decoding is slow, so `load` is meant for worker threads; the
 /// audio thread only ever sees `Arc<AudioData>` handed over in a render graph.
 #[derive(Debug, Default)]
@@ -665,20 +729,22 @@ impl MediaPool {
         }
         let base = self.ready(path)?;
         let rate = base.audio.sample_rate;
-        let audio = if processing.shifts() {
-            let shifted = crate::stretch::apply(&base.audio, processing);
-            if processing.rate == 1.0 {
-                shifted
+        let audio = media_threads().install(|| {
+            if processing.shifts() {
+                let shifted = crate::stretch::apply(&base.audio, processing);
+                if processing.rate == 1.0 {
+                    Some(shifted)
+                } else {
+                    resample_rate(&shifted, rate as f64 * processing.rate, rate, self.resample).ok()
+                }
+            } else if base.source_rate == rate {
+                resample_rate(&base.audio, rate as f64 * processing.rate, rate, self.resample).ok()
             } else {
-                resample_rate(&shifted, rate as f64 * processing.rate, rate, self.resample).ok()?
+                // One conversion from the file's own rate, as REAPER does, rather than two.
+                let raw = decode_file(path).ok()?;
+                resample_rate(&raw, raw.sample_rate as f64 * processing.rate, rate, self.resample).ok()
             }
-        } else if base.source_rate == rate {
-            resample_rate(&base.audio, rate as f64 * processing.rate, rate, self.resample).ok()?
-        } else {
-            // One conversion from the file's own rate, as REAPER does, rather than two.
-            let raw = decode_file(path).ok()?;
-            resample_rate(&raw, raw.sample_rate as f64 * processing.rate, rate, self.resample).ok()?
-        };
+        })?;
         let audio = Arc::new(audio);
         self.processed.lock().unwrap().insert((path.to_owned(), processing.key()), audio.clone());
         Some(audio)
@@ -708,7 +774,8 @@ impl MediaPool {
         if let Some(m) = self.ready(path) {
             return Ok(m);
         }
-        let result = decode_file(path).and_then(|raw| {
+        let result = media_threads().install(|| -> Result<_, MediaError> {
+            let raw = decode_file(path)?;
             let audio = resample_with(&raw, engine_rate, self.resample)?;
             let peaks = Peaks::compute(&audio, Peaks::DEFAULT_RESOLUTION);
             Ok(Arc::new(Media { path: path.to_owned(), source_rate: raw.sample_rate, audio: Arc::new(audio), peaks }))
@@ -773,6 +840,23 @@ mod tests {
     #[test]
     fn missing_file_is_an_error() {
         assert!(matches!(decode_file(Path::new("/nonexistent/x.wav")), Err(MediaError::Open { .. })));
+    }
+
+    #[test]
+    fn sinc_conversion_matches_one_frame_at_a_time() {
+        let input: Vec<f32> =
+            (0..150_001u32).map(|i| ((i.wrapping_mul(2_654_435_761) >> 8) as f32 / 8e6) - 1.0).collect();
+        for (half, from, to) in [(32, 441, 480), (96, 480, 441), (8, 3, 7)] {
+            let kernel = SincKernel::new(from as f64 / to as f64, half, true);
+            let phases = PhaseTable::new(&kernel, from, to);
+            let frames = input.len() * to as usize / from as usize;
+            let whole = phases.convert(&kernel, &input, from, to, frames);
+            for j in (0..frames).step_by(7).chain(frames - 300..frames) {
+                let mut one = [0.0];
+                phases.convert_into(&kernel, &input, from, to, j as u64, &mut one);
+                assert_eq!(whole[j].to_bits(), one[0].to_bits(), "frame {j} of {from} to {to}");
+            }
+        }
     }
 
     #[test]
