@@ -578,6 +578,7 @@ pub fn wizards(app: &mut ScytheApp, ui: &mut Ui) {
         let title = if cue { "Create cue buss from track selection" } else { "New monitor mix" };
         egui::Window::new(title)
             .open(&mut open)
+            .default_pos(ui.max_rect().center() - egui::vec2(210.0, 220.0))
             .collapsible(false)
             .resizable(false)
             .default_width(420.0)

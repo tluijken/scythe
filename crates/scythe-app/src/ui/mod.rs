@@ -34,7 +34,7 @@ pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
 
     let body = Rect::from_min_max(pos2(area.left(), header.bottom() + GAP), area.max);
     let show_inspector = body.width() > 980.0;
-    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 * 2.0 + 8.0 * 48.0 + 9.0));
+    let rail = Rect::from_min_size(body.min, vec2(RAIL_W, 8.0 + 8.0 * 48.0 + 1.0 + 8.0));
     nav_rail(app, ui, rail);
 
     if app.view.setlist {
@@ -321,7 +321,10 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         app.import_dialog();
     }
     if rail_button(ui, next(44.0), Icon::Fx, false, ACCENT, "FX browser").clicked() {
-        app.notify("Plugin hosting is the next milestone; the FX browser comes with it");
+        app.view.inspector_tab = crate::app::InspectorTab::Fx;
+        app.view.plugin_browser = true;
+        app.view.monitor_page = false;
+        app.view.setlist = false;
     }
     if rail_button(ui, next(44.0), Icon::Routing, false, ACCENT, "Routing").clicked() {
         app.view.inspector_tab = crate::app::InspectorTab::Sends;

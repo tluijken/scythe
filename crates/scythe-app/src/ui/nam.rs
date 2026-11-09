@@ -35,6 +35,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
     let shown = egui::Window::new(format!("Neural Amp Modeler · {track}"))
         .id(Id::unique("nam-panel"))
+        .default_pos(ui.max_rect().center() - vec2(380.0, 310.0))
         .open(&mut open)
         .frame(frame)
         .default_size(vec2(760.0, 620.0))
@@ -104,6 +105,7 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
         (Some(p), _, _) => format!("Loading {}…", p.file_name().map(|f| f.to_string_lossy()).unwrap_or_default()),
         (_, Some(scythe_engine::fx::FxStatus::Unavailable(why)), _) => format!("Not running: {why}"),
         (_, _, Some(e)) if !e.summary().is_empty() => e.summary(),
+        (_, _, Some(_)) => "No gear details in the model file".to_owned(),
         (_, _, _) if path.is_some() => "Not in the library (add its folder to see what it is)".to_owned(),
         _ => "Pick a model below, drop a .nam file here, or open one".to_owned(),
     };
@@ -167,6 +169,13 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
             }
         }
     }
+    end_block(ui, rect);
+}
+
+/// Puts the layout cursor below `rect` again: the buttons inside it are placed by rect, and
+/// allocating those moves the cursor back up to their bottom, under the next block.
+fn end_block(ui: &mut Ui, rect: Rect) {
+    ui.advance_cursor_after_rect(rect);
 }
 
 fn trim(v: f64) -> String {
@@ -292,6 +301,7 @@ fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
         });
         sx += size + 6.0;
     }
+    end_block(ui, rect);
 }
 
 fn tabs(app: &mut ScytheApp, ui: &mut Ui) {
@@ -319,6 +329,7 @@ fn tabs(app: &mut ScytheApp, ui: &mut Ui) {
             TEXT_DIM,
         );
     }
+    end_block(ui, rect);
 }
 
 fn library_tab(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {

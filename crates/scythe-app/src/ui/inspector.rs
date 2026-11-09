@@ -22,11 +22,10 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let index = app.project.track_index(track_id).unwrap();
     let color = track_color(track.color);
 
-    let content_h = content_height(app, &track);
-    let panel = Rect::from_min_size(rect.min, vec2(rect.width(), content_h.min(rect.height())));
-    painter.rect_filled(panel, CornerRadius::same(18), PANEL);
-    let inner = panel.shrink(16.0);
-    let clip = painter.with_clip_rect(panel);
+    // The card fits what the tabs lay out, so its background is filled in once they are done.
+    let background = painter.add(egui::Shape::Noop);
+    let inner = rect.shrink(16.0);
+    let clip = painter.with_clip_rect(rect);
 
     // Identity.
     let badge = Rect::from_min_size(inner.min, vec2(44.0, 44.0));
@@ -93,7 +92,10 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         Some(p) => format!("Track {} · in folder {p}", index + 1),
         None => format!("Track {} · {} items", index + 1, track.items.len()),
     };
-    let sub = widgets::truncate(ui, &sub, &theme::regular(12.0), auto_pill.left() - badge.right() - 20.0);
+    let room = auto_pill.left() - badge.right() - 20.0;
+    let sub =
+        if widgets::text_width(ui, &sub, theme::regular(12.0)) <= room { sub } else { format!("Track {}", index + 1) };
+    let sub = widgets::truncate(ui, &sub, &theme::regular(12.0), room);
     clip.text(
         pos2(badge.right() + 12.0, badge.bottom() - 9.0),
         Align2::LEFT_CENTER,
@@ -133,6 +135,7 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             let r = Rect::from_min_size(pos2(inner.left(), y), vec2(inner.width(), 40.0));
             clip.rect_filled(r, CornerRadius::same(12), RAISED);
             let dest = app.project.track(s.dest).map_or("?".to_owned(), |t| t.name.clone());
+            let dest = widgets::truncate(ui, &dest, &theme::regular(13.0), r.width() - 100.0);
             clip.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, dest, theme::regular(13.0), TEXT);
             clip.text(
                 r.right_center() - vec2(12.0, 0.0),
@@ -144,6 +147,8 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             y += 46.0;
         }
     }
+    let panel = Rect::from_min_max(rect.min, pos2(rect.right(), (y + 10.0).min(rect.bottom())));
+    painter.set(background, egui::epaint::RectShape::filled(panel, CornerRadius::same(18), PANEL));
 }
 
 /// A plugin binary the browser can add.
@@ -187,44 +192,6 @@ fn installed_plugins(app: &ScytheApp) -> Vec<Installed> {
     out
 }
 
-fn content_height(app: &ScytheApp, track: &scythe_core::Track) -> f32 {
-    let base = 16.0 + 44.0 + 16.0 + 40.0 + 16.0 + 16.0;
-    let tab = match app.view.inspector_tab {
-        InspectorTab::Fx => {
-            let browser = if app.view.plugin_browser {
-                (scythe_engine::builtin::Builtin::ALL.len() + 1 + installed_plugins(app).len().max(1)) as f32 * 36.0
-                    + 8.0
-            } else {
-                0.0
-            };
-            let expanded = match app.view.expanded_fx {
-                Some((t, i)) if t == track.id => track
-                    .fx
-                    .get(i)
-                    .and_then(|slot| app.engine.fx().instance(Some(t), slot, i))
-                    .and_then(|inst| inst.with(|e| e.params().len()))
-                    .map_or(26.0, |n| if n == 0 { 26.0 } else { n as f32 * (PARAM_ROW + 4.0) + 4.0 }),
-                _ => 0.0,
-            };
-            track.fx.len() as f32 * (ROW_H + 6.0) + 46.0 + 20.0 + browser + expanded
-        }
-        InspectorTab::Sends => {
-            let receives = app.project.tracks.iter().filter(|t| t.sends.iter().any(|s| s.dest == track.id)).count();
-            let picking = app.ctx.data(|d| d.get_temp::<bool>(Id::unique(("pick-send", track.id)))).unwrap_or(false);
-            let picker = if picking { app.project.tracks.len() as f32 * 36.0 } else { 0.0 };
-            let hw = 30.0 + track.hw_outs.len() as f32 * (ROW_H + 6.0) + 46.0;
-            30.0 + track.sends.len() as f32 * 56.0 + 46.0 + picker + 30.0 + receives as f32 * 46.0 + 60.0 + hw
-        }
-        InspectorTab::Envelopes => EnvelopeKind::ALL.len() as f32 * (ROW_H + 6.0) + 30.0,
-    };
-    let sends = if app.view.inspector_tab != InspectorTab::Sends && !track.sends.is_empty() {
-        30.0 + track.sends.len() as f32 * 46.0
-    } else {
-        0.0
-    };
-    base + tab + sends
-}
-
 fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect, y: &mut f32, track_id: TrackId) {
     let track = app.project.track(track_id).unwrap().clone();
     for (i, fx) in track.fx.iter().enumerate() {
@@ -234,7 +201,11 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         painter.rect_filled(num, CornerRadius::same(8), BG);
         painter.text(num.center(), Align2::CENTER_CENTER, (i + 1).to_string(), theme::mono(11.0), TEXT_DIM);
         let (short, kind) = split_plugin_name(&fx.name);
-        let name = widgets::truncate(ui, &short, &theme::semibold(13.0), r.width() - 110.0);
+        let nam = scythe_engine::fx::nam_settings(fx);
+        let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
+            || app.has_gfx(Some(track_id), i);
+        let text_w = if nam.is_some() || hosted { r.width() - 162.0 } else { r.width() - 110.0 };
+        let name = widgets::truncate(ui, &short, &theme::semibold(13.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y - 8.0),
             Align2::LEFT_CENTER,
@@ -242,7 +213,6 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             theme::semibold(13.0),
             if fx.enabled { TEXT } else { TEXT_DIM },
         );
-        let nam = scythe_engine::fx::nam_settings(fx);
         let nam_model = nam.as_ref().and_then(|s| s.model.as_ref()).map(|m| {
             let path = std::path::Path::new(m);
             app.nam.library.entry(path).map_or_else(
@@ -259,7 +229,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             Some(FxStatus::Unavailable(why)) => format!("{kind} · bypassed: {why}"),
             None => format!("{kind} · not loaded"),
         };
-        let detail = widgets::truncate(ui, &status, &theme::regular(11.0), r.width() - 110.0);
+        let detail = widgets::truncate(ui, &status, &theme::regular(11.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y + 9.0),
             Align2::LEFT_CENTER,
@@ -269,8 +239,6 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
-        let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
-            || app.has_gfx(Some(track_id), i);
         if nam.is_some() {
             let open = app.nam.panel.is_some() && app.nam.panel == app.nam_target(track_id, i);
             let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
@@ -791,6 +759,7 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
     for (src, vol) in receives {
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 40.0));
         painter.rect_filled(r, CornerRadius::same(12), RAISED);
+        let src = widgets::truncate(ui, &src, &theme::regular(13.0), r.width() - 100.0);
         painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, src, theme::regular(13.0), TEXT);
         painter.text(
             r.right_center() - vec2(12.0, 0.0),

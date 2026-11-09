@@ -71,11 +71,12 @@ pub fn install(ctx: &egui::Context) {
     visuals.selection.bg_fill = with_alpha(ACCENT, 90);
     visuals.selection.stroke.color = ACCENT;
     visuals.widgets.noninteractive.bg_fill = PANEL;
-    visuals.widgets.inactive.bg_fill = RAISED;
+    // `bg_fill` is what checkboxes, radio buttons and slider rails draw with; RAISED vanishes on a panel.
+    visuals.widgets.inactive.bg_fill = SWITCH_OFF;
     visuals.widgets.inactive.weak_bg_fill = RAISED;
-    visuals.widgets.hovered.bg_fill = RAISED_HI;
+    visuals.widgets.hovered.bg_fill = ARM_OFF;
     visuals.widgets.hovered.weak_bg_fill = RAISED_HI;
-    visuals.widgets.active.bg_fill = RAISED_HI;
+    visuals.widgets.active.bg_fill = ARM_OFF;
     visuals.window_stroke.color = RAISED_HI;
     ctx.set_visuals(visuals);
 }
