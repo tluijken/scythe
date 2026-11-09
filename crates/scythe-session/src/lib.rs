@@ -28,7 +28,7 @@ use scythe_engine::midi_io::midi_input_channel;
 pub use automation::AutoTarget;
 use automation::AutoWrite;
 pub use live::LiveState;
-use media::StretchKey;
+use media::{LoadQueue, StretchKey};
 pub use media::{LoaderMsg, RenderedItems};
 pub use scythe_core::ItemId;
 pub use transport::ActiveRecording;
@@ -72,6 +72,7 @@ pub struct Session {
     loader_rx: Receiver<LoaderMsg>,
     pending: HashSet<PathBuf>,
     pending_stretch: HashSet<StretchKey>,
+    load_queue: Arc<std::sync::Mutex<LoadQueue>>,
     /// The last MIDI input error shown, so it is not repeated on every edit.
     midi_error: Option<String>,
     autosaved_at: Instant,
@@ -113,6 +114,7 @@ impl Session {
             loader_rx,
             pending: HashSet::new(),
             pending_stretch: HashSet::new(),
+            load_queue: Arc::default(),
             midi_error: None,
             autosaved_at: Instant::now(),
             load_window: (0.0, Instant::now()),

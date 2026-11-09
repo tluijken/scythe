@@ -1,5 +1,6 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use scythe_core::model::MIN_ITEM_LENGTH;
 use scythe_core::rpp::resolve_media_path;
@@ -37,17 +38,63 @@ pub enum RenderedItems {
 /// A file and the `Processing::key` of a processed copy.
 pub(crate) type StretchKey = (PathBuf, (u64, u64, u64, i32));
 
+/// Files waiting to load, in the order they are wanted, and the threads loading them.
+#[derive(Default)]
+pub(crate) struct LoadQueue {
+    jobs: VecDeque<Box<dyn FnOnce() + Send>>,
+    threads: usize,
+}
+
+impl LoadQueue {
+    /// A few files at a time, each converted on every core, so the files queued first are
+    /// ready first instead of all of them at the end.
+    const THREADS: usize = 4;
+
+    fn push(queue: &Arc<Mutex<Self>>, job: Box<dyn FnOnce() + Send>) {
+        let mut q = queue.lock().unwrap();
+        q.jobs.push_back(job);
+        if q.threads >= Self::THREADS {
+            return;
+        }
+        q.threads += 1;
+        let queue = queue.clone();
+        std::thread::spawn(move || {
+            loop {
+                let job = {
+                    let mut q = queue.lock().unwrap();
+                    let job = q.jobs.pop_front();
+                    if job.is_none() {
+                        q.threads -= 1;
+                    }
+                    job
+                };
+                match job {
+                    Some(job) => job(),
+                    None => break,
+                }
+            }
+        });
+    }
+}
+
 impl Session {
     pub(crate) fn request_media(&mut self) {
-        let paths: Vec<PathBuf> = self
+        // What plays next loads first, then what lies behind the playhead: a set is playable
+        // from where it stands long before its last song has loaded.
+        let at = if self.is_playing() { self.engine.transport().position_seconds() } else { self.project.cursor };
+        let mut paths: Vec<(bool, f64, PathBuf)> = self
             .project
             .tracks
             .iter()
             .flat_map(|t| &t.items)
-            .flat_map(|i| &i.takes)
-            .filter_map(|t| t.source.file().map(|p| resolve_media_path(&self.project, p)))
+            .flat_map(|i| i.takes.iter().map(move |t| (i, t)))
+            .filter_map(|(i, t)| {
+                let path = resolve_media_path(&self.project, t.source.file()?);
+                Some((i.position + i.length <= at, i.position, path))
+            })
             .collect();
-        for path in paths {
+        paths.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        for (_, _, path) in paths {
             if self.engine.pool().get(&path).is_none() && !self.pending.contains(&path) {
                 self.spawn_load(path, None);
             }
@@ -86,11 +133,14 @@ impl Session {
         let rate = self.engine.sample_rate();
         let tx = self.loader_tx.clone();
         let wake = self.waker.clone();
-        std::thread::spawn(move || {
-            let result = pool.load(&path, rate).map_err(|e| e.to_string());
-            let _ = tx.send(LoaderMsg::Loaded { path, result, place });
-            wake();
-        });
+        LoadQueue::push(
+            &self.load_queue,
+            Box::new(move || {
+                let result = pool.load(&path, rate).map_err(|e| e.to_string());
+                let _ = tx.send(LoaderMsg::Loaded { path, result, place });
+                wake();
+            }),
+        );
     }
 
     pub fn media(&self, take: &Take) -> Option<MediaState> {
