@@ -1018,7 +1018,16 @@ impl RenderGraph {
             None => master_channels,
         };
         let metronome = MetronomeRouting::from_project(project, click_output);
-        let device_channels = track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(2);
+        let insert_outputs = tracks
+            .iter()
+            .map(|t| &t.chain)
+            .chain([&master_chain])
+            .flat_map(|c| c.effects())
+            .filter_map(|e| e.fx.with(|e| e.device_outputs()))
+            .max()
+            .unwrap_or(0);
+        let device_channels =
+            track_outputs.unwrap_or(0).max(master_outputs).max(metronome.end().unwrap_or(0)).max(insert_outputs).max(2);
         let monitor_slots = fx.monitor_fx.clone();
         let monitor_chain = monitor_slots.iter().any(FxSlot::active).then(|| {
             let chain = crate::chain::build(fx, &FxOwner::Monitor, &monitor_slots, device_channels);

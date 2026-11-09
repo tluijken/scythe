@@ -494,8 +494,10 @@ impl Session {
         }
         let sync = self.sync_config();
         let ltc = matches!(sync.chase.map(|c| c.source), Some(scythe_engine::midi_sync::ChaseSource::Ltc { .. }));
-        let monitor =
-            !self.no_input && (ltc || self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t)));
+        let monitor = !self.no_input
+            && (ltc
+                || self.project.tracks.iter().any(|t| t.armed && t.monitor && !is_midi(t))
+                || scythe_engine::stock::reainsert::in_project(&self.project));
         if let Err(e) = self.engine.set_monitoring(monitor) {
             self.notify(format!("Input monitoring unavailable: {e}"));
         }

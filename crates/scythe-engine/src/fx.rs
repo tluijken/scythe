@@ -225,6 +225,12 @@ pub trait Effect: Send {
         true
     }
 
+    /// Audio device outputs the effect writes to directly (hardware inserts), so the device
+    /// opens with at least this many channels.
+    fn device_outputs(&self) -> usize {
+        0
+    }
+
     /// Clears internal state such as filter memories and delay lines (on seek or stop).
     fn reset(&mut self) {}
 
@@ -691,6 +697,8 @@ pub struct FxRegistry {
     /// The monitoring chain: after the master, on what the device plays only. It belongs to
     /// the setup rather than a project, as REAPER keeps it in `reaper-hwoutfx.ini`.
     pub monitor_fx: Vec<FxSlot>,
+    /// The live engine's audio device, for hardware inserts.
+    pub hardware: Option<Arc<crate::hardware_io::HardwareIo>>,
 }
 
 impl FxRegistry {
@@ -707,6 +715,7 @@ impl FxRegistry {
             vst3_modules: Default::default(),
             nam_preloaded: Default::default(),
             monitor_fx: Vec::new(),
+            hardware: None,
         }
     }
 
@@ -1165,6 +1174,7 @@ impl FxRegistry {
                     let cx = crate::stock::StockContext {
                         sample_rate: self.sample_rate,
                         project_dir: self.project_dir.as_deref(),
+                        hardware: self.hardware.as_ref(),
                     };
                     // Settings an emulation does not cover run in REAPER's own binary when it
                     // is installed.

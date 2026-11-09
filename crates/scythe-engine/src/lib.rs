@@ -13,6 +13,7 @@ pub mod editor;
 pub mod eel;
 pub mod engine;
 pub mod fx;
+pub mod hardware_io;
 pub mod jsfx;
 pub mod loudness;
 pub mod lv2;

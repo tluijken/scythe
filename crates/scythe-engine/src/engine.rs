@@ -349,6 +349,8 @@ struct Processor {
     keyboard_used: bool,
     /// Every message from the MIDI inputs, for learned controls and actions.
     control: rtrb::Producer<LiveMidi>,
+    /// The device as hardware inserts see it.
+    hardware: Arc<crate::hardware_io::HardwareIo>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -381,6 +383,7 @@ impl Processor {
             sync_in: Vec::with_capacity(MAX_LIVE_MIDI),
             keyboard_used: false,
             control: feeds.control,
+            hardware: Arc::default(),
         }
     }
 
@@ -501,6 +504,7 @@ impl Processor {
         }
         let mut segments = [(0i64, 0usize, 0usize); 8];
         let has_input = self.read_input(frames);
+        self.hardware.begin(frames, has_input.then_some(self.in_bufs.as_slice()));
         let has_midi = self.read_midi();
         self.chase(has_input, frames);
         let count_in = self.transport.count_in_step(frames);
@@ -570,6 +574,7 @@ impl Processor {
                 midi_out: clock(pos, 0),
                 clicks: Clicks::CountIn { clicks, at },
             };
+            self.hardware.segment(0);
             graph.render_with(pos, &mut l[..len], &mut r[..len], &mut self.scratch, &live);
             graph.master_extra_at(0, len, &mut self.extra);
             graph.device_out_at(0, len, l, r, &mut self.extra);
@@ -584,6 +589,7 @@ impl Processor {
                 midi_out: clock(pos, 0),
                 clicks: Clicks::Off,
             };
+            self.hardware.segment(0);
             graph.render_with(pos, l, r, &mut self.scratch, &live);
             graph.master_extra_at(0, frames, &mut self.extra);
             graph.device_out_at(0, frames, l, r, &mut self.extra);
@@ -599,11 +605,13 @@ impl Processor {
                 midi_out: clock(pos, off),
                 clicks: song_clicks,
             };
+            self.hardware.segment(off);
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
             graph.master_extra_at(off, len, &mut self.extra);
             graph.device_out_at(off, len, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, off, len, l, r, &mut self.extra);
         }
+        self.hardware.mix_into(&mut self.left[..frames], &mut self.right[..frames], &mut self.extra);
         let budget = frames as f32 / self.transport.sample_rate as f32;
         let load = started.elapsed().as_secs_f32() / budget;
         let t = &self.transport;
@@ -978,13 +986,18 @@ impl Engine {
         let transport = Arc::new(Transport::new(sample_rate));
         let (senders, feeds) = feeds();
         let proc = Arc::new(Mutex::new(Processor::new(graph.clone(), transport.clone(), feeds)));
+        let hardware = proc.lock().map(|p| p.hardware.clone()).ok();
         let output = Output::null(proc.clone(), sample_rate);
         Self {
             graph,
             transport,
             pool,
             meters: MeterRegistry::default(),
-            fx: FxRegistry::new(sample_rate),
+            fx: {
+                let mut fx = FxRegistry::new(sample_rate);
+                fx.hardware = hardware;
+                fx
+            },
             retired: VecDeque::new(),
             input_tx: senders.input_tx,
             input_stream: None,
@@ -1754,6 +1767,69 @@ mod tests {
             block = if block > 1500 { 97 } else { block * 2 + 1 };
         }
         out
+    }
+
+    /// A hardware insert on the null engine with a 300-frame loopback cable on outputs and
+    /// inputs 3/4: with its delay compensation at 300 frames the return lines up with a
+    /// second track playing the same item.
+    #[test]
+    fn a_hardware_insert_lines_up_through_a_loopback() {
+        use scythe_core::{Item, Take};
+        let dir = std::env::temp_dir().join(format!("scythe-engine-insert-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("tone.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let tone = |i: usize| 0.25 * (i as f32 * 0.037).sin() + 0.1 * (i as f32 * 0.0051).cos();
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for i in 0..16_000 {
+            w.write_sample(tone(i)).unwrap();
+        }
+        w.finalize().unwrap();
+        let mut state = crate::builtin::Builtin::HardwareInsert.default_state();
+        state[32..40].copy_from_slice(&(300.0 / crate::stock::reainsert::MAX_DELAY).to_le_bytes());
+        let mut p = Project::default();
+        for with_insert in [true, false] {
+            let t = p.add_track("t");
+            let track = p.track_mut(t).unwrap();
+            let mut item = Item::new(0.0, 2.0, Take::from_file(src.clone()));
+            (item.fade_in, item.fade_out) = (scythe_core::Fade::default(), scythe_core::Fade::default());
+            track.items.push(item);
+            if with_insert {
+                track.fx.push(crate::builtin::Builtin::HardwareInsert.slot_with(&state));
+            }
+        }
+        let pool = MediaPool::default();
+        pool.load(&src, 8000).unwrap();
+        let transport = Arc::new(Transport::new(8000));
+        transport.playing.store(true, Ordering::Relaxed);
+        let (_senders, feeds) = feeds();
+        let hardware = Arc::new(crate::hardware_io::HardwareIo::default());
+        hardware.set_loopback(Some(300));
+        let mut fx = FxRegistry::new(8000);
+        fx.hardware = Some(hardware.clone());
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut fx, 8000);
+        assert_eq!(graph.device_channels, 4);
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport, feeds);
+        proc.hardware = hardware;
+        proc.set_outputs(4);
+        let mut out = Vec::new();
+        for _ in 0..60 {
+            let mut buf = vec![0.0f32; 4 * 128];
+            proc.write_interleaved(&mut buf, 4);
+            out.extend(buf.chunks(4).map(|f| f[0]));
+        }
+        // Items on the insert's track are read 300 frames ahead, so its return arrives in time;
+        // before the cable has carried anything only the other track plays.
+        for (i, v) in out.iter().enumerate() {
+            let want = if i < 300 { tone(i) } else { 2.0 * tone(i) };
+            assert!((v - want).abs() < 1e-5, "frame {i}: {v} vs {want}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -17,6 +17,8 @@ pub enum Builtin {
     Verbate,
     Synth,
     MidiControl,
+    FftEq,
+    HardwareInsert,
 }
 
 /// Default states as REAPER writes them for a freshly added instance.
@@ -26,11 +28,13 @@ const DELAY_DEFAULT: &str =
     "AAAAAAAAAAABAAAALAAAAAIAAAAAAAAAQwIAPwAAgD8AAAAAAACAPwAAAAAAAAA8nNEHMwAAgD8AAAAAAACAPwAAgD8AAIA/AAAAPw==";
 /// A fresh ReaControlMIDI's state, without the bank file path REAPER fills in.
 const CONTROL_MIDI_DEFAULT: &str = "/////wAAAAAAAAAAAAAAAAkAAAAMAAAAAQAAAP8/AAAAIAAAACAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgAAAE1ham9yAA0AAAAxMDIwMzQwNTA2MDcAAQAAAAAAAAAAAAAAAAoAAAANAAAAAQAAAAAAAAAAAAAAAAAAAA==";
+const FIR_DEFAULT: &str = "nBIAAAAAtMIAAMBBABAAAAAAgD8AAAAAAgAAAAIAAADXOb9DAAAAAKUrSEUAAAAAAAAAAAAAAACtVQM8AACAP7OiBDgAAAA+AAAAAAAAAAACAAACAACAPw==";
+const INSERT_DEFAULT: &str = "7u7dDRgAAAACAAAAAwAAAAIAAAADAAAA/////wAAEAAAAAAAAAAAAAAAAAAAAPA/AAAAAAAA8D8=";
 const LIMIT_DEFAULT: &str = "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAACAAAAAAAAAAAAAD+fduMQw8Y/";
 const XCOMP_DEFAULT: &str = "OAAAAAQAAAAAAAAAAABpQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAAAAAAAQI9AAAAAAAAA8D8AAAAAAADwPwAAAAAAAABAAAAAAAAAAAAPAAAAlgAAAAUAAAARAAAAAAAAAACIs0AAAAAAAADwPwAAAAAAAPA/AAAAAAAAAEAAAAAAAAAAAA8AAACWAAAABQAAABEAAAAAAAAAAHDXQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAEAAAABAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAgAAAA==";
 
 impl Builtin {
-    pub const ALL: [Builtin; 10] = [
+    pub const ALL: [Builtin; 12] = [
         Self::Eq,
         Self::Gate,
         Self::Compressor,
@@ -41,6 +45,8 @@ impl Builtin {
         Self::Verbate,
         Self::Synth,
         Self::MidiControl,
+        Self::FftEq,
+        Self::HardwareInsert,
     ];
 
     pub fn label(self) -> &'static str {
@@ -55,6 +61,8 @@ impl Builtin {
             Self::Verbate => "Algorithmic reverb",
             Self::Synth => "Synth",
             Self::MidiControl => "MIDI control",
+            Self::FftEq => "FFT EQ",
+            Self::HardwareInsert => "Hardware insert",
         }
     }
 
@@ -71,6 +79,8 @@ impl Builtin {
             Self::Verbate => "ReaVerbate",
             Self::Synth => "ReaSynth",
             Self::MidiControl => "ReaControlMIDI",
+            Self::FftEq => "ReaFir (FFT EQ+Dynamics Processor)",
+            Self::HardwareInsert => "ReaInsert",
         };
         crate::stock::by_name(name).expect("built-ins are stock plugins")
     }
@@ -90,6 +100,8 @@ impl Builtin {
             Self::Verbate => crate::stock::marked_chunk(&crate::stock::reaverbate::DEFAULTS),
             Self::Synth => crate::stock::marked_chunk(&crate::stock::reasynth::DEFAULTS),
             Self::MidiControl => b64.decode(CONTROL_MIDI_DEFAULT).unwrap(),
+            Self::FftEq => b64.decode(FIR_DEFAULT).unwrap(),
+            Self::HardwareInsert => b64.decode(INSERT_DEFAULT).unwrap(),
         }
     }
 

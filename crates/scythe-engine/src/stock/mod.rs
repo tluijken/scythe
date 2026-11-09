@@ -7,6 +7,7 @@ pub mod reacomp;
 pub mod reacontrolmidi;
 pub mod reafir;
 pub mod reagate;
+pub mod reainsert;
 pub mod realimit;
 pub mod reasynth;
 pub mod reaverbate;
@@ -22,6 +23,8 @@ pub struct StockContext<'a> {
     pub sample_rate: u32,
     /// For plugins that load files relative to the project (samples, impulse responses).
     pub project_dir: Option<&'a Path>,
+    /// The live engine's audio device, for hardware inserts; none in offline renders.
+    pub hardware: Option<&'a std::sync::Arc<crate::hardware_io::HardwareIo>>,
 }
 
 pub type Constructor = fn(&[u8], &StockContext) -> Result<Box<dyn Effect>, String>;
@@ -179,6 +182,14 @@ pub static PLUGINS: &[StockPlugin] = &[
         "56535472656672726561666972666674",
         "ReaFIR-compatible FFT EQ",
         |chunk, cx| Ok(Box::new(reafir::Fir::from_reafir(chunk, cx.sample_rate)?))
+    ),
+    stock!(
+        "ReaInsert",
+        "reainsert.vst.so",
+        1919250281,
+        "56535472656F69726561696E73657274",
+        "ReaInsert-compatible hardware insert",
+        |chunk, cx| boxed(reainsert::Insert::new(chunk, cx.hardware.cloned(), cx.sample_rate), "ReaInsert")
     ),
 ];
 
