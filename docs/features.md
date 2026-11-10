@@ -340,9 +340,12 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   switching it by hand overrides that. Snapshots A-D (Alt+1…4, and `_SCYTHE_RIG_SNAPSHOT_A`…`D`
   for footswitches and MIDI learn) and named presets (`~/.local/share/scythe/rigs`, loadable on
   any track, `_SCYTHE_RIG_PRESET_NEXT`/`PREVIOUS`) hold the whole rig; the control API and MCP
-  have `rig.*`. **Make rig** turns a NAM slot and the ReaVerb after it into a rig; a bare NAM slot
+  have `rig.*`, with `rig.preview` (an amp model or cab impulse response tried as one undo step),
+  `rig.keep` and `rig.revert`, and `nam.preview`/`nam.keep`/`nam.revert` for a bare NAM slot.
+  **Make rig** turns a NAM slot and the ReaVerb after it into a rig; a bare NAM slot
   works as before. Switching is click-free: models crossfade, impulse responses crossfade over 20
-  ms, and gate, EQ and level changes reach the running effects in place.
+  ms, a stage switched on or off crossfades over 10 ms, and gate, EQ and level changes reach the
+  running effects in place.
 - **Parameter modulation and learn** (`<PROGRAMENV`, `PARMLEARN`, `LFOLEARN`): baseline, LFO
   (six shapes, Hz or tempo-synced periods, strength, direction, phase, follow-the-position or
   free-running), audio control signal from any input channel pair (sidechain on 3/4) with
@@ -438,7 +441,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   (tape style: heard while stopped or recording, not during playback); right-click it or the
   arm button for the **record mode menu**: REAPER's per-track record modes (input, input forced
   to mono, stereo or multichannel, output stereo/mono/multichannel with or without latency
-  compensation tapped post-fader, pre-FX or post-FX, MIDI overdub, replace, touch-replace and
+  compensation tapped post-fader, pre-FX or post-FX, output (MIDI) recording what the track's
+  effects put out, MIDI overdub, replace, touch-replace (with REAPER's controller timeout) and
   latch-replace into the MIDI item under the playhead, disable to only monitor), "monitor
   track media when recording" (otherwise a recording track's own items fall silent, as in
   REAPER), automatic record-arm on selection, the project record mode (normal, time selection
@@ -541,7 +545,10 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   Control and extenders (shared bank, flip, V-pots, scribble strips, meters, time display,
   automation mode buttons, touch-sensitive faders feeding automation, F1-F8 to markers, the
   user switches as footswitches for the setlist) and HUI partly, as REAPER (faders, touch,
-  select/mute/solo/arm, V-pots, four-letter names, meters, transport). See
+  select/mute/solo/arm, V-pots, four-letter names, meters, transport), and the PreSonus
+  FaderPort and FaderPort v2 as REAPER drives them (one strip from the master: fader with
+  touch, pan, mute/solo/arm, automation modes, track stepping, transport, the v2's shift and
+  pan mode). See
   [docs/live.md](live.md#footswitches-tablets-and-control-surfaces).
 
 ### Running as a service

@@ -10,8 +10,7 @@ measured.
 - Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
   take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
   scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's
-  gate, compressor, subtract and convolve modes have no editor (they are not emulated). Parameter
-  changes through `fx.param` are not undo steps (the editors' and the parameter rows' are).
+  gate, compressor, subtract and convolve modes have no editor (they are not emulated).
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns
@@ -41,13 +40,15 @@ measured.
   that address.
 - Editing: REAPER's detector for transients is not reproduced exactly (see the table in
   [verification.md](verification.md)), and the dynamic split dialog's gate and "split at" options other than transients are
-  not there. Envelope points do not move with moved items (REAPER's "move envelope points with
-  media items"), and a locked item does not hold the envelope above it still during a ripple.
-  Snapping to item edges and markers is a window setting (REAPER keeps its snap targets in
-  bits of `GRID` that were not measured); the framerate grid snaps like a plain grid. Ripple
-  of edge trims ("ripple edit when editing media item edges"), ripple of the tempo map,
-  auto-crossfade on split, track media/razor edit grouping and razor copies of envelope areas
-  are not there.
+  not there. Snapping to item edges and markers is a window setting (REAPER keeps its snap
+  targets in bits of `GRID` that were not measured); the framerate grid snaps like a plain grid.
+  Ripple of edge trims was not measured with the mouse (REAPER's trim actions and nudge
+  dialog do not ripple, nor do Scythe's); with a beats timebase REAPER moves items again after
+  a ripple delete moves the tempo map, which Scythe does not. Envelope points move with items
+  as REAPER's do; automation items do not move along. A ripple move with a locked item later
+  on moves the items before it one by one, as REAPER does; points between those items stay.
+  Track media/razor edit grouping and razor copies of envelope areas are not there (REAPER's
+  split does not crossfade by default, nor does Scythe's).
 - MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
   (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
   Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes
@@ -57,10 +58,12 @@ measured.
   pool. The inline editor draws notes only (no lanes), in every pass of a looped item. Other items show behind the edited one
   without their takes' play rate or loops.
 
-- Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
-  only between the first and last message played (REAPER's CC timeout is not modelled). The
-  MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
-  for comparison (that needs MIDI played into it live). A
+- Recording: "Output (MIDI)" records the messages the track's effects put out, at the block's
+  timing (not compared with REAPER live). Touch-replace replaces notes between the first and
+  last note played and each controller lane while it is played, until `midicctouchtimeout`
+  (1000 ms) passes without a message. The MIDI overdub and replace modes follow REAPER's
+  descriptions and were not recorded in REAPER for comparison (that needs MIDI played into it
+  live). A
   track records one file per pass group; "start new files on loop", record formats other than
   24-bit WAV (`<RECORD_CFG`) and the secondary record path are kept but not acted on. File
   names use UTC. "New recording adds lanes in layers" plays like "exclusively" (REAPER saved
@@ -84,7 +87,10 @@ measured.
   `-renderproject` does). Project tabs: background projects do not play ("Run background
   projects" is off, REAPER's default) and tabs are not restored on start-up.
 
-- Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
+- Control surfaces: on the FaderPorts, Bank, User, Punch, Mix, Proj and Trns (classic) and
+  Bypass, Link, Click, Section, Marker and the encoder push (v2) do nothing (REAPER's were not
+  seen to change anything in the probe), Output switches the strip to the master, and the v2's
+  pan and volume steps were measured with Shift latched; HUI is
   partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the
   system's ports as Scythe sees them, not REAPER's `reaper-midihw.ini` order, and a surface's
   input port is also opened for MIDI recording. OSC has no FX parameters, ReaEQ, instrument,
@@ -96,8 +102,7 @@ measured.
   hard right comes back from there; a fader taken to -inf and back returns to where it was);
   Scythe clamps each edit, so after hitting a limit followers keep their clamped offset.
   The global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
-  project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
-  into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
+  project but not acted on. Safe solo (`I_SOLO` 5 and 6) is kept but plays
   as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
 - Folders and selection: the drop depth comes from where the pointer is over a track (thirds),
   not from its horizontal position; the selection lives in the window (the `SEL` lines of the
@@ -151,7 +156,9 @@ measured.
   not available to compare with. Freeze renders only the track's own items (not what other
   tracks send it or folder children), in stereo; REAPER's mono and multichannel freezes and
   "freeze to the last FX" are not there, and a freeze needs the project saved first.
-- Guitar rigs: switching a stage on or off is instant rather than crossfaded; the impulse
+- Guitar rigs: switching a stage on or off crossfades over 10 ms (Scythe's own; a stage with
+  latency still switches at once); `rig.preview` and `nam.preview` try local files only (the
+  TONE3000 previews are the desktop app's); the impulse
   response's length and trim are not offered (ReaVerb's trim is not modelled); the gate's
   attack, release and hysteresis and the EQ bands' frequencies are set in ReaGate's and ReaEQ's
   own editors. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot

@@ -141,7 +141,7 @@ A summary; [docs/features.md](docs/features.md) has the full description of each
 - **Setlists** made from the project's markers, with stop markers, cues, auto-advance and a
   count-in per song, stored where REAPER keeps them.
 - **Marker actions** (`!1016` stops on the marker's frame), footswitches, MIDI pedals, OSC with
-  REAPER's `.ReaperOSC` files, Mackie Control and HUI.
+  REAPER's `.ReaperOSC` files, Mackie Control, HUI and the PreSonus FaderPorts.
 - A **headless server** that installs itself as a systemd service, runs with real-time priority
   and survives an unplugged audio device. See [docs/live.md](docs/live.md).
 
@@ -243,7 +243,7 @@ Every known difference, area by area, is in [docs/limitations.md](docs/limitatio
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
 | `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |
-| `scythe-surface` | Control surfaces on top of the control API: OSC with REAPER's `.ReaperOSC` pattern files, Mackie Control and extenders, HUI; run by the app and the server from the `csurf_<i>` preferences |
+| `scythe-surface` | Control surfaces on top of the control API: OSC with REAPER's `.ReaperOSC` pattern files, Mackie Control and extenders, HUI, FaderPort and FaderPort v2; run by the app and the server from the `csurf_<i>` preferences |
 | `scythe-mcp` | MCP server for AI agents: tools generated from the control API's command types, the compact project overview, resources and prompts, tool selection, subscriptions and notifications, waiting for measuring jobs; the `scythe-mcp` stdio binary |
 | `scythe-app` | egui UI around a `Session`: arrange view, mixer dock, inspector, action palette (Ctrl+K), Actions window, toolbars, plugin editor windows, ReaScript, demo generator |
 
