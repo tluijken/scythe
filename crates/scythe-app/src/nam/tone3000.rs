@@ -278,8 +278,41 @@ fn error_text(body: &[u8]) -> String {
                 })
             })
             .unwrap_or_default(),
-        Err(_) => String::from_utf8_lossy(&body[..body.len().min(200)]).into_owned(),
+        Err(_) => {
+            web_page_text(body).unwrap_or_else(|| String::from_utf8_lossy(&body[..body.len().min(200)]).into_owned())
+        }
     }
+}
+
+/// What an HTML page (a proxy's error page, a bot check) says in a line: its title, or else
+/// its text without the markup. `None` when `body` is not HTML.
+fn web_page_text(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let trimmed = text.trim_start();
+    if !trimmed.starts_with('<') {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let title = lower
+        .find("<title")
+        .and_then(|at| Some(at + lower[at..].find('>')? + 1))
+        .and_then(|start| Some(&trimmed[start..start + lower[start..].find("</title")?]));
+    let mut plain = String::new();
+    let mut in_tag = false;
+    for c in title.unwrap_or(trimmed).chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                plain.push(' ');
+            }
+            _ if !in_tag => plain.push(c),
+            _ => {}
+        }
+    }
+    let line = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    let line: String = line.chars().take(120).collect();
+    Some(if line.is_empty() { "a web page".to_owned() } else { format!("a web page: {line}") })
 }
 
 /// TONE3000 sends `null` for empty lists and unset fields, which `#[serde(default)]` alone
@@ -865,9 +898,10 @@ impl Client {
     fn get<T: DeserializeOwned>(&self, path_and_query: &str) -> Result<T, ApiError> {
         let body = self.send("GET", format!("{}{path_and_query}", self.base))?;
         serde_json::from_slice(&body).map_err(|e| {
-            let error = ApiError::Decode(e.to_string());
+            let why = web_page_text(&body).unwrap_or_else(|| e.to_string());
+            let error = ApiError::Decode(why.clone());
             match self.debug_log.as_ref().map(|log| log_response(log, path_and_query, &error, &body)) {
-                Some(Ok(())) => ApiError::Decode(format!("{e} (response written to tone3000-debug.log)")),
+                Some(Ok(())) => ApiError::Decode(format!("{why} (response written to tone3000-debug.log)")),
                 _ => error,
             }
         })
@@ -1272,5 +1306,18 @@ mod tests {
         assert!(written.contains(r#"{"nested":true}"#));
         assert!(!written.contains("old"), "the access token stays out of the log");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_web_page_instead_of_json_reads_as_its_title() {
+        let page = "<!DOCTYPE html>\n<html><head><style>body{margin:0}</style>\n\
+                    <title>tone3000.com | 502: Bad gateway</title></head><body><h1>Bad gateway</h1></body></html>";
+        let http = Recorded::with([(502, page), (200, "<html><body><p>Enable  JavaScript</p></body></html>")]);
+        let client = signed_in(http, None);
+        let Err(e) = client.user() else { panic!("an error") };
+        assert_eq!(e.to_string(), "TONE3000 answered 502: a web page: tone3000.com | 502: Bad gateway");
+        let Err(e) = client.user() else { panic!("an error") };
+        assert_eq!(e.to_string(), "unexpected TONE3000 response: a web page: Enable JavaScript");
+        assert_eq!(web_page_text(br#"{"error": "x"}"#), None);
     }
 }
