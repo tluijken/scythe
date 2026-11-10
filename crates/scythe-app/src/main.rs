@@ -14,6 +14,9 @@ mod script_host;
 mod theme;
 mod ui;
 
+#[cfg(all(test, feature = "itest"))]
+mod itest;
+
 use std::path::PathBuf;
 
 use scythe_core::Project;
@@ -40,15 +43,7 @@ impl eframe::App for Shell {
                 self.app.run_script(&script);
             }
         }
-        self.app.update_meters();
-        self.app.tick_editors();
-        self.app.tick_automation();
-        self.app.tick_script();
-        ui::window::begin_frame(&ctx);
-        palette::handle_shortcuts(&mut self.app, &ctx);
-        ui::root(&mut self.app, ui);
-        ui::window::end_frame(&ctx);
-        theme::recolor(&ctx, &self.app.session.theme);
+        ui::frame(&mut self.app, ui);
         self.app.session.release();
         // Meters and the clock need a steady frame rate even when nothing is playing.
         ctx.request_repaint_after(std::time::Duration::from_millis(33));

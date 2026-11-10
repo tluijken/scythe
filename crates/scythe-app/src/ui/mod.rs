@@ -45,6 +45,21 @@ const ENVELOPES_H: f32 = 300.0;
 const SEARCH_W: f32 = 216.0;
 const TABS_H: f32 = 30.0;
 
+/// One window frame after the session was polled: meters, editors, automation, the running
+/// script, shortcuts and the whole UI.
+pub fn frame(app: &mut ScytheApp, ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    app.update_meters();
+    app.tick_editors();
+    app.tick_automation();
+    app.tick_script();
+    window::begin_frame(&ctx);
+    palette::handle_shortcuts(app, &ctx);
+    root(app, ui);
+    window::end_frame(&ctx);
+    theme::recolor(&ctx, &app.session.theme);
+}
+
 pub fn root(app: &mut ScytheApp, ui: &mut Ui) {
     let full = ui.max_rect();
     ui.painter().rect_filled(full, CornerRadius::ZERO, BG);
@@ -131,6 +146,9 @@ fn project_tabs(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         let tip = tab.path.as_ref().map_or_else(|| "Not saved yet".to_owned(), |p| p.display().to_string());
         let body = Rect::from_min_max(r.min, pos2(r.right() - 24.0, r.bottom()));
         let resp = ui.interact(body, egui::Id::unique(("project_tab", tab.index)), Sense::click()).on_hover_text(tip);
+        resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Tab, true, tab.active, format!("Project tab {}", tab.name))
+        });
         ui.painter().rect_filled(r, CornerRadius::same(8), if resp.hovered() { RAISED } else { bg });
         if tab.active {
             let bar = Rect::from_min_size(pos2(r.left() + 8.0, r.bottom() - 3.0), vec2(w - 16.0, 2.0));

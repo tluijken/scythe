@@ -225,6 +225,8 @@ pub struct NamHub {
     pub library: Library,
     pub config: Config,
     pub client: Arc<Client>,
+    /// Where the client keeps the TONE3000 session.
+    tokens: TokenStore,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     pub scanning: bool,
@@ -261,11 +263,17 @@ pub struct NamHub {
 
 impl NamHub {
     pub fn new() -> Self {
-        let config = Config::load();
+        Self::with(Config::load(), Library::default_dir(), TokenStore::default_location(), preview::default_cache_dir())
+    }
+
+    /// A hub keeping its library in `library_dir`, its TONE3000 session in `tokens` and its
+    /// previewed models in `preview_dir`.
+    pub fn with(config: Config, library_dir: PathBuf, tokens: TokenStore, preview_dir: PathBuf) -> Self {
         let (tx, rx) = channel();
         Self {
-            client: Arc::new(Self::client(&config)),
-            library: Library::open(Library::default_dir()),
+            client: Arc::new(Self::client(&config, &library_dir, &tokens)),
+            tokens,
+            library: Library::open(library_dir),
             config,
             tx,
             rx,
@@ -284,17 +292,12 @@ impl NamHub {
             library_dirty: false,
             selected: None,
             preview: None,
-            preview_dir: preview::default_cache_dir(),
+            preview_dir,
             fetching: HashSet::new(),
             preview_next_tone: None,
             section: RigStage::Amp,
             pending: Vec::new(),
         }
-    }
-
-    fn client(config: &Config) -> Client {
-        Client::new(Arc::new(tone3000::UreqHttp::default()), config, Some(TokenStore::default_location()))
-            .with_debug_log(Library::default_dir().join("tone3000-debug.log"))
     }
 
     /// Reads the library's folders again in the background.
@@ -336,6 +339,11 @@ impl NamHub {
         });
     }
 
+    fn client(config: &Config, library_dir: &std::path::Path, tokens: &TokenStore) -> Client {
+        Client::new(Arc::new(tone3000::UreqHttp::default()), config, Some(tokens.clone()))
+            .with_debug_log(library_dir.join("tone3000-debug.log"))
+    }
+
     pub fn has_client_id(&self) -> bool {
         self.config.client_id().is_some()
     }
@@ -344,7 +352,7 @@ impl NamHub {
         let id = id.trim();
         self.config.client_id = (!id.is_empty()).then(|| id.to_owned());
         self.config.save()?;
-        self.client = Arc::new(Self::client(&self.config));
+        self.client = Arc::new(Self::client(&self.config, self.library.dir(), &self.tokens));
         Ok(())
     }
 

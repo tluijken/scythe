@@ -189,6 +189,10 @@ impl Library {
         crate::demo::data_dir().join("nam")
     }
 
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn open(dir: PathBuf) -> Self {
         let saved: Saved = std::fs::read(dir.join("library.json"))
             .ok()

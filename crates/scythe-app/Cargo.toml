@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 rubberband = ["scythe-engine/rubberband"]
+itest = ["dep:egui_kittest"]
 
 [dependencies]
 scythe-core.workspace = true
@@ -29,3 +30,4 @@ hound.workspace = true
 rayon.workspace = true
 x11rb.workspace = true
 image.workspace = true
+egui_kittest = { version = "0.37.0", optional = true, features = ["snapshot", "wgpu"] }

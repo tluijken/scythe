@@ -631,6 +631,7 @@ fn library_filters(app: &mut ScytheApp, ui: &mut Ui, pick_kind: bool) {
 /// list auditions model after model.
 fn entry_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, e: &Entry, current: bool, loading: bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW - 2.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, current, format!("Library {}", e.name)));
     ui.add_space(2.0);
     let painter = ui.painter().clone();
     let selected = app.nam.selected.as_deref() == Some(e.path.as_path());
@@ -1009,6 +1010,7 @@ fn short_count(n: i64) -> String {
 
 fn tone_row(app: &mut ScytheApp, ui: &mut Ui, tone: &Tone, selected: bool, previewed: bool) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW - 2.0), Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Tone {}", tone.title)));
     ui.add_space(2.0);
     let painter = ui.painter().clone();
     let bg = match (selected, resp.hovered()) {
@@ -1174,6 +1176,8 @@ fn models_list(app: &mut ScytheApp, ui: &mut Ui, target: &Target, tone: &Tone, r
 
 fn model_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, tone: &Tone, models: &[Model], model: &Model) {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MODEL_ROW - 4.0), Sense::hover());
+    let shown_name = if model.name.is_empty() { format!("model {}", model.id) } else { model.name.clone() };
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ListItem, true, format!("Model {shown_name}")));
     ui.add_space(4.0);
     let painter = ui.painter().clone();
     let local: Option<PathBuf> = app.nam.library.downloaded(model.id).map(|e| e.path.clone());
