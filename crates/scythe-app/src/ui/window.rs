@@ -130,7 +130,7 @@ impl ScytheWindow {
             .id(id)
             .open(open)
             .frame(frame(&ctx.global_style()))
-            .collapsible(self.kind == WindowKind::Panel)
+            .collapsible(false)
             .resizable(resizable)
             .constrain(true);
         if self.kind == WindowKind::Panel {
@@ -194,7 +194,6 @@ impl ScytheWindow {
 
         let shown = window.show(ctx, add_contents);
         let rect = shown.as_ref().map(|s| s.response.rect);
-        let collapsed = shown.as_ref().is_some_and(|s| s.inner.is_none());
         let user_moved = ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
         registry(ctx, |r| {
             r.shown_now.push(Shown { id, key: self.key.clone(), escape: self.escape });
@@ -206,7 +205,7 @@ impl ScytheWindow {
             }
             let previous = r.placements.get(&self.key).copied();
             let size =
-                if remembers_size && !collapsed { rect.size() } else { previous.map_or(rect.size(), |p| p.size()) };
+                if remembers_size { rect.size() } else { previous.map_or(rect.size(), |p| p.size()) };
             let next = Rect::from_min_size(rect.min.round(), size.round());
             if previous != Some(next) {
                 r.placements.insert(self.key.clone(), next);
