@@ -783,6 +783,10 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_TRACK_DBLCLK");
         }
 
+        if track.fixed_lanes && track.lane_count() > 1 {
+            fixed_lanes(app, ui, &clip, head, lane, rows, &track);
+        }
+
         let dim = !audible || (any_solo && !track.solo && !audible);
         for item in track.items.iter().filter(|i| drawn.insert(i.id)) {
             let silent = !track.lane_plays(item.lane());
@@ -1550,4 +1554,66 @@ fn drop_under(app: &ScytheApp, layout: &RowLayout, y: f32, moving: &[usize]) -> 
     let i = layout.index_at(y.max(0.0));
     let frac = ((y - layout.tops[i]) / layout.heights[i]).clamp(0.0, 1.0);
     app.project.drop_at(moving, i, frac)
+}
+
+/// A fixed-lane track's lanes: a line between each two over the header and the lanes, and in
+/// the header a button per lane with its name, lit while the lane plays. A click plays only
+/// that lane (REAPER's lane solo); Ctrl+click adds it to the lanes that play or takes it out.
+fn fixed_lanes(
+    app: &mut ScytheApp,
+    ui: &mut Ui,
+    clip: &egui::Painter,
+    head: Rect,
+    lane: Rect,
+    rows: Rect,
+    track: &scythe_core::Track,
+) {
+    let n = track.lane_count();
+    let y = |f: f32| head.top() + 2.0 + f * (head.height() - 4.0);
+    let comp = track.comp_lane();
+    for k in 0..n {
+        let band = Rect::from_x_y_ranges(head.x_range(), y(k as f32 / n as f32)..=y((k + 1) as f32 / n as f32));
+        if k > 0 {
+            let stroke = Stroke::new(1.0, with_alpha(TEXT_DIM, 70));
+            clip.hline((head.left() + 10.0)..=(head.right() - 10.0), band.top(), stroke);
+            clip.hline(lane.x_range(), band.top(), stroke);
+        }
+        let name = track.lane_names.get(k).cloned().unwrap_or_else(|| (k + 1).to_string());
+        let w = (widgets::text_width(ui, &name, theme::mono(10.0)) + 14.0).clamp(26.0, 90.0);
+        let h = band.height().min(18.0);
+        let r = Rect::from_min_size(pos2(head.right() - 10.0 - w, band.center().y - h / 2.0), vec2(w, h));
+        if !rows.contains_rect(r) || band.height() < 14.0 {
+            continue;
+        }
+        let plays = track.lane_plays(k);
+        let (bg, fg) = match (plays, comp == Some(k)) {
+            (true, true) => (theme::PINK, BG),
+            (true, false) => (ACCENT, BG),
+            (false, _) => (BG, TEXT_DIM),
+        };
+        let shown = widgets::truncate(ui, &name, &theme::mono(10.0), w - 8.0);
+        let resp = text_pill(ui, r, &shown, theme::mono(10.0), bg, fg).on_hover_text(format!(
+            "Lane {name}{}: click to play only this lane, Ctrl+click to add or take it out",
+            if comp == Some(k) { " (comp)" } else { "" }
+        ));
+        if resp.clicked() {
+            let add = ui.input(|i| i.modifiers.command);
+            let id = track.id;
+            let mut lanes = track.playing_lanes();
+            if add {
+                if let Some(i) = lanes.iter().position(|&l| l == k) {
+                    lanes.remove(i);
+                } else {
+                    lanes.push(k);
+                }
+            } else {
+                lanes = vec![k];
+            }
+            app.edit("Play lanes", move |p| {
+                if let Some(t) = p.track_mut(id) {
+                    t.play_lanes(lanes.clone());
+                }
+            });
+        }
+    }
 }
