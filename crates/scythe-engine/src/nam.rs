@@ -85,6 +85,13 @@ impl Activation {
         })
     }
 
+    fn apply_all(self, xs: &mut [f32]) {
+        match self {
+            Self::Tanh => tanh_all(xs),
+            _ => xs.iter_mut().for_each(|x| *x = self.apply(*x)),
+        }
+    }
+
     fn apply(self, x: f32) -> f32 {
         match self {
             Self::Tanh => x.tanh(),
@@ -134,10 +141,11 @@ struct LayerArray {
     rechannel: Dense,
     layers: Vec<Layer>,
     head: Dense,
-    /// Per layer: its input, channel major, as `backs[i]` samples of history followed by
-    /// the current block.
+    /// Per layer: its input, channel major, `backs[i] + ROOM` samples per channel: the
+    /// current block starts at `heads[i]`, preceded by `backs[i]` samples of history.
     inbufs: Vec<Vec<f32>>,
     backs: Vec<usize>,
+    heads: Vec<usize>,
 }
 
 impl LayerArray {
@@ -166,8 +174,10 @@ impl LayerArray {
         }
         let head = Dense::read(config.head_size, ch, config.head_bias, weights);
         let backs: Vec<usize> = config.dilations.iter().map(|d| d * (config.kernel_size - 1)).collect();
-        let inbufs = backs.iter().map(|b| vec![0.0; ch * (b + BLOCK)]).collect();
-        Ok(Self { activation: Activation::parse(&config.activation)?, config, rechannel, layers, head, inbufs, backs })
+        let inbufs = backs.iter().map(|b| vec![0.0; ch * (b + ROOM)]).collect();
+        let heads = backs.clone();
+        let activation = Activation::parse(&config.activation)?;
+        Ok(Self { activation, config, rechannel, layers, head, inbufs, backs, heads })
     }
 
     fn weight_count(c: &ArrayConfig) -> usize {
@@ -181,24 +191,158 @@ impl LayerArray {
 /// Samples per internal block; longer host blocks are split.
 const BLOCK: usize = 512;
 
+/// Room per layer buffer for blocks to advance through before the history is moved back to
+/// the start: moving it after every block would copy far more than the block itself.
+const ROOM: usize = 4 * BLOCK;
+
 impl Dense {
     /// `out[r][t] += Σ_c W[r][c] · x[c][x_off + t] (+ b[r])` for `n` columns of channel-major
     /// buffers with the given row strides.
     fn add_block(&self, x: &[f32], x_stride: usize, x_off: usize, out: &mut [f32], out_stride: usize, n: usize) {
-        for r in 0..self.rows {
-            let o = &mut out[r * out_stride..r * out_stride + n];
-            if let Some(b) = &self.bias {
+        add_all(&[Source { m: self, x, x_stride, x_off }], out, out_stride, n);
+    }
+}
+
+/// One product of [`add_all`]: matrix `m` times the columns of `x` from `x_off` on.
+struct Source<'a> {
+    m: &'a Dense,
+    x: &'a [f32],
+    x_stride: usize,
+    x_off: usize,
+}
+
+/// Adds the products of every source (all with the same rows) to `out`, as consecutive
+/// [`Dense::add_block`] calls would, the sums staying in registers across the sources.
+fn add_all(sources: &[Source], out: &mut [f32], out_stride: usize, n: usize) {
+    #[cfg(target_arch = "x86_64")]
+    if fma_available() {
+        // SAFETY: the CPU supports AVX2 and FMA.
+        return unsafe { add_all_fma(sources, out, out_stride, n) };
+    }
+    add_all_with::<false>(sources, out, out_stride, n);
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn add_all_fma(sources: &[Source], out: &mut [f32], out_stride: usize, n: usize) {
+    add_all_with::<true>(sources, out, out_stride, n);
+}
+
+#[inline(always)]
+fn add_all_with<const FMA: bool>(sources: &[Source], out: &mut [f32], out_stride: usize, n: usize) {
+    let Some(rows) = sources.first().map(|s| s.m.rows) else { return };
+    let mut r = 0;
+    while r < rows {
+        r += match rows - r {
+            8.. => rows_tile::<8, FMA>(sources, r, out, out_stride, n),
+            4.. => rows_tile::<4, FMA>(sources, r, out, out_stride, n),
+            2.. => rows_tile::<2, FMA>(sources, r, out, out_stride, n),
+            _ => rows_tile::<1, FMA>(sources, r, out, out_stride, n),
+        };
+    }
+}
+
+/// Rows `r0..r0 + R`, eight columns at a time with the sums held in registers rather than
+/// written back after every input channel. Returns `R`.
+#[inline(always)]
+fn rows_tile<const R: usize, const FMA: bool>(
+    sources: &[Source],
+    r0: usize,
+    out: &mut [f32],
+    out_stride: usize,
+    n: usize,
+) -> usize {
+    const T: usize = 8;
+    let madd = |w: f32, x: f32, a: f32| if FMA { w.mul_add(x, a) } else { a + w * x };
+    let full = n / T * T;
+    let mut t = 0;
+    while t < full {
+        let mut acc = [[0f32; T]; R];
+        for (i, a) in acc.iter_mut().enumerate() {
+            a.copy_from_slice(&out[(r0 + i) * out_stride + t..][..T]);
+        }
+        for s in sources {
+            let cols = s.m.cols;
+            let w = &s.m.w[r0 * cols..(r0 + R) * cols];
+            if let Some(b) = &s.m.bias {
+                for (i, a) in acc.iter_mut().enumerate() {
+                    a.iter_mut().for_each(|v| *v += b[r0 + i]);
+                }
+            }
+            for c in 0..cols {
+                let xv: &[f32; T] = s.x[c * s.x_stride + s.x_off + t..][..T].try_into().unwrap();
+                for (i, a) in acc.iter_mut().enumerate() {
+                    let wv = w[i * cols + c];
+                    for k in 0..T {
+                        a[k] = madd(wv, xv[k], a[k]);
+                    }
+                }
+            }
+        }
+        for (i, a) in acc.iter().enumerate() {
+            out[(r0 + i) * out_stride + t..][..T].copy_from_slice(a);
+        }
+        t += T;
+    }
+    for i in 0..R {
+        let r = r0 + i;
+        let o = &mut out[r * out_stride + full..r * out_stride + n];
+        for s in sources {
+            if let Some(b) = &s.m.bias {
                 o.iter_mut().for_each(|v| *v += b[r]);
             }
-            for c in 0..self.cols {
-                let w = self.w[r * self.cols + c];
-                let xs = &x[c * x_stride + x_off..c * x_stride + x_off + n];
+            for c in 0..s.m.cols {
+                let wv = s.m.w[r * s.m.cols + c];
+                let xs = &s.x[c * s.x_stride + s.x_off + full..c * s.x_stride + s.x_off + n];
                 for (ov, xv) in o.iter_mut().zip(xs) {
-                    *ov += w * xv;
+                    *ov = madd(wv, *xv, *ov);
                 }
             }
         }
     }
+    R
+}
+
+#[cfg(target_arch = "x86_64")]
+fn fma_available() -> bool {
+    std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+}
+
+/// `tanh` over a buffer, vectorised.
+fn tanh_all(xs: &mut [f32]) {
+    #[cfg(target_arch = "x86_64")]
+    if fma_available() {
+        // SAFETY: the CPU supports AVX2 and FMA.
+        return unsafe { tanh_all_fma(xs) };
+    }
+    xs.iter_mut().for_each(|x| *x = tanh(*x));
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn tanh_all_fma(xs: &mut [f32]) {
+    xs.iter_mut().for_each(|x| *x = tanh(*x));
+}
+
+/// `tanh` without branches or library calls, so a loop over it vectorises: `(1 - e) / (1 + e)`
+/// with `e = exp(-2|x|)` from a range-reduced polynomial. Within 2e-7 of `f32::tanh`.
+#[inline(always)]
+fn tanh(x: f32) -> f32 {
+    // Past 9, tanh is 1 to within half an f32 step.
+    let a = x.abs().min(9.0);
+    let y = -2.0 * a;
+    // Round y / ln 2 to the nearest integer k; adding 1.5 * 2^23 leaves k in the low mantissa bits.
+    const SHIFT: f32 = 12_582_912.0;
+    let shifted = y * std::f32::consts::LOG2_E + SHIFT;
+    let k = shifted - SHIFT;
+    let k_bits = shifted.to_bits().wrapping_sub(SHIFT.to_bits());
+    let r = (y - k * 0.693_359_4) + k * 2.121_944_4e-4;
+    let p = 1.0
+        + r * (1.0
+            + r * (1.0 / 2.0
+                + r * (1.0 / 6.0 + r * (1.0 / 24.0 + r * (1.0 / 120.0 + r * (1.0 / 720.0 + r * (1.0 / 5040.0)))))));
+    let e = p * f32::from_bits(k_bits.wrapping_add(127) << 23);
+    ((1.0 - e) / (1.0 + e)).copysign(x)
 }
 
 pub struct NamModel {
@@ -258,6 +402,7 @@ impl NamModel {
             for b in &mut a.inbufs {
                 b.fill(0.0);
             }
+            a.heads.clone_from(&a.backs);
         }
     }
 
@@ -276,22 +421,26 @@ impl NamModel {
             let ch = array.config.channels;
             let conv_out = if array.config.gated { 2 * ch } else { ch };
             // The head accumulator starts from the previous array's head output.
-            if ai == 0 {
-                self.head_acc[..ch * BLOCK].fill(0.0);
-            } else {
-                self.head_acc[..ch * BLOCK].copy_from_slice(&self.head_out[..ch * BLOCK]);
+            for c in 0..ch {
+                let row = c * BLOCK..c * BLOCK + n;
+                if ai == 0 {
+                    self.head_acc[row].fill(0.0);
+                } else {
+                    self.head_acc[row.clone()].copy_from_slice(&self.head_out[row]);
+                }
             }
             let k = array.config.kernel_size;
             let layers = array.layers.len();
             for li in 0..layers {
                 let back = array.backs[li];
-                let stride = back + BLOCK;
+                let stride = back + ROOM;
+                let head = array.heads[li];
                 if li == 0 {
                     let first = &mut array.inbufs[0];
                     for c in 0..ch {
-                        first[c * stride + back..c * stride + back + n].fill(0.0);
+                        first[c * stride + head..c * stride + head + n].fill(0.0);
                     }
-                    array.rechannel.add_block(&self.input, BLOCK, 0, &mut first[back..], stride, n);
+                    array.rechannel.add_block(&self.input, BLOCK, 0, &mut first[head..], stride, n);
                 }
                 let layer = &array.layers[li];
                 let z = &mut self.z[..conv_out * BLOCK];
@@ -299,11 +448,23 @@ impl NamModel {
                     z[r * BLOCK..r * BLOCK + n].fill(layer.conv_bias[r]);
                 }
                 let ib = &array.inbufs[li];
-                for (tap, m) in layer.conv.iter().enumerate() {
-                    let off = back - layer.dilation * (k - 1 - tap);
-                    m.add_block(ib, stride, off, z, BLOCK, n);
+                let source = |i: usize| match i.min(k) {
+                    tap if tap < k => Source {
+                        m: &layer.conv[tap],
+                        x: ib,
+                        x_stride: stride,
+                        x_off: head - layer.dilation * (k - 1 - tap),
+                    },
+                    _ => Source { m: &layer.mixin, x: cond, x_stride: n, x_off: 0 },
+                };
+                if k < 8 {
+                    let sources: [Source; 8] = std::array::from_fn(source);
+                    add_all(&sources[..=k], z, BLOCK, n);
+                } else {
+                    for i in 0..=k {
+                        add_all(&[source(i)], z, BLOCK, n);
+                    }
                 }
-                layer.mixin.add_block(cond, n, 0, z, BLOCK, n);
                 let act = array.activation;
                 for c in 0..ch {
                     let (top, rest) = z.split_at_mut((c + 1) * BLOCK);
@@ -314,7 +475,7 @@ impl NamModel {
                             *t = act.apply(*t) * Activation::Sigmoid.apply(*g);
                         }
                     } else {
-                        top.iter_mut().for_each(|t| *t = act.apply(*t));
+                        act.apply_all(top);
                     }
                     let h = &mut self.head_acc[c * BLOCK..c * BLOCK + n];
                     for (hv, t) in h.iter_mut().zip(top.iter()) {
@@ -327,23 +488,29 @@ impl NamModel {
                 let cur = &cur[li];
                 let (dst, dst_stride, dst_off): (&mut [f32], usize, usize) = if li + 1 < layers {
                     let nb = array.backs[li + 1];
-                    (&mut next[0][..], nb + BLOCK, nb)
+                    (&mut next[0][..], nb + ROOM, array.heads[li + 1])
                 } else {
                     (&mut self.input[..], BLOCK, 0)
                 };
                 for c in 0..ch {
-                    let src = &cur[c * stride + back..c * stride + back + n];
+                    let src = &cur[c * stride + head..c * stride + head + n];
                     dst[c * dst_stride + dst_off..c * dst_stride + dst_off + n].copy_from_slice(src);
                 }
                 layer.one_by_one.add_block(&self.z, BLOCK, 0, &mut dst[dst_off..], dst_stride, n);
-                // Keep the newest `back` samples as history for the next block.
-                let cur = &mut array.inbufs[li];
-                for c in 0..ch {
-                    cur.copy_within(c * stride + n..c * stride + n + back, c * stride);
+                array.heads[li] = head + n;
+                if head + n + BLOCK > stride {
+                    // Out of room: the newest `back` samples become the history at the start.
+                    let cur = &mut array.inbufs[li];
+                    for c in 0..ch {
+                        cur.copy_within(c * stride + head + n - back..c * stride + head + n, c * stride);
+                    }
+                    array.heads[li] = back;
                 }
             }
             let hs = array.config.head_size;
-            self.head_out[..hs * BLOCK].fill(0.0);
+            for r in 0..hs {
+                self.head_out[r * BLOCK..r * BLOCK + n].fill(0.0);
+            }
             array.head.add_block(&self.head_acc, BLOCK, 0, &mut self.head_out, BLOCK, n);
         }
         for (o, h) in buf.iter_mut().zip(&self.head_out[..n]) {
@@ -765,6 +932,43 @@ impl Effect for NamEffect {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fast_tanh_follows_the_library() {
+        let mut worst = 0.0f32;
+        for i in -2_000_000..=2_000_000 {
+            let x = i as f32 * 1e-5;
+            let mut v = [x];
+            tanh_all(&mut v);
+            worst = worst.max((v[0] - x.tanh()).abs());
+            assert_eq!(v[0].is_sign_negative(), x.is_sign_negative(), "sign at {x}");
+        }
+        assert!(worst < 2e-7, "worst error {worst}");
+        let mut big = [1e30f32, -1e30, 0.0];
+        tanh_all(&mut big);
+        assert_eq!(big, [1.0, -1.0, 0.0]);
+    }
+
+    #[test]
+    fn tiled_dense_matches_the_plain_sum() {
+        let (rows, cols, n) = (13, 5, 37);
+        let w: Vec<f32> = (0..rows * cols).map(|i| ((i * 37 % 11) as f32 - 5.0) * 0.1).collect();
+        let bias: Vec<f32> = (0..rows).map(|i| i as f32 * 0.01).collect();
+        let d = Dense { rows, cols, w: w.clone(), bias: Some(bias.clone()) };
+        let x: Vec<f32> = (0..cols * 50).map(|i| ((i * 13 % 7) as f32 - 3.0) * 0.2).collect();
+        let mut out = vec![0.5f32; rows * 40];
+        d.add_block(&x, 50, 3, &mut out, 40, n);
+        for r in 0..rows {
+            for t in 0..40 {
+                let want = if t < n {
+                    0.5 + bias[r] + (0..cols).map(|c| w[r * cols + c] * x[c * 50 + 3 + t]).sum::<f32>()
+                } else {
+                    0.5
+                };
+                assert!((out[r * 40 + t] - want).abs() < 1e-5, "row {r} col {t}");
+            }
+        }
+    }
+
     /// One layer array, one channel, kernel 2, dilation 2: every term of the forward pass can
     /// be checked by hand.
     #[test]
@@ -788,6 +992,47 @@ mod tests {
             let expect = s * (h * z + hb);
             assert!((out[t] - expect).abs() < 1e-6, "t {t}: {} vs {expect}", out[t]);
         }
+    }
+
+    /// Two arrays with long dilations and Tanh, run over many blocks: splitting the input
+    /// differently (so the history moves back to the start at other moments) changes nothing.
+    #[test]
+    fn block_size_does_not_change_the_output() {
+        let array = |input: usize, ch: usize, head: usize| {
+            format!(
+                r#"{{"input_size": {input}, "condition_size": 1, "head_size": {head}, "channels": {ch},
+                  "kernel_size": 3, "dilations": [1, 64, 700], "activation": "Tanh", "gated": false,
+                  "head_bias": true}}"#
+            )
+        };
+        let configs = [(1, 3, 2), (3, 2, 1)];
+        let count: usize = configs
+            .iter()
+            .map(|&(input, ch, head)| {
+                let per_layer = ch * ch * 3 + ch + ch + ch * ch + ch;
+                ch * input + 3 * per_layer + head * ch + head
+            })
+            .sum::<usize>()
+            + 1;
+        let weights: Vec<String> = (0..count).map(|i| format!("{}", ((i * 7919 % 97) as f32 - 48.0) / 97.0)).collect();
+        let layers: Vec<String> = configs.iter().map(|&(i, c, h)| array(i, c, h)).collect();
+        let json = format!(
+            r#"{{"version": "0.5.1", "architecture": "WaveNet", "config": {{"layers": [{}], "head_scale": 0.5}},
+               "weights": [{}]}}"#,
+            layers.join(","),
+            weights.join(",")
+        );
+        let input: Vec<f32> = (0..9000).map(|i| ((i as f32) * 0.013).sin() * 0.8).collect();
+        let mut whole = NamModel::from_json(json.as_bytes()).unwrap();
+        let mut one = input.clone();
+        whole.process(&mut one);
+        let mut split = NamModel::from_json(json.as_bytes()).unwrap();
+        let mut parts = input.clone();
+        for chunk in parts.chunks_mut(37) {
+            split.process(chunk);
+        }
+        assert_eq!(one, parts);
+        assert!(one.iter().any(|v| v.abs() > 1e-3));
     }
 
     /// A 48 kHz model that passes its input through, in a 44.1 kHz project: the bridge to the
