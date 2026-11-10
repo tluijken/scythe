@@ -338,3 +338,17 @@ fn escape_closes_each_window_and_leaves_playback_alone() {
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+#[test]
+fn every_input_widget_of_the_main_views_has_a_name() {
+    let mut t = TestApp::live("accessibility");
+    t.click("Track Drums");
+    t.click("Add plugin");
+    t.click("Equalizer");
+    t.click_role(Role::Button, "Edit");
+    t.h.check_accessibility();
+    for page in ["Setlist (L)", "Monitor mixes (in-ear)", "Envelope lanes"] {
+        t.click(page);
+        t.h.check_accessibility();
+    }
+}
