@@ -3,6 +3,11 @@
 
 use serde_json::{Value, json};
 
+/// Every prompt ends with this, so the person watching Scythe sees what the agent is up to.
+const STATUS_NOTE: &str = "Before each step, say in a few words what you are doing with set_status (such as \
+    \"Balancing drums against the reference\"); Scythe shows it to the person at the session. Clear it \
+    with an empty text when you are done.";
+
 pub fn list() -> Value {
     json!([
         {"name": "mix_check", "title": "Mix check",
@@ -179,5 +184,5 @@ pub fn get(params: &Value) -> Result<(String, String), String> {
         Some(other) => return Err(format!("no prompt \"{other}\"")),
         None => return Err("give the prompt's \"name\"".into()),
     };
-    Ok((description.to_owned(), text))
+    Ok((description.to_owned(), format!("{text}\n\n{STATUS_NOTE}")))
 }

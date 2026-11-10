@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{http, request};
+use common::{exchange, http, request};
 use scythe_core::render_settings::ResampleMode;
 use scythe_engine::{Engine, MediaPool};
 use scythe_server::{ControlServer, ServerConfig};
@@ -91,7 +91,7 @@ fn mcp_over_streamable_http() {
             json!({"jsonrpc": "2.0", "id": 9, "method": "ping"}),
         );
         assert_eq!(status, 400);
-        assert_eq!(http(addr, "DELETE", "/mcp", Some(TOKEN), None).0, 405);
+        assert_eq!(http(addr, "DELETE", "/mcp", Some(TOKEN), None).0, 404, "no session to end");
     });
     assert_eq!(session.project.tracks.len(), 1);
     assert!(session.project.tracks[0].muted);
@@ -192,4 +192,82 @@ fn tool_selection_notifications_and_access_links() {
         let text = body["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("project_changed"), "{text}");
     });
+}
+
+#[test]
+fn agents_show_in_the_session_and_obey_the_pause() {
+    let session = serve(Some(TOKEN), |addr| {
+        let auth = format!("Bearer {TOKEN}");
+        let init = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": {"name": "claude-code", "title": "Claude Code", "version": "2.1.0"}}});
+        let headers = [
+            ("Authorization", auth.as_str()),
+            ("Accept", "application/json, text/event-stream"),
+            ("MCP-Protocol-Version", "2025-11-25"),
+        ];
+        let (status, head, _) = exchange(addr, "POST", "/mcp", &headers, Some(&init));
+        assert_eq!(status, 200);
+        let id =
+            head.lines().find_map(|l| l.strip_prefix("mcp-session-id: ")).expect("an MCP session id").trim().to_owned();
+        let session = [auth.as_str(), id.as_str()];
+        let mcp = |message: Value| rpc(addr, &[("Authorization", session[0]), ("Mcp-Session-Id", session[1])], message);
+        let control = |command: Value| http(addr, "POST", "/api/command", Some(TOKEN), Some(&command)).1;
+        let text = |body: &Value| body["result"]["content"][0]["text"].as_str().unwrap_or_default().to_owned();
+
+        let (_, body) = mcp(call(2, "set_status", json!({"text": "Building the drum bus"})));
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let (_, body) = mcp(call(3, "track_add", json!({"name": "Vox"})));
+        assert_eq!(body["result"]["isError"], false, "{body}");
+        let (_, body) = mcp(call(4, "track_volume", json!({"track": "Vox", "db": -3})));
+        assert_eq!(body["result"]["isError"], false, "{body}");
+
+        let activity = control(json!({"cmd": "agents.activity"}))["result"].clone();
+        let client = &activity["clients"][0];
+        assert_eq!((client["name"].as_str(), client["transport"].as_str()), (Some("Claude Code"), Some("http")));
+        assert_eq!((client["version"].as_str(), client["role"].as_str()), (Some("2.1.0"), Some("admin")));
+        assert_eq!(activity["status"], "Building the drum bus");
+        let calls = activity["calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 2, "set_status is no call: {calls:?}");
+        assert_eq!(calls[0]["summary"], "Add track Vox");
+        assert_eq!(calls[1]["summary"], "Set Vox volume to -3 dB");
+        assert_eq!((calls[1]["ok"].as_bool(), calls[1]["changed"].as_bool()), (Some(true), Some(true)));
+        assert_eq!(calls[1]["undo"], json!(["Track volume"]));
+        assert_eq!(activity["undo"], json!({"label": "Track volume", "agent": "Claude Code"}));
+
+        assert_eq!(control(json!({"cmd": "agents.pause"}))["result"]["paused"], true);
+        let (_, body) = mcp(call(5, "track_volume", json!({"track": "Vox", "db": -10})));
+        assert_eq!(body["result"]["isError"], true);
+        assert!(text(&body).contains("paused by the user"), "{body}");
+        let (_, body) = mcp(call(6, "scythe_command", json!({"command": {"cmd": "access.create", "role": "stage"}})));
+        assert!(text(&body).contains("paused by the user"), "{body}");
+        let (_, body) = mcp(call(7, "get_project", json!({})));
+        assert_eq!(body["result"]["isError"], false, "reading still works: {body}");
+        let (_, body) = mcp(call(8, "scythe_command", json!({"command": {"cmd": "agents.pause", "paused": false}})));
+        assert_eq!(body["result"]["isError"], true, "an agent cannot resume itself: {body}");
+        control(json!({"cmd": "agents.pause", "paused": false}));
+        let activity = control(json!({"cmd": "agents.activity"}))["result"].clone();
+        let failed = activity["calls"].as_array().unwrap().iter().filter(|c| c["ok"] == false).count();
+        assert_eq!(failed, 3);
+
+        let undone = control(json!({"cmd": "agents.undo"}));
+        assert_eq!(undone["result"]["label"], "Track volume", "{undone}");
+        assert_eq!(control(json!({"cmd": "track.volume", "track": "Vox", "db": -1}))["ok"], true);
+        let refused = control(json!({"cmd": "agents.undo"}));
+        assert_eq!(refused["ok"], false, "the user's own edit is on top: {refused}");
+
+        control(json!({"cmd": "agents.disconnect", "client": id}));
+        let (_, body) = mcp(call(9, "track_add", json!({"name": "Gtr"})));
+        assert!(text(&body).contains("disconnected"), "{body}");
+        assert_eq!(control(json!({"cmd": "agents.activity"}))["result"]["clients"], json!([]));
+        assert_eq!(
+            exchange(addr, "DELETE", "/mcp", &[("Authorization", session[0]), ("Mcp-Session-Id", session[1])], None).0,
+            204
+        );
+        assert_eq!(mcp(json!({"jsonrpc": "2.0", "id": 10, "method": "ping"})).0, 404, "an ended session");
+    });
+    let names: Vec<&str> = session.project.tracks.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["Vox"]);
+    assert_eq!(session.history.undo_label(), Some("Track volume"));
+    assert_eq!(session.history.undo_by(), None);
 }

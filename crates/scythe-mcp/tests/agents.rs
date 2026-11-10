@@ -228,3 +228,35 @@ fn unknown_tool_domains_are_refused_at_start() {
         .unwrap();
     assert_eq!(status.code(), Some(2));
 }
+
+#[test]
+fn the_session_sees_the_agent_and_its_status() {
+    let dir = std::env::temp_dir().join(format!("scythe-mcp-status-{}", std::process::id()));
+    let path = project(&dir);
+    let mut client = Client::start(&["--headless", "--null-audio", path.to_str().unwrap()]);
+    let init = client.request(
+        "initialize",
+        json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "probe", "version": "0.1"}}),
+    );
+    assert!(init["result"]["instructions"].as_str().unwrap().contains("set_status"));
+    assert!(client.tool_names().contains(&"set_status".to_owned()));
+    let (error, text) = client.call("set_status", json!({"text": "Checking the vocal chain"}));
+    assert!(!error, "{text}");
+    let (error, text) = client.call("track_volume", json!({"track": "Vox", "db": -4.5}));
+    assert!(!error, "{text}");
+    let (error, text) = client.call("scythe_command", json!({"command": {"cmd": "agents.activity"}}));
+    assert!(!error, "{text}");
+    let activity: Value = serde_json::from_str(&text).unwrap();
+    let agent = &activity["clients"][0];
+    assert_eq!((agent["name"].as_str(), agent["transport"].as_str()), (Some("probe"), Some("stdio")));
+    assert_eq!(activity["status"], "Checking the vocal chain");
+    let calls = activity["calls"].as_array().unwrap();
+    assert_eq!(calls[0]["summary"], "Set Vox volume to -4.5 dB");
+    assert_eq!(calls[0]["undo"], json!(["Track volume"]));
+    let (error, text) = client.call("scythe_command", json!({"command": {"cmd": "agents.pause"}}));
+    assert!(error && text.contains("for the people using Scythe"), "{text}");
+    let (error, _) = client.call("set_status", json!({"text": ""}));
+    assert!(!error);
+    let (_, text) = client.call("scythe_command", json!({"command": {"cmd": "agents.activity"}}));
+    assert!(serde_json::from_str::<Value>(&text).unwrap()["status"].is_null(), "{text}");
+}

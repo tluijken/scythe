@@ -20,6 +20,8 @@ use crate::{Session, Waker};
 pub const EVENT_INTERVAL: Duration = Duration::from_millis(50);
 /// How often the health event goes out when nothing happens.
 pub const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the agents' activity goes out at most.
+pub const AGENTS_INTERVAL: Duration = Duration::from_millis(100);
 
 pub type Reply = Box<dyn FnOnce(Result<Value, ApiError>) + Send>;
 
@@ -73,6 +75,8 @@ pub struct ControlPump {
     setlist: Option<SetlistStatus>,
     health: Option<HealthInfo>,
     health_at: Instant,
+    agents: (u64, Option<crate::agents::AgentUndo>),
+    agents_at: Instant,
 }
 
 /// A connected pair. `wake` is called when a command is queued, so a UI that sleeps between
@@ -90,6 +94,8 @@ pub fn channel(wake: Waker, sink: EventSink) -> (ControlHandle, ControlPump) {
         setlist: None,
         health: None,
         health_at: due,
+        agents: (0, None),
+        agents_at: due,
     };
     (ControlHandle { tx, wake }, pump)
 }
@@ -160,6 +166,15 @@ impl ControlPump {
                 .map(|m| TrackMeter { id: m.track.0, peak: peak(m.track), musician: Some(m.musician) })
                 .collect();
             (self.sink)(&Event::Meters(Meters { master: session.master_level, tracks, mixes }));
+        }
+        let now_agents = Instant::now();
+        session.agents.expire(now_agents);
+        let agents = (session.agents.revision(), crate::api::agents::agent_undo(session));
+        if agents != self.agents && now_agents.duration_since(self.agents_at) >= AGENTS_INTERVAL {
+            self.agents = agents;
+            self.agents_at = now_agents;
+            let activity = crate::api::agents::activity(session, crate::api::agents::EVENT_CALLS);
+            self.emit(session, Event::AgentActivity(activity), false);
         }
         let health = transport::health(session);
         let news = self.health.as_ref().is_none_or(|last| {

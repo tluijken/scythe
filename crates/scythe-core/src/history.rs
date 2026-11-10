@@ -1,12 +1,23 @@
 use crate::model::Project;
 
+/// One undo step: its label, the project to return to, a number no other step of the history
+/// has, and who made it when not the user at this machine (an AI agent's name).
+#[derive(Debug)]
+struct Step {
+    label: String,
+    before: Project,
+    serial: u64,
+    by: Option<String>,
+}
+
 /// Snapshot-based undo. Projects are small compared to the media they reference, so storing
 /// whole copies keeps every edit trivially undoable without per-command inverse logic.
 #[derive(Debug)]
 pub struct History {
-    undo: Vec<(String, Project)>,
-    redo: Vec<(String, Project)>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
     limit: usize,
+    next_serial: u64,
 }
 
 impl Default for History {
@@ -17,7 +28,7 @@ impl Default for History {
 
 impl History {
     pub fn new(limit: usize) -> Self {
-        Self { undo: Vec::new(), redo: Vec::new(), limit }
+        Self { undo: Vec::new(), redo: Vec::new(), limit, next_serial: 1 }
     }
 
     /// Keeps at most `limit` undo steps (the oldest are dropped first).
@@ -29,33 +40,69 @@ impl History {
 
     /// Records `before` as the state to return to when undoing `label`.
     pub fn record(&mut self, label: impl Into<String>, before: Project) {
-        self.undo.push((label.into(), before));
-        if self.undo.len() > self.limit {
-            self.undo.remove(0);
-        }
+        self.push(label.into(), before, None);
         self.redo.clear();
     }
 
+    fn push(&mut self, label: String, before: Project, by: Option<String>) {
+        let serial = self.next_serial;
+        self.next_serial += 1;
+        self.undo.push(Step { label, before, serial, by });
+        if self.undo.len() > self.limit {
+            self.undo.remove(0);
+        }
+    }
+
     pub fn undo(&mut self, current: &mut Project) -> Option<String> {
-        let (label, prev) = self.undo.pop()?;
-        let now = std::mem::replace(current, prev);
-        self.redo.push((label.clone(), now));
+        let mut step = self.undo.pop()?;
+        step.before = std::mem::replace(current, step.before);
+        let label = step.label.clone();
+        self.redo.push(step);
         Some(label)
     }
 
     pub fn redo(&mut self, current: &mut Project) -> Option<String> {
-        let (label, next) = self.redo.pop()?;
-        let now = std::mem::replace(current, next);
-        self.undo.push((label.clone(), now));
+        let mut step = self.redo.pop()?;
+        step.before = std::mem::replace(current, step.before);
+        let label = step.label.clone();
+        self.undo.push(step);
         Some(label)
     }
 
     pub fn undo_label(&self) -> Option<&str> {
-        self.undo.last().map(|(l, _)| l.as_str())
+        self.undo.last().map(|s| s.label.as_str())
     }
 
     pub fn redo_label(&self) -> Option<&str> {
-        self.redo.last().map(|(l, _)| l.as_str())
+        self.redo.last().map(|s| s.label.as_str())
+    }
+
+    /// Who made the step undo would revert, when it was not the user at this machine.
+    pub fn undo_by(&self) -> Option<&str> {
+        self.undo.last().and_then(|s| s.by.as_deref())
+    }
+
+    pub fn redo_by(&self) -> Option<&str> {
+        self.redo.last().and_then(|s| s.by.as_deref())
+    }
+
+    /// The serial number the next recorded step gets: steps numbered from it on were recorded
+    /// after asking.
+    pub fn next_serial(&self) -> u64 {
+        self.next_serial
+    }
+
+    /// Marks the undo steps recorded since [`Self::next_serial`] answered `since` as made by
+    /// `by`, and answers their labels, oldest first. The labels stay as REAPER names the steps.
+    pub fn attribute_since(&mut self, since: u64, by: &str) -> Vec<String> {
+        self.undo
+            .iter_mut()
+            .filter(|s| s.serial >= since)
+            .map(|s| {
+                s.by = Some(by.to_owned());
+                s.label.clone()
+            })
+            .collect()
     }
 
     /// How many undo steps there are.
@@ -69,8 +116,10 @@ impl History {
         if self.undo.len() <= since {
             return false;
         }
-        let before = self.undo.drain(since..).next().map(|(_, p)| p).expect("non-empty");
-        self.undo.push((label.to_owned(), before));
+        let mut folded = self.undo.drain(since..).collect::<Vec<_>>().into_iter();
+        let first = folded.next().expect("non-empty");
+        let by = folded.fold(first.by, |by, s| by.or(s.by));
+        self.push(label.to_owned(), first.before, by);
         true
     }
 
@@ -136,5 +185,21 @@ mod tests {
         assert_eq!(h.undo(&mut cur).as_deref(), Some("3"));
         assert_eq!(h.undo(&mut cur).as_deref(), Some("2"));
         assert!(h.undo(&mut cur).is_none());
+    }
+
+    #[test]
+    fn steps_remember_who_made_them() {
+        let mut h = History::default();
+        let mut p = Project::default();
+        h.record("by hand", p.clone());
+        let since = h.next_serial();
+        h.record("Track volume", p.clone());
+        p.add_track("a");
+        assert_eq!(h.attribute_since(since, "Claude"), vec!["Track volume".to_owned()]);
+        assert_eq!((h.undo_label(), h.undo_by()), (Some("Track volume"), Some("Claude")));
+        h.undo(&mut p);
+        assert_eq!((h.undo_by(), h.redo_by()), (None, Some("Claude")));
+        h.redo(&mut p);
+        assert_eq!(h.undo_by(), Some("Claude"));
     }
 }

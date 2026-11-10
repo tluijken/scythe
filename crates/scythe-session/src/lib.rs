@@ -22,6 +22,7 @@ mod transport;
 
 pub mod access;
 pub mod actions;
+pub mod agents;
 pub mod api;
 pub mod control;
 
@@ -149,6 +150,8 @@ pub struct Session {
     active_tab: usize,
     /// Recent events for clients that poll (`events.since`).
     pub event_log: api::feed::EventLog,
+    /// The AI agents driving the session over MCP, what they did and whether they are paused.
+    pub agents: agents::Agents,
     /// Runs ReaScript for `script.run`; the desktop app sets it.
     pub script_runner: Option<api::script::ScriptRunner>,
     /// The channel maps and aliases of the preferences (`[alias_in_*]`, `[alias_out_*]`), by
@@ -222,6 +225,7 @@ impl Session {
             parked_tabs: vec![None],
             active_tab: 0,
             event_log: Default::default(),
+            agents: Default::default(),
             script_runner: None,
             aliases: HashMap::new(),
             memory_locked: false,
@@ -434,9 +438,10 @@ impl Session {
 
     pub fn undo(&mut self) {
         self.end_gesture();
+        let by = self.history.undo_by().map(|by| format!(" ({by})")).unwrap_or_default();
         match self.history.undo(&mut self.project) {
             Some(label) => {
-                self.notify(format!("Undo: {label}"));
+                self.notify(format!("Undo: {label}{by}"));
                 self.changed();
             }
             None => self.notify("Nothing to undo"),
@@ -444,9 +449,10 @@ impl Session {
     }
 
     pub fn redo(&mut self) {
+        let by = self.history.redo_by().map(|by| format!(" ({by})")).unwrap_or_default();
         match self.history.redo(&mut self.project) {
             Some(label) => {
-                self.notify(format!("Redo: {label}"));
+                self.notify(format!("Redo: {label}{by}"));
                 self.changed();
             }
             None => self.notify("Nothing to redo"),

@@ -19,6 +19,11 @@ An MCP server on stdin and stdout for AI agents to drive Scythe.
                    `default,mix,setlist` (comma-separated); scythe_command reaches the rest
 ";
 
+/// How often the bridge tells Scythe its client is still there, and how long Scythe keeps listing
+/// it after the last time: an agent that quits shows as gone within seconds.
+const KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(5);
+const LISTED_FOR: std::time::Duration = std::time::Duration::from_secs(20);
+
 struct Options {
     url: String,
     token: Option<String>,
@@ -79,6 +84,7 @@ fn run(options: Options) -> Result<(), String> {
         let output = protocol_output().map_err(|e| format!("cannot set up stdout: {e}"))?;
         let session = InProcess::start(options.project, options.null_audio)?;
         let server = McpServer::with_tools(session.backend(), options.tools);
+        server.keep_alive(KEEP_ALIVE, LISTED_FOR);
         eprintln!("scythe-mcp: serving an in-process session on stdio");
         stdio::serve(&server, stdin, BufWriter::new(output)).map_err(|e| e.to_string())
     } else {
@@ -88,6 +94,7 @@ fn run(options: Options) -> Result<(), String> {
             Err(e) => eprintln!("scythe-mcp: {e}; tools fail until Scythe runs with its control API"),
         }
         let server = McpServer::with_tools(remote, options.tools);
+        server.keep_alive(KEEP_ALIVE, LISTED_FOR);
         stdio::serve(&server, stdin, io::stdout()).map_err(|e| e.to_string())
     }
 }

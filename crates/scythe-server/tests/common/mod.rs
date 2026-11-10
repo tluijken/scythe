@@ -19,6 +19,19 @@ pub fn request(
     headers: &[(&str, &str)],
     body: Option<&Value>,
 ) -> (u16, Value) {
+    let (status, _, body) = exchange(addr, method, path, headers, body);
+    (status, body)
+}
+
+/// [`request`] answering the response head too, lower-cased.
+#[allow(dead_code, reason = "each test binary uses only some of the helpers")]
+pub fn exchange(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Option<&Value>,
+) -> (u16, String, Value) {
     let mut stream = TcpStream::connect(addr).expect("connect");
     stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
     let body = body.map(|b| b.to_string()).unwrap_or_default();
@@ -34,7 +47,7 @@ pub fn request(
     let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).expect("a status code");
     let chunked = head.to_ascii_lowercase().contains("transfer-encoding: chunked");
     let text = if chunked { dechunk(rest) } else { rest.to_owned() };
-    (status, serde_json::from_str(&text).unwrap_or(Value::Null))
+    (status, head.to_ascii_lowercase(), serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
 fn dechunk(mut rest: &str) -> String {

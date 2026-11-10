@@ -11,6 +11,9 @@ use serde_json::{Value, json};
 /// The first `fx.catalog` scans for plugins, which can take a while.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
+/// How `scythe-mcp` introduces itself to a running Scythe.
+pub const USER_AGENT: &str = concat!("scythe-mcp/", env!("CARGO_PKG_VERSION"));
+
 /// Runs one control API command (JSON with a `cmd` field) and answers with its result.
 pub trait Backend: Send + Sync {
     fn command(&self, command: Value) -> Result<Value, ApiError>;
@@ -66,8 +69,12 @@ impl Remote {
         let unreachable = |e: ureq::Error| ApiError::failed(format!("cannot reach Scythe at {}: {e}", self.url));
         let mut response = match command {
             Some(command) => {
-                let mut request =
-                    self.agent.post(format!("{}/api/command", self.url)).header("content-type", "application/json");
+                // Scythe tells MCP bridges from other clients by this, besides their `agents.*` reports.
+                let mut request = self
+                    .agent
+                    .post(format!("{}/api/command", self.url))
+                    .header("content-type", "application/json")
+                    .header("user-agent", USER_AGENT);
                 if let Some(token) = &self.token {
                     request = request.header("authorization", format!("Bearer {token}"));
                 }

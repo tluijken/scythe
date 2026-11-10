@@ -30,6 +30,8 @@ pub enum Action {
     Passthrough,
     /// Shows or changes which tools are listed.
     Tools,
+    /// Shows what the agent says it is doing in Scythe.
+    Status,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +142,7 @@ pub fn all() -> &'static [Tool] {
         }
         tools.push(passthrough_tool());
         tools.push(tools_tool());
+        tools.push(status_tool());
         tools
     })
 }
@@ -257,6 +260,34 @@ fn tools_tool() -> Tool {
             "title": "Choose the tools listed",
             "description": description,
             "inputSchema": arguments::<ToolsArgs>(),
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }),
+    }
+}
+
+/// Arguments of `set_status`.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StatusArgs {
+    /// What you are doing now, in a few words (\"Balancing drums against the reference\"); empty
+    /// clears it.
+    pub text: String,
+}
+
+fn status_tool() -> Tool {
+    let description = "Tells the person at Scythe what you are doing, in a few words (\"Balancing drums \
+        against the reference\", \"Adding monitor mixes for the drummer\"). Scythe shows it beside the \
+        agent activity light until you set another or clear it with an empty text. Call it before each \
+        step of a longer task.";
+    Tool {
+        name: "set_status".into(),
+        domain: String::new(),
+        action: Action::Status,
+        definition: json!({
+            "name": "set_status",
+            "title": "Say what you are doing",
+            "description": description,
+            "inputSchema": arguments::<StatusArgs>(),
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         }),
     }
@@ -423,11 +454,6 @@ fn title(cmd: &str) -> String {
 /// Hints for clients deciding what to confirm with the user, judged by the action's name so
 /// that new domains get sensible ones too.
 fn annotations(cmd: &str) -> Value {
-    const READS: [&str; 24] = [
-        "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
-        "peaks", "health", "devices", "evaluate", "since", "meters", "probe", "job", "compare", "file", "mix",
-        "whoami",
-    ];
     // Opening or starting a project drops unsaved changes; saving overwrites a file; renewing
     // a link locks out the phone holding it.
     const DESTROYS: [&str; 7] = ["delete", "remove", "clear", "open", "new", "save", "renew"];
@@ -461,7 +487,7 @@ fn annotations(cmd: &str) -> Value {
     }
     let action = cmd.rsplit('.').next().unwrap_or(cmd);
     let has = |list: &[&str]| action.split('_').any(|word| list.contains(&word));
-    if has(&READS) {
+    if scythe_session::api::agents::reads_only(cmd) {
         return json!({"readOnlyHint": true, "openWorldHint": false});
     }
     json!({"readOnlyHint": false, "destructiveHint": has(&DESTROYS), "idempotentHint": !has(&REPEATABLE), "openWorldHint": false})

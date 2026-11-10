@@ -15021,5 +15021,29 @@
     },
     "name": "scythe_tools",
     "title": "Choose the tools listed"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Tells the person at Scythe what you are doing, in a few words (\"Balancing drums against the reference\", \"Adding monitor mixes for the drummer\"). Scythe shows it beside the agent activity light until you set another or clear it with an empty text. Call it before each step of a longer task.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "text": {
+          "description": "What you are doing now, in a few words (\\\"Balancing drums against the reference\\\"); empty\nclears it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "set_status",
+    "title": "Say what you are doing"
   }
 ]

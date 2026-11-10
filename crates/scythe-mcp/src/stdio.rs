@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use crate::protocol::{self, McpServer};
 
-/// Answers messages from `input` on `output` until `input` ends.
+/// Answers messages from `input` on `output` until `input` ends, which ends the client's
+/// session.
 pub fn serve(server: &McpServer, input: impl BufRead, output: impl Write + Send + 'static) -> io::Result<()> {
     let output = Arc::new(Mutex::new(output));
     let out = output.clone();
@@ -31,5 +32,6 @@ pub fn serve(server: &McpServer, input: impl BufRead, output: impl Write + Send 
             o.flush()?;
         }
     }
+    server.end_default_client();
     Ok(())
 }

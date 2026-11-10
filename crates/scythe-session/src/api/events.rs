@@ -22,6 +22,9 @@ pub enum Event {
     /// The audio device and how it holds up: every second, and at once when xruns are counted
     /// or the device goes away or comes back.
     Health(HealthInfo),
+    /// The AI agents connected over MCP and their recent tool calls changed (admin only): the
+    /// `agents.activity` answer with the newest calls.
+    AgentActivity(crate::agents::Activity),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

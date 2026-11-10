@@ -22,7 +22,7 @@ use axum::routing::{get, post};
 use axum::serve::ListenerExt;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use scythe_mcp::{Backend, McpServer, Selection};
+use scythe_mcp::{Backend, McpServer, Selection, Transport};
 use scythe_session::Waker;
 use scythe_session::access::Scope;
 use scythe_session::api::{ApiError, Command, ErrorKind, Event};
@@ -115,7 +115,8 @@ impl ControlServer {
         });
         let (handle, pump) = control::channel(wake, sink);
         let access = Arc::new(access);
-        let mcp = McpServer::new(McpBackend { local: scythe_mcp::Local(handle.clone()), access: access.clone(), addr });
+        let backend = McpBackend { local: scythe_mcp::Local(handle.clone()), access: access.clone(), addr };
+        let mcp = McpServer::serving(backend, Selection::default(), Transport::Http);
         let (mcp_events, _) = broadcast::channel::<Arc<str>>(256);
         let notify = mcp_events.clone();
         mcp.set_notifier(Arc::new(move |message: &Value| {
@@ -448,11 +449,50 @@ async fn mcp(
             return (StatusCode::BAD_REQUEST, Json(body)).into_response();
         }
     };
+    let initializing = is_initialize(&message);
+    let client = match (initializing, session_id(&headers)) {
+        (true, _) => Some(server.new_client()),
+        (false, Some(id)) if !server.knows(id) => {
+            let message = "no such MCP session (Scythe may have restarted); initialize again";
+            let body = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32600, "message": message}});
+            return (StatusCode::NOT_FOUND, Json(body)).into_response();
+        }
+        (false, id) => id.map(str::to_owned),
+    };
+    let session = client.clone().filter(|_| initializing);
     // Tool calls wait for the session's thread to answer.
-    match tokio::task::spawn_blocking(move || server.handle(message)).await {
+    let handled = tokio::task::spawn_blocking(move || match &client {
+        Some(id) => server.handle_from(id, message),
+        None => server.handle(message),
+    })
+    .await;
+    let mut response = match handled {
         Ok(Some(answer)) => Json(answer).into_response(),
         Ok(None) => StatusCode::ACCEPTED.into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if let Some(value) = session.and_then(|id| header::HeaderValue::from_str(&id).ok()) {
+        response.headers_mut().insert(MCP_SESSION, value);
+    }
+    response
+}
+
+/// The header an MCP session's id travels in.
+const MCP_SESSION: &str = "mcp-session-id";
+/// While a client holds its notification stream open it is there: it stays listed this long
+/// after the stream closes, and says so this often while it is open.
+const STREAM_TTL: Duration = Duration::from_secs(30);
+const STREAM_HELLO: Duration = Duration::from_secs(10);
+
+fn session_id(headers: &HeaderMap) -> Option<&str> {
+    headers.get(MCP_SESSION).and_then(|v| v.to_str().ok()).filter(|v| !v.is_empty())
+}
+
+fn is_initialize(message: &Value) -> bool {
+    let one = |m: &Value| m["method"] == "initialize" && m.get("id").is_some();
+    match message {
+        Value::Array(batch) => batch.iter().any(one),
+        m => one(m),
     }
 }
 
@@ -470,16 +510,32 @@ fn mcp_view(state: &AppState, tools: Option<&String>) -> Result<McpServer, Strin
 }
 
 /// The server's notifications (resource updates, tool list changes, log messages) as a
-/// stream of server-sent events, for as long as the client holds it open.
-async fn mcp_stream(State(state): State<AppState>, Extension(scope): Extension<Scope>) -> Response {
+/// stream of server-sent events, for as long as the client holds it open. A client naming its
+/// MCP session is kept listed as connected meanwhile.
+async fn mcp_stream(State(state): State<AppState>, Extension(scope): Extension<Scope>, headers: HeaderMap) -> Response {
     if !scope.is_admin() {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let open = Arc::new(());
+    if let Some(id) = session_id(&headers).filter(|id| state.mcp.knows(id)).map(str::to_owned) {
+        let open = Arc::downgrade(&open);
+        let server = state.mcp.clone();
+        tokio::spawn(async move {
+            while open.upgrade().is_some() {
+                let (server, id) = (server.clone(), id.clone());
+                let _ = tokio::task::spawn_blocking(move || server.keep(&id, STREAM_TTL)).await;
+                tokio::time::sleep(STREAM_HELLO).await;
+            }
+        });
+    }
     let events = state.mcp_events.subscribe();
-    let stream = futures_util::stream::unfold(events, |mut events| async move {
+    let stream = futures_util::stream::unfold((events, open), |(mut events, open)| async move {
         loop {
             match events.recv().await {
-                Ok(text) => return Some((Ok::<_, std::convert::Infallible>(SseEvent::default().data(&*text)), events)),
+                Ok(text) => {
+                    let event = SseEvent::default().data(&*text);
+                    return Some((Ok::<_, std::convert::Infallible>(event), (events, open)));
+                }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
@@ -488,9 +544,19 @@ async fn mcp_stream(State(state): State<AppState>, Extension(scope): Extension<S
     Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
 }
 
-/// Sessions are not tracked, so there is none to end.
-async fn mcp_delete() -> Response {
-    (StatusCode::METHOD_NOT_ALLOWED, [(header::ALLOW, "GET, POST")]).into_response()
+/// Ends an MCP session: its client is no longer listed as connected.
+async fn mcp_delete(State(state): State<AppState>, Extension(scope): Extension<Scope>, headers: HeaderMap) -> Response {
+    if !scope.is_admin() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    match session_id(&headers).filter(|id| state.mcp.knows(id)).map(str::to_owned) {
+        Some(id) => {
+            let server = state.mcp.clone();
+            let _ = tokio::task::spawn_blocking(move || server.end_client(&id)).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn websocket(
