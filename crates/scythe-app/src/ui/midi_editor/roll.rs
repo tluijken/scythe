@@ -12,6 +12,7 @@ use scythe_core::midi::view::EditorMode;
 use super::{EditorState, Take, apply_notes, origin_qn};
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, BG, LANE, RAISED, RAISED_HI, TEXT, TEXT_DIM, with_alpha};
+use crate::ui::window::{WindowKind, scythe_window};
 
 const KEYS_W: f32 = 44.0;
 const NAMES_W: f32 = 120.0;
@@ -449,14 +450,10 @@ fn note_properties(app: &mut ScytheApp, ui: &mut Ui, take: &Take, notes: &mut [E
     let ppq = take.src.ticks_per_qn as f64;
     let mut open = true;
     let mut changed = false;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(14));
-    egui::Window::new(format!("Note {}", key_name(n.key)))
+    scythe_window("note-properties", format!("Note {}", key_name(n.key)), WindowKind::Dialog)
         .id(id.with("window"))
-        .frame(frame)
-        .collapsible(false)
-        .resizable(false)
-        .open(&mut open)
-        .show(ui.ctx(), |ui| {
+        .anchored()
+        .show(ui.ctx(), &mut open, |ui| {
             egui::Grid::new(("note-props", i)).num_columns(2).show(ui, |ui| {
                 let mut start = n.start as f64 / ppq;
                 let mut length = n.length() as f64 / ppq;

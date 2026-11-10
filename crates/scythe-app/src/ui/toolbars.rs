@@ -11,6 +11,7 @@ use scythe_session::api::customize::toolbar_or_default;
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM};
+use crate::ui::window::{WindowKind, scythe_window};
 
 pub const STRIP_H: f32 = 34.0;
 const BUTTON_H: f32 = 28.0;
@@ -99,25 +100,18 @@ pub fn floating(app: &mut ScytheApp, ui: &mut Ui) {
         let title = toolbar.title.clone().unwrap_or_else(|| format!("Toolbar {n}"));
         let mut open = true;
         let mut clicked = None;
-        egui::Window::new(title)
-            .id(Id::unique(("floating-toolbar", n)))
-            .open(&mut open)
-            .resizable(false)
-            .collapsible(false)
-            .frame(egui::Frame::window(&ctx.global_style()).fill(PANEL).corner_radius(CornerRadius::same(14)))
-            .show(&ctx, |ui| {
-                if toolbar.buttons.is_empty() {
-                    if ui.button("Empty toolbar: customize…").clicked() {
-                        app.view.toolbar_editor =
-                            Some(ToolbarEditor { section: section.clone(), ..Default::default() });
-                    }
-                    return;
+        scythe_window(format!("toolbar-{n}"), title, WindowKind::Floating).show(&ctx, &mut open, |ui| {
+            if toolbar.buttons.is_empty() {
+                if ui.button("Empty toolbar: customize…").clicked() {
+                    app.view.toolbar_editor = Some(ToolbarEditor { section: section.clone(), ..Default::default() });
                 }
-                let origin = ui.cursor().min;
-                let (c, w) = buttons(app, ui, &toolbar, origin, &section);
-                ui.allocate_space(vec2(w, BUTTON_H));
-                clicked = c;
-            });
+                return;
+            }
+            let origin = ui.cursor().min;
+            let (c, w) = buttons(app, ui, &toolbar, origin, &section);
+            ui.allocate_space(vec2(w, BUTTON_H));
+            clicked = c;
+        });
         if !open {
             app.view.toolbars.remove(&n);
         }
@@ -148,13 +142,10 @@ pub fn editor(app: &mut ScytheApp, ui: &mut Ui) {
     let mut open = true;
     let mut toolbar = toolbar_or_default(&app.session, &e.section);
     let before = toolbar.clone();
-    let frame = egui::Frame::window(&ctx.global_style()).fill(PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Customize toolbars")
-        .id(Id::unique("toolbar-editor"))
-        .open(&mut open)
-        .frame(frame)
+    scythe_window("toolbar-editor", "Customize toolbars", WindowKind::Panel)
         .default_size(vec2(680.0, 460.0))
-        .show(&ctx, |ui| {
+        .anchored()
+        .show(&ctx, &mut open, |ui| {
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("toolbar-pick").selected_text(&e.section).width(200.0).show_ui(ui, |ui| {
                     let names = std::iter::once(MAIN_TOOLBAR.to_owned())
@@ -273,15 +264,12 @@ pub fn mouse_editor(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(&ctx.global_style()).fill(PANEL).corner_radius(CornerRadius::same(18));
     let id = Id::unique("mouse-editor-state");
     let (mut context, mut mods, mut query): (usize, u8, String) = ctx.data(|d| d.get_temp(id)).unwrap_or_default();
-    egui::Window::new("Mouse modifiers")
-        .id(Id::unique("mouse-editor"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(560.0, 420.0))
-        .show(&ctx, |ui| {
+    scythe_window("mouse-editor", "Mouse modifiers", WindowKind::Panel).default_size(vec2(560.0, 420.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 ui.label("Context");
                 egui::ComboBox::from_id_salt("mm-context").selected_text(CLICK_CONTEXTS[context].1).show_ui(ui, |ui| {
@@ -330,7 +318,8 @@ pub fn mouse_editor(app: &mut ScytheApp, ui: &mut Ui) {
                     }
                 }
             });
-        });
+        },
+    );
     ctx.data_mut(|d| d.insert_temp(id, (context, mods, query)));
     app.view.mouse_editor = open;
 }

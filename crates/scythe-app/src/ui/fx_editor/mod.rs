@@ -22,8 +22,9 @@ use scythe_engine::fx::{FxInstance, FxStatus};
 use scythe_engine::probe::{self, Side, Spectrum, Watch};
 
 use crate::app::ScytheApp;
-use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
+use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets;
+use crate::ui::window::{WindowKind, scythe_window};
 use model::{Ballistic, History, Plot, amp_db};
 
 /// Which editor a stock effect gets.
@@ -374,21 +375,20 @@ fn window(app: &mut ScytheApp, ui: &mut Ui, ed: &mut FxEditor) -> bool {
     let owner = ed.track.and_then(|t| app.project.track(t)).map_or_else(|| "Master".to_owned(), |t| t.name.clone());
     let (params, values) = read_params(&inst);
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(PANEL).corner_radius(CornerRadius::same(18));
     let ctx = ui.ctx().clone();
-    let shown = egui::Window::new(format!("{} · {}", ed.kind.title(), owner))
-        .id(Id::unique(("fx-editor", ed.track, ed.index)))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(ed.kind.default_size())
-        .min_width(380.0)
-        .min_height(280.0)
-        .resizable(true)
-        .collapsible(false)
-        .show(&ctx, |ui| {
-            let mut cx = Ctx { app, ed, inst, slot, params, values };
-            body(&mut cx, ui);
-        });
+    let shown = scythe_window(
+        format!("fx-editor-{}", ed.kind.title()),
+        format!("{} · {}", ed.kind.title(), owner),
+        WindowKind::Panel,
+    )
+    .id(Id::unique(("fx-editor", ed.track, ed.index)))
+    .default_size(ed.kind.default_size())
+    .min_size(vec2(380.0, 280.0))
+    .escape_closes(ed.typing.is_none())
+    .show(&ctx, &mut open, |ui| {
+        let mut cx = Ctx { app, ed, inst, slot, params, values };
+        body(&mut cx, ui);
+    });
     if let Some(s) = shown {
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         ed.hovered = pointer.is_some_and(|p| s.response.rect.contains(p));

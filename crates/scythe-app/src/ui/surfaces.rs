@@ -6,6 +6,7 @@ use scythe_core::surface::{MidiKind, MidiSurface, OSC_RECEIVE, OSC_SEND, OscSurf
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, TEXT_DIM, TEXT_MID};
+use crate::ui::window::{WindowKind, scythe_window};
 
 /// The window's state while it is open: the surface being edited and its draft.
 #[derive(Debug, Clone, Default)]
@@ -34,60 +35,64 @@ impl SurfacesWindow {
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut state) = app.view.surfaces.take() else { return };
     let mut open = true;
-    egui::Window::new("Control surfaces").open(&mut open).default_width(520.0).show(ui.ctx(), |ui| {
-        let info = app.engine.info().clone();
-        ui.label(RichText::new(format!("Audio: {} · {} Hz", info.name, info.sample_rate)).color(TEXT_DIM));
-        ui.separator();
-        list(app, ui, &mut state);
-        ui.separator();
-        match state.editing.take() {
-            Some((index, mut draft)) => {
-                editor(ui, &state, &mut draft);
-                ui.horizontal(|ui| {
-                    if ui.button(if index.is_some() { "Apply" } else { "Add" }).clicked() {
-                        let s = draft.clone();
-                        app.change_preferences(|p| match index {
-                            Some(i) if i < p.surfaces.len() => p.surfaces[i] = s,
-                            _ => p.surfaces.push(s),
-                        });
-                    } else if !ui.button("Cancel").clicked() {
-                        state.editing = Some((index, draft));
-                    }
-                });
-            }
-            None => {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.button("Add OSC device").clicked() {
-                        let port = 8000 + app.prefs.surfaces.len() as u16;
-                        state.editing =
-                            Some((None, Surface::Osc(OscSurface { local_port: port, ..Default::default() })));
-                    }
-                    for kind in [MidiKind::Mcu, MidiKind::McuExtender, MidiKind::Hui] {
-                        if ui.button(format!("Add {}", kind.label())).clicked() {
-                            let offset = if kind == MidiKind::McuExtender { 8 } else { 0 };
-                            state.editing =
-                                Some((None, Surface::Midi(MidiSurface { offset, ..MidiSurface::new(kind, 0, 0) })));
+    scythe_window("control-surfaces", "Control surfaces", WindowKind::Panel).default_width(520.0).show(
+        ui.ctx(),
+        &mut open,
+        |ui| {
+            let info = app.engine.info().clone();
+            ui.label(RichText::new(format!("Audio: {} · {} Hz", info.name, info.sample_rate)).color(TEXT_DIM));
+            ui.separator();
+            list(app, ui, &mut state);
+            ui.separator();
+            match state.editing.take() {
+                Some((index, mut draft)) => {
+                    editor(ui, &state, &mut draft);
+                    ui.horizontal(|ui| {
+                        if ui.button(if index.is_some() { "Apply" } else { "Add" }).clicked() {
+                            let s = draft.clone();
+                            app.change_preferences(|p| match index {
+                                Some(i) if i < p.surfaces.len() => p.surfaces[i] = s,
+                                _ => p.surfaces.push(s),
+                            });
+                        } else if !ui.button("Cancel").clicked() {
+                            state.editing = Some((index, draft));
                         }
-                    }
-                    if ui.button("Rescan devices").clicked() {
-                        state.refresh();
-                    }
-                });
+                    });
+                }
+                None => {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("Add OSC device").clicked() {
+                            let port = 8000 + app.prefs.surfaces.len() as u16;
+                            state.editing =
+                                Some((None, Surface::Osc(OscSurface { local_port: port, ..Default::default() })));
+                        }
+                        for kind in [MidiKind::Mcu, MidiKind::McuExtender, MidiKind::Hui] {
+                            if ui.button(format!("Add {}", kind.label())).clicked() {
+                                let offset = if kind == MidiKind::McuExtender { 8 } else { 0 };
+                                state.editing =
+                                    Some((None, Surface::Midi(MidiSurface { offset, ..MidiSurface::new(kind, 0, 0) })));
+                            }
+                        }
+                        if ui.button("Rescan devices").clicked() {
+                            state.refresh();
+                        }
+                    });
+                }
             }
-        }
-        ui.separator();
-        crate::ui::modulation::shortcuts(app, ui, &mut state.shortcut);
-        ui.separator();
-        ui.label(
-            RichText::new(
-                "OSC actions: /action/<id> runs a REAPER command id; /action/str _SCYTHE_SETLIST_NEXT (or \
+            ui.separator();
+            crate::ui::modulation::shortcuts(app, ui, &mut state.shortcut);
+            ui.separator();
+            ui.label(
+                RichText::new(
+                    "OSC actions: /action/<id> runs a REAPER command id; /action/str _SCYTHE_SETLIST_NEXT (or \
                  _PLAY, _STOP, _PLAY_STOP, _PREVIOUS) drives the setlist from a footswitch. On a Mackie \
                  Control, user switch A plays or stops the setlist and B goes to the next song.",
-            )
-            .color(TEXT_DIM)
-            .font(theme::regular(11.0)),
-        );
-    });
+                )
+                .color(TEXT_DIM)
+                .font(theme::regular(11.0)),
+            );
+        },
+    );
     if open {
         app.view.surfaces = Some(state);
     }

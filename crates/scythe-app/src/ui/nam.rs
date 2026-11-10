@@ -15,6 +15,7 @@ use crate::nam::tone3000::{Model, Prompt, Tone, ToneList, open_browser};
 use crate::nam::{BrowserTab, Gear, Remote, SIZES, Target, ToneSort, is_model_file};
 use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets::{self, Icon, icon_button, knob, paint_star, text_pill};
+use crate::ui::window::{WindowKind, scythe_window};
 
 const ROW: f32 = 32.0;
 const MODEL_ROW: f32 = 40.0;
@@ -42,18 +43,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     take_dropped_files(app, &ctx, &target);
     let track = app.project.track(target.track).map(|t| t.name.clone()).unwrap_or_default();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
     let title = if app.nam_rig(&target).is_some() { "Guitar rig" } else { "Neural Amp Modeler" };
-    let shown = egui::Window::new(format!("{title} · {track}"))
-        .id(Id::unique("nam-panel"))
-        .default_pos(ui.max_rect().center() - vec2(440.0, 380.0))
-        .open(&mut open)
-        .frame(frame)
+    let shown = scythe_window("nam-panel", format!("{title} · {track}"), WindowKind::Panel)
         .default_size(vec2(880.0, 760.0))
-        .min_width(420.0)
-        .min_height(460.0)
-        .resizable(true)
-        .show(&ctx, |ui| body(app, ui, &target));
+        .min_size(vec2(420.0, 460.0))
+        .show(&ctx, &mut open, |ui| body(app, ui, &target));
     app.nam.panel_rect = shown.map(|s| s.response.rect);
     if !open {
         app.nam.panel = None;

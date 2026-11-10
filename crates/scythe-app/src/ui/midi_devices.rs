@@ -6,8 +6,9 @@ use scythe_core::prefs::MidiPrefs;
 use scythe_session::api::midi::{ChaseKind, MidiCommand, sync_info};
 
 use crate::app::ScytheApp;
-use crate::theme::{self, ACCENT, BG, PANEL, RAISED, TEXT, TEXT_DIM};
+use crate::theme::{self, ACCENT, BG, RAISED, TEXT, TEXT_DIM};
 use crate::ui::widgets::{switch, text_pill};
+use crate::ui::window::{WindowKind, scythe_window};
 
 /// What the keyboard remembers between frames: the held note, octave, velocity and channel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -29,11 +30,6 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     devices(app, ui);
 }
 
-fn window(title: &str, id: &str, ui: &Ui) -> egui::Window<'static> {
-    let frame = egui::Frame::window(ui.style()).fill(PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new(title.to_owned()).id(Id::unique(id.to_owned())).frame(frame).resizable(false).collapsible(false)
-}
-
 fn send_note(app: &mut ScytheApp, note: u8, velocity: u8) {
     let channel = app.view.keyboard.channel;
     let _ = scythe_session::api::midi::execute(
@@ -51,7 +47,7 @@ fn keyboard(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    window("Virtual MIDI keyboard", "virtual-keyboard", ui).open(&mut open).show(&ctx, |ui| {
+    scythe_window("virtual-keyboard", "Virtual MIDI keyboard", WindowKind::Floating).show(&ctx, &mut open, |ui| {
         let state = app.view.keyboard;
         ui.horizontal(|ui| {
             let (bg, fg) = (RAISED, TEXT);
@@ -182,7 +178,7 @@ fn devices(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    window("MIDI devices and sync", "midi-devices", ui).open(&mut open).show(&ctx, |ui| {
+    scythe_window("midi-devices", "MIDI devices and sync", WindowKind::Dialog).show(&ctx, &mut open, |ui| {
         ui.set_width(520.0);
         heading(ui, "Inputs");
         let inputs = app.midi_devices.inputs.clone();

@@ -4,12 +4,13 @@
 
 use std::path::PathBuf;
 
-use egui::{CornerRadius, Id, RichText, Ui, vec2};
+use egui::{RichText, Ui, vec2};
 use scythe_core::mediadb::format_length;
 use scythe_session::explorer::{Entry, InsertTarget, Location, TempoMatch};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, TEXT_DIM};
+use crate::ui::window::{WindowKind, scythe_window};
 
 /// What the window shows besides the session's explorer state.
 #[derive(Debug, Default)]
@@ -51,14 +52,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Media explorer")
-        .id(Id::unique("media-explorer"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(980.0, 460.0))
-        .resizable(true)
-        .show(&ctx, |ui| {
+    scythe_window("media-explorer", "Media explorer", WindowKind::Panel).default_size(vec2(980.0, 460.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Up").on_hover_text("Go to parent folder").clicked() {
                     let _ = app.session.run_explorer_action(1004);
@@ -97,7 +94,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                     list(app, &mut w, ui);
                 });
             });
-        });
+        },
+    );
     if open {
         app.view.explorer = Some(w);
     } else {

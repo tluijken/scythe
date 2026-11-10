@@ -2,12 +2,13 @@
 //! keyboard shortcuts, make custom actions (macros) and register scripts as actions, and
 //! import or export the shortcut file as a `.ReaperKeyMap`.
 
-use egui::{CornerRadius, Id, RichText, Ui, vec2};
+use egui::{RichText, Ui, vec2};
 use scythe_core::keymap::{Chord, SECTION_MAIN};
 use scythe_session::actions::{ActionInfo, Kind};
 
 use crate::app::ScytheApp;
-use crate::theme::{self, ACCENT, TEXT_DIM};
+use crate::theme::{ACCENT, TEXT_DIM};
+use crate::ui::window::{WindowKind, scythe_window};
 
 #[derive(Debug, Default)]
 pub struct ActionsWindow {
@@ -46,15 +47,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     if state.capturing {
         capture_key(app, &ctx, &mut state);
     }
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Actions")
-        .id(Id::unique("actions-window"))
-        .open(&mut open)
-        .frame(frame)
+    scythe_window("actions-window", "Actions", WindowKind::Panel)
         .default_size(vec2(780.0, 520.0))
         .min_size(vec2(560.0, 320.0))
-        .resizable(true)
-        .show(&ctx, |ui| body(app, ui, &mut state));
+        .escape_closes(!state.capturing)
+        .show(&ctx, &mut open, |ui| body(app, ui, &mut state));
     if let Some(mut editor) = state.editor.take() {
         let keep = custom_editor(app, &ctx, &mut editor);
         if keep {
@@ -229,13 +226,10 @@ fn edit_existing(app: &ScytheApp, command: &str) -> Option<CustomEditor> {
 fn custom_editor(app: &mut ScytheApp, ctx: &egui::Context, e: &mut CustomEditor) -> bool {
     let mut open = true;
     let mut done = false;
-    let frame = egui::Frame::window(&ctx.global_style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Custom action")
-        .id(Id::unique("custom-action-editor"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(640.0, 420.0))
-        .show(ctx, |ui| {
+    scythe_window("custom-action-editor", "Custom action", WindowKind::Panel).default_size(vec2(640.0, 420.0)).show(
+        ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 ui.label("Name");
                 ui.add(egui::TextEdit::singleline(&mut e.name).desired_width(320.0));
@@ -300,6 +294,7 @@ fn custom_editor(app: &mut ScytheApp, ctx: &egui::Context, e: &mut CustomEditor)
                     done = true;
                 }
             });
-        });
+        },
+    );
     open && !done
 }

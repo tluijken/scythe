@@ -17,6 +17,7 @@ use scythe_session::api::editing::item_transients;
 use crate::app::{ScytheApp, Selection};
 use crate::theme::{self, ACCENT, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets;
+use crate::ui::window::{WindowKind, scythe_window};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditWindow {
@@ -253,24 +254,27 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(w) = app.view.editing.window else { return };
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    let title = match w {
-        EditWindow::Crossfade => "Crossfade editor",
-        EditWindow::DynamicSplit => "Dynamic split",
-        EditWindow::Nudge => "Nudge/set items",
-        EditWindow::Grid => "Snap/grid settings",
-        EditWindow::Lock => "Lock settings",
+    let (key, title) = match w {
+        EditWindow::Crossfade => ("crossfade-editor", "Crossfade editor"),
+        EditWindow::DynamicSplit => ("dynamic-split", "Dynamic split"),
+        EditWindow::Nudge => ("nudge-items", "Nudge/set items"),
+        EditWindow::Grid => ("grid-settings", "Snap/grid settings"),
+        EditWindow::Lock => ("lock-settings", "Lock settings"),
     };
-    egui::Window::new(title).id(Id::unique(("edit-window", title))).open(&mut open).frame(frame).resizable(false).show(
-        &ctx,
-        |ui| match w {
-            EditWindow::Crossfade => crossfade_editor(app, ui),
-            EditWindow::DynamicSplit => dynamic_split(app, ui),
-            EditWindow::Nudge => nudge_dialog(app, ui),
-            EditWindow::Grid => grid_settings(app, ui),
-            EditWindow::Lock => lock_settings(app, ui),
-        },
-    );
+    let window = scythe_window(key, title, WindowKind::Dialog);
+    // Opened on an item, they stand beside it; the settings dialogs belong to the whole project.
+    let window = if matches!(w, EditWindow::Crossfade | EditWindow::DynamicSplit | EditWindow::Nudge) {
+        window.anchored()
+    } else {
+        window
+    };
+    window.show(&ctx, &mut open, |ui| match w {
+        EditWindow::Crossfade => crossfade_editor(app, ui),
+        EditWindow::DynamicSplit => dynamic_split(app, ui),
+        EditWindow::Nudge => nudge_dialog(app, ui),
+        EditWindow::Grid => grid_settings(app, ui),
+        EditWindow::Lock => lock_settings(app, ui),
+    });
     if !open {
         app.view.editing.window = None;
         app.view.editing.preview.clear();

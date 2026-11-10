@@ -14,6 +14,7 @@ use scythe_session::learn::{Heard, Trigger};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, TEXT_DIM, TEXT_MID};
+use crate::ui::window::{WindowKind, scythe_window};
 
 /// The parameter the window shows.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,11 +108,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         .and_then(|i| i.with(|e| scythe_engine::modulation::native_range(e, w.param)))
         .unwrap_or((0.0, 1.0));
     let mut open = true;
-    egui::Window::new(format!("Modulation · {name}"))
-        .id(egui::Id::unique("param-modulation"))
-        .open(&mut open)
-        .default_width(420.0)
-        .show(ui.ctx(), |ui| {
+    scythe_window("param-modulation", format!("Modulation · {name}"), WindowKind::Panel).default_width(420.0).show(
+        ui.ctx(),
+        &mut open,
+        |ui| {
             let md = m::modulation(&slot, w.param);
             let current = md.clone().unwrap_or_else(|| ParamModulation::new(w.param.to_string(), "", value));
             let mut next = current.clone();
@@ -147,7 +147,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
             }
             ui.separator();
             learn(app, ui, &mut w, &slot);
-        });
+        },
+    );
     if open {
         app.view.modulation = Some(w);
     } else if w.learning {

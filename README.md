@@ -349,6 +349,16 @@ Working:
   REAPER 7.73's preferences describe it.
   Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
   zoom. API: `action.*`, `toolbar.*`, `mouse.*`.
+- **Windows** share one card frame and one set of rules: tool windows (actions, regions,
+  explorer, bay, grouping, theme, effect editors, the rig window…) resize, dialogs (grid, lock,
+  monitor mix, MIDI devices…) size to their contents, floating ones (toolbars, the virtual
+  keyboard, JSFX and script graphics) keep their contents' size. A window opens centred on the
+  main window, or beside the pointer for those opened on something (crossfade, nudge and dynamic
+  split dialogs, tempo marker, note properties, toolbar editor), always fully on screen; a newly
+  opened window comes on top. Where each was moved and how it was sized is kept in
+  `windows.ini` beside the preferences and comes back in the next session (kept on a smaller
+  screen). Escape closes the window last clicked or opened instead of stopping the transport;
+  once the arrange or another part of the main window is clicked, Escape is a shortcut again.
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
   preview), cycled from the inspector or set with `envelope.mode`. While playing, moves in
   touch, latch and write mode are recorded into armed envelopes (missing ones are created):
@@ -1052,6 +1062,9 @@ compares the two files.
 
 ### Not there yet
 
+- Windows: they are drawn inside the main window (egui), so none can be moved onto a second
+  screen or out of the main window; windows opened beside the pointer do not remember where they
+  were moved, and a tool window whose contents are shorter than its size shrinks to them.
 - Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
   take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
   scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's

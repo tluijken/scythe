@@ -2,12 +2,13 @@
 //! matrix (View: Region Render Matrix): edit names, times and colours, and tick which tracks
 //! (and the master) each region renders.
 
-use egui::{CornerRadius, Id, RichText, Ui, vec2};
+use egui::{RichText, Ui, vec2};
 use scythe_core::model::RegionRenderTrack;
 use scythe_core::tempo::format_time;
 
 use crate::app::ScytheApp;
-use crate::theme::{self, TEXT_DIM};
+use crate::theme::TEXT_DIM;
+use crate::ui::window::{WindowKind, scythe_window};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionsTab {
@@ -19,14 +20,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut tab) = app.view.regions else { return };
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Regions and markers")
-        .id(Id::unique("region-manager"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(760.0, 420.0))
-        .resizable(true)
-        .show(&ctx, |ui| {
+    scythe_window("region-manager", "Regions and markers", WindowKind::Panel).default_size(vec2(760.0, 420.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut tab, RegionsTab::List, "Regions and markers");
                 ui.selectable_value(&mut tab, RegionsTab::Matrix, "Render matrix");
@@ -54,7 +51,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                 RegionsTab::List => list(app, ui),
                 RegionsTab::Matrix => matrix(app, ui),
             });
-        });
+        },
+    );
     app.view.regions = open.then_some(tab);
 }
 

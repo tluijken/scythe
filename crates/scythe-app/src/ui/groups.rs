@@ -1,13 +1,14 @@
 //! Track groups in the UI: the grouping matrix window, the group badge on track headers and
 //! mixer strips, and the mute/solo/arm/polarity switches that carry over to group followers.
 
-use egui::{Align2, CornerRadius, Id, Rect, Sense, Ui, vec2};
+use egui::{Align2, CornerRadius, Rect, Sense, Ui, vec2};
 use scythe_core::groups::{GROUP_COUNT, GroupParam, GroupedControl};
 use scythe_core::{SoloMode, Track, TrackId};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, BG, GREEN, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets::text_pill;
+use crate::ui::window::{WindowKind, scythe_window};
 
 fn label(control: GroupedControl) -> &'static str {
     match control {
@@ -188,14 +189,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut group) = app.view.groups else { return };
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Track grouping")
-        .id(Id::unique("group-matrix"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(1010.0, 420.0))
-        .resizable(true)
-        .show(&ctx, |ui| {
+    scythe_window("group-matrix", "Track grouping", WindowKind::Panel).default_size(vec2(1010.0, 420.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 ui.label("Group");
                 egui::ComboBox::from_id_salt("group-pick")
@@ -241,7 +238,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
             );
             ui.add_space(6.0);
             egui::ScrollArea::both().show(ui, |ui| matrix(app, ui, group));
-        });
+        },
+    );
     app.view.groups = open.then_some(group);
 }
 

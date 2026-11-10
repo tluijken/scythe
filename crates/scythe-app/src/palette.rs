@@ -940,6 +940,7 @@ pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
         return;
     }
     crate::ui::nam::preview_keys(app, ctx);
+    crate::ui::window::take_escape(ctx);
     // The windowing layer turns the clipboard shortcuts into events instead of key presses.
     let clipboard = ctx.input(|i| {
         i.events.iter().find_map(|e| match e {

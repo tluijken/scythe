@@ -14,6 +14,7 @@ use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT
 use crate::ui::arrange::meter_fraction;
 use crate::ui::mixer::{fader_gain, fader_position};
 use crate::ui::widgets::{self, switch, text_pill};
+use crate::ui::window::{WindowKind, scythe_window};
 
 const CARD_W: f32 = 320.0;
 const CARD_GAP: f32 = 12.0;
@@ -576,13 +577,10 @@ pub fn wizards(app: &mut ScytheApp, ui: &mut Ui) {
         let mut open = true;
         let mut done = false;
         let title = if cue { "Create cue buss from track selection" } else { "New monitor mix" };
-        egui::Window::new(title)
-            .open(&mut open)
-            .default_pos(ui.max_rect().center() - egui::vec2(210.0, 220.0))
-            .collapsible(false)
-            .resizable(false)
+        let key = if cue { "cue-buss" } else { "monitor-wizard" };
+        scythe_window(key, title, WindowKind::Dialog)
             .default_width(420.0)
-            .show(ui.ctx(), |ui| done = wizard_body(app, ui, &mut w));
+            .show(ui.ctx(), &mut open, |ui| done = wizard_body(app, ui, &mut w));
         if open && !done {
             let slot = if cue { &mut app.view.cue_dialog } else { &mut app.view.monitor_wizard };
             *slot = Some(w);

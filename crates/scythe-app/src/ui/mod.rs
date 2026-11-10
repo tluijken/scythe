@@ -25,6 +25,7 @@ pub mod surfaces;
 pub mod theme_editor;
 pub mod toolbars;
 pub mod widgets;
+pub mod window;
 
 use egui::{Align2, CornerRadius, Rect, Sense, Ui, pos2, vec2};
 use scythe_core::tempo::format_time;
@@ -490,11 +491,15 @@ fn nav_rail(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 fn script_console(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(text) = app.script_console.clone() else { return };
     let mut open = true;
-    egui::Window::new("ReaScript console").open(&mut open).default_width(480.0).show(ui.ctx(), |ui| {
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(text).font(theme::mono(12.0))).wrap());
-        });
-    });
+    window::scythe_window("script-console", "ReaScript console", window::WindowKind::Panel).default_width(480.0).show(
+        ui.ctx(),
+        &mut open,
+        |ui| {
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).font(theme::mono(12.0))).wrap());
+            });
+        },
+    );
     if !open {
         app.script_console = None;
     }

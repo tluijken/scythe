@@ -4,12 +4,13 @@
 
 use std::path::PathBuf;
 
-use egui::{CornerRadius, Id, RichText, Ui, vec2};
+use egui::{RichText, Ui, vec2};
 use scythe_core::bay;
 use scythe_core::tempo::format_time;
 
 use crate::app::ScytheApp;
 use crate::theme::{self, TEXT_DIM};
+use crate::ui::window::{WindowKind, scythe_window};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BayTab {
@@ -37,15 +38,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut w) = app.view.bay.take() else { return };
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
     let title = if w.tab == BayTab::Clean { "Project directory cleanup" } else { "Project bay" };
-    egui::Window::new(title)
-        .id(Id::unique("project-bay"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(760.0, 420.0))
-        .resizable(true)
-        .show(&ctx, |ui| {
+    scythe_window("project-bay", title, WindowKind::Panel).default_size(vec2(760.0, 420.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut w.tab, BayTab::Media, "Source media");
                 ui.selectable_value(&mut w.tab, BayTab::Items, "Media items");
@@ -61,7 +58,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                 BayTab::Fx => effects(app, ui),
                 BayTab::Clean => clean(app, &mut w, ui),
             });
-        });
+        },
+    );
     if open {
         app.view.bay = Some(w);
     }

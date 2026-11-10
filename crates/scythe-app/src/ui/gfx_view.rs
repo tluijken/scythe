@@ -13,6 +13,7 @@ use egui::{
 use scythe_engine::eel::gfx::{self, Bitmap, Input, Menu, MenuItem};
 
 use crate::app::{GfxView, ScytheApp};
+use crate::ui::window::{WindowKind, scythe_window};
 
 const PERIOD: Duration = Duration::from_millis(33);
 
@@ -145,12 +146,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         let (w, h) = view.size;
         let size =
             vec2(if w == 0 { 600.0 } else { w as f32 }.max(420.0), if h == 0 { 400.0 } else { h as f32 }.max(300.0));
-        egui::Window::new(view.title.as_str())
+        scythe_window("jsfx-gfx", view.title.as_str(), WindowKind::Floating)
             .id(Id::unique(("jsfx-gfx", view.track, view.index)))
-            .open(&mut open)
             .default_size(size)
             .resizable(true)
-            .show(&ctx, |ui| canvas(ui, view));
+            .show(&ctx, &mut open, |ui| canvas(ui, view));
         open
     });
     script_window(app, &ctx);
@@ -192,8 +192,9 @@ fn script_window(app: &mut ScytheApp, ctx: &egui::Context) {
     let mut open = true;
     let size = vec2(view.size.0.max(64) as f32, view.size.1.max(48) as f32);
     let title = if view.title.is_empty() { "Script".to_owned() } else { view.title.clone() };
-    egui::Window::new(title).id(Id::unique("script-gfx")).open(&mut open).default_size(size).resizable(true).show(
+    scythe_window("script-gfx", title, WindowKind::Floating).default_size(size).resizable(true).show(
         ctx,
+        &mut open,
         |ui| {
             let (rect, resp) =
                 ui.allocate_exact_size(ui.available_size().max(vec2(64.0, 48.0)), Sense::click_and_drag());

@@ -10,6 +10,7 @@ use crate::theme::{
     self, ACCENT, BG, LANE, LANE_SELECTED, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID, track_color, with_alpha,
 };
 use crate::ui::widgets::{self, Icon, text_pill};
+use crate::ui::window::{WindowKind, scythe_window};
 
 pub(super) const HEADER_W: f32 = 236.0;
 const RULER_H: f32 = 52.0;
@@ -505,12 +506,10 @@ fn tempo_dialog(app: &mut ScytheApp, ui: &mut Ui) {
     let Some((i, mut draft)) = app.view.tempo_edit.take() else { return };
     let mut open = true;
     let (mut apply, mut cancel) = (false, false);
-    egui::Window::new("Edit time signature marker")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
-        .show(ui.ctx(), |ui| {
+    scythe_window("tempo-marker", "Edit time signature marker", WindowKind::Dialog).anchored().show(
+        ui.ctx(),
+        &mut open,
+        |ui| {
             egui::Grid::new("tempo-edit").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
                 ui.label("Position");
                 ui.label(app.project.tempo.format_bar_beat(draft.time));
@@ -538,7 +537,8 @@ fn tempo_dialog(app: &mut ScytheApp, ui: &mut Ui) {
                 apply = ui.button("OK").clicked();
                 cancel = ui.button("Cancel").clicked();
             });
-        });
+        },
+    );
     if apply {
         let (bpm, sig, linear) = (draft.bpm, draft.time_sig, draft.linear);
         app.edit("Edit tempo marker", |p| p.change_tempo(|t| _ = t.edit_point(i, bpm, sig, linear)));

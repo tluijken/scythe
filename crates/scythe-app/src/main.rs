@@ -44,8 +44,10 @@ impl eframe::App for Shell {
         self.app.tick_editors();
         self.app.tick_automation();
         self.app.tick_script();
+        ui::window::begin_frame(&ctx);
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
+        ui::window::end_frame(&ctx);
         theme::recolor(&ctx, &self.app.session.theme);
         self.app.session.release();
         // Meters and the clock need a steady frame rate even when nothing is playing.
@@ -210,6 +212,7 @@ fn main() -> eframe::Result {
             let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default(), null_audio);
             app.no_input = no_input;
             app.load_preferences(scythe_session::preferences_path());
+            ui::window::load(&cc.egui_ctx, ui::window::placements_file());
             app.view.setlist = setlist;
             match open {
                 Some(path) => app.open_path(&path),

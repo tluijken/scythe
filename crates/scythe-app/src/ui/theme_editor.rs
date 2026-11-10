@@ -1,11 +1,12 @@
 //! The theme window: a colour per main UI element, Scythe's colours back, theme files, and
 //! the colours of a REAPER theme where they map.
 
-use egui::{CornerRadius, Id, RichText, Ui, vec2};
+use egui::{RichText, Ui, vec2};
 use scythe_core::theme::{Rgb, Slot, Theme};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, TEXT_DIM};
+use crate::ui::window::{WindowKind, scythe_window};
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     if !app.view.theme_editor {
@@ -13,14 +14,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let ctx = ui.ctx().clone();
     let mut open = true;
-    let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    egui::Window::new("Theme colors")
-        .id(Id::unique("theme-editor"))
-        .open(&mut open)
-        .frame(frame)
-        .default_size(vec2(440.0, 520.0))
-        .resizable(true)
-        .show(&ctx, |ui| {
+    scythe_window("theme-editor", "Theme colors", WindowKind::Panel).default_size(vec2(440.0, 520.0)).show(
+        &ctx,
+        &mut open,
+        |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Import REAPER theme…").clicked()
                     && let Some(path) = rfd::FileDialog::new()
@@ -66,6 +63,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                     }
                 });
             });
-        });
+        },
+    );
     app.view.theme_editor = open;
 }
