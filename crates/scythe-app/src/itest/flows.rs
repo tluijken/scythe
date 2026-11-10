@@ -95,7 +95,7 @@ fn fx_browser_adds_reaeq_and_its_editor_drags_a_band() {
     let before = fx_state(&t, "Drums", 0);
     t.click_role(Role::Button, "Edit");
     let drums = t.track("Drums").id;
-    assert!(crate::ui::fx_editor::is_open(t.app(), Some(drums), 0), "the editor opened");
+    t.until("the editor", 10.0, move |t| crate::ui::fx_editor::is_open(t.app(), Some(drums), 0));
     let band = t.rect("Band 2");
     t.drag(band.center(), band.center() + vec2(0.0, -40.0));
     assert_ne!(before, fx_state(&t, "Drums", 0), "dragging the band changed the plugin's state");
@@ -133,7 +133,7 @@ fn setlist_page_builds_a_setlist_plays_and_steps() {
     }
     assert!(t.has("Entry Opener") && t.has("Entry Ballad"), "{:#?}", t.labels());
     t.click_role(Role::Button, "Next song (N)");
-    assert_eq!(t.app().live.player.entry, 1);
+    t.until("the next song", 10.0, |t| t.app().live.player.entry == 1);
     t.click_role(Role::Button, "Play song (Enter)");
     t.until("playback", 5.0, |t| t.app().is_playing());
     let pos = t.app().position();
@@ -425,7 +425,7 @@ fn the_audio_device_window_has_reapers_device_and_audio_page_switches() {
         "Allow projects to override device sample rate",
         "Lock process memory with mlockall() (caution)",
     ] {
-        assert!(t.has(label), "{label} has no name: {:?}", t.labels());
+        t.wait_has(label);
     }
     t.h.get_by_label("Close audio device when stopped and application is inactive").scroll_to_me();
     t.frames(3);

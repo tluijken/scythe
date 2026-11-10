@@ -163,9 +163,14 @@ impl TestApp {
         self.frames(2);
     }
 
-    /// Clicks the widget AccessKit knows by exactly `label` and draws the result.
+    /// Clicks the widget AccessKit knows by exactly `label` and draws the result. The widget
+    /// may need a few frames to appear: what the last action asked for can come from the engine
+    /// or a worker thread, which a loaded machine answers late.
     #[track_caller]
     pub fn click(&mut self, label: &str) {
+        self.wait_has(label);
+        let wanted = label.to_owned();
+        self.settle(label, move |t| t.h.query_by_label(&wanted).map(|n| n.rect()));
         self.h.get_by_label(label).click();
         self.frames(3);
     }
@@ -173,12 +178,34 @@ impl TestApp {
     /// Clicks the `role` widget labelled `label` (a button among labels with the same text).
     #[track_caller]
     pub fn click_role(&mut self, role: Role, label: &str) {
+        let wanted = label.to_owned();
+        self.settle(label, move |t| t.h.query_by_role_and_label(role, &wanted).map(|n| n.rect()));
         self.h.get_by_role_and_label(role, label).click();
         self.frames(3);
     }
 
     pub fn has(&self, label: &str) -> bool {
         self.h.query_by_label(label).is_some()
+    }
+
+    /// Runs frames until `rect` reads the same two frames running, so a click lands where the
+    /// widget is drawn rather than where a shifting layout had it a frame ago.
+    fn settle(&mut self, what: &str, mut rect: impl FnMut(&Self) -> Option<egui::Rect>) {
+        let mut last = rect(self);
+        self.h.step();
+        self.until(what, 10.0, move |t| {
+            let now = rect(t);
+            let still = now.is_some() && now == last;
+            last = now;
+            still
+        });
+    }
+
+    /// Runs frames until a widget labelled `label` shows, failing after 10 s.
+    #[track_caller]
+    pub fn wait_has(&mut self, label: &str) {
+        let wanted = label.to_owned();
+        self.until(label, 10.0, move |t| t.has(&wanted));
     }
 
     /// Where the widget labelled `label` is on screen.
