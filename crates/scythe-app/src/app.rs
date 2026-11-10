@@ -75,6 +75,8 @@ pub struct ViewState {
     pub surfaces: Option<crate::ui::surfaces::SurfacesWindow>,
     /// The modulation and learn window of one effect parameter, while open.
     pub modulation: Option<crate::ui::modulation::ModWindow>,
+    /// The graphical editors of stock effects that are open.
+    pub fx_editors: Vec<crate::ui::fx_editor::FxEditor>,
     pub keyboard_open: bool,
     pub keyboard: crate::ui::midi_devices::KeyboardState,
     pub midi_devices_open: bool,
@@ -250,6 +252,7 @@ impl ScytheApp {
                 groups: None,
                 surfaces: None,
                 modulation: None,
+                fx_editors: Vec::new(),
                 keyboard_open: false,
                 keyboard: Default::default(),
                 midi_devices_open: false,

@@ -286,7 +286,8 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         let nam = scythe_engine::fx::nam_settings(fx);
         let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
             || app.has_gfx(Some(track_id), i);
-        let text_w = if nam.is_some() || hosted { r.width() - 162.0 } else { r.width() - 110.0 };
+        let stock = crate::ui::fx_editor::kind(app, Some(track_id), fx, i).is_some();
+        let text_w = if nam.is_some() || hosted || stock { r.width() - 162.0 } else { r.width() - 110.0 };
         let name = widgets::truncate(ui, &short, &theme::semibold(13.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y - 8.0),
@@ -347,10 +348,24 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             {
                 app.toggle_editor(Some(track_id), i);
             }
+        } else if stock {
+            let open = crate::ui::fx_editor::is_open(app, Some(track_id), i);
+            let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
+            let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
+            if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
+                .on_hover_text(if open { "Close the editor" } else { "Open the graphical editor" })
+                .clicked()
+            {
+                crate::ui::fx_editor::toggle(app, Some(track_id), i);
+            }
         }
         row.context_menu(|ui| {
             if hosted && ui.button("Open editor").clicked() {
                 app.toggle_editor(Some(track_id), i);
+                ui.close();
+            }
+            if stock && ui.button("Open editor").clicked() {
+                crate::ui::fx_editor::toggle(app, Some(track_id), i);
                 ui.close();
             }
             ui.menu_button("Save preset", |ui| {
@@ -1124,14 +1139,13 @@ fn fx_params(
                 v + step * span
             }
             .clamp(p.min, p.max);
-            inst.with(|e| e.set_param(p.id, nv));
-            app.engine.wake_effects();
-            app.dirty = true;
+            app.fx_gesture(&format!("Adjust {}", p.name), &inst, |e| e.set_param(p.id, nv));
+        }
+        if resp.drag_stopped() {
+            app.end_gesture();
         }
         if resp.double_clicked() {
-            inst.with(|e| e.set_param(p.id, p.default));
-            app.engine.wake_effects();
-            app.dirty = true;
+            app.fx_edit(&format!("Reset {}", p.name), &inst, |e| e.set_param(p.id, p.default));
         }
         at += PARAM_ROW + 4.0;
     }

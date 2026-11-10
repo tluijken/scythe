@@ -5,6 +5,7 @@ mod comp;
 pub mod editing;
 mod envelope_lanes;
 pub mod explorer;
+pub mod fx_editor;
 pub mod gfx_view;
 pub mod groups;
 mod inspector;
@@ -156,6 +157,7 @@ fn project_tabs(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     gfx_view::show(app, ui);
     nam::show(app, ui);
+    fx_editor::show(app, ui);
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);

@@ -954,12 +954,15 @@ pub fn handle_shortcuts(app: &mut ScytheApp, ctx: &egui::Context) {
     if let Some(action) = clipboard {
         action.run(app);
     }
+    let editor_keys = crate::ui::fx_editor::takes_keys(app);
     let presses: Vec<(usize, Option<String>)> = ctx.input(|i| {
         i.events
             .iter()
             .enumerate()
             .filter_map(|(n, e)| match e {
-                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                egui::Event::Key { key, pressed: true, modifiers, .. }
+                    if !(editor_keys && crate::ui::fx_editor::is_editor_key(*key)) =>
+                {
                     let chord = crate::keys::chord(*key, *modifiers)?;
                     Some((n, crate::keys::command_for(app, chord)))
                 }
