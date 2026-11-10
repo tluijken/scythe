@@ -5,7 +5,6 @@ import { clamp, faderGain, faderPosition, formatDb, formatPan } from "./format.j
 import { useMeter } from "./store.js";
 
 const ICONS = {
-  logo: `<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" stroke-width="2.4"/>`,
   start: `<path d="M6 5v14"/><path d="M19 5l-9 7 9 7z"/>`,
   stop: `<rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor" stroke="none"/>`,
   play: `<path d="M7 4.5L20 12 7 19.5z" fill="currentColor" stroke="none"/>`,
@@ -301,7 +300,7 @@ export function OfflineVeil({ status }) {
 }
 
 export function Logo({ size = 40 }) {
-  return html`<div class="logo" style=${{ width: `${size}px`, height: `${size}px` }}><${Icon} name="logo" size=${size / 2} /></div>`;
+  return html`<div class="logo" style=${{ width: `${size}px`, height: `${size}px`, borderRadius: `${size * 0.3}px` }}><img src="/glyph.svg" alt="" /></div>`;
 }
 
 // An inline text field that commits on Enter or blur and gives up on Escape.

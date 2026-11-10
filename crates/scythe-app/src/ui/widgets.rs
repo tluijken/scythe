@@ -4,7 +4,6 @@ use crate::theme::{self, RAISED_HI, TEXT};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
-    Logo,
     GoStart,
     Stop,
     Play,
@@ -53,6 +52,23 @@ impl Canvas {
     }
 }
 
+/// The Scythe mark on a raised tile; the tile carries it on the dark top bar, where the mark's own dark tile would vanish.
+pub fn paint_logo(ui: &Ui, rect: Rect) {
+    let id = egui::Id::unique("scythe-logo");
+    let texture = ui.ctx().data_mut(|d| d.get_temp::<egui::TextureHandle>(id)).unwrap_or_else(|| {
+        let img = image::load_from_memory(include_bytes!("../../assets/glyph.png")).expect("bundled logo").to_rgba8();
+        let size = [img.width() as usize, img.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
+        let texture = ui.ctx().load_texture("scythe-logo", color, egui::TextureOptions::LINEAR);
+        ui.ctx().data_mut(|d| d.insert_temp(id, texture.clone()));
+        texture
+    });
+    let radius = CornerRadius::same((rect.width() * 0.3) as u8);
+    ui.painter().rect_filled(rect, radius, theme::RAISED);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    ui.painter().image(texture.id(), rect, uv, Color32::WHITE);
+}
+
 pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
     let painter = ui.painter();
     let c = Canvas::new(rect, size);
@@ -62,14 +78,6 @@ pub fn paint_icon(ui: &Ui, rect: Rect, icon: Icon, color: Color32, size: f32) {
         painter.add(Shape::line(c.pts(xy), stroke));
     };
     match icon {
-        Icon::Logo => {
-            let s = Stroke::new(2.4 * c.scale, color);
-            for (x, a, b) in
-                [(4.0, 10.0, 14.0), (8.0, 6.0, 18.0), (12.0, 3.0, 21.0), (16.0, 7.0, 17.0), (20.0, 10.0, 14.0)]
-            {
-                painter.line_segment([c.p(x, a), c.p(x, b)], s);
-            }
-        }
         Icon::GoStart => {
             line(&[(6.0, 5.0), (6.0, 19.0)]);
             painter.add(Shape::closed_line(c.pts(&[(19.0, 5.0), (10.0, 12.0), (19.0, 19.0)]), stroke));

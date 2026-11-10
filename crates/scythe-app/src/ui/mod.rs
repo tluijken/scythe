@@ -228,8 +228,7 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 
     if show_title {
         let logo = Rect::from_center_size(pos2(rect.left() + 20.0, cy), vec2(40.0, 40.0));
-        painter.rect_filled(logo, CornerRadius::same(12), ACCENT);
-        paint_icon(ui, logo, Icon::Logo, BG, 20.0);
+        widgets::paint_logo(ui, logo);
         painter.text(pos2(logo.right() + 12.0, cy - 9.0), Align2::LEFT_CENTER, &title, theme::semibold(15.0), TEXT);
         painter.text(pos2(logo.right() + 12.0, cy + 10.0), Align2::LEFT_CENTER, &sub, theme::regular(12.0), TEXT_DIM);
     }

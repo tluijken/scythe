@@ -1,4 +1,9 @@
-# Scythe
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/wordmark-dark.png">
+    <img src="docs/logo/wordmark-light.png" alt="Scythe" height="72">
+  </picture>
+</h1>
 
 A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
 format, with a modern UI based on the "REAPER redesign" mockup.

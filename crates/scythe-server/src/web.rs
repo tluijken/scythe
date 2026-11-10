@@ -27,6 +27,7 @@ pub const FILES: &[(&str, &[u8])] = web![
     "index.html",
     "app.css",
     "icon.svg",
+    "glyph.svg",
     "manifest.webmanifest",
     "js/main.js",
     "js/api.js",

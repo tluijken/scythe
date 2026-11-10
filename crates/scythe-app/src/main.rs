@@ -113,6 +113,11 @@ fn is_script(path: &std::path::Path) -> bool {
         .is_some_and(|e| ["lua", "eel", "py"].iter().any(|s| e.eq_ignore_ascii_case(s)))
 }
 
+fn app_icon() -> egui::IconData {
+    let img = image::load_from_memory(include_bytes!("../assets/icon.png")).expect("bundled icon").to_rgba8();
+    egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--script-dialog") {
@@ -198,7 +203,9 @@ fn main() -> eframe::Result {
             .with_title("Scythe")
             .with_inner_size([1440.0, 940.0])
             .with_min_inner_size([900.0, 600.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_app_id("scythe")
+            .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
