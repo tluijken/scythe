@@ -380,7 +380,8 @@ Working:
   into new empty lane", and **swiping**: Ctrl+Shift+drag across a lane makes a comp area
   (`LINKEDLANE`); the new area wins its range and the areas it overlaps cross-fade into it over
   10 ms with REAPER's equal-power curve, and the comp lane's items are rebuilt from the areas as
-  REAPER rebuilds them.
+  REAPER rebuilds them. As with REAPER's big lanes (`FIXEDLANES` &8, the default) each lane is
+  one track height tall, so a track grows with its lanes.
 - **Editing**: move (snapped, across tracks), trim edges, fade handles, split, copy/cut/paste,
   duplicate, reverse, delete, markers, undo/redo. Several items: Ctrl+click or drag a marquee on
   empty lane space; moving, deleting, muting, copying (with track spacing) and duplicating then

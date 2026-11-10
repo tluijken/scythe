@@ -34,6 +34,36 @@ impl TimeAxis {
     }
 }
 
+/// Where each track's row sits, from the top of the track list: a track with fixed lanes is
+/// one track height per lane (REAPER's big lanes).
+struct RowLayout {
+    tops: Vec<f32>,
+    heights: Vec<f32>,
+}
+
+impl RowLayout {
+    fn new(app: &ScytheApp) -> Self {
+        let mut top = 0.0;
+        let (mut tops, mut heights) = (Vec::new(), Vec::new());
+        for t in &app.project.tracks {
+            let h = app.view.row_h * t.height_in_lanes() as f32;
+            tops.push(top);
+            heights.push(h);
+            top += h + ROW_GAP;
+        }
+        RowLayout { tops, heights }
+    }
+
+    fn total(&self) -> f32 {
+        self.tops.last().zip(self.heights.last()).map_or(0.0, |(t, h)| t + h + ROW_GAP)
+    }
+
+    /// The row at `y` from the top of the track list (the last for below it).
+    fn index_at(&self, y: f32) -> usize {
+        self.tops.partition_point(|&t| t <= y).saturating_sub(1)
+    }
+}
+
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ui.painter().rect_filled(rect, CornerRadius::same(18), PANEL);
     let inner = rect.shrink(8.0);
@@ -102,7 +132,7 @@ fn handle_scroll(app: &mut ScytheApp, ui: &Ui, area: Rect, lanes_left: f32, rows
     if scroll == egui::Vec2::ZERO {
         return;
     }
-    let content_h = app.project.tracks.len() as f32 * (app.view.row_h + ROW_GAP);
+    let content_h = RowLayout::new(app).total();
     let max_scroll = (content_h - rows.height()).max(0.0);
     if mods.shift || scroll.x.abs() > scroll.y.abs() || max_scroll == 0.0 {
         let dx = if scroll.x != 0.0 { scroll.x } else { scroll.y };
@@ -335,7 +365,7 @@ fn razor_dragging(ui: &Ui) -> bool {
 /// Razor edits: Alt+drag anywhere on the lanes, over items too, marks the same time range on
 /// every track it crosses; Shift+Alt adds to the existing areas. Read from the raw pointer, so
 /// it works whichever widget is under it.
-fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: Rect, row_h: f32, scroll: f32) {
+fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: Rect, layout: &RowLayout, scroll: f32) {
     let id = Id::unique(RAZOR_ANCHOR);
     let (pressed, down, alt, shift, ctrl, pos) = ui.input(|i| {
         (
@@ -358,7 +388,7 @@ fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: R
     if let Some(p) = pos {
         let (t0, t1) =
             (app.snap(axis.t(anchor.x.min(p.x)).max(0.0), false), app.snap(axis.t(anchor.x.max(p.x)), false));
-        let row_of = |y: f32| ((y - rows.top() + scroll) / (row_h + ROW_GAP)).floor().max(0.0) as usize;
+        let row_of = |y: f32| layout.index_at(y - rows.top() + scroll);
         let (first, last) = (row_of(anchor.y.min(p.y)), row_of(anchor.y.max(p.y)));
         let mut areas: Vec<(TrackId, TimeRange)> = ui.data(|d| d.get_temp(id.with("base"))).unwrap_or_default();
         if t1 > t0 {
@@ -409,9 +439,10 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let n = app.project.tracks.len();
     let scroll = app.view.track_scroll;
     let row_h = app.view.row_h;
+    let layout = RowLayout::new(app);
     let row_rect = |i: usize| {
-        let top = rows.top() + i as f32 * (row_h + ROW_GAP) - scroll;
-        Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), row_h))
+        let top = rows.top() + layout.tops[i] - scroll;
+        Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), layout.heights[i]))
     };
 
     // Marquee selection: dragging on empty lane space. Registered first, so items and lanes
@@ -420,7 +451,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let lanes_area = Rect::from_min_max(pos2(axis.left, rows.top()), rows.max);
     let marquee = ui.interact(lanes_area, Id::unique("lanes-marquee"), Sense::drag());
     let anchor_id = Id::unique("marquee-anchor");
-    razor_drag(app, ui, lanes_area, axis, rows, row_h, scroll);
+    razor_drag(app, ui, lanes_area, axis, rows, &layout, scroll);
     if marquee.drag_started()
         && !razor_dragging(ui)
         && !crate::ui::comp::swiping(ui)
@@ -438,8 +469,8 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         if marquee.drag_stopped() {
             let (t0, t1) = (axis.t(r.left()), axis.t(r.right()));
-            let row_of = |y: f32| ((y - rows.top() + scroll) / (row_h + ROW_GAP)).floor() as i64;
-            let (first, last) = (row_of(r.top()).max(0) as usize, row_of(r.bottom()).max(0) as usize);
+            let row_of = |y: f32| layout.index_at(y - rows.top() + scroll);
+            let (first, last) = (row_of(r.top()), row_of(r.bottom()));
             let hits: Vec<(TrackId, ItemId)> = app
                 .project
                 .tracks
@@ -473,7 +504,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         let color = track_color(track.color);
 
         // Header.
-        let head = Rect::from_min_size(row.min, vec2(HEADER_W, row_h));
+        let head = Rect::from_min_size(row.min, vec2(HEADER_W, row.height()));
         let head_resp = ui.interact(head.intersect(rows), Id::unique(("head", track.id)), Sense::click());
         clip.rect_filled(head, CornerRadius::same(12), if selected { RAISED_HI } else { RAISED });
         let indent = level as f32 * 10.0;
@@ -506,7 +537,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             }
         }
 
-        let by = head.bottom() - 22.0;
+        let by = head.top() + row_h - 22.0;
         let btn = |k: f32| Rect::from_min_size(pos2(head.left() + 12.0 + k * 32.0, by - 2.0), vec2(28.0, 24.0));
         let full = row_h >= FULL_ROW_H;
         if full && rows.contains_rect(btn(0.0)) {
@@ -547,8 +578,8 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             )
         } else {
             Rect::from_min_max(
-                pos2(head.left() + 12.0, head.bottom() - 6.0),
-                pos2(head.right() - 12.0, head.bottom() - 3.0),
+                pos2(head.left() + 12.0, head.top() + row_h - 6.0),
+                pos2(head.right() - 12.0, head.top() + row_h - 3.0),
             )
         };
         clip.rect_filled(meter, CornerRadius::same(255), BG);
@@ -646,7 +677,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     }
 
     // Empty area below the last track: double-click adds a track, dropped files land here too.
-    let used = n as f32 * (app.view.row_h + ROW_GAP) - scroll;
+    let used = layout.total() - scroll;
     let empty = Rect::from_min_max(pos2(rows.left(), (rows.top() + used).max(rows.top())), rows.max);
     if empty.height() > 4.0 {
         if n == 0 {

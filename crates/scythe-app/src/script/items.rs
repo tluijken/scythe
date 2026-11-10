@@ -117,6 +117,15 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                 }
                 return Some(ret(Val::Bool(item.is_some())));
             }
+            if key == "I_FIXEDLANE" {
+                let track = item.and_then(|i| s.project.find_item(i)).map(|(t, _)| t);
+                let done = match (track.and_then(|t| s.project.track_mut(t)), item) {
+                    (Some(t), Some(i)) => t.set_item_lane(i, v.max(0.0) as usize),
+                    _ => false,
+                };
+                s.changed |= done;
+                return Some(ret(Val::Bool(done)));
+            }
             let Some(it) = item_mut(&mut s.project, item) else { return Some(ret(Val::Bool(false))) };
             match key.as_str() {
                 "D_POSITION" => it.position = v.max(0.0),

@@ -57,6 +57,13 @@ impl Track {
         from_items.max(self.lane_names.len()).max(1)
     }
 
+    /// How many track heights the track takes in the arrange view. With REAPER's big lanes
+    /// (`C_LANESETTINGS` &8, on by default) each fixed lane is as tall as the track height, so
+    /// the track grows with its lanes; without them the lanes share one height.
+    pub fn height_in_lanes(&self) -> usize {
+        if self.fixed_lanes && self.lane_settings() & 8 != 0 { self.lane_count() } else { 1 }
+    }
+
     /// The comp lane being built, when there is one.
     pub fn comp_lane(&self) -> Option<usize> {
         let lane = self.lane_rec?[1];
@@ -132,6 +139,20 @@ impl Track {
             *words = solo_words(plays.into_iter().map(shift));
         }
         self.lane_names.insert(at, name.to_owned());
+    }
+
+    /// Puts item `id` in fixed lane `lane`, adding lanes down to it (`I_FIXEDLANE`). Does
+    /// nothing on a track without fixed lanes.
+    pub fn set_item_lane(&mut self, id: crate::model::ItemId, lane: usize) -> bool {
+        if !self.fixed_lanes || self.item(id).is_none() {
+            return false;
+        }
+        let n = self.lane_count().max(lane + 1);
+        self.layout_lanes(n);
+        if let Some(it) = self.items.iter_mut().find(|it| it.id == id) {
+            it.ypos = Some((lane as f64 / n as f64, 1.0 / n as f64));
+        }
+        true
     }
 
     /// Adds an empty lane below the others; returns its index.
@@ -302,6 +323,30 @@ mod tests {
         let mut it = Item::new(pos, len, Take::from_file(file.into()));
         it.ypos = Some((lane as f64 / lanes as f64, 1.0 / lanes as f64));
         it
+    }
+
+    /// REAPER 7.73: 136 px tracks are 272, 544, 1088 px tall with 2, 4, 8 fixed lanes (and 8 lanes
+    /// of a 40 px track 320), but stay 136 with `C_LANESETTINGS` 1, without big lanes.
+    #[test]
+    fn big_lanes_grow_the_track_as_reaper_does() {
+        let mut t = Track::new("lanes");
+        assert_eq!(t.height_in_lanes(), 1);
+        t.items = (0..8).map(|l| item(l, 8, l as f64, 0.5, "a.wav")).collect();
+        assert_eq!(t.height_in_lanes(), 1, "without fixed lanes");
+        t.fixed_lanes = true;
+        assert_eq!(t.height_in_lanes(), 8);
+        let mut u = Track::new("set");
+        u.items = (0..4).map(|l| Item::new(l as f64, 0.5, Take::from_file("a.wav".into()))).collect();
+        let ids: Vec<_> = u.items.iter().map(|i| i.id).collect();
+        assert!(!u.set_item_lane(ids[1], 1), "no lanes to put it in");
+        u.fixed_lanes = true;
+        for (lane, id) in ids.iter().enumerate().rev() {
+            assert!(u.set_item_lane(*id, lane));
+        }
+        assert_eq!(u.items.iter().map(|i| i.lane()).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        assert_eq!(u.height_in_lanes(), 4);
+        t.extra.push(crate::rpp::Node::Line("FIXEDLANES 1 0 0 0 0".into()));
+        assert_eq!(t.height_in_lanes(), 1);
     }
 
     /// Three lanes a, b, c, then "comp into new empty lane" and the swipes of the REAPER probe
