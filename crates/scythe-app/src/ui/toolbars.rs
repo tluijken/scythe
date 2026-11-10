@@ -301,7 +301,10 @@ pub fn mouse_editor(app: &mut ScytheApp, ui: &mut Ui) {
                     let text = match &assigned {
                         Some(Assignment::Action(c)) => app.session.action_name(c).unwrap_or_else(|| c.clone()),
                         Some(Assignment::Behavior(n)) => format!("REAPER behaviour {n}"),
-                        None => "Default".into(),
+                        None => match mousemap::default_behaviour(key, m) {
+                            Some(d) => format!("Default: {d}"),
+                            None => "Default: no action".into(),
+                        },
                     };
                     ui.label(RichText::new(text).color(if assigned.is_some() { TEXT } else { TEXT_DIM }));
                     if assigned.is_some() && ui.small_button("Reset").clicked() {

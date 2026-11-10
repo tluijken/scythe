@@ -103,6 +103,61 @@ impl MouseMap {
     }
 }
 
+/// What REAPER 7.73 does by default for a click in `context` with `modifiers` held, as its
+/// mouse modifier preferences describe it; `None` where REAPER assigns nothing.
+pub fn default_behaviour(context: &str, modifiers: u8) -> Option<&'static str> {
+    const S: u8 = SHIFT;
+    const C: u8 = CTRL;
+    const A: u8 = ALT;
+    let table: &[(u8, &str)] = match context {
+        "MM_CTX_ITEM_CLK" => &[
+            (0, "Select item and move edit cursor"),
+            (S, "Add items to selection, if already selected extend time selection"),
+            (C, "Toggle item selection"),
+            (S | C, "Select item and move edit cursor ignoring snap"),
+            (A, "Select item ignoring grouping"),
+            (S | A, "Select razor edit area"),
+            (C | A, "Add stretch marker"),
+        ],
+        "MM_CTX_ITEM_DBLCLK" => &[
+            (0, "MIDI: open in editor, Subprojects: open project, Audio: show media item properties"),
+            (S, "Set time selection to item"),
+            (C, "Set loop points to item"),
+            (A, "Open media item in external editor"),
+            (S | A, "Show take list"),
+            (C | A, "Show take comps list"),
+        ],
+        "MM_CTX_TRACK_CLK" => &[
+            (0, "Deselect all items and move edit cursor"),
+            (S, "Extend time selection"),
+            (C, "Deselect all items and move edit cursor ignoring snap"),
+            (S | C, "Extend time selection ignoring snap"),
+            (A, "Deselect all items"),
+            (C | A, "Clear time selection"),
+        ],
+        "MM_CTX_TCP_DBLCLK" => &[
+            (0, "Select all media items on track"),
+            (S, "Add all media items on track to selection"),
+            (C, "Toggle selection for all media items on track"),
+        ],
+        "MM_CTX_RULER_CLK" => &[
+            (0, "Move edit cursor"),
+            (S, "Extend loop points"),
+            (C, "Move edit cursor ignoring snap"),
+            (S | C, "Extend loop points ignoring snap"),
+            (A, "Seek playback without moving edit cursor"),
+            (C | A, "Clear loop points"),
+        ],
+        "MM_CTX_RULER_DBLCLK" => &[
+            (0, "Set loop points to region"),
+            (C, "Set time selection to region"),
+            (A, "Set loop points and time selection to region"),
+        ],
+        _ => &[],
+    };
+    table.iter().find(|(m, _)| *m == modifiers).map(|(_, d)| *d)
+}
+
 /// The modifier number for these keys.
 pub fn modifiers(shift: bool, ctrl: bool, alt: bool, logo: bool) -> u8 {
     shift as u8 * SHIFT + ctrl as u8 * CTRL + alt as u8 * ALT + logo as u8 * LOGO
@@ -113,6 +168,18 @@ mod tests {
     use super::*;
 
     const REAPER: &str = include_str!("../testdata/reaper-config/reaper-mouse.ini");
+
+    #[test]
+    fn defaults_are_described_as_reaper_describes_them() {
+        assert_eq!(default_behaviour("MM_CTX_ITEM_CLK", CTRL), Some("Toggle item selection"));
+        assert_eq!(default_behaviour("MM_CTX_RULER_DBLCLK", ALT), Some("Set loop points and time selection to region"));
+        assert_eq!(default_behaviour("MM_CTX_RULER_DBLCLK", SHIFT), None);
+        assert_eq!(default_behaviour("MM_CTX_TRACK_DBLCLK", 0), None, "REAPER: no action");
+        for (context, _) in CLICK_CONTEXTS.iter().filter(|(c, _)| *c != "MM_CTX_TRACK_DBLCLK") {
+            assert!(default_behaviour(context, 0).is_some(), "{context}");
+            assert_eq!(default_behaviour(context, LOGO), None, "{context}");
+        }
+    }
 
     #[test]
     fn reaper_written_file_round_trips() {

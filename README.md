@@ -317,7 +317,8 @@ Working:
   import and export): the main toolbar as a strip under the header and 32 floating toolbars,
   with REAPER's toolbar icons when its `Data/toolbar_icons` is around, lit while their action is
   on, and a toolbar editor. Mouse modifiers (`reaper-mouse.ini`): actions on clicks and double
-  clicks of items, track lanes, track headers and the ruler, per modifier keys, with an editor.
+  clicks of items, track lanes, track headers and the ruler, per modifier keys, with an editor that names each unassigned combination's default as
+  REAPER 7.73's preferences describe it.
   Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
   zoom. API: `action.*`, `toolbar.*`, `mouse.*`.
 - **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
