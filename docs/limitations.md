@@ -60,7 +60,10 @@ measured.
   holder's name comes from `/proc/asound/cardN/pcmMp/subS/status`, which the kernel fills only
   while the PCM is open. Rates that a device does not run at are not offered once it has been
   asked; when it cannot be asked (busy and not a USB interface) REAPER's rates are offered and
-  the nearest supported rate opens.
+  the nearest supported rate opens. The PulseAudio path's smaller buffer (two blocks, 512 frames
+  when none is set) was not measured: the audio backend's own PulseAudio client is refused with
+  "protocol error" by a private PulseAudio 17 server, so only its request is tested, not what a
+  server makes of it.
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns
