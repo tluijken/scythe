@@ -75,7 +75,8 @@ the order the commands were sent:
 ```
 
 Every connected client also receives the events (below) its role may hear as `{"type":
-"event", "event": …}`. A client that falls behind skips events rather than slowing the session
+"event", "event": "project_changed", "revision": 42}`: the event's name with its fields beside it.
+A client that falls behind skips events rather than slowing the session
 down. `access.*` commands are answered by the server itself, at once.
 
 ## Commands
