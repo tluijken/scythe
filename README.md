@@ -734,8 +734,12 @@ Working:
   the model's rate and back (192-point sinc, reported as plugin latency). The NAM slot's **Edit**
   opens the NAM panel: the model's name, gear, author, architecture and rate, input and output
   knobs, previous/next model (Alt+Left/Right), four snapshots per slot to A/B models and levels
-  (click to switch, Shift+click to store, Alt+1…4), and a browser with Library, Recent and
-  TONE3000 tabs. The library indexes folders you add (read only, e.g. `~/music/Samples/NAM`) and
+  (click to switch, Shift+click to store, Alt+1…4), and a two-pane browser (list beside the
+  picked entry, stacked when the panel is narrow) with Library, Recent and TONE3000 tabs. A
+  TONE3000 tone shows its models first; **Preview** fetches one into a cache outside the library
+  and plays it in the slot (Left/Right step through the tone's models, Up/Down through the
+  list, A/B against the model from before), then **Keep** moves it into the library or
+  **Revert** puts the old model back, the whole try-out one undo step. The library indexes folders you add (read only, e.g. `~/music/Samples/NAM`) and
   models downloaded from TONE3000 (`~/.local/share/scythe/nam`), with search, favourites and
   tags; impulse responses load into a convolution slot after the NAM slot. Switching models is
   click-free: the new model is read off the audio thread, warms up beside the old one and the two

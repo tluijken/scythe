@@ -280,6 +280,21 @@ impl Session {
         self.merge = Some((key.to_owned(), Instant::now()));
     }
 
+    /// An edit that, when `fold` is set and the last undo step is `label`, becomes part of
+    /// that step, so trying many settings in a row undoes in one go.
+    pub fn edit_folding(&mut self, label: &str, fold: bool, f: impl FnOnce(&mut Project)) {
+        if fold && self.history.undo_label() == Some(label) {
+            let before = self.project.clone();
+            f(&mut self.project);
+            if self.project != before {
+                self.merge = None;
+                self.changed();
+            }
+        } else {
+            self.edit(label, f);
+        }
+    }
+
     /// Continuous edits (fader drags, item moves) record one undo step for the whole gesture.
     pub fn gesture(&mut self, label: &str, f: impl FnOnce(&mut Project)) {
         if self.gesture.is_none() {

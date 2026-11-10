@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 
 use scythe_core::{FxSlot, TrackId};
 use scythe_engine::builtin::{Builtin, reverb_state};
-use scythe_engine::fx::{is_nam, nam_settings, set_nam_levels, set_nam_model, slot_id};
+use scythe_engine::fx::{clear_nam_model, is_nam, nam_settings, set_nam_levels, set_nam_model, slot_id};
 
 use super::library::{Filter, Kind};
+use super::preview::Ending;
 use super::snapshots::{self, Snapshot};
-use super::{Outcome, Target, is_model_file};
+use super::tone3000::{Model, Tone};
+use super::{Outcome, Purpose, Target, is_model_file};
 use crate::app::ScytheApp;
 
 impl ScytheApp {
@@ -101,6 +103,10 @@ impl ScytheApp {
             self.notify("Select a track with a Neural Amp Modeler slot first");
             return;
         };
+        if self.nam.preview.as_ref().is_some_and(|p| p.target == target) {
+            self.nam.step_preview(step);
+            return;
+        }
         self.nam.ensure_scanned();
         let current = self.nam.loading.get(&target).cloned().or_else(|| self.nam_model_path(&target));
         let filter = Filter { kind: Some(Kind::Model), ..self.nam.filter.clone() };
@@ -192,22 +198,110 @@ impl ScytheApp {
     pub fn poll_nam(&mut self) {
         for outcome in self.nam.poll() {
             match outcome {
-                Outcome::Load { target, path, levels, model } => {
+                Outcome::Load { target, path, levels, purpose, model } => {
                     let Some(index) = self.nam_index(&target) else { continue };
-                    self.engine.fx().preload_nam(path.clone(), model);
+                    self.engine.fx().preload_nam(path.clone(), *model);
                     let track = target.track;
-                    self.edit("Load NAM model", |p| {
+                    let model_name = match &purpose {
+                        Purpose::Restore(name) => PathBuf::from(name),
+                        _ => path,
+                    };
+                    let change = |p: &mut scythe_core::Project| {
                         let slot = &mut p.track_mut(track).unwrap().fx[index];
-                        set_nam_model(slot, &path);
+                        set_nam_model(slot, &model_name);
                         if let Some((input, output)) = levels {
                             set_nam_levels(slot, input, output);
                         }
-                    });
+                    };
+                    match purpose {
+                        Purpose::Load => {
+                            if self.nam.preview.as_ref().is_some_and(|p| p.target == target) {
+                                self.nam.preview = None;
+                            }
+                            self.edit("Load NAM model", change);
+                        }
+                        Purpose::Preview(_) | Purpose::Restore(_) => {
+                            let fold = self.nam.preview.as_ref().is_none_or(|p| p.recorded);
+                            self.session.edit_folding(PREVIEW_STEP, fold, change);
+                            if let Some(p) = self.nam.preview.as_mut() {
+                                p.recorded = true;
+                            }
+                        }
+                    }
                     self.engine.wake_effects();
                 }
                 Outcome::Open { target, path } => self.nam_open(&target, path),
                 Outcome::Notify(msg) => self.notify(msg),
             }
         }
+    }
+
+    /// Plays `model` of `tone` in the slot without adding it to the library yet.
+    pub fn nam_preview(&mut self, target: &Target, tone: &Tone, models: &[Model], model: &Model) {
+        let previous = self.nam_slot(target).and_then(nam_settings).and_then(|s| s.model);
+        self.nam.start_preview(target.clone(), previous, tone, models, model.id);
+    }
+
+    /// Ends a preview: keeps the model (into the library, the slot pointing at it there) or
+    /// puts the slot's earlier model back.
+    pub fn nam_end_preview(&mut self, keep: bool) {
+        let recorded = self.nam.preview.as_ref().is_some_and(|p| p.recorded);
+        match self.nam.end_preview(keep) {
+            Some(Ending::Keep { target, tone, model }) => match self.nam.keep_previewed(&tone, &model) {
+                Ok(path) => {
+                    self.nam.selected = Some(path.clone());
+                    self.nam.load_model(target, path, None);
+                    self.notify(format!("Kept {} in the library", model.name));
+                }
+                Err(e) => self.notify(format!("Could not keep {}: {e}", model.name)),
+            },
+            Some(Ending::Revert { target, previous }) => match previous {
+                Some(name) => {
+                    let path = self.nam_resolve(&name);
+                    self.nam.read_model(target, path, None, Purpose::Restore(name));
+                }
+                None => {
+                    let Some(index) = self.nam_index(&target) else { return };
+                    let track = target.track;
+                    self.session.edit_folding(PREVIEW_STEP, recorded, |p| {
+                        clear_nam_model(&mut p.track_mut(track).unwrap().fx[index]);
+                    });
+                    self.engine.wake_effects();
+                }
+            },
+            None => {}
+        }
+    }
+
+    /// A/B: plays the slot's model from before the preview, or the previewed one again.
+    pub fn nam_toggle_compare(&mut self) {
+        let dir = self.project.path.as_deref().and_then(Path::parent).map(Path::to_owned);
+        self.nam.toggle_compare(|name| resolve(dir.as_deref(), name));
+    }
+
+    /// A model name as a slot keeps it, with a path relative to the project resolved.
+    pub fn nam_resolve(&self, name: &str) -> PathBuf {
+        resolve(self.project.path.as_deref().and_then(Path::parent), name)
+    }
+
+    /// Adds the folder of the slot's model to the library, so it is listed with what is
+    /// known about it.
+    pub fn nam_add_model_folder(&mut self, target: &Target) {
+        let Some(dir) = self.nam_model_path(target).and_then(|p| p.parent().map(Path::to_owned)) else { return };
+        if self.nam.library.add_folder(dir.clone()) {
+            self.nam.rescan();
+            self.notify(format!("Added {} to the library", dir.display()));
+        }
+    }
+}
+
+/// The undo step a preview's changes to the slot fold into.
+const PREVIEW_STEP: &str = "Preview NAM model";
+
+fn resolve(project_dir: Option<&Path>, name: &str) -> PathBuf {
+    let path = PathBuf::from(name);
+    match (path.is_absolute(), project_dir) {
+        (false, Some(dir)) => dir.join(path),
+        _ => path,
     }
 }

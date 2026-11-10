@@ -13,7 +13,7 @@ pub mod midi_editor;
 mod mixer;
 pub mod modulation;
 pub mod monitor;
-mod nam;
+pub mod nam;
 pub mod recording;
 pub mod regions;
 mod setlist;

@@ -1588,3 +1588,19 @@ fn toolbar_buttons_read_the_same_on_every_toolbar() {
         "the main toolbar's label, else the name without its category"
     );
 }
+
+#[test]
+fn folded_edits_undo_in_one_step() {
+    let mut s = session();
+    s.edit("Rename", |p| {
+        p.add_track("A");
+    });
+    s.edit_folding("Try", false, |p| p.tracks[0].name = "1".into());
+    s.edit_folding("Try", true, |p| p.tracks[0].name = "2".into());
+    s.edit_folding("Try", true, |p| p.tracks[0].name = "3".into());
+    s.undo();
+    assert_eq!(s.project.tracks[0].name, "A", "the whole run is one undo step");
+    s.edit_folding("Try", true, |p| p.tracks[0].name = "4".into());
+    s.undo();
+    assert_eq!(s.project.tracks[0].name, "A", "folding needs the last step to carry the label");
+}

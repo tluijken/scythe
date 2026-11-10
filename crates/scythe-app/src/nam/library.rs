@@ -121,6 +121,15 @@ impl Entry {
     }
 }
 
+/// Where library files come from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Place {
+    /// Downloaded from TONE3000.
+    Downloads,
+    /// An added folder.
+    Folder(PathBuf),
+}
+
 /// What the browser shows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Filter {
@@ -129,6 +138,7 @@ pub struct Filter {
     pub kind: Option<Kind>,
     pub favourites: bool,
     pub tag: Option<String>,
+    pub place: Option<Place>,
 }
 
 impl Filter {
@@ -137,6 +147,14 @@ impl Filter {
             return false;
         }
         if self.tag.as_ref().is_some_and(|t| !entry.tags.iter().any(|e| e.eq_ignore_ascii_case(t))) {
+            return false;
+        }
+        let place = match &self.place {
+            None => true,
+            Some(Place::Downloads) => entry.folder.is_none(),
+            Some(Place::Folder(f)) => entry.folder.as_ref() == Some(f),
+        };
+        if !place {
             return false;
         }
         let hay = entry.haystack();
@@ -579,6 +597,9 @@ mod tests {
         assert_eq!(names(&lib, &Filter { favourites: true, ..Filter::default() }), ["TS9"]);
         assert_eq!(names(&lib, &Filter { tag: Some("boost".into()), ..Filter::default() }), ["TS9"]);
         assert_eq!(lib.tags(), ["Boost"]);
+        assert_eq!(names(&lib, &Filter { place: Some(Place::Downloads), ..Filter::default() }), Vec::<String>::new());
+        let folder = Filter { place: Some(Place::Folder(music.clone())), ..Filter::default() };
+        assert_eq!(lib.search(&folder).len(), lib.entries().len());
         for p in ["a", "b", "a"] {
             lib.touch(Path::new(p));
         }

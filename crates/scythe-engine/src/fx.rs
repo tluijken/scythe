@@ -1675,6 +1675,18 @@ fn nam_chunk_mut(slot: &mut FxSlot) -> Option<&mut Chunk> {
     })
 }
 
+/// Leaves a NAM slot without a model, keeping any other state properties.
+pub fn clear_nam_model(slot: &mut FxSlot) {
+    let Some(chunk) = nam_chunk_mut(slot) else { return };
+    for node in &mut chunk.children {
+        if let Node::Chunk(state) = node
+            && state.name() == "STATE"
+        {
+            state.children.retain(|n| !matches!(n, Node::Line(l) if l.contains("#model")));
+        }
+    }
+}
+
 /// Points a NAM slot at another model file, keeping any other state properties.
 pub fn set_nam_model(slot: &mut FxSlot, model: &Path) {
     let Some(chunk) = nam_chunk_mut(slot) else { return };
@@ -2367,6 +2379,9 @@ mod nam_tests {
         assert_eq!(chunk.find_line("P").unwrap(), ["input_level", "3.5", "output_level", "-6"]);
         let state = chunk.chunks("STATE").next().unwrap();
         assert_eq!(state.children, [Node::Line(format!("P {NAM_MODEL_PROPERTY} \"/models/My Amp.nam\" 3"))]);
+        let mut cleared = slot.clone();
+        clear_nam_model(&mut cleared);
+        assert_eq!(nam_settings(&cleared), Some(NamSettings { model: None, input_db: 3.5, output_db: -6.0 }));
         let other = crate::lv2::Lv2Info {
             uri: "urn:x".into(),
             name: "Other".into(),

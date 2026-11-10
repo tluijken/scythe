@@ -304,6 +304,60 @@ where
     })
 }
 
+/// Counts and page numbers: a number, a number sent as a string, or null (read as 0).
+fn count<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: TryFrom<u64> + Default,
+{
+    use serde::de::Error;
+    let n = match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => return Ok(T::default()),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => return Ok(T::default()),
+        Some(serde_json::Value::Number(n)) => n.as_u64().or_else(|| n.as_f64().map(|f| f.max(0.0) as u64)),
+        Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+        Some(_) => None,
+    };
+    n.and_then(|n| T::try_from(n).ok()).ok_or_else(|| D::Error::custom("not a count"))
+}
+
+/// A count that may be absent; numbers sent as strings are taken.
+fn optional_count<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        Some(serde_json::Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
+    })
+}
+
+/// A flag sent as a boolean, a number or a string.
+fn flag<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        Some(serde_json::Value::Bool(b)) => Some(b),
+        Some(serde_json::Value::Number(n)) => Some(n.as_f64().is_some_and(|v| v != 0.0)),
+        Some(serde_json::Value::String(s)) => Some(matches!(s.as_str(), "true" | "1")),
+        _ => None,
+    })
+}
+
+/// Text that is sometimes sent as a number.
+fn text<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s),
+        Some(other) => Some(other.to_string()),
+    })
+}
+
 /// Tone and model ids are numbers, but a number sent as a string is taken too.
 fn numeric_id<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
@@ -353,13 +407,13 @@ pub struct Tone {
     pub id: i64,
     #[serde(default, deserialize_with = "nullable")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub gear: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub format: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub license: Option<String>,
     #[serde(default)]
     pub user: Option<User>,
@@ -369,15 +423,15 @@ pub struct Tone {
     pub tags: Vec<Named>,
     #[serde(default, deserialize_with = "nullable")]
     pub sizes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_count")]
     pub models_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_count")]
     pub irs_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_count")]
     pub downloads_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "optional_count")]
     pub favorites_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "flag")]
     pub is_favorite: Option<bool>,
     #[serde(default)]
     pub url: Option<String>,
@@ -401,14 +455,14 @@ pub struct Model {
     pub tone_id: i64,
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub size: Option<String>,
     #[serde(default, deserialize_with = "nullable")]
     pub model_url: String,
     /// `1`, `2` or `custom`; absent for impulse responses.
     #[serde(default)]
     pub architecture_version: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text")]
     pub content_hash: Option<String>,
 }
 
@@ -428,11 +482,11 @@ impl Model {
 pub struct Page<T> {
     #[serde(default, deserialize_with = "nullable")]
     pub data: Vec<T>,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "count")]
     pub page: u32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "count")]
     pub total_pages: u32,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "count")]
     pub total: u64,
 }
 
@@ -683,6 +737,7 @@ pub struct Client {
     client_id: Option<String>,
     tokens: Mutex<Option<Tokens>>,
     store: Option<TokenStore>,
+    debug_log: Option<PathBuf>,
 }
 
 impl Client {
@@ -694,7 +749,15 @@ impl Client {
             client_id: config.client_id().map(str::to_owned),
             tokens: Mutex::new(tokens),
             store,
+            debug_log: None,
         }
+    }
+
+    /// Where responses that could not be read are written, so a changed API can be looked into.
+    /// Only the request path, the error and the body go there, never a token or a header.
+    pub fn with_debug_log(mut self, path: PathBuf) -> Self {
+        self.debug_log = Some(path);
+        self
     }
 
     pub fn signed_in(&self) -> bool {
@@ -801,7 +864,13 @@ impl Client {
 
     fn get<T: DeserializeOwned>(&self, path_and_query: &str) -> Result<T, ApiError> {
         let body = self.send("GET", format!("{}{path_and_query}", self.base))?;
-        serde_json::from_slice(&body).map_err(|e| ApiError::Decode(e.to_string()))
+        serde_json::from_slice(&body).map_err(|e| {
+            let error = ApiError::Decode(e.to_string());
+            match self.debug_log.as_ref().map(|log| log_response(log, path_and_query, &error, &body)) {
+                Some(Ok(())) => ApiError::Decode(format!("{e} (response written to tone3000-debug.log)")),
+                _ => error,
+            }
+        })
     }
 
     pub fn user(&self) -> Result<User, ApiError> {
@@ -860,6 +929,20 @@ pub fn open_browser(url: &str) -> std::io::Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
+}
+
+/// Bodies above this are cut short in the debug log.
+const LOGGED_BODY: usize = 256 * 1024;
+
+/// Appends an unreadable response to `log`: when, which request, why, and the body.
+fn log_response(log: &std::path::Path, request: &str, error: &ApiError, body: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(log)?;
+    writeln!(file, "--- {} GET {request}\n{error}\n{} bytes:", unix_now(), body.len())?;
+    file.write_all(&body[..body.len().min(LOGGED_BODY)])?;
+    writeln!(file)
 }
 
 #[cfg(test)]
@@ -1140,5 +1223,54 @@ mod tests {
         assert_eq!(client.download(&model).unwrap(), br#"{"architecture": "WaveNet"}"#);
         assert_eq!(http.requests()[0].url, "https://cdn.t3k.test/m/1.nam");
         assert_eq!(http.requests()[0].bearer.as_deref(), Some("old"));
+    }
+
+    /// Models as the live API sends them: UUID user ids, nulls for unset fields, numbers as
+    /// strings, and pages spread over two requests.
+    #[test]
+    fn reads_models_shaped_like_live_responses() {
+        let first = r#"{"data":[
+            {"id":"501","created_at":"2026-01-02T03:04:05.000Z","updated_at":null,
+             "user_id":"913292c0-f036-4690-916d-043924eed513","model_url":"https://cdn.t3k.test/501.nam",
+             "name":"Clean ch","size":"standard","tone_id":"77","architecture_version":2,
+             "content_hash":null,"metadata":null,"private":false},
+            {"id":502,"user_id":"913292c0-f036-4690-916d-043924eed513","model_url":"https://cdn.t3k.test/502.nam",
+             "name":null,"size":null,"tone_id":77,"architecture_version":null,"content_hash":12345}],
+            "page":"1","page_size":"2","total":"3","total_pages":"2"}"#;
+        let second = r#"{"data":[{"id":503,"tone_id":77,"name":"Lead (nano)","size":"nano",
+            "architecture_version":"custom","model_url":"https://cdn.t3k.test/503.nam"}],
+            "page":2,"page_size":2,"total":3,"total_pages":2.0}"#;
+        let http = Recorded::with([(200, first), (200, second)]);
+        let models = signed_in(http.clone(), None).models(77).unwrap();
+        assert_eq!(models.iter().map(|m| m.id).collect::<Vec<_>>(), [501, 502, 503]);
+        assert_eq!((models[0].tone_id, models[0].architecture().as_deref()), (77, Some("2")));
+        assert_eq!((models[1].name.as_str(), models[1].size.as_deref(), models[1].architecture()), ("", None, None));
+        assert_eq!(models[1].content_hash.as_deref(), Some("12345"));
+        assert_eq!(models[2].architecture().as_deref(), Some("custom"));
+        assert!(http.requests()[1].url.ends_with("/models?tone_id=77&page=2&page_size=100"));
+
+        let tone: Tone = serde_json::from_str(
+            r#"{"id":"77","title":"Plexi","description":null,"gear":"amp","license":null,"models_count":"3",
+                "downloads_count":1520,"favorites_count":null,"is_favorite":0,"sizes":["standard","nano"],
+                "user":{"id":"913292c0-f036-4690-916d-043924eed513","username":"capt"}}"#,
+        )
+        .unwrap();
+        assert_eq!((tone.id, tone.models_count, tone.downloads_count), (77, Some(3), Some(1520)));
+        assert_eq!((tone.favorites_count, tone.is_favorite), (None, Some(false)));
+    }
+
+    #[test]
+    fn an_unreadable_response_is_reported_and_logged_without_the_token() {
+        let dir = scratch("debuglog");
+        let log = dir.join("nam/tone3000-debug.log");
+        let http = Recorded::with([(200, r#"{"data":[{"id":{"nested":true}}]}"#)]);
+        let client = signed_in(http, None).with_debug_log(log.clone());
+        let Err(ApiError::Decode(why)) = client.models(5) else { panic!("a decode error") };
+        assert!(why.contains("tone3000-debug.log"), "{why}");
+        let written = std::fs::read_to_string(&log).unwrap();
+        assert!(written.contains("GET /models?tone_id=5&page=1&page_size=100"), "{written}");
+        assert!(written.contains(r#"{"nested":true}"#));
+        assert!(!written.contains("old"), "the access token stays out of the log");
+        std::fs::remove_dir_all(dir).ok();
     }
 }
