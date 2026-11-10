@@ -791,6 +791,7 @@ mod scopes {
             json!({"cmd": "setlist.auto_advance", "enabled": true}),
             json!({"cmd": "setlist.count_in", "enabled": true}),
             json!({"cmd": "transport.health"}),
+            json!({"cmd": "transport.performance"}),
             json!({"cmd": "setlist.play"}),
             json!({"cmd": "setlist.stop"}),
             json!({"cmd": "transport.play"}),
@@ -1807,4 +1808,28 @@ fn scythe_eq_bands_are_set_by_name_saved_and_undone() {
     assert_eq!(got["bands"][0]["gain_db"], 3.0);
     let err = execute_json(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "slope": 7})).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Invalid);
+}
+
+/// The performance meter counts each track's and effect's render time on a playing engine,
+/// in project order, with the master's effects last.
+#[test]
+fn the_performance_meter_reads_tracks_and_effects() {
+    let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    let mut s = Session::new(Engine::start_null(pool, 48_000, None));
+    let a = add_track(&mut s, "Bass");
+    add_track(&mut s, "Keys");
+    ok(&mut s, json!({"cmd": "fx.add", "track": a, "plugin": "builtin:compressor"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": "master", "plugin": "builtin:delay"}));
+    ok(&mut s, json!({"cmd": "transport.play"}));
+    std::thread::sleep(Duration::from_millis(1100));
+    s.poll();
+    let meter = ok(&mut s, json!({"cmd": "transport.performance"}));
+    ok(&mut s, json!({"cmd": "transport.stop"}));
+    let tracks = meter["tracks"].as_array().unwrap();
+    let names: Vec<&str> = tracks.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Bass", "Keys", "MASTER"]);
+    assert_eq!(tracks[0]["fx"].as_array().unwrap().len(), 1);
+    assert!(tracks[0]["longest_block_ms"].as_f64().unwrap() > 0.0, "{meter}");
+    assert_eq!(tracks[2]["index"], 0);
+    assert!(meter["block_ms"].as_f64().unwrap() > 0.0, "{meter}");
 }

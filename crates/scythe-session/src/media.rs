@@ -237,6 +237,7 @@ impl Session {
     /// auto-saves when it is time.
     pub fn poll(&mut self) {
         self.watch_device();
+        self.sample_performance();
         self.autosave();
         self.handle_marker_actions();
         while let Ok(msg) = self.loader_rx.try_recv() {

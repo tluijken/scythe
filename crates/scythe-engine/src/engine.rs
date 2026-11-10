@@ -1273,6 +1273,12 @@ impl Engine {
         &self.meters
     }
 
+    /// The tracks that play, with their meters (which count their render time) and the
+    /// frames their effects delay them by.
+    pub fn track_timing(&self) -> Vec<(scythe_core::TrackId, Arc<crate::meter::Meter>, i64)> {
+        self.graph.load().tracks.iter().map(|t| (t.id, t.meter.clone(), t.chain.latency)).collect()
+    }
+
     /// Where the metronome plays when a project names no output (a `METRONOMEOUT` value, -1
     /// for the master); takes effect at the next [`Engine::sync`].
     pub fn set_default_click_output(&mut self, output: i64) {

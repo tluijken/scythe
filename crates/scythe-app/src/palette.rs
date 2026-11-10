@@ -69,6 +69,7 @@ pub enum Action {
     RenderProjectSettings,
     QueueRender,
     RegionManager,
+    PerformanceMeter,
     MediaExplorer,
     ProjectBay,
     CleanProjectDirectory,
@@ -203,6 +204,7 @@ impl Action {
         Action::RenderProjectSettings,
         Action::QueueRender,
         Action::RegionManager,
+        Action::PerformanceMeter,
         Action::MediaExplorer,
         Action::ProjectBay,
         Action::CleanProjectDirectory,
@@ -351,6 +353,7 @@ impl Action {
             Action::RenderProjectSettings => id(41824),
             Action::QueueRender => id(41823),
             Action::RegionManager => id(40326),
+            Action::PerformanceMeter => id(40240),
             Action::MediaExplorer => id(50124),
             Action::ProjectBay => id(41157),
             Action::CleanProjectDirectory => id(40098),
@@ -491,7 +494,9 @@ impl Action {
             Action::CloseTab => k(CMD, Key::F4),
             Action::NextTab => k(Modifiers::CTRL, Key::Tab),
             Action::PreviousTab => k(Modifiers { shift: true, ..Modifiers::CTRL }, Key::Tab),
-            Action::OpenInNewTab | Action::RegionManager | Action::RegionRenderMatrix => None,
+            Action::OpenInNewTab | Action::RegionManager | Action::RegionRenderMatrix | Action::PerformanceMeter => {
+                None
+            }
             Action::MediaExplorer | Action::ProjectBay | Action::CleanProjectDirectory | Action::ThemeColors => None,
             Action::LoadDemo => None,
             Action::ToggleMixer => k(CMD, Key::M),
@@ -785,6 +790,7 @@ impl Action {
             Action::RenderProjectSettings => app.render(crate::app::RenderKind::ProjectSettings),
             Action::QueueRender => app.queue_render(),
             Action::RegionManager => app.view.regions = Some(crate::ui::regions::RegionsTab::List),
+            Action::PerformanceMeter => app.view.performance = true,
             Action::MediaExplorer => {
                 app.view.explorer = match app.view.explorer.take() {
                     Some(_) => {

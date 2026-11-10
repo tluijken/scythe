@@ -93,6 +93,8 @@ pub struct ViewState {
     pub agents: bool,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
+    /// The performance meter window is open.
+    pub performance: bool,
     /// The media explorer window, while open.
     pub explorer: Option<crate::ui::explorer::ExplorerWindow>,
     /// The project bay window, while open.
@@ -283,6 +285,7 @@ impl ScytheApp {
                 audio_error: None,
                 agents: false,
                 regions: None,
+                performance: false,
                 explorer: None,
                 bay: None,
                 theme_editor: false,

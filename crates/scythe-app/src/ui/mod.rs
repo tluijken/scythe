@@ -19,6 +19,7 @@ mod mixer;
 pub mod modulation;
 pub mod monitor;
 pub mod nam;
+pub mod performance;
 pub mod recording;
 pub mod regions;
 pub mod rig;
@@ -194,6 +195,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     monitor::wizards(app, ui);
     groups::show(app, ui);
     regions::show(app, ui);
+    performance::show(app, ui);
     explorer::show(app, ui);
     bay::show(app, ui);
     theme_editor::show(app, ui);

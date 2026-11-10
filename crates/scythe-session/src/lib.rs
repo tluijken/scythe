@@ -14,6 +14,7 @@ pub mod learn;
 mod live;
 mod media;
 mod midi;
+pub mod perf;
 pub mod render;
 pub mod rig;
 pub mod tabs;
@@ -105,6 +106,7 @@ pub struct Session {
     autosaved_at: Instant,
     /// The highest DSP load of the last window, and when the window started.
     load_window: (f32, Instant),
+    perf: perf::PerfSampler,
     toast: Option<(String, Instant)>,
     gesture: Option<(String, Project)>,
     /// The gesture changes a running effect, whose state reaches the project when it ends.
@@ -203,6 +205,7 @@ impl Session {
             midi_out_error: None,
             autosaved_at: Instant::now(),
             load_window: (0.0, Instant::now()),
+            perf: Default::default(),
             toast: None,
             gesture: None,
             fx_gesture: false,

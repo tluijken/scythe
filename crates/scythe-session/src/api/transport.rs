@@ -108,6 +108,11 @@ pub enum TransportCommand {
     /// The audio device and how it holds up: xruns, DSP load, latency, a lost device.
     #[serde(rename = "transport.health")]
     Health,
+    /// The performance meter (REAPER's): real-time CPU, the longest block, xruns, and per track
+    /// the CPU it takes, its longest block and plugin delay, with each effect's CPU. Updated
+    /// about once a second.
+    #[serde(rename = "transport.performance")]
+    Performance,
     /// Play state, playhead and edit cursor, loop and metronome.
     #[serde(rename = "transport.state")]
     State,
@@ -208,6 +213,7 @@ pub fn execute(session: &mut Session, command: TransportCommand) -> Result<Value
             });
         }
         TransportCommand::Health => return Ok(json(health(session))),
+        TransportCommand::Performance => return Ok(json(session.performance())),
         TransportCommand::State => {}
     }
     Ok(json(snapshot::transport(session)))

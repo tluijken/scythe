@@ -194,6 +194,7 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("40847", "Item: Open item inline editors", W),
     ("41887", "Item: Close item inline editors", W),
     ("40326", "View: Show region/marker manager window", W),
+    ("40240", "View: Show performance meter window", W),
     ("50124", "Media explorer: Show/hide media explorer", W),
     ("41157", "View: Show project bay window", W),
     ("40098", "File: Clean current project directory...", W),

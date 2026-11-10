@@ -136,7 +136,11 @@ pub fn run(session: &mut Session, scope: &Scope, command: Command) -> Result<Val
     let allowed = matches!(
         &command,
         Command::Transport(
-            TransportCommand::Play | TransportCommand::Stop | TransportCommand::State | TransportCommand::Health
+            TransportCommand::Play
+                | TransportCommand::Stop
+                | TransportCommand::State
+                | TransportCommand::Health
+                | TransportCommand::Performance
         ) | Command::Setlist(
             SetlistCommand::Songs
                 | SetlistCommand::List

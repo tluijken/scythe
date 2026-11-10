@@ -342,6 +342,21 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The performance meter (REAPER's): real-time CPU, the longest block, xruns, and per track\nthe CPU it takes, its longest block and plugin delay, with each effect's CPU. Updated\nabout once a second.\n\nControl API command `transport.performance`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "transport_performance",
+    "title": "Transport performance"
+  },
+  {
+    "annotations": {
       "openWorldHint": false,
       "readOnlyHint": true
     },
