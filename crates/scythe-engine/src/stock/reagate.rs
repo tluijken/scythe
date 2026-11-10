@@ -292,6 +292,20 @@ impl Effect for Gate {
         Some(self)
     }
 
+    /// Takes new levels and timings in place; the detector routing and MIDI output have to
+    /// stay as they are.
+    fn update_state(&mut self, chunk: &[u8]) -> bool {
+        let Some(values) = marked_params(chunk) else { return false };
+        let values = Params::new(values, SPECS, &DEFAULTS).values;
+        let fixed = |v: &[f32]| [7, 8, 15, 16, 17, 19, 20].map(|i| v.get(i).copied().unwrap_or(0.0));
+        if values.len() != self.params.values.len() || fixed(&values) != fixed(&self.params.values) {
+            return false;
+        }
+        self.params.values = values;
+        self.configure(false);
+        true
+    }
+
     fn reset(&mut self) {
         self.gain = 0.0;
         self.open = false;

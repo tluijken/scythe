@@ -108,7 +108,9 @@ pub(crate) fn nice_step(top: f64) -> f64 {
 
 pub fn verb(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let Some((envelope, length, file)) = cx.read(|r: &mut ReaVerbCompat| {
-        (r.envelope().0.to_vec(), r.envelope().1, r.file().map(|f| f.display().to_string()))
+        let file = r.file().map(|f| f.display().to_string());
+        let (envelope, length) = r.envelope();
+        (envelope.to_vec(), length, file)
     }) else {
         return;
     };

@@ -423,7 +423,32 @@ impl Effect for ReaEqCompat {
             c.get_mut(o + 16..o + 24)?.copy_from_slice(&b.gain.to_le_bytes());
             c.get_mut(o + 24..o + 32)?.copy_from_slice(&b.bandwidth.to_le_bytes());
         }
+        let count = u32::from_le_bytes(c.get(4..8)?.try_into().ok()?) as usize;
+        let at = 8 + count * BAND_BYTES + 8;
+        if let Some(stored) = c.get_mut(at..at + 8)
+            && Some(f64::from_le_bytes((&*stored).try_into().ok()?))
+                .filter(|g| g.is_finite() && (0.0..=16.0).contains(g))
+                .unwrap_or(1.0)
+                != self.output
+        {
+            stored.copy_from_slice(&self.output.to_le_bytes());
+        }
         Some(c)
+    }
+
+    /// Takes new band settings and output gain in place when the bands keep their types.
+    fn update_state(&mut self, chunk: &[u8]) -> bool {
+        let Some(new) = Self::from_chunk(chunk, self.sample_rate) else { return false };
+        let kinds = |eq: &Self| eq.bands.iter().map(|b| b.kind).collect::<Vec<_>>();
+        if kinds(&new) != kinds(self) || new.offsets.len() != new.bands.len() {
+            return false;
+        }
+        self.bands = new.bands;
+        self.output = new.output;
+        self.chunk = new.chunk;
+        self.offsets = new.offsets;
+        self.redesign();
+        true
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {

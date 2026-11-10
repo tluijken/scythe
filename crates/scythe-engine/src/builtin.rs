@@ -194,12 +194,18 @@ pub fn vst_lines_with(unique_id: u32, chunk: &[u8], trailer: u32) -> Vec<String>
 /// ReaEQ state: version 33, the bands `(type, frequency, gain, bandwidth)`, then the trailer
 /// with unity output gain.
 pub fn eq_state(bands: &[(u32, f64, f64, f64)]) -> Vec<u8> {
+    let bands: Vec<_> = bands.iter().map(|&(kind, freq, gain, bw)| (kind, true, freq, gain, bw)).collect();
+    eq_chunk(&bands, 1.0)
+}
+
+/// ReaEQ state with bands `(type, enabled, frequency, gain, bandwidth)` and a linear output gain.
+pub fn eq_chunk(bands: &[(u32, bool, f64, f64, f64)], output: f64) -> Vec<u8> {
     let mut d = Vec::new();
     d.extend(33u32.to_le_bytes());
     d.extend((bands.len() as u32).to_le_bytes());
-    for &(kind, freq, gain, bw) in bands {
+    for &(kind, enabled, freq, gain, bw) in bands {
         d.extend(kind.to_le_bytes());
-        d.extend(1u32.to_le_bytes());
+        d.extend((enabled as u32).to_le_bytes());
         d.extend(freq.to_le_bytes());
         d.extend(gain.to_le_bytes());
         d.extend(bw.to_le_bytes());
@@ -207,7 +213,7 @@ pub fn eq_state(bands: &[(u32, f64, f64, f64)]) -> Vec<u8> {
     }
     d.extend(1u32.to_le_bytes());
     d.extend(1u32.to_le_bytes());
-    d.extend(1.0f64.to_le_bytes());
+    d.extend(output.to_le_bytes());
     for v in [0u32, 644, 1424, 2] {
         d.extend(v.to_le_bytes());
     }

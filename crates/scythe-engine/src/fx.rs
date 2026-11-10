@@ -312,6 +312,17 @@ pub trait Effect: Send {
         None
     }
 
+    /// The handle that crossfades a convolution slot to another impulse response.
+    fn ir_control(&self) -> Option<Arc<crate::reaverb::IrControl>> {
+        None
+    }
+
+    /// Takes a changed state of the same plugin without starting over, keeping filter
+    /// memories so the change does not click; false when it needs a new instance.
+    fn update_state(&mut self, _chunk: &[u8]) -> bool {
+        false
+    }
+
     /// Hands the effect the probe its editor reads; effects that measure more than their
     /// input and output (gain reduction, a gate's state) keep it and publish while it is
     /// active.
@@ -739,6 +750,8 @@ struct Entry {
     channels: usize,
     /// How a Neural Amp Modeler instance takes a new model or levels while it plays.
     nam: Option<Arc<NamControl>>,
+    /// How a convolution instance takes a new impulse response while it plays.
+    ir: Option<Arc<crate::reaverb::IrControl>>,
 }
 
 /// Owns every effect instance across graph rebuilds.
@@ -853,16 +866,20 @@ impl FxRegistry {
         let state = plugin_state(slot);
         let stale =
             self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
-        if stale && !self.update_nam(&key, &state) {
+        if stale && !self.update_nam(&key, &state) && !self.update_stock(&key, &state) {
             let (instance, status) = match self.create(slot, channels) {
                 Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
                 Err(reason) => (None, FxStatus::Unavailable(reason)),
             };
             let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
-            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam });
+            let ir = instance.as_ref().and_then(|i| i.with(|e| e.ir_control()).flatten());
+            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam, ir });
         }
         let entry = &self.entries[&key];
         if let Some(control) = &entry.nam {
+            control.collect();
+        }
+        if let Some(control) = &entry.ir {
             control.collect();
         }
         entry.instance.clone()
@@ -1192,6 +1209,58 @@ impl FxRegistry {
         entry.state = state.to_vec();
         entry.status = FxStatus::Native(NAM_RUNNING);
         true
+    }
+
+    /// Hands a changed state of a running stock effect to it instead of building a new one:
+    /// in place when the effect can take it (gains, filter settings), or for a convolution
+    /// slot by crossfading to the new impulse response. False when the slot changed in
+    /// another way.
+    fn update_stock(&mut self, key: &(Owner, String), state: &[Node]) -> bool {
+        let Some(entry) = self.entries.get(key) else { return false };
+        let Some(inst) = entry.instance.clone() else { return false };
+        let (Some(Node::Chunk(old)), Some(Node::Chunk(new))) = (entry.state.first(), state.first()) else {
+            return false;
+        };
+        if old.name() != "VST" || new.name() != "VST" || old.args() != new.args() {
+            return false;
+        }
+        if !matches!(&entry.status, FxStatus::Native(_))
+            || new.args().first().and_then(|d| crate::stock::find(d)).is_none()
+        {
+            return false;
+        }
+        let lines = |c: &Chunk| -> Vec<String> {
+            c.children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Line(l) => Some(l.trim().to_owned()),
+                    Node::Chunk(_) => None,
+                })
+                .collect()
+        };
+        let (Some(before), Some(after)) = (ReaperVstState::decode(&lines(old)), ReaperVstState::decode(&lines(new)))
+        else {
+            return false;
+        };
+        if (&before.inputs, &before.outputs, before.words) != (&after.inputs, &after.outputs, after.words) {
+            return false;
+        }
+        let updated = inst.with(|e| e.update_state(&after.chunk)).unwrap_or(false)
+            || entry.ir.as_ref().is_some_and(|control| {
+                let Some(settings) = crate::reaverb::ReaVerbSettings::parse(&after.chunk) else { return false };
+                match crate::reaverb::IrSet::new(settings, self.sample_rate, self.project_dir.as_deref()) {
+                    Ok(mut set) => {
+                        set.set_chunk(after.chunk.clone());
+                        control.load(set);
+                        true
+                    }
+                    Err(_) => false,
+                }
+            });
+        if updated {
+            self.entries.get_mut(key).unwrap().state = state.to_vec();
+        }
+        updated
     }
 
     fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {

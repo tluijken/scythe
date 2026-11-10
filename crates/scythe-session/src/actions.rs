@@ -360,6 +360,12 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("_SCYTHE_NAM_SNAPSHOT_B", "NAM: Switch to snapshot B", W),
     ("_SCYTHE_NAM_SNAPSHOT_C", "NAM: Switch to snapshot C", W),
     ("_SCYTHE_NAM_SNAPSHOT_D", "NAM: Switch to snapshot D", W),
+    ("_SCYTHE_RIG_SNAPSHOT_A", "Rig: Switch the selected track's rig to snapshot A", S),
+    ("_SCYTHE_RIG_SNAPSHOT_B", "Rig: Switch the selected track's rig to snapshot B", S),
+    ("_SCYTHE_RIG_SNAPSHOT_C", "Rig: Switch the selected track's rig to snapshot C", S),
+    ("_SCYTHE_RIG_SNAPSHOT_D", "Rig: Switch the selected track's rig to snapshot D", S),
+    ("_SCYTHE_RIG_PRESET_NEXT", "Rig: Load the next rig preset on the selected track", S),
+    ("_SCYTHE_RIG_PRESET_PREVIOUS", "Rig: Load the previous rig preset on the selected track", S),
     ("65535", "No-op (no action)", S),
 ];
 
@@ -637,6 +643,12 @@ pub(crate) fn run_here(session: &mut Session, c: &str) -> Option<Result<(), ApiE
             exec(session, cmd(c))
         }
         "_SCYTHE_SETLIST_NEXT" => exec(session, cmd("setlist.next")),
+        "_SCYTHE_RIG_SNAPSHOT_A" => exec(session, json!({ "cmd": "rig.snapshot", "snapshot": "A" })),
+        "_SCYTHE_RIG_SNAPSHOT_B" => exec(session, json!({ "cmd": "rig.snapshot", "snapshot": "B" })),
+        "_SCYTHE_RIG_SNAPSHOT_C" => exec(session, json!({ "cmd": "rig.snapshot", "snapshot": "C" })),
+        "_SCYTHE_RIG_SNAPSHOT_D" => exec(session, json!({ "cmd": "rig.snapshot", "snapshot": "D" })),
+        "_SCYTHE_RIG_PRESET_NEXT" => exec(session, json!({ "cmd": "rig.load_preset", "name": "next" })),
+        "_SCYTHE_RIG_PRESET_PREVIOUS" => exec(session, json!({ "cmd": "rig.load_preset", "name": "previous" })),
         "_SCYTHE_SETLIST_PREVIOUS" => exec(session, cmd("setlist.previous")),
         "_SCYTHE_SETLIST_RESTART" => {
             if session.is_playing()

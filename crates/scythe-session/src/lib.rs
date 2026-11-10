@@ -14,6 +14,7 @@ mod live;
 mod media;
 mod midi;
 pub mod render;
+pub mod rig;
 pub mod tabs;
 mod theme;
 mod transport;

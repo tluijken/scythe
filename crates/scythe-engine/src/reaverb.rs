@@ -13,6 +13,7 @@
 //! modelled; states with them are refused, so REAPER's binary runs them when installed.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::convolve::Convolver;
 use crate::fx::{Effect, ProcessContext};
@@ -117,21 +118,26 @@ impl Generator {
     }
 }
 
-pub struct ReaVerbCompat {
+/// An impulse response ready to play: the settings it was built from, a convolver per channel
+/// and its envelope for the editor.
+pub struct IrSet {
     settings: ReaVerbSettings,
-    /// The stored chunk, patched with edited gains on save.
-    pub chunk: Vec<u8>,
     left: Option<Convolver>,
     right: Option<Convolver>,
     /// The impulse response's peak level in dB over [`ENVELOPE_POINTS`] stretches, and its length.
     envelope: Vec<f32>,
     length: f64,
+    /// The stored chunk, patched with edited gains on save.
+    chunk: Vec<u8>,
 }
 
 /// Stretches the impulse response's envelope is kept in, for the editor.
 pub const ENVELOPE_POINTS: usize = 200;
 
-impl ReaVerbCompat {
+/// How long the old and new impulse responses overlap when one replaces the other.
+const CROSSFADE_SECONDS: f64 = 0.02;
+
+impl IrSet {
     pub fn new(settings: ReaVerbSettings, sample_rate: u32, project_dir: Option<&Path>) -> Result<Self, String> {
         if !settings.unsupported.is_empty() {
             return Err(format!("ReaVerb modules not supported yet: {}", settings.unsupported.join(", ")));
@@ -171,19 +177,129 @@ impl ReaVerbCompat {
             Some([l, r]) => (Some(Convolver::new(&l)), Some(Convolver::new(&r))),
             None => (None, None),
         };
-        Ok(Self { settings, left, right, chunk: Vec::new(), envelope, length })
+        Ok(Self { settings, left, right, envelope, length, chunk: Vec::new() })
+    }
+
+    /// The same impulse response (file and generators), whatever the gains.
+    pub fn set_chunk(&mut self, chunk: Vec<u8>) {
+        self.chunk = chunk;
+    }
+
+    fn same_response(&self, other: &ReaVerbSettings) -> bool {
+        self.settings.ir == other.ir && self.settings.generators == other.generators
+    }
+
+    fn run(&mut self, x: f32, channel: usize) -> f32 {
+        let (dry, wet) = (self.settings.dry, if self.settings.wet_muted { 0.0 } else { self.settings.wet });
+        let conv = if channel == 0 { &mut self.left } else { &mut self.right };
+        match conv {
+            Some(c) => x * dry + c.process_sample(x) * wet,
+            None => x * dry,
+        }
+    }
+
+    fn reset(&mut self) {
+        for c in [&mut self.left, &mut self.right].into_iter().flatten() {
+            c.reset();
+        }
     }
 }
 
+/// Hands a running ReaVerb a new impulse response from another thread, without its lock; the
+/// two crossfade. Sets the audio thread is done with wait here to be dropped off it.
+#[derive(Default)]
+pub struct IrControl {
+    incoming: Mutex<Option<Box<IrSet>>>,
+    #[allow(clippy::vec_box)]
+    retired: Mutex<Vec<Box<IrSet>>>,
+}
+
+const RETIRED_CAPACITY: usize = 4;
+
+impl IrControl {
+    fn new() -> Self {
+        Self { incoming: Mutex::new(None), retired: Mutex::new(Vec::with_capacity(RETIRED_CAPACITY)) }
+    }
+
+    /// Switches to `set`, crossfading from the response playing now.
+    pub fn load(&self, set: IrSet) {
+        let replaced = self.incoming.lock().unwrap().replace(Box::new(set));
+        drop(replaced);
+        self.collect();
+    }
+
+    /// Drops the sets the audio thread retired.
+    pub fn collect(&self) {
+        let old: Vec<_> = self.retired.lock().unwrap().drain(..).collect();
+        drop(old);
+    }
+}
+
+pub struct ReaVerbCompat {
+    current: Box<IrSet>,
+    /// The response faded out, and how far the fade has come.
+    fading: Option<(Box<IrSet>, usize)>,
+    fade_len: usize,
+    control: Arc<IrControl>,
+    /// A retired set the control could not take yet.
+    limbo: Option<Box<IrSet>>,
+}
+
 impl ReaVerbCompat {
+    pub fn new(settings: ReaVerbSettings, sample_rate: u32, project_dir: Option<&Path>) -> Result<Self, String> {
+        let set = IrSet::new(settings, sample_rate, project_dir)?;
+        Ok(Self {
+            current: Box::new(set),
+            fading: None,
+            fade_len: ((sample_rate as f64 * CROSSFADE_SECONDS).round() as usize).max(1),
+            control: Arc::new(IrControl::new()),
+            limbo: None,
+        })
+    }
+
     /// The impulse response's envelope (peak dB per stretch) and its length in seconds.
-    pub fn envelope(&self) -> (&[f32], f64) {
-        (&self.envelope, self.length)
+    pub fn envelope(&mut self) -> (&[f32], f64) {
+        self.receive();
+        (&self.current.envelope, self.current.length)
     }
 
     /// The impulse response's file, if it loads one.
-    pub fn file(&self) -> Option<&std::path::Path> {
-        self.settings.ir.as_deref()
+    pub fn file(&mut self) -> Option<&std::path::Path> {
+        self.receive();
+        self.current.settings.ir.as_deref()
+    }
+
+    /// The chunk the settings were read from, written back with edited gains on save.
+    pub fn set_chunk(&mut self, chunk: Vec<u8>) {
+        self.current.chunk = chunk;
+    }
+
+    pub fn control(&self) -> Arc<IrControl> {
+        self.control.clone()
+    }
+
+    fn receive(&mut self) {
+        let incoming = match self.control.incoming.try_lock() {
+            Ok(mut slot) => slot.take(),
+            Err(_) => None,
+        };
+        if let Some(set) = incoming {
+            let old = std::mem::replace(&mut self.current, set);
+            if let Some((stale, _)) = self.fading.replace((old, 0)) {
+                self.retire(stale);
+            }
+        }
+        if let Some(set) = self.limbo.take() {
+            self.retire(set);
+        }
+    }
+
+    fn retire(&mut self, set: Box<IrSet>) {
+        match self.control.retired.try_lock() {
+            Ok(mut list) if list.len() < list.capacity() => list.push(set),
+            _ if self.limbo.is_none() => self.limbo = Some(set),
+            _ => drop(set),
+        }
     }
 }
 
@@ -195,8 +311,8 @@ impl Effect for ReaVerbCompat {
 
     fn param(&mut self, id: u32) -> Option<(f64, String)> {
         let g = match id {
-            0 => self.settings.wet,
-            1 => self.settings.dry,
+            0 => self.current.settings.wet,
+            1 => self.current.settings.dry,
             _ => return None,
         };
         Some(crate::stock::db_value(g as f64))
@@ -205,8 +321,8 @@ impl Effect for ReaVerbCompat {
     fn set_param(&mut self, id: u32, value: f64) {
         let g = if value <= -59.9 { 0.0 } else { 10f32.powf(value as f32 / 20.0) };
         match id {
-            0 => self.settings.wet = g,
-            1 => self.settings.dry = g,
+            0 => self.current.settings.wet = g,
+            1 => self.current.settings.dry = g,
             _ => {}
         }
     }
@@ -224,39 +340,72 @@ impl Effect for ReaVerbCompat {
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
-        let mut c = self.chunk.clone();
-        c.get_mut(4..8)?.copy_from_slice(&self.settings.wet.to_le_bytes());
-        c.get_mut(8..12)?.copy_from_slice(&self.settings.dry.to_le_bytes());
+        self.receive();
+        let mut c = self.current.chunk.clone();
+        c.get_mut(4..8)?.copy_from_slice(&self.current.settings.wet.to_le_bytes());
+        c.get_mut(8..12)?.copy_from_slice(&self.current.settings.dry.to_le_bytes());
         Some(c)
     }
 
+    /// Takes new gains in place when the impulse response stays the same.
+    fn update_state(&mut self, chunk: &[u8]) -> bool {
+        let Some(settings) = ReaVerbSettings::parse(chunk) else { return false };
+        if !self.current.same_response(&settings) {
+            return false;
+        }
+        self.current.settings = settings;
+        self.current.chunk = chunk.to_vec();
+        true
+    }
+
+    fn ir_control(&self) -> Option<Arc<IrControl>> {
+        Some(self.control.clone())
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
-        let (dry, wet) = (self.settings.dry, if self.settings.wet_muted { 0.0 } else { self.settings.wet });
-        for (ch, buf) in [(&mut self.left, left), (&mut self.right, right)] {
-            match ch {
-                Some(conv) => {
-                    for s in buf.iter_mut() {
-                        let w = conv.process_sample(*s);
-                        *s = *s * dry + w * wet;
+        self.receive();
+        let len = self.fade_len as f32;
+        let frames = left.len();
+        for (ch, buf) in [left, right].into_iter().enumerate() {
+            let at = self.fading.as_ref().map_or(0, |(_, at)| *at);
+            for (k, s) in buf.iter_mut().enumerate() {
+                let x = *s;
+                let new = self.current.run(x, ch);
+                *s = match &mut self.fading {
+                    Some((old, _)) => {
+                        let old = old.run(x, ch);
+                        let t = ((at + k) as f32 / len).min(1.0);
+                        let w = 0.5 - 0.5 * (std::f32::consts::PI * t).cos();
+                        old + (new - old) * w
                     }
-                }
-                None => buf.iter_mut().for_each(|s| *s *= dry),
+                    None => new,
+                };
+            }
+        }
+        let n = frames;
+        if let Some((_, at)) = &mut self.fading {
+            *at += n;
+            if *at >= self.fade_len
+                && let Some((old, _)) = self.fading.take()
+            {
+                self.retire(old);
             }
         }
     }
 
     fn set_named_param(&mut self, name: &str, value: f64) -> bool {
         match name {
-            "_Wet" => self.settings.wet = value as f32,
-            "_Dry" => self.settings.dry = value as f32,
+            "_Wet" => self.current.settings.wet = value as f32,
+            "_Dry" => self.current.settings.dry = value as f32,
             _ => return false,
         }
         true
     }
 
     fn reset(&mut self) {
-        for c in [&mut self.left, &mut self.right].into_iter().flatten() {
-            c.reset();
+        self.current.reset();
+        if let Some((old, _)) = self.fading.take() {
+            self.retire(old);
         }
     }
 }

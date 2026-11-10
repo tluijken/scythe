@@ -147,7 +147,7 @@ pub static PLUGINS: &[StockPlugin] = &[
             use crate::reaverb::{ReaVerbCompat, ReaVerbSettings};
             let settings = ReaVerbSettings::parse(chunk).ok_or("unreadable ReaVerb settings")?;
             let mut verb = ReaVerbCompat::new(settings, cx.sample_rate, cx.project_dir)?;
-            verb.chunk = chunk.to_vec();
+            verb.set_chunk(chunk.to_vec());
             Ok(Box::new(verb))
         }
     ),

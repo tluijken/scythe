@@ -36,6 +36,7 @@ pub mod realtime;
 pub mod reaverb;
 pub mod record;
 pub mod render;
+pub mod rig;
 pub mod sampler;
 pub mod scan_cache;
 pub mod shifters;

@@ -24,6 +24,7 @@ pub mod modulation;
 pub mod project;
 pub mod recording;
 pub mod render;
+pub mod rig;
 pub mod script;
 pub mod sends;
 pub mod setlist;
@@ -77,6 +78,7 @@ pub enum Command {
     Events(feed::EventsCommand),
     Script(script::ScriptCommand),
     Editing(editing::EditingCommand),
+    Rig(rig::RigCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -140,6 +142,7 @@ impl<'de> Deserialize<'de> for Command {
             "analysis" => serde_json::from_value(value).map(Command::Analysis),
             "events" => serde_json::from_value(value).map(Command::Events),
             "script" => serde_json::from_value(value).map(Command::Script),
+            "rig" => serde_json::from_value(value).map(Command::Rig),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -177,6 +180,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Events(c) => feed::execute(session, c),
         Command::Script(c) => script::execute(session, c),
         Command::Editing(c) => editing::execute(session, c),
+        Command::Rig(c) => rig::execute(session, c),
     }
 }
 
