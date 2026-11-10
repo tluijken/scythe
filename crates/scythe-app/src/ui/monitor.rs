@@ -147,14 +147,26 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     }
     scroll = scroll.clamp(0.0, max_scroll);
     ui.data_mut(|d| d.insert_temp(scroll_id, scroll));
-    let clip = painter.with_clip_rect(area.expand(2.0));
+    let shown = area.expand(2.0);
+    let clip = painter.with_clip_rect(shown);
+    // The cards' own buttons and knobs draw through a child clipped to the page too, so a card
+    // scrolled partly out of view does not paint past the panel.
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(shown));
+    inner.set_clip_rect(shown.intersect(ui.clip_rect()));
     for (i, mix) in mixes.into_iter().enumerate() {
         let x = area.left() + i as f32 * (CARD_W + CARD_GAP) - scroll;
         let r = Rect::from_min_size(pos2(x, area.top()), vec2(CARD_W, area.height()));
         if r.right() < area.left() || r.left() > area.right() {
             continue;
         }
-        card(app, ui, &clip, r, area, mix);
+        card(app, &mut inner, &clip, r, area, mix);
+    }
+    if max_scroll > 0.0 {
+        let track = Rect::from_min_max(pos2(area.left(), area.bottom() + 3.0), pos2(area.right(), area.bottom() + 6.0));
+        painter.rect_filled(track, CornerRadius::same(255), BG);
+        let w = track.width() * area.width() / content_w;
+        let thumb = Rect::from_min_size(pos2(track.left() + (track.width() - w) * scroll / max_scroll, track.top()), vec2(w, 3.0));
+        painter.rect_filled(thumb, CornerRadius::same(255), RAISED_HI);
     }
 }
 
