@@ -12,7 +12,7 @@ use crate::theme::{self, ACCENT, PANEL, PINK, RAISED, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets;
 use crate::ui::window::{WindowKind, scythe_window};
 
-/// The light's slot in the top bar, left of the device status.
+/// The light's slot in the top bar.
 pub const DOT_W: f32 = 32.0;
 /// One pulse of the busy light.
 const PULSE: f32 = 1.6;
@@ -24,6 +24,21 @@ fn state_word(light: Light) -> &'static str {
         Light::Busy => "working",
         Light::Error => "error",
     }
+}
+
+/// The light in the title block: after the project's name when there is room before the
+/// transport (`limit`), else as a badge on the logo. `title_w` is the block's width.
+pub fn dot_beside(app: &mut ScytheApp, ui: &mut Ui, logo: Rect, title_w: f32, limit: f32) {
+    let beside = Rect::from_center_size(
+        egui::pos2(logo.left() + title_w + 6.0 + DOT_W / 2.0, logo.center().y),
+        vec2(DOT_W, DOT_W),
+    );
+    let rect = if beside.right() <= limit - 4.0 {
+        beside
+    } else {
+        Rect::from_center_size(logo.right_bottom() - vec2(3.0, 3.0), vec2(16.0, 16.0))
+    };
+    dot(app, ui, rect);
 }
 
 /// Draws the light in `rect` when an agent is connected; answers whether it took the room.
@@ -162,7 +177,7 @@ fn controls(app: &mut ScytheApp, ui: &mut Ui) {
             app.notify(if paused { "Agents resumed" } else { "Agents paused: their changes are refused" });
         }
         let any = !app.agents.clients().is_empty();
-        if ui.add_enabled(any, egui::Button::new("Disconnect")).on_hover_text("Disconnect every agent").clicked() {
+        if ui.add_enabled(any, egui::Button::new("Disconnect all")).on_hover_text("Disconnect every agent").clicked() {
             app.session.agents.disconnect(None);
             app.notify("Agents disconnected");
         }

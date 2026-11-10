@@ -499,3 +499,28 @@ a.btn { text-decoration: none; }
   .setlist-editor { grid-template-columns: minmax(0, 1fr); }
   .steps li { white-space: normal; }
 }
+
+/* Agents (MCP) */
+.agent-dot { width: 32px; height: 32px; flex: none; border-radius: 999px; background: var(--panel); display: inline-flex; align-items: center; justify-content: center; position: relative; }
+.agent-dot:hover { background: var(--raised); }
+.agent-dot span { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); opacity: 0.55; }
+.agent-dot.busy span { background: var(--accent); opacity: 1; animation: agent-pulse 1.6s ease-in-out infinite; }
+.agent-dot.error span { background: var(--pink); opacity: 1; }
+.agent-dot.paused::after { content: ""; position: absolute; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--text-dim); }
+@keyframes agent-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(253, 151, 31, 0.35); opacity: 0.7; } 50% { box-shadow: 0 0 0 4px rgba(253, 151, 31, 0); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .agent-dot.busy span { animation: none; } }
+.agent-client { display: flex; flex-direction: column; gap: 4px; }
+.agent-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.agent-head .btn { margin-left: auto; }
+.agent-status { font-style: italic; color: var(--text-mid); }
+.agent-paused { color: var(--yellow); }
+.agent-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.agent-title { font-size: 13px; color: var(--text-mid); }
+.agent-calls { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.agent-call { display: grid; grid-template-columns: 48px 12px 1fr; align-items: baseline; gap: 4px; font-size: 13px; }
+.agent-call .when { color: var(--text-dim); font-size: 11px; }
+.agent-call .mark { width: 7px; height: 7px; border-radius: 50%; background: var(--green); opacity: 0.8; align-self: center; }
+.agent-call.running .mark { background: var(--accent); }
+.agent-call.failed .mark { background: var(--pink); }
+.agent-call .error { color: var(--pink); font-size: 12px; }
+.agent-call .dim { font-size: 12px; }

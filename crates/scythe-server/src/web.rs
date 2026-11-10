@@ -46,6 +46,7 @@ pub const FILES: &[(&str, &[u8])] = web![
     "js/waveform.js",
     "js/tempo.js",
     "js/access.js",
+    "js/agents.js",
     "js/mixes.js",
     "js/setlist-editor.js",
     "js/files.js",

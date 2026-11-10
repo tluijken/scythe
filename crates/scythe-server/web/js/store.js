@@ -2,6 +2,7 @@
 // server, with hooks that re-render only what listens to each.
 
 import { useEffect, useRef, useState } from "../vendor/preact-htm.js";
+import { agentMarks } from "./domains.js";
 import { meterFraction } from "./format.js";
 
 // How long continuous controls must rest before a changed project is fetched again.
@@ -16,7 +17,9 @@ export class Store {
     this.status = client.status;
     this.meters = { master: [0, 0], tracks: new Map(), mixes: new Map() };
     this.access = client.access;
-    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set(), health: new Set() };
+    this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set(), health: new Set(), agents: new Set() };
+    this.agents = null;
+    this.agentMarks = {};
     this.fetching = false;
     this.wanted = 0;
     this.deferred = null;
@@ -40,11 +43,19 @@ export class Store {
       if (!this.snapshot || e.revision > this.snapshot.revision) this.refresh(e.revision);
     });
     client.on("event:notice", (e) => this.notify(e.message));
+    client.on("event:agent_activity", (e) => this.setAgents(e));
+    // Only the admin hears of agents; anyone else is refused and shows no light.
+    client.on("status", (s) => s === "open" && client.send({ cmd: "agents.activity", calls: 30 }).then((a) => this.setAgents(a), () => {}));
   }
 
   set(key, value) {
     this[key] = value;
     for (const fn of this.listeners[key]) fn(value);
+  }
+
+  setAgents(activity) {
+    this.agentMarks = agentMarks(this.agentMarks, activity, Date.now());
+    this.set("agents", activity);
   }
 
   on(key, fn) {

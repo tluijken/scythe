@@ -254,6 +254,7 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         widgets::paint_logo(ui, logo);
         painter.text(pos2(logo.right() + 12.0, cy - 9.0), Align2::LEFT_CENTER, &title, theme::semibold(15.0), TEXT);
         painter.text(pos2(logo.right() + 12.0, cy + 10.0), Align2::LEFT_CENTER, &sub, theme::regular(12.0), TEXT_DIM);
+        agents::dot_beside(app, ui, logo, title_w, group.left());
     }
     painter.rect_filled(group, CornerRadius::same(255), PANEL);
     let mut x = group.left() + 6.0;
@@ -353,10 +354,6 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         if resp.on_hover_text(format!("{tip}\nClick for the audio device settings")).clicked() {
             audio_device::toggle(app);
         }
-    }
-    let dot = Rect::from_min_size(status_rect.left_top() - vec2(agents::DOT_W + 6.0, 0.0), vec2(agents::DOT_W, 32.0));
-    if dot.left() > group.right() + GAP {
-        agents::dot(app, ui, dot);
     }
     if search.left() >= group.right() + GAP - 0.5 {
         let resp = ui.allocate_rect(search, Sense::click());

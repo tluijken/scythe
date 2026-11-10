@@ -269,3 +269,38 @@ export function moveCommand(tracks, moving, drop) {
   const index = rest.slice(from, at).filter(({ t }) => t.level === drop.level).length;
   return { cmd: "track.move", track: tracks[moving[0]].id, parent, index };
 }
+
+// How long a finished agent call keeps the light lit, and a failed one shows.
+export const AGENT_ACTIVE_MS = 2000;
+export const AGENT_ERROR_MS = 3000;
+
+// When the light's spells end, from an `agent_activity` event arriving at `now`: busy while a
+// call runs and a little after, red a little after a call failed. `marks` carries the last
+// answer on, so a failure already seen does not light it again.
+export function agentMarks(marks, activity, now) {
+  const next = { ...marks };
+  if (activity?.busy) next.busyUntil = now + AGENT_ACTIVE_MS;
+  const last = activity?.calls?.at(-1);
+  if (last?.ok === false && last.id !== marks.failed) {
+    next.failed = last.id;
+    next.errorUntil = now + AGENT_ERROR_MS;
+  }
+  return next;
+}
+
+// `off` (no agent), `idle`, `busy` or `error`.
+export function agentLight(activity, marks, now) {
+  if (!activity?.clients?.length) return "off";
+  if ((marks?.errorUntil ?? 0) > now) return "error";
+  if (activity.clients.some((c) => c.running > 0) || (marks?.busyUntil ?? 0) > now) return "busy";
+  return "idle";
+}
+
+// "now", "12 s", "4 min", "2 h": how long before `now` the time `ms` was.
+export function agoText(ms, now) {
+  const s = Math.floor(Math.max(0, now - ms) / 1000);
+  if (s < 3) return "now";
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  return `${Math.floor(s / 3600)} h`;
+}

@@ -2,6 +2,7 @@
 
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
 import { AccessDialog } from "./access.js";
+import { AgentDot, AgentsDialog } from "./agents.js";
 import { Arrange } from "./arrange.js";
 import { countInLabel, detector, healthLine } from "./domains.js";
 import { FileDialog } from "./files.js";
@@ -86,6 +87,7 @@ function TopBar({ store, snap, status, domains, onFile, onDialog }) {
       ${domains.mix && html`<${IconButton} icon="headphones" title="Monitor mixes" onClick=${() => onDialog("mixes")} />`}
       ${domains.setlist && html`<${IconButton} icon="list" title="Setlists" onClick=${() => onDialog("setlists")} />`}
       <${IconButton} icon="qr" title="Access links for phones and the stage" onClick=${() => onDialog("access")} />
+      <${AgentDot} store=${store} onOpen=${() => onDialog("agents")} />
       <${HealthPill} store=${store} />
       <${StatusPill} status=${status} />
     </div>
@@ -163,6 +165,7 @@ export function Editor({ client, store }) {
     ${dialog === "mixes" && html`<${MixManager} store=${store} snap=${snap} onClose=${() => setDialog(null)} />`}
     ${dialog === "setlists" && html`<${SetlistManager} store=${store} onClose=${() => setDialog(null)} />`}
     ${dialog === "access" && html`<${AccessDialog} store=${store} snap=${snap} onClose=${() => setDialog(null)} />`}
+    ${dialog === "agents" && html`<${AgentsDialog} store=${store} onClose=${() => setDialog(null)} />`}
     <${OfflineVeil} status=${status} />
   </div>`;
 }

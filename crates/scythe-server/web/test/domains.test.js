@@ -1,6 +1,6 @@
 import { equal, test } from "./harness.js";
 import { ApiError } from "../js/api.js";
-import { countInLabel, detector, healthLine, normalizeMix, normalizeMixes, normalizeSetlists, normalizeStatus, pickMix, songProgress } from "../js/domains.js";
+import { AGENT_ACTIVE_MS, agentLight, agentMarks, agoText, countInLabel, detector, healthLine, normalizeMix, normalizeMixes, normalizeSetlists, normalizeStatus, pickMix, songProgress } from "../js/domains.js";
 
 test("a domain the server does not know is detected once", async () => {
   let calls = 0;
@@ -75,4 +75,24 @@ test("a running count-in and the health line read for the stage", () => {
   equal([lost.text, lost.warn, lost.title], ["44.1k · 512 · CPU 0% · 3 xruns · no audio device", true, "USB was disconnected"]);
   const status = normalizeStatus({ setlist: 0, playing: false, current: null, next: null, auto_advance: false, count_in: true });
   equal(status.countIn, true);
+});
+
+test("the agent light follows the activity and fades", () => {
+  const client = { id: "a", name: "Claude Code", running: 0 };
+  equal(agentLight(null, {}, 0), "off");
+  equal(agentLight({ clients: [] }, {}, 0), "off");
+  const idle = { clients: [client], calls: [], busy: false };
+  equal(agentLight(idle, {}, 0), "idle");
+  const done = { clients: [client], calls: [{ id: 1, ok: true }], busy: true };
+  let marks = agentMarks({}, done, 1000);
+  equal(agentLight(done, marks, 1500), "busy");
+  equal(agentLight(done, marks, 1000 + AGENT_ACTIVE_MS + 1), "idle");
+  equal(agentLight({ ...idle, clients: [{ ...client, running: 1 }] }, {}, 0), "busy");
+  const failed = { clients: [client], calls: [{ id: 2, ok: false }], busy: true };
+  marks = agentMarks(marks, failed, 5000);
+  equal(agentLight(failed, marks, 5100), "error");
+  marks = agentMarks(marks, failed, 9000);
+  equal(agentLight(failed, marks, 9100), "busy", "a failure seen before does not light it again");
+  equal(agoText(1000, 2000), "now");
+  equal(agoText(0, 75_000), "1 min");
 });

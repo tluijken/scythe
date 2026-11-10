@@ -2,6 +2,7 @@
 //! and roles AccessKit sees, on a silent engine. Built with `--features itest` only (see
 //! docs/testing.md), so `cargo test` stays fast.
 
+mod agents;
 mod corpus;
 mod flows;
 mod nam;

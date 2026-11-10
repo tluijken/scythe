@@ -179,3 +179,33 @@ fn http_on_the_server_with_its_token() {
     let mix = s.ok(json!({"cmd": "mix.get", "mix": "MON Keys player"}));
     assert_eq!(mix["more_me"], 0.0, "undo over MCP undoes the last step: {mix}");
 }
+
+#[test]
+fn a_stdio_bridge_shows_as_an_agent() {
+    let dir = test_dir("mcp_stdio_agent");
+    let project = live_fixture(&dir);
+    let s = Scythe::server(&dir, Some(&project));
+    let url = format!("http://{}", s.addr);
+    let mut mcp = Mcp::start(&dir, &["--url", &url, "--token", ADMIN]);
+    mcp.initialize();
+    let (error, text) = mcp.call("set_status", json!({"text": "Setting up the drum mix"}));
+    assert!(!error, "{text}");
+    let (error, text) = mcp.call("track_volume", json!({"track": "Drums", "db": -2}));
+    assert!(!error, "{text}");
+
+    let activity = s.ok(json!({"cmd": "agents.activity"}));
+    let agent = &activity["clients"][0];
+    assert_eq!((agent["name"].as_str(), agent["transport"].as_str()), (Some("itest"), Some("stdio")), "{activity}");
+    assert_eq!(activity["status"], "Setting up the drum mix");
+    assert_eq!(activity["calls"][0]["summary"], "Set Drums volume to -2 dB");
+    assert_eq!(activity["undo"]["agent"], "itest");
+    let health = scythe_itest::http(s.addr, "GET", "/api/health", None, None).1;
+    assert_eq!(health["clients"], 0, "a bridge is no web client: {health}");
+
+    s.ok(json!({"cmd": "agents.pause"}));
+    let (error, text) = mcp.call("track_mute", json!({"track": "Drums", "muted": true}));
+    assert!(error && text.contains("paused"), "{text}");
+    s.ok(json!({"cmd": "agents.pause", "paused": false}));
+    let (error, text) = mcp.call("track_mute", json!({"track": "Drums", "muted": true}));
+    assert!(!error, "{text}");
+}
