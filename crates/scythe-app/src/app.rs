@@ -87,6 +87,8 @@ pub struct ViewState {
     /// Why the audio device did not open at start, until dismissed (REAPER's "Error opening
     /// devices" window).
     pub audio_error: Option<String>,
+    /// The agents window (MCP clients and their activity) is open.
+    pub agents: bool,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
     /// The media explorer window, while open.
@@ -276,6 +278,7 @@ impl ScytheApp {
                 midi_devices_open: false,
                 audio_device: None,
                 audio_error: None,
+                agents: false,
                 regions: None,
                 explorer: None,
                 bay: None,

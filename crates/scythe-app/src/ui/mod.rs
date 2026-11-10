@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod agents;
 mod arrange;
 pub mod audio_device;
 pub mod bay;
@@ -188,6 +189,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     modulation::show(app, ui);
     midi_devices::show(app, ui);
     audio_device::show(app, ui);
+    agents::show(app, ui);
     monitor::wizards(app, ui);
     groups::show(app, ui);
     regions::show(app, ui);
@@ -351,6 +353,10 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         if resp.on_hover_text(format!("{tip}\nClick for the audio device settings")).clicked() {
             audio_device::toggle(app);
         }
+    }
+    let dot = Rect::from_min_size(status_rect.left_top() - vec2(agents::DOT_W + 6.0, 0.0), vec2(agents::DOT_W, 32.0));
+    if dot.left() > group.right() + GAP {
+        agents::dot(app, ui, dot);
     }
     if search.left() >= group.right() + GAP - 0.5 {
         let resp = ui.allocate_rect(search, Sense::click());
