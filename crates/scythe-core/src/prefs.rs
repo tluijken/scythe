@@ -29,12 +29,199 @@ pub struct Preferences {
     /// `midicctouchtimeout`: touch-replace recording stops replacing a controller this many
     /// milliseconds after its last message. `None` until set: REAPER 7.73's 1000.
     pub midi_cc_touch_timeout: Option<u32>,
+    /// The audio device page (Preferences > Audio > Device) under REAPER's Linux keys.
+    pub audio: AudioDevicePrefs,
+    /// `useinnc`: bit 1 names inputs by their aliases, bit 2 outputs.
+    pub channel_aliasing: u32,
+    /// `allstereopairs`: stereo pairs start on every channel (Input 2 / Input 3), not only
+    /// odd ones. `None` until set: REAPER's default, on.
+    pub all_stereo_pairs: Option<bool>,
 }
 
 impl Preferences {
     /// The touch-replace controller timeout in seconds.
     pub fn cc_touch_timeout(&self) -> f64 {
         self.midi_cc_touch_timeout.unwrap_or(1000) as f64 / 1000.0
+    }
+}
+
+/// The audio system REAPER on Linux opens (`linux_audio_mode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioSystem {
+    Jack,
+    Alsa,
+    Dummy,
+    PulseAudio,
+}
+
+impl AudioSystem {
+    pub const ALL: [AudioSystem; 4] = [Self::Jack, Self::Alsa, Self::Dummy, Self::PulseAudio];
+
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Jack => 0,
+            Self::Alsa => 1,
+            Self::Dummy => 2,
+            Self::PulseAudio => 3,
+        }
+    }
+
+    pub fn from_code(code: u32) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.code() == code)
+    }
+
+    /// The name on REAPER's device page.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jack => "JACK",
+            Self::Alsa => "ALSA",
+            Self::Dummy => "Dummy Audio",
+            Self::PulseAudio => "PulseAudio",
+        }
+    }
+
+    /// The audio host that plays it (as the engine names hosts).
+    pub fn host(self) -> &'static str {
+        match self {
+            Self::Jack => "JACK",
+            Self::Alsa => "ALSA",
+            Self::Dummy => "Dummy",
+            Self::PulseAudio => "PulseAudio",
+        }
+    }
+
+    pub fn from_host(host: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.host().eq_ignore_ascii_case(host) || s.label().eq_ignore_ascii_case(host))
+    }
+}
+
+/// Preferences > Audio > Device, as REAPER 7.73 on Linux keeps it in reaper.ini. Unset values
+/// were never chosen: the system default device, at its own rate and block size.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AudioDevicePrefs {
+    /// `linux_audio_mode`. REAPER leaves the key out for JACK, its default; Scythe writes 0 so
+    /// that a missing key still means "the system default".
+    pub system: Option<AudioSystem>,
+    /// `alsa_indev`: the ALSA input device (`hw:CARD=USB,DEV=0`), empty for the default.
+    pub input_device: Option<String>,
+    /// `alsa_outdev`.
+    pub output_device: Option<String>,
+    /// `linux_audio_nch_in`: input channels to open.
+    pub input_channels: Option<u32>,
+    /// `linux_audio_nch_out`.
+    pub output_channels: Option<u32>,
+    /// `linux_audio_srate`.
+    pub sample_rate: Option<u32>,
+    /// `linux_audio_bsize`: frames per block.
+    pub block_size: Option<u32>,
+    /// `linux_audio_srateor`: "Allow projects to override device sample rate", on by default.
+    pub project_rate_override: Option<bool>,
+}
+
+impl AudioDevicePrefs {
+    pub fn project_rate_override(&self) -> bool {
+        self.project_rate_override.unwrap_or(true)
+    }
+
+    /// Takes `key` when it is one of the device page's; false for any other key.
+    fn read(&mut self, key: &str, value: &str) -> bool {
+        let number = || value.parse::<i64>().ok().filter(|v| *v >= 0).map(|v| v as u32);
+        let text = || Some(value.to_owned()).filter(|v| !v.is_empty());
+        match key {
+            "linux_audio_mode" => self.system = number().and_then(AudioSystem::from_code),
+            "alsa_indev" => self.input_device = text(),
+            "alsa_outdev" => self.output_device = text(),
+            "linux_audio_nch_in" => self.input_channels = number(),
+            "linux_audio_nch_out" => self.output_channels = number(),
+            "linux_audio_srate" => self.sample_rate = number().filter(|r| *r > 0),
+            "linux_audio_bsize" => self.block_size = number().filter(|b| *b > 0),
+            "linux_audio_srateor" => self.project_rate_override = number().map(|v| v != 0),
+            _ => return false,
+        }
+        true
+    }
+
+    fn values(&self) -> Vec<(String, String)> {
+        let Some(system) = self.system else { return Vec::new() };
+        let mut out = vec![("linux_audio_mode".to_owned(), system.code().to_string())];
+        let device = |d: &Option<String>| d.clone().unwrap_or_default();
+        out.push(("alsa_indev".to_owned(), device(&self.input_device)));
+        out.push(("alsa_outdev".to_owned(), device(&self.output_device)));
+        let numbers = [
+            ("linux_audio_nch_in", self.input_channels),
+            ("linux_audio_nch_out", self.output_channels),
+            ("linux_audio_srate", self.sample_rate),
+            ("linux_audio_bsize", self.block_size),
+            ("linux_audio_srateor", self.project_rate_override.map(u32::from)),
+        ];
+        out.extend(numbers.iter().filter_map(|(k, v)| v.map(|v| (k.to_string(), v.to_string()))));
+        out
+    }
+}
+
+/// `useinnc` bit: inputs go by their aliases.
+pub const ALIAS_INPUTS: u32 = 1;
+/// `useinnc` bit: outputs go by their aliases.
+pub const ALIAS_OUTPUTS: u32 = 2;
+
+/// A device's channel names and mapping, as REAPER keeps them in an `[alias_in_<device>]` or
+/// `[alias_out_<device>]` section of reaper.ini: per channel slot the hardware channel it
+/// plays (`ch<i>`) and its alias (`name<i>`, empty for the hardware name).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelAliases {
+    pub channels: Vec<(usize, String)>,
+    /// `map_hwnch`: how many channels the device had when the map was made.
+    pub hardware_channels: usize,
+}
+
+impl ChannelAliases {
+    /// The section name for a device REAPER identifies as `ident` (`ALSA null`, `JackIn`):
+    /// characters other than letters and digits become `_`.
+    pub fn section(ident: &str, input: bool) -> String {
+        let clean: String = ident.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        format!("alias_{}_{clean}", if input { "in" } else { "out" })
+    }
+
+    pub fn read(ini: &crate::ini::Ini, section: &str) -> Option<Self> {
+        let s = ini.section(section)?;
+        let number = |k: &str| s.get(k).and_then(|v| v.trim().parse::<usize>().ok());
+        let size = number("map_size").unwrap_or(0).min(1024);
+        let channels = (0..size)
+            .map(|i| {
+                let hw = number(&format!("ch{i}")).unwrap_or(i);
+                (hw, s.get(&format!("name{i}")).unwrap_or("").to_owned())
+            })
+            .collect();
+        Some(Self { channels, hardware_channels: number("map_hwnch").unwrap_or(size) })
+    }
+
+    /// Replaces `section` in `ini` with these channels, keys sorted as REAPER sorts them.
+    pub fn write(&self, ini: &mut crate::ini::Ini, section: &str) {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for (i, (hw, name)) in self.channels.iter().enumerate() {
+            entries.push((format!("ch{i}"), hw.to_string()));
+            entries.push((format!("name{i}"), name.clone()));
+        }
+        entries.push(("map_hwnch".into(), self.hardware_channels.to_string()));
+        entries.push(("map_size".into(), self.channels.len().to_string()));
+        entries.sort();
+        ini.section_mut(section).entries = entries;
+    }
+
+    /// The alias of channel `i`, when it has one. Channel `i` plays hardware channel `i`:
+    /// REAPER's remapping (`ch<i>`) is kept in the file but not applied.
+    pub fn alias(&self, i: usize) -> Option<&str> {
+        self.channels.get(i).map(|(_, a)| a.as_str()).filter(|a| !a.is_empty())
+    }
+
+    /// Sets channel `i`'s alias (empty clears it), growing the map to `hardware` channels.
+    pub fn set_alias(&mut self, i: usize, alias: &str, hardware: usize) {
+        let len = self.channels.len().max(hardware).max(i + 1);
+        while self.channels.len() < len {
+            self.channels.push((self.channels.len(), String::new()));
+        }
+        self.hardware_channels = self.hardware_channels.max(hardware);
+        self.channels[i].1 = alias.trim().to_owned();
     }
 }
 
@@ -103,6 +290,9 @@ impl Default for Preferences {
             last_project: None,
             autoxfade: None,
             midi_cc_touch_timeout: None,
+            audio: AudioDevicePrefs::default(),
+            channel_aliasing: 0,
+            all_stereo_pairs: None,
         }
     }
 }
@@ -154,6 +344,9 @@ impl Preferences {
                 "midicctouchtimeout" => {
                     prefs.midi_cc_touch_timeout = value.parse::<i64>().ok().map(|v| v.max(0) as u32)
                 }
+                "useinnc" => prefs.channel_aliasing = value.parse::<i64>().map_or(0, |v| v as u32),
+                "allstereopairs" => prefs.all_stereo_pairs = value.parse::<i64>().ok().map(|v| v != 0),
+                key if prefs.audio.read(key, value) => {}
                 "csurf_cnt" => surface_count = value.parse().unwrap_or(0),
                 "projecttabs" => tab_count = value.parse().unwrap_or(0),
                 "lastproject" => prefs.last_project = Some(value.to_owned()).filter(|v| !v.is_empty()),
@@ -203,6 +396,13 @@ impl Preferences {
         if let Some(v) = self.midi_cc_touch_timeout {
             values.push(("midicctouchtimeout".to_owned(), v.to_string()));
         }
+        if self.channel_aliasing != 0 || text.contains("useinnc=") {
+            values.push(("useinnc".to_owned(), self.channel_aliasing.to_string()));
+        }
+        if let Some(on) = self.all_stereo_pairs {
+            values.push(("allstereopairs".to_owned(), u8::from(on).to_string()));
+        }
+        values.extend(self.audio.values());
         let has_surfaces = !self.surfaces.is_empty() || text.lines().any(|l| l.trim_start().starts_with("csurf_cnt="));
         if has_surfaces {
             values.push(("csurf_cnt".to_owned(), self.surfaces.len().to_string()));
@@ -312,6 +512,59 @@ mod tests {
         assert_eq!(fresh, "[REAPER]\npreroll=0\nprerollmeas=2.00000000000000\nmetronome_defout=-1\n");
         assert_eq!(Preferences::parse(&fresh), Preferences::default());
         assert_eq!(Preferences::parse("[REAPER]\nprerollmeas=-2\npreroll=x\n"), Preferences::default());
+    }
+
+    #[test]
+    fn audio_device_keys_read_as_reaper_writes_them() {
+        // REAPER 7.73's reaper.ini after choosing ALSA with 18 inputs and 20 outputs.
+        let text = "[reaper]\nalsa_indev=null\nalsa_outdev=hw:CARD=USB,DEV=0\nalsa_rtprio=0\nlinux_audio_bits=32\n\
+                    linux_audio_bsize=512\nlinux_audio_bufs=3\nlinux_audio_mode=1\nlinux_audio_nch_in=18\n\
+                    linux_audio_nch_out=20\nlinux_audio_srate=44100\nlinux_audio_srateor=1\nuseinnc=3\n\
+                    allstereopairs=0\n";
+        let p = Preferences::parse(text);
+        let a = &p.audio;
+        assert_eq!(a.system, Some(AudioSystem::Alsa));
+        assert_eq!((a.input_device.as_deref(), a.output_device.as_deref()), (Some("null"), Some("hw:CARD=USB,DEV=0")));
+        assert_eq!((a.input_channels, a.output_channels), (Some(18), Some(20)));
+        assert_eq!((a.sample_rate, a.block_size), (Some(44100), Some(512)));
+        assert!(a.project_rate_override());
+        assert_eq!(p.channel_aliasing, ALIAS_INPUTS | ALIAS_OUTPUTS);
+        assert_eq!(p.all_stereo_pairs, Some(false));
+        let written = p.write_into(text);
+        assert_eq!(Preferences::parse(&written), p);
+        assert!(written.contains("linux_audio_bufs=3"), "keys Scythe does not use stay");
+        // REAPER leaves `linux_audio_mode` out for JACK; Scythe writes it so the choice sticks.
+        let jack = Preferences {
+            audio: AudioDevicePrefs { system: Some(AudioSystem::Jack), ..Default::default() },
+            ..Default::default()
+        };
+        let written = jack.write_into("");
+        assert!(written.contains("linux_audio_mode=0\n"), "{written}");
+        assert_eq!(Preferences::parse(&written).audio.system, Some(AudioSystem::Jack));
+        assert_eq!(Preferences::parse("[REAPER]\n").audio, AudioDevicePrefs::default());
+    }
+
+    #[test]
+    fn channel_aliases_use_reapers_sections() {
+        // As REAPER 7.73 wrote it after naming input 2 "Snare" on the ALSA device `null`.
+        let mut text = String::from("[alias_in_ALSA_null]\n");
+        for i in 0..3 {
+            text.push_str(&format!("ch{i}={i}\n"));
+        }
+        text.push_str("map_hwnch=3\nmap_size=3\nname0=\nname1=Snare\nname2=\n");
+        let ini = crate::ini::Ini::parse(&text);
+        let section = ChannelAliases::section("ALSA null", true);
+        assert_eq!(section, "alias_in_ALSA_null");
+        let aliases = ChannelAliases::read(&ini, &section).unwrap();
+        assert_eq!((aliases.alias(0), aliases.alias(1)), (None, Some("Snare")));
+        let mut again = crate::ini::Ini::default();
+        aliases.write(&mut again, &section);
+        assert_eq!(ChannelAliases::read(&again, &section), Some(aliases.clone()));
+        let mut grown = aliases;
+        grown.set_alias(4, " Kick ", 6);
+        assert_eq!(grown.channels.len(), 6);
+        assert_eq!(grown.alias(4), Some("Kick"));
+        assert_eq!(ChannelAliases::section("ALSA hw:CARD=USB,DEV=0", false), "alias_out_ALSA_hw_CARD_USB_DEV_0");
     }
 
     #[test]

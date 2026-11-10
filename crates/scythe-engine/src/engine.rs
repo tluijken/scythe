@@ -687,10 +687,11 @@ impl Output {
     const NULL_BLOCK: usize = 512;
     const NULL_MAX_LAG: Duration = Duration::from_millis(250);
 
-    fn null(proc: Arc<Mutex<Processor>>, sample_rate: u32) -> Self {
+    fn null(proc: Arc<Mutex<Processor>>, sample_rate: u32, block: usize) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_t = stop.clone();
-        let period = Duration::from_secs_f64(Self::NULL_BLOCK as f64 / sample_rate as f64);
+        let block = block.clamp(16, RenderScratch::MAX_BLOCK);
+        let period = Duration::from_secs_f64(block as f64 / sample_rate as f64);
         let thread = std::thread::Builder::new()
             .name("scythe-null-audio".into())
             .spawn(move || {
@@ -698,7 +699,7 @@ impl Output {
                 let mut next = Instant::now();
                 while !stop_t.load(Ordering::Relaxed) {
                     if let Ok(mut proc) = proc.lock() {
-                        proc.process(Self::NULL_BLOCK);
+                        proc.process(block);
                     }
                     next += period;
                     let now = Instant::now();
@@ -778,6 +779,16 @@ pub struct DeviceInfo {
     pub block_size: Option<u32>,
     /// Set when no device could be opened and playback is simulated.
     pub fallback_reason: Option<String>,
+    /// The audio system, as `devices::hosts` names it; empty without a device.
+    pub host: String,
+    /// The output device's id (`hw:CARD=USB,DEV=0`).
+    pub device_id: String,
+    /// The input device's name and id, when there is one.
+    pub input: Option<(String, String)>,
+    /// The input channels the device offers, named as REAPER names them (`Input 1`).
+    pub inputs: Vec<String>,
+    /// The output channels the device plays (`Output 1`).
+    pub outputs: Vec<String>,
 }
 
 /// How the audio is doing, for a status display and the control API's `health` event.
@@ -859,6 +870,8 @@ pub struct Engine {
     /// Where the metronome plays when the project names no output (`metronome_defout`).
     click_output: i64,
     preview: Arc<crate::preview::Preview>,
+    /// Frames per block of the silent clock.
+    null_block: usize,
 }
 
 impl Engine {
@@ -872,9 +885,13 @@ impl Engine {
     /// the device again every few seconds (see [`Engine::maintain`]).
     pub fn start_with(pool: Arc<MediaPool>, request: &DeviceRequest) -> Self {
         let rate = request.sample_rate.unwrap_or(48_000);
+        if request.is_dummy() {
+            return Self::start_dummy(pool, request);
+        }
         let mut engine = match open_device(request) {
             Ok((device, config, format, name)) => {
                 let mut engine = Self::start_null(pool, config.sample_rate, None);
+                engine.devices = request.clone();
                 if let Err(e) = engine.attach(&device, config, format, name.clone()) {
                     engine.info.fallback_reason = Some(format!("{name}: {e}"));
                 }
@@ -887,6 +904,55 @@ impl Engine {
         }
         engine.devices = request.clone();
         engine
+    }
+
+    /// Opens exactly the devices `request` names, or says why it cannot: for switching
+    /// devices, where a failure keeps the old one rather than falling back to silence.
+    pub fn open(pool: Arc<MediaPool>, request: &DeviceRequest) -> Result<Self, String> {
+        if request.is_dummy() {
+            return Ok(Self::start_dummy(pool, request));
+        }
+        let (device, config, format, name) = open_device(request)?;
+        let mut engine = Self::start_null(pool, config.sample_rate, None);
+        engine.devices = request.clone();
+        engine.attach(&device, config, format, name.clone()).map_err(|e| format!("{name}: {e}"))?;
+        Ok(engine)
+    }
+
+    /// REAPER's "Dummy Audio": a silent clock at the requested rate and block size, with the
+    /// requested outputs (a pair by default) and no inputs.
+    fn start_dummy(pool: Arc<MediaPool>, request: &DeviceRequest) -> Self {
+        let rate = request.sample_rate.unwrap_or(48_000);
+        let mut engine = Self::start_null(pool, rate, None);
+        engine.devices = request.clone();
+        engine.null_block = request.buffer_size.map_or(Output::NULL_BLOCK, |b| b as usize);
+        engine.go_silent();
+        let outputs = request.output_channels.unwrap_or(2) as usize;
+        engine.info.name = "Dummy Audio".into();
+        engine.info.host = crate::devices::DUMMY_HOST.into();
+        engine.info.outputs = crate::devices::channel_names(crate::devices::DUMMY_HOST, false, outputs);
+        if let Ok(mut proc) = engine.proc.lock() {
+            proc.set_outputs(outputs);
+        }
+        engine
+    }
+
+    /// Closes the device and plays on with a silent clock, for opening another device that
+    /// may be the same hardware.
+    pub fn release_device(&mut self) {
+        self.go_silent();
+        self.input_stream = None;
+        let _ = self.input_tx.send(None);
+        self.retry_at = None;
+    }
+
+    /// Opens the devices this engine was asked for again, after [`Engine::release_device`].
+    pub fn reopen_device(&mut self) -> Result<(), String> {
+        if self.devices.is_dummy() {
+            return Ok(());
+        }
+        let (device, config, format, name) = open_device(&self.devices)?;
+        self.attach(&device, config, format, name.clone()).map_err(|e| format!("{name}: {e}"))
     }
 
     /// Replaces the silent clock with `device`.
@@ -920,7 +986,24 @@ impl Engine {
                     cpal::BufferSize::Fixed(n) => Some(n),
                     cpal::BufferSize::Default => None,
                 };
-                self.info = DeviceInfo { name, sample_rate: self.info.sample_rate, block_size, fallback_reason: None };
+                let host = crate::devices::host_name(&self.devices);
+                let input = crate::devices::input_device(&self.devices).ok().and_then(|d| {
+                    let (config, _) =
+                        crate::devices::input_config(&d, self.devices.input_channels, self.info.sample_rate).ok()?;
+                    Some((crate::devices::device_name(&d), crate::devices::device_id(&d), config.channels as usize))
+                });
+                let inputs = input.as_ref().map_or(0, |i| i.2);
+                self.info = DeviceInfo {
+                    device_id: crate::devices::device_id(device),
+                    name,
+                    sample_rate: self.info.sample_rate,
+                    block_size,
+                    fallback_reason: None,
+                    outputs: crate::devices::channel_names(&host, false, self.output_channels()),
+                    inputs: crate::devices::channel_names(&host, true, inputs),
+                    input: input.map(|(name, id, _)| (name, id)),
+                    host,
+                };
                 self.callbacks_seen = (self.transport.callbacks.load(Ordering::Relaxed), Instant::now());
                 self.transport.lost.store(false, Ordering::Relaxed);
                 Ok(())
@@ -932,9 +1015,17 @@ impl Engine {
         }
     }
 
+    /// Output channels the device plays now.
+    fn output_channels(&self) -> usize {
+        match &self.output {
+            Output::Device(out) => out.config.channels as usize,
+            Output::Null { .. } => self.info.outputs.len(),
+        }
+    }
+
     fn go_silent(&mut self) {
-        self.output = Output::null(self.proc.clone(), self.info.sample_rate);
-        self.info.block_size = Some(Output::NULL_BLOCK as u32);
+        self.output = Output::null(self.proc.clone(), self.info.sample_rate, self.null_block);
+        self.info.block_size = Some(self.null_block as u32);
     }
 
     /// Watches the device: when it disappears (unplugged, or it stopped calling back) the
@@ -1009,7 +1100,7 @@ impl Engine {
         let proc = Arc::new(Mutex::new(Processor::new(graph.clone(), transport.clone(), feeds)));
         let hardware = proc.lock().map(|p| p.hardware.clone()).ok();
         let preview = proc.lock().map(|p| p.preview.clone()).unwrap_or_default();
-        let output = Output::null(proc.clone(), sample_rate);
+        let output = Output::null(proc.clone(), sample_rate, Output::NULL_BLOCK);
         Self {
             graph,
             transport,
@@ -1039,6 +1130,11 @@ impl Engine {
                 sample_rate,
                 block_size: Some(Output::NULL_BLOCK as u32),
                 fallback_reason: reason,
+                host: String::new(),
+                device_id: String::new(),
+                input: None,
+                inputs: Vec::new(),
+                outputs: crate::devices::channel_names("", false, 2),
             },
             proc,
             output,
@@ -1049,6 +1145,7 @@ impl Engine {
             callbacks_seen: (0, Instant::now()),
             click_output: -1,
             preview,
+            null_block: Output::NULL_BLOCK,
         }
     }
 
@@ -1132,6 +1229,10 @@ impl Engine {
         if let Output::Device(out) = &mut self.output {
             out.match_master(graph.device_channels, &self.transport);
         }
+        let playing = self.output_channels();
+        if playing != self.info.outputs.len() && matches!(self.output, Output::Device(_)) {
+            self.info.outputs = crate::devices::channel_names(&self.info.host, false, playing);
+        }
         let old = self.graph.swap(Arc::new(graph));
         let now = Instant::now();
         self.retired.push_back((now, old));
@@ -1199,9 +1300,7 @@ impl Engine {
             return Ok(());
         }
         let device = crate::devices::input_device(&self.devices)?;
-        let default = device.default_input_config().map_err(|e| e.to_string())?;
-        let mut config = default.config();
-        config.sample_rate = self.info.sample_rate;
+        let (config, _) = crate::devices::input_config(&device, self.devices.input_channels, self.info.sample_rate)?;
         let channels = config.channels as usize;
         let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(self.info.sample_rate as usize * channels / 2);
         let stream = device
@@ -1442,15 +1541,16 @@ fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, S
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let format = supported.sample_format();
     let mut config: StreamConfig = supported.into();
-    if let Some(rate) = request.sample_rate {
+    // A JACK server runs at its own rate and block size, as REAPER's JACK page has none to ask.
+    let server = crate::devices::host_name(request).eq_ignore_ascii_case("JACK");
+    if let Some(rate) = request.sample_rate.filter(|_| !server) {
         config.sample_rate = rate;
     }
-    if let Some(frames) = request.buffer_size {
+    if let Some(frames) = request.buffer_size.filter(|_| !server) {
         config.buffer_size = cpal::BufferSize::Fixed(frames);
     }
-    if let Some(channels) = request.output_channels {
-        config.channels = config.channels.max(channels);
-    }
+    let supported = supported_channels(&device, format, config.sample_rate);
+    config.channels = crate::devices::stream_channels(&supported, config.channels, request.output_channels);
     Ok((device, config, format, name))
 }
 
@@ -2043,6 +2143,66 @@ mod tests {
         proc.write_interleaved(&mut out, 6);
         assert!(out.iter().all(|&s| s == 0.0));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A band's interface with 20 outputs: the audience on 1/2, an in-ear mix on 9/10 and the
+    /// click alone on 11, each output carrying only its own signal.
+    #[test]
+    fn a_twenty_output_device_plays_an_in_ear_mix_on_9_10_and_the_click_on_11() {
+        use scythe_core::monitor::{CueBusOptions, MonitorOutput};
+        let (mut p, pool, dir) = ones_project(100.0);
+        p.metronome.set(scythe_core::metronome::ENABLED, true);
+        p.metronome.outputs = vec![10 | scythe_core::HwOut::MONO];
+        let ids: Vec<_> = p.tracks.iter().map(|t| t.id).collect();
+        let opts = CueBusOptions { output: Some(MonitorOutput::Stereo(8)), ..CueBusOptions::default() };
+        let mix = p.create_monitor_mix("Bass", &ids, &[], &opts);
+        p.track_mut(mix).unwrap().fx.clear();
+        for item in &mut p.tracks[0].items {
+            item.position = 0.0;
+        }
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        assert_eq!(graph.device_channels, 11);
+        let transport = Arc::new(Transport::new(8000));
+        let (_senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport.clone(), feeds);
+        proc.set_outputs(20);
+        transport.playing.store(true, Ordering::Relaxed);
+        let mut out = vec![0.0f32; 20 * 800];
+        proc.write_interleaved(&mut out, 20);
+        let peak = |c: usize| out.chunks(20).fold(0f32, |m, f| m.max(f[c].abs()));
+        let peaks: Vec<f32> = (0..20).map(peak).collect();
+        assert!(peaks[0] > 0.5 && peaks[1] > 0.5, "the audience hears the track: {peaks:?}");
+        assert!(peaks[8] > 0.5 && peaks[9] > 0.5, "the in-ear mix plays on 9/10: {peaks:?}");
+        assert!(peaks[10] > 0.0, "the click plays on 11: {peaks:?}");
+        let silent = [2, 3, 4, 5, 6, 7, 11, 12, 13, 14, 15, 16, 17, 18, 19];
+        assert!(silent.iter().all(|&c| peaks[c] == 0.0), "nothing else is heard: {peaks:?}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An 18-input interface: a track monitoring input 17 hears that channel, not the first.
+    #[test]
+    fn monitoring_reaches_every_input_of_a_large_interface() {
+        let mut p = Project::default();
+        let t = p.add_track("Vocal");
+        let track = p.track_mut(t).unwrap();
+        (track.armed, track.monitor, track.rec_input) = (true, true, 16);
+        let pool = MediaPool::default();
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let transport = Arc::new(Transport::new(8000));
+        let (senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport, feeds);
+        proc.set_outputs(2);
+        let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(18 * 4096);
+        for _ in 0..1024 {
+            for c in 0..18 {
+                let _ = tx.push(if c == 16 { 0.5 } else { 0.0 });
+            }
+        }
+        senders.input_tx.send(Some((rx, 18))).unwrap();
+        let mut out = vec![0.0f32; 2 * 512];
+        proc.write_interleaved(&mut out, 2);
+        let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
+        assert!(peak > 0.2, "input 17 reaches the track: {peak}");
     }
 
     /// Records a track's output (post-fader and pre-FX) on the null engine, the track hearing

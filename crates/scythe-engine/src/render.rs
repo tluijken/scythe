@@ -590,7 +590,7 @@ impl Default for LiveInput<'_> {
 }
 
 impl<'a> LiveInput<'a> {
-    pub const MAX_CHANNELS: usize = 8;
+    pub const MAX_CHANNELS: usize = 64;
 
     fn slice(&self, from: usize, len: usize) -> LiveInput<'a> {
         LiveInput {

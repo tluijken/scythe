@@ -14745,6 +14745,162 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The audio systems (hosts) and the devices each offers, to choose from in\n`audio.set_device`.\n\nControl API command `audio.devices`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "audio_devices",
+    "title": "Audio devices"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The device playing now: system, devices, rate, block size, latency and the names of its\ninput and output channels; also what the preferences ask for.\n\nControl API command `audio.device`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "audio_device",
+    "title": "Audio device"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Opens other audio devices without closing the project (the transport stops). Fields\nleft out keep the current choice. When the devices cannot be opened the previous ones\nplay on and the reason comes back as an error.\n\nControl API command `audio.set_device`.",
+    "inputSchema": {
+      "properties": {
+        "block_size": {
+          "default": null,
+          "description": "Frames per audio block to request; 0 for the device's own.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "default": null,
+          "description": "The input device, like `output`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_channels": {
+          "default": null,
+          "description": "Input channels to open, like `output_channels`.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "default": null,
+          "description": "The output device: its id from `audio.devices` (`hw:CARD=USB,DEV=0`) or name; empty\nfor the system default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_channels": {
+          "default": null,
+          "description": "Output channels to open; 0 opens every channel of a hardware device (a pair on a\nsound server).",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sample_rate": {
+          "default": null,
+          "description": "Sample rate in Hz to request; 0 for the device's own.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "save": {
+          "default": null,
+          "description": "Keep the choice for the next start (true when left out).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "system": {
+          "default": null,
+          "description": "The audio system: `ALSA`, `JACK` or `Dummy` (no device, a silent clock), as\n`audio.devices` lists them.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "audio_set_device",
+    "title": "Audio set device"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Names a hardware input or output channel (REAPER's channel name aliasing), or clears\nits name with an empty `name`. Track inputs, hardware outputs and monitor mixes show it.\n\nControl API command `audio.channel_name`.",
+    "inputSchema": {
+      "properties": {
+        "channel": {
+          "description": "The channel, from 1.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "description": "`input` or `output`.",
+          "enum": [
+            "input",
+            "output"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "channel",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "audio_channel_name",
+    "title": "Audio channel name"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

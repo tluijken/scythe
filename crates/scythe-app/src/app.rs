@@ -82,6 +82,8 @@ pub struct ViewState {
     pub keyboard_open: bool,
     pub keyboard: crate::ui::midi_devices::KeyboardState,
     pub midi_devices_open: bool,
+    /// The audio device window, while open.
+    pub audio_device: Option<crate::ui::audio_device::AudioDeviceWindow>,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
     /// The media explorer window, while open.
@@ -214,14 +216,23 @@ pub struct GfxView {
 }
 
 impl ScytheApp {
-    /// A window on `project`, playing on the default device, or on a silent clock with
-    /// `null_audio`.
-    pub fn new(ctx: egui::Context, project: Project, null_audio: bool) -> Self {
+    /// A window on an empty project, playing on `request` (else the default device, and a
+    /// notice says why), or on a silent clock with `null_audio`.
+    pub fn with_devices(ctx: egui::Context, request: &scythe_engine::DeviceRequest, null_audio: bool) -> Self {
         let pool = Arc::new(MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK));
-        let engine = if null_audio { Engine::start_offline(pool, 48_000) } else { Engine::start(pool) };
+        let (engine, notice) = if null_audio {
+            (Engine::start_offline(pool, request.sample_rate.unwrap_or(48_000)), None)
+        } else {
+            scythe_session::audio::start_engine(pool, request)
+        };
         let mut session = Session::new(engine);
-        session.load(project);
-        Self::with_session(ctx, session)
+        session.no_input = request.no_input;
+        session.load(Project::default());
+        let mut app = Self::with_session(ctx, session);
+        if let Some(n) = notice {
+            app.notify(n);
+        }
+        app
     }
 
     pub fn with_session(ctx: egui::Context, mut session: Session) -> Self {
@@ -262,6 +273,7 @@ impl ScytheApp {
                 keyboard_open: false,
                 keyboard: Default::default(),
                 midi_devices_open: false,
+                audio_device: None,
                 regions: None,
                 explorer: None,
                 bay: None,
@@ -787,6 +799,15 @@ impl ScytheApp {
             .and_then(|slot| self.engine.fx().instance(track, slot, index))
             .and_then(|inst| inst.with(|e| e.gfx_size().is_some()))
             .unwrap_or(false)
+    }
+
+    /// Closes every plugin editor and JSFX view: their effects belong to the engine, which
+    /// a device change replaces.
+    pub fn close_plugin_windows(&mut self) {
+        while !self.editors.is_empty() {
+            self.close_editor(0);
+        }
+        self.gfx_views.clear();
     }
 
     fn close_editor(&mut self, at: usize) {

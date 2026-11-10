@@ -82,19 +82,13 @@ impl Recording {
     ) -> Result<Self, RecordError> {
         let device = crate::devices::input_device(devices).map_err(RecordError::Device)?;
         let name = device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "input".into());
-        let default = device.default_input_config().map_err(|e| RecordError::Device(e.to_string()))?;
-        let format = default.sample_format();
-        let mut config = default.config();
-        let supports_preferred = device.supported_input_configs().is_ok_and(|mut cfgs| {
-            cfgs.any(|c| {
-                c.min_sample_rate() <= preferred_rate
-                    && c.max_sample_rate() >= preferred_rate
-                    && c.channels() == config.channels
-            })
-        });
-        if supports_preferred {
-            config.sample_rate = preferred_rate;
-        }
+        let (config, format) = match crate::devices::input_config(&device, devices.input_channels, preferred_rate) {
+            Ok(found) => found,
+            Err(_) => {
+                let default = device.default_input_config().map_err(|e| RecordError::Device(e.to_string()))?;
+                (default.config(), default.sample_format())
+            }
+        };
         let in_channels = config.channels as usize;
         let sample_rate = config.sample_rate;
 

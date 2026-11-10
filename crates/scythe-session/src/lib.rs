@@ -3,6 +3,7 @@
 //! metronome, automation writing, meters and saving. Nothing here draws, so the same session
 //! runs under the egui app, without a screen, and behind the control API.
 
+pub mod audio;
 mod automation;
 mod bay;
 mod customize;
@@ -150,6 +151,8 @@ pub struct Session {
     pub event_log: api::feed::EventLog,
     /// Runs ReaScript for `script.run`; the desktop app sets it.
     pub script_runner: Option<api::script::ScriptRunner>,
+    /// Channel aliases of a session without a preferences file, by section.
+    unsaved_aliases: HashMap<String, scythe_core::prefs::ChannelAliases>,
 }
 
 impl Session {
@@ -213,6 +216,7 @@ impl Session {
             active_tab: 0,
             event_log: Default::default(),
             script_runner: None,
+            unsaved_aliases: HashMap::new(),
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));
@@ -597,6 +601,16 @@ impl Session {
         if let Err(e) = written {
             self.notify(format!("Cannot save preferences to {}: {e}", path.display()));
         }
+    }
+
+    /// Forgets the device errors already shown, so a new device reports its own, and the
+    /// media loads begun for the old device.
+    fn reset_device_errors(&mut self) {
+        self.midi_error = None;
+        self.monitor_error = None;
+        self.midi_out_error = None;
+        self.pending.clear();
+        self.pending_stretch.clear();
     }
 
     /// Hands the project to the engine and opens or closes the live inputs and outputs it

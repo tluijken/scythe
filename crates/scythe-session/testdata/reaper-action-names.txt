@@ -332,3 +332,4 @@
 1042	Track: Cycle folder collapsed state
 41665	Track: Show/hide children of selected folder tracks in mixer
 42785	Track: Move tracks to new folder
+40016	Options: Preferences...

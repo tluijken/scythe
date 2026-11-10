@@ -51,6 +51,7 @@ pub struct AudioConfig {
     pub sample_rate: Option<u32>,
     pub buffer_size: Option<u32>,
     pub output_channels: Option<u16>,
+    pub input_channels: Option<u16>,
     /// Run without opening any audio device (silent, for tests and dry runs).
     #[serde(default)]
     pub null: bool,
@@ -99,7 +100,8 @@ usage: scythe-server [project.RPP] [options]
   --input-device NAME    input device for monitoring and recording
   --sample-rate HZ       device sample rate
   --buffer-size FRAMES   frames per audio callback
-  --output-channels N    open at least N output channels
+  --output-channels N    output channels to open (default: all of an interface, else 2)
+  --input-channels N     input channels to open, likewise
   --null-audio           open no audio device at all
   --no-input             never open an audio or MIDI input
   --list-devices         print the audio devices and exit
@@ -108,7 +110,7 @@ usage: scythe-server [project.RPP] [options]
 ";
 
 /// Flags followed by a value.
-pub const VALUED: [&str; 11] = [
+pub const VALUED: [&str; 12] = [
     "--config",
     "--control",
     "--token",
@@ -120,7 +122,51 @@ pub const VALUED: [&str; 11] = [
     "--sample-rate",
     "--buffer-size",
     "--output-channels",
+    "--input-channels",
 ];
+
+/// The audio device flags among `args` (`--audio-host`, `--output-device`, `--sample-rate`…,
+/// as `--flag value` or `--flag=value`), which override a settings file or saved preferences.
+/// `null` is `--null-audio`.
+pub fn audio_flags(args: &[String]) -> Result<AudioConfig, String> {
+    let value = |name: &str| {
+        let prefix = format!("{name}=");
+        args.iter().enumerate().rev().find_map(|(i, a)| match a.strip_prefix(&prefix) {
+            Some(v) => Some(v.to_owned()),
+            None if a == name => args.get(i + 1).cloned(),
+            None => None,
+        })
+    };
+    let number = |name: &str| -> Result<Option<u32>, String> {
+        value(name).map(|v| v.parse().map_err(|_| format!("{name} takes a number, not {v}"))).transpose()
+    };
+    let channels = |name: &str| -> Result<Option<u16>, String> {
+        number(name)?.map(|n| u16::try_from(n).map_err(|_| format!("{name} is too large"))).transpose()
+    };
+    Ok(AudioConfig {
+        host: value("--audio-host"),
+        output: value("--output-device"),
+        input: value("--input-device"),
+        sample_rate: number("--sample-rate")?,
+        buffer_size: number("--buffer-size")?,
+        output_channels: channels("--output-channels")?,
+        input_channels: channels("--input-channels")?,
+        null: args.iter().any(|a| a == "--null-audio"),
+    })
+}
+
+/// Prints every audio device of every host, as `--list-devices` does.
+pub fn print_devices() {
+    for d in scythe_engine::devices::list() {
+        let dir = match (d.input, d.output) {
+            (true, true) => "in/out",
+            (true, false) => "in",
+            _ => "out",
+        };
+        let id = if d.id == d.name { String::new() } else { format!("  [{}]", d.id) };
+        println!("{:<10} {:<7} {}{id}", d.host, dir, d.name);
+    }
+}
 
 /// Combines the settings file with `args` (the arguments after the program name, `--headless`
 /// already taken out).
@@ -142,10 +188,6 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     }
     let flag = |name: &str| flags.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v.clone());
     let value = |name: &str| flag(name).flatten();
-    let number = |name: &str| -> Result<Option<u32>, String> {
-        value(name).map(|v| v.parse().map_err(|_| format!("{name} takes a number, not {v}"))).transpose()
-    };
-
     let config = match value("--config") {
         Some(path) => read(Path::new(&path))?,
         None => match default_path().filter(|p| p.is_file()) {
@@ -179,17 +221,16 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     let folders = if folders.is_empty() { config.folders } else { folders };
     let access_file =
         value("--access-file").map(PathBuf::from).or(config.access_file).or_else(crate::access::default_file);
+    let flags = audio_flags(args)?;
     let audio = config.audio;
     let devices = DeviceRequest {
-        host: value("--audio-host").or(audio.host),
-        output: value("--output-device").or(audio.output),
-        input: value("--input-device").or(audio.input),
-        sample_rate: number("--sample-rate")?.or(audio.sample_rate),
-        buffer_size: number("--buffer-size")?.or(audio.buffer_size),
-        output_channels: number("--output-channels")?
-            .map(|n| u16::try_from(n).map_err(|_| "--output-channels is too large".to_owned()))
-            .transpose()?
-            .or(audio.output_channels),
+        host: flags.host.or(audio.host),
+        output: flags.output.or(audio.output),
+        input: flags.input.or(audio.input),
+        sample_rate: flags.sample_rate.or(audio.sample_rate),
+        buffer_size: flags.buffer_size.or(audio.buffer_size),
+        output_channels: flags.output_channels.or(audio.output_channels),
+        input_channels: flags.input_channels.or(audio.input_channels),
         no_input: flag("--no-input").is_some() || config.no_input,
     };
     Ok(Options {

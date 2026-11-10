@@ -19,8 +19,6 @@ mod itest;
 
 use std::path::PathBuf;
 
-use scythe_core::Project;
-
 struct Shell {
     /// Runs the control API's commands and events, the control surfaces (OSC devices, Mackie
     /// Control, HUI), marker actions and automation between frames.
@@ -102,6 +100,36 @@ fn control_config(args: &[String]) -> Result<Option<scythe_server::ServerConfig>
     Ok(Some(config))
 }
 
+/// The devices to open: the ones saved in the preferences, with the command line's audio
+/// flags over them. Naming another audio system drops the saved devices, which belong to the
+/// saved one.
+fn devices_for(flags: &scythe_server::config::AudioConfig, no_input: bool) -> scythe_engine::DeviceRequest {
+    let saved = std::fs::read_to_string(scythe_session::preferences_path()).unwrap_or_default();
+    let saved = scythe_session::audio::request_from_prefs(&scythe_core::prefs::Preferences::parse(&saved).audio);
+    overlay(saved, flags, no_input)
+}
+
+fn overlay(
+    mut r: scythe_engine::DeviceRequest,
+    flags: &scythe_server::config::AudioConfig,
+    no_input: bool,
+) -> scythe_engine::DeviceRequest {
+    if let Some(host) = &flags.host {
+        if !r.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case(host)) {
+            (r.output, r.input) = (None, None);
+        }
+        r.host = Some(host.clone());
+    }
+    r.output = flags.output.clone().or(r.output);
+    r.input = flags.input.clone().or(r.input);
+    r.sample_rate = flags.sample_rate.or(r.sample_rate);
+    r.buffer_size = flags.buffer_size.or(r.buffer_size);
+    r.output_channels = flags.output_channels.or(r.output_channels);
+    r.input_channels = flags.input_channels.or(r.input_channels);
+    r.no_input = no_input;
+    r
+}
+
 fn is_script(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -134,7 +162,23 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
-    let valued = |i: usize| i > 0 && matches!(args[i - 1].as_str(), "--control" | "--control-token");
+    let valued = |i: usize| {
+        i > 0 && {
+            let flag = args[i - 1].as_str();
+            matches!(flag, "--control" | "--control-token") || scythe_server::config::VALUED.contains(&flag)
+        }
+    };
+    if args.iter().any(|a| a == "--list-devices") {
+        scythe_server::config::print_devices();
+        return Ok(());
+    }
+    let audio = match scythe_server::config::audio_flags(&args) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
     // Like REAPER, a ReaScript on the command line runs once the project is open.
     let (scripts, positional): (Vec<PathBuf>, Vec<PathBuf>) = args
         .iter()
@@ -211,8 +255,8 @@ fn main() -> eframe::Result {
             if let Some(scale) = std::env::var("SCYTHE_UI_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
                 cc.egui_ctx.set_zoom_factor(scale.clamp(0.5, 3.0));
             }
-            let mut app = app::ScytheApp::new(cc.egui_ctx.clone(), Project::default(), null_audio);
-            app.no_input = no_input;
+            let devices = devices_for(&audio, no_input);
+            let mut app = app::ScytheApp::with_devices(cc.egui_ctx.clone(), &devices, null_audio);
             app.load_preferences(scythe_session::preferences_path());
             ui::window::load(&cc.egui_ctx, ui::window::placements_file());
             app.view.setlist = setlist;
@@ -259,4 +303,33 @@ fn main() -> eframe::Result {
             Ok(Box::new(Shell { _pump: pump, _control: control, app, scripts }))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn audio_flags_override_the_saved_device() {
+        let saved = scythe_engine::DeviceRequest {
+            host: Some("ALSA".into()),
+            output: Some("hw:CARD=USB,DEV=0".into()),
+            sample_rate: Some(44_100),
+            output_channels: Some(20),
+            ..Default::default()
+        };
+        let flags =
+            scythe_server::config::audio_flags(&args(&["--sample-rate", "48000", "--input-channels=18"])).unwrap();
+        let r = overlay(saved.clone(), &flags, false);
+        assert_eq!(r.output.as_deref(), Some("hw:CARD=USB,DEV=0"));
+        assert_eq!((r.sample_rate, r.output_channels, r.input_channels), (Some(48_000), Some(20), Some(18)));
+        let flags = scythe_server::config::audio_flags(&args(&["--audio-host", "JACK"])).unwrap();
+        let r = overlay(saved, &flags, true);
+        assert_eq!((r.host.as_deref(), r.output.as_deref(), r.no_input), (Some("JACK"), None, true));
+        assert!(scythe_server::config::audio_flags(&args(&["--buffer-size", "lots"])).is_err());
+    }
 }

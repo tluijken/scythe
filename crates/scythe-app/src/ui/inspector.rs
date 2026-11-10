@@ -36,15 +36,23 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let mut name = track.name.clone();
     let name_rect =
         Rect::from_min_size(pos2(badge.right() + 12.0, badge.top() + 2.0), vec2(inner.width() - 56.0 - 76.0, 24.0));
-    // Record input: cycles through mono inputs 1-4, stereo pairs 1/2, 3/4, all MIDI inputs, the
-    // virtual keyboard and each MIDI device; right-click picks the MIDI channel.
+    // Record input: a menu of the device's inputs, mono and in pairs, and the MIDI inputs, as
+    // REAPER's; right-click picks the MIDI channel.
     let midi_input = MidiInput::from_rec_input(track.rec_input);
     let keep_channel =
         |device: MidiDevice| MidiInput { device, channel: midi_input.and_then(|i| i.channel) }.rec_input();
-    let mut inputs: Vec<i64> =
-        vec![0, 1, 2, 3, 1024, 1026, keep_channel(MidiDevice::All), keep_channel(MidiDevice::VirtualKeyboard)];
-    inputs
-        .extend(app.midi_devices.inputs.iter().filter(|p| p.present).map(|p| keep_channel(MidiDevice::Port(p.number))));
+    let mut midi_inputs: Vec<(i64, String)> = vec![
+        (keep_channel(MidiDevice::All), "All MIDI inputs".to_owned()),
+        (keep_channel(MidiDevice::VirtualKeyboard), "Virtual MIDI keyboard".to_owned()),
+    ];
+    midi_inputs.extend(
+        app.midi_devices.inputs.iter().filter(|p| p.present).map(|p| {
+            (keep_channel(MidiDevice::Port(p.number)), app.midi_devices.input_label(MidiDevice::Port(p.number)))
+        }),
+    );
+    let audio_ins = crate::ui::channels::Channels::inputs(app);
+    let audio_pick = (track.rec_input >= 0 && midi_input.is_none() && track.rec_input & (512 | 2048 | 4096) == 0)
+        .then_some(((track.rec_input & 511) as usize, track.rec_input & 1024 == 0));
     let input_label = match (track.rec_input, midi_input) {
         (v, _) if v < 0 => "No input".to_owned(),
         (_, Some(i)) => {
@@ -55,8 +63,7 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             };
             i.channel.map_or(device.clone(), |c| format!("{device} {}", c + 1))
         }
-        (v, None) if v & 1024 != 0 => format!("In {}/{}", (v & 511) + 1, (v & 511) + 2),
-        (v, None) => format!("In {}", (v & 511) + 1),
+        (v, None) => audio_ins.short(((v & 511) as usize, v & 1024 == 0)),
     };
     let input_hover = match midi_input {
         Some(i) => format!(
@@ -64,8 +71,10 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             app.midi_devices.input_label(i.device),
             i.channel.map_or("all channels".to_owned(), |c| format!("channel {}", c + 1))
         ),
-        None => "Record input (click to change). MIDI plays the track's instrument while armed with monitoring on"
-            .to_owned(),
+        None => format!(
+            "{} (click to change). MIDI plays the track's instrument while armed with monitoring on",
+            audio_pick.map_or("No input".to_owned(), |p| audio_ins.label(p))
+        ),
     };
     let input_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 2.0), vec2(70.0, 24.0));
     let mon_pill = Rect::from_min_size(pos2(inner.right() - 70.0, badge.top() + 28.0), vec2(70.0, 18.0));
@@ -115,8 +124,23 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         if track.armed { theme::PINK } else { TEXT_DIM },
     )
     .on_hover_text(input_hover);
-    if resp.clicked() {
-        let next = inputs[(inputs.iter().position(|&v| v == track.rec_input).map_or(0, |i| i + 1)) % inputs.len()];
+    let mut next_input = None;
+    egui::Popup::menu(&resp).show(|ui| {
+        if let Some((first, mono)) = audio_ins.input_menu(ui, audio_pick) {
+            next_input = Some(first as i64 | if mono { 0 } else { 1024 });
+        }
+        ui.menu_button("Input: MIDI", |ui| {
+            for (value, label) in &midi_inputs {
+                if ui.selectable_label(track.rec_input == *value, label).clicked() {
+                    next_input = Some(*value);
+                }
+            }
+        });
+        if ui.selectable_label(track.rec_input < 0, "Input: None").clicked() {
+            next_input = Some(-1);
+        }
+    });
+    if let Some(next) = next_input {
         set_rec_input(app, track_id, next);
     }
     if resp.secondary_clicked()
@@ -1483,16 +1507,20 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         TEXT_DIM,
     );
     *y += 26.0;
+    let device_outs = crate::ui::channels::Channels::outputs(app);
     for (i, o) in track.hw_outs.iter().enumerate() {
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), ROW_H));
         painter.rect_filled(r, CornerRadius::same(12), RAISED);
         let out = Rect::from_min_size(pos2(r.left() + 8.0, r.center().y - 20.0), vec2(110.0, 22.0));
-        let resp = text_pill(ui, out, &o.label(), theme::mono(11.0), BG, if o.muted { TEXT_DIM } else { TEXT })
-            .on_hover_text("Device outputs (click: next pair, right-click: stereo or mono)");
-        if resp.clicked() || resp.secondary_clicked() {
-            let mono = o.is_mono() ^ resp.secondary_clicked();
-            let step = if mono { 1 } else { 2 };
-            let first = if resp.clicked() { (o.first_output() + step) % 64 } else { o.first_output() };
+        let pick = (o.outputs().len() <= 2 && !o.is_rearoute()).then(|| (o.first_output(), o.is_mono()));
+        let label = pick.map_or_else(|| o.label(), |p| device_outs.short(p));
+        let label = widgets::truncate(ui, &label, &theme::mono(11.0), out.width() - 10.0);
+        let hover = pick.map_or_else(|| o.label(), |p| device_outs.label(p));
+        let resp = text_pill(ui, out, &label, theme::mono(11.0), BG, if o.muted { TEXT_DIM } else { TEXT })
+            .on_hover_text(format!("{hover} (click to choose the device outputs)"));
+        let mut chosen = None;
+        egui::Popup::menu(&resp).show(|ui| chosen = device_outs.output_menu(ui, pick));
+        if let Some((first, mono)) = chosen {
             let flags = o.dst_channels & !(1024 | 511);
             app.edit("Set hardware output", |p| {
                 p.track_mut(track_id).unwrap().hw_outs[i].dst_channels =

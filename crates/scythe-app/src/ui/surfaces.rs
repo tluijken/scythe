@@ -40,7 +40,16 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         &mut open,
         |ui| {
             let info = app.engine.info().clone();
-            ui.label(RichText::new(format!("Audio: {} · {} Hz", info.name, info.sample_rate)).color(TEXT_DIM));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Audio: {} · {} Hz", info.name, info.sample_rate)).color(TEXT_DIM));
+                if ui
+                    .button("Audio device...")
+                    .on_hover_text("Choose the audio system, devices, rate and channels")
+                    .clicked()
+                {
+                    crate::ui::audio_device::toggle(app);
+                }
+            });
             ui.separator();
             list(app, ui, &mut state);
             ui.separator();

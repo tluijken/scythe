@@ -5,6 +5,7 @@
 //! variant and a line in each of [`Command`]'s two `match`es.
 
 pub mod analysis;
+pub mod audio;
 pub mod bay;
 pub mod customize;
 pub mod editing;
@@ -81,6 +82,7 @@ pub enum Command {
     Editing(editing::EditingCommand),
     Rig(rig::RigCommand),
     Nam(nam::NamCommand),
+    Audio(audio::AudioCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -146,6 +148,7 @@ impl<'de> Deserialize<'de> for Command {
             "script" => serde_json::from_value(value).map(Command::Script),
             "rig" => serde_json::from_value(value).map(Command::Rig),
             "nam" => serde_json::from_value(value).map(Command::Nam),
+            "audio" => serde_json::from_value(value).map(Command::Audio),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -185,6 +188,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Editing(c) => editing::execute(session, c),
         Command::Rig(c) => rig::execute(session, c),
         Command::Nam(c) => nam::execute(session, c),
+        Command::Audio(c) => audio::execute(session, c),
     }
 }
 

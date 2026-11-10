@@ -2,7 +2,7 @@
 //! and envelope, ReaInsert's routing and ping, ReaControlMIDI's controls.
 
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui, pos2, vec2};
-use scythe_engine::devices::{DeviceChannels, pair_name};
+use scythe_engine::devices::pair_name;
 use scythe_engine::reaverb::ReaVerbCompat;
 use scythe_engine::stock::reacontrolmidi::ControlMidi;
 use scythe_engine::stock::reainsert::{INPUT, OUTPUT, PING};
@@ -297,32 +297,26 @@ pub fn insert(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
 /// ReaInsert's send or return channels: a pill with the device's pair and a menu of the pairs
 /// the device has.
 fn device_pair(cx: &mut Ctx, ui: &mut Ui, r: Rect, id: u32) {
-    type Devices = (Option<DeviceChannels>, Option<DeviceChannels>);
     let output = id == OUTPUT;
-    let cache = egui::Id::unique("rea-insert-devices");
-    let known: Option<Devices> = ui.data(|d| d.get_temp(cache));
-    let devices = known.unwrap_or_else(|| {
-        let found = scythe_engine::devices::channels(cx.app.engine.devices());
-        ui.data_mut(|d| d.insert_temp(cache, found.clone()));
-        found
-    });
-    let side = if output { devices.0 } else { devices.1 };
+    let info = cx.app.engine.info();
+    let names = if output { cx.app.output_names() } else { cx.app.input_names() };
+    let device = if output { Some(info.name.clone()) } else { info.input.as_ref().map(|(n, _)| n.clone()) };
     let first = cx.value(id).round() as i64 - 1;
-    let name = side.as_ref().map(|d| d.name.clone());
-    let label = if first < 0 { "none".to_owned() } else { pair_name(first as usize, output, name.as_deref()) };
+    let name = device.filter(|_| !names.is_empty());
+    let label = if first < 0 { "none".to_owned() } else { pair_name(first as usize, &names, output, name.as_deref()) };
     let shown = widgets::truncate(ui, &label, &theme::regular(11.0), r.width() - 12.0);
     let resp = widgets::text_pill(ui, r, &shown, theme::regular(11.0), theme::RAISED_HI, TEXT).on_hover_text(&label);
     egui::Popup::menu(&resp).show(|ui| {
         if ui.selectable_label(first < 0, "none").clicked() {
             cx.set_once(id, 0.0);
         }
-        let count = side.as_ref().map_or(2, |d| d.channels as usize).max(2).max(first.max(0) as usize + 2);
+        let count = names.len().max(2).max(first.max(0) as usize + 2);
         for k in 0..count - 1 {
-            if ui.selectable_label(first == k as i64, pair_name(k, output, name.as_deref())).clicked() {
+            if ui.selectable_label(first == k as i64, pair_name(k, &names, output, name.as_deref())).clicked() {
                 cx.set_once(id, k as f64 + 1.0);
             }
         }
-        if side.is_none() {
+        if names.is_empty() {
             ui.label(egui::RichText::new(if output { "No output device" } else { "No input device" }).color(TEXT_DIM));
         }
     });

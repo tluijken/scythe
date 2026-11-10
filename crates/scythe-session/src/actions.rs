@@ -202,6 +202,8 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("40768", "View: Show track grouping matrix window", W),
     ("40377", "View: Show virtual MIDI keyboard", W),
     ("40619", "Show external timecode synchronization settings", W),
+    ("40016", "Options: Preferences...", W),
+    ("_SCYTHE_AUDIO_DEVICE_SETTINGS", "Options: Audio device settings...", W),
     ("40605", "Show action list", W),
     ("_SCYTHE_SEARCH_ACTIONS", "Actions: Search actions", W),
     ("40905", "Toolbars: Customize...", W),

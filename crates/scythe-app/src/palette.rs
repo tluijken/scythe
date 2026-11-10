@@ -117,6 +117,9 @@ pub enum Action {
     ShowVirtualKeyboard,
     MidiDevices,
     ToggleTimecodeSync,
+    /// REAPER's "Options: Preferences..." (Ctrl+P), which opens on the audio device page.
+    Preferences,
+    AudioDeviceSettings,
     ShowActionList,
     CustomizeToolbars,
     MouseModifiers,
@@ -248,6 +251,8 @@ impl Action {
         Action::ShowVirtualKeyboard,
         Action::MidiDevices,
         Action::ToggleTimecodeSync,
+        Action::Preferences,
+        Action::AudioDeviceSettings,
     ];
 
     /// Every action, the toolbars and screensets included.
@@ -394,6 +399,8 @@ impl Action {
             Action::ShowVirtualKeyboard => id(40377),
             Action::MidiDevices => id(40619),
             Action::ToggleTimecodeSync => id(40620),
+            Action::Preferences => id(40016),
+            Action::AudioDeviceSettings => named("_SCYTHE_AUDIO_DEVICE_SETTINGS"),
             Action::ShowActionList => id(40605),
             Action::CustomizeToolbars => id(40905),
             Action::MouseModifiers => id(41356),
@@ -515,6 +522,8 @@ impl Action {
             Action::ToggleMarkerActions => None,
             Action::ShowVirtualKeyboard => k(Modifiers::ALT, Key::B),
             Action::MidiDevices | Action::ToggleTimecodeSync => None,
+            Action::Preferences => k(CMD, Key::P),
+            Action::AudioDeviceSettings => None,
             Action::ShowActionList
             | Action::CustomizeToolbars
             | Action::MouseModifiers
@@ -889,6 +898,7 @@ impl Action {
             Action::SetlistPrevious => app.setlist_step(false),
             Action::ShowVirtualKeyboard => app.view.keyboard_open = !app.view.keyboard_open,
             Action::MidiDevices => app.view.midi_devices_open = !app.view.midi_devices_open,
+            Action::Preferences | Action::AudioDeviceSettings => crate::ui::audio_device::toggle(app),
             Action::ToggleTimecodeSync => {
                 let on = !app.project.timecode_sync.enabled();
                 app.edit("Toggle external timecode synchronization", |p| p.timecode_sync.set_enabled(on));

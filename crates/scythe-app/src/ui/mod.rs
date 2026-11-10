@@ -1,6 +1,8 @@
 pub mod actions;
 mod arrange;
+pub mod audio_device;
 pub mod bay;
+pub mod channels;
 mod comp;
 pub mod editing;
 mod envelope_lanes;
@@ -185,6 +187,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     surfaces::show(app, ui);
     modulation::show(app, ui);
     midi_devices::show(app, ui);
+    audio_device::show(app, ui);
     monitor::wizards(app, ui);
     groups::show(app, ui);
     regions::show(app, ui);
@@ -343,7 +346,11 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             Some(r) => format!("{}\n{r}", info.name),
             None => info.name.clone(),
         };
-        ui.allocate_rect(status_rect, Sense::hover()).on_hover_text(tip);
+        let resp = ui.allocate_rect(status_rect, Sense::click());
+        resp.widget_info(|| widgets::button_info(ui, "Audio device settings"));
+        if resp.on_hover_text(format!("{tip}\nClick for the audio device settings")).clicked() {
+            audio_device::toggle(app);
+        }
     }
     if search.left() >= group.right() + GAP - 0.5 {
         let resp = ui.allocate_rect(search, Sense::click());
@@ -599,31 +606,28 @@ fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
     ui.separator();
     let current = m.device_outputs().first().copied();
     let default = Metronome::default().outputs_or(prefs.metronome_default_output).first().copied();
-    let default_name = default.map_or("the master".to_owned(), |(first, _)| format!("Out {}/{}", first + 1, first + 2));
+    let outs = channels::Channels::outputs(app);
+    let default_name = default.map_or("the master".to_owned(), |p| outs.label(p));
     if ui.radio(current.is_none(), format!("Default output ({default_name})")).clicked() {
         app.change_metronome(|m| m.outputs.clear());
         ui.close();
     }
-    ui.menu_button("Play to device output", |ui| {
-        for first in (0..16).step_by(2) {
-            let label = format!("Out {}/{}", first + 1, first + 2);
-            if ui.radio(current == Some((first, false)), label).clicked() {
-                app.change_metronome(|m| m.outputs = vec![first as i64]);
-                ui.close();
-            }
-        }
-    });
+    let encode = |(first, mono): channels::Pick| first as i64 | if mono { scythe_core::HwOut::MONO } else { 0 };
+    let mut chosen = None;
+    ui.menu_button("Play to device output", |ui| chosen = outs.output_menu(ui, current));
+    if let Some(p) = chosen {
+        app.change_metronome(|m| m.outputs = vec![encode(p)]);
+        ui.close();
+    }
+    let mut chosen = None;
+    let mut master = false;
     ui.menu_button("Default output (all projects)", |ui| {
-        if ui.radio(default.is_none(), "The master").clicked() {
-            app.change_preferences(|p| p.metronome_default_output = -1);
-            ui.close();
-        }
-        for first in (0..16).step_by(2) {
-            let label = format!("Out {}/{}", first + 1, first + 2);
-            if ui.radio(default == Some((first, false)), label).clicked() {
-                app.change_preferences(|p| p.metronome_default_output = first as i64);
-                ui.close();
-            }
-        }
+        master = ui.radio(default.is_none(), "The master").clicked();
+        chosen = outs.output_menu(ui, default);
     });
+    if master || chosen.is_some() {
+        let value = chosen.map_or(-1, encode);
+        app.change_preferences(|p| p.metronome_default_output = value);
+        ui.close();
+    }
 }

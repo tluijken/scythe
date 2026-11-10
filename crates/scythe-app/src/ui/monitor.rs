@@ -19,8 +19,16 @@ use crate::ui::window::{WindowKind, scythe_window};
 const CARD_W: f32 = 320.0;
 const CARD_GAP: f32 = 12.0;
 const ROW_H: f32 = 40.0;
-/// Device outputs offered when choosing where a mix plays.
-const OUTPUTS: u32 = 16;
+fn pick(o: MonitorOutput) -> crate::ui::channels::Pick {
+    match o {
+        MonitorOutput::Stereo(n) => (n as usize, false),
+        MonitorOutput::Mono(n) => (n as usize, true),
+    }
+}
+
+fn unpick((first, mono): crate::ui::channels::Pick) -> MonitorOutput {
+    if mono { MonitorOutput::Mono(first as u32) } else { MonitorOutput::Stereo(first as u32) }
+}
 
 /// State of the "new monitor mix" wizard, which doubles as SWS's cue buss dialog.
 #[derive(Debug, Clone)]
@@ -252,10 +260,12 @@ fn card(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, area
     y += 26.0;
 
     // Output, safety limiter.
+    let outs = crate::ui::channels::Channels::outputs(app);
     let out_label = match mix.output {
-        Some(o) => o.label(),
+        Some(o) => outs.short(pick(o)),
         None => "No output".to_owned(),
     };
+    let out_label = crate::ui::widgets::truncate(ui, &out_label, &theme::mono(11.0), 120.0);
     let out = Rect::from_min_size(pos2(left, y), vec2(130.0, 28.0));
     let resp = text_pill(
         ui,
@@ -265,24 +275,18 @@ fn card(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, area
         BG,
         if mix.output.is_some() { TEXT } else { theme::PINK },
     )
-    .on_hover_text("Where this mix plays: the in-ear transmitter or headphone amp input");
+    .on_hover_text(format!(
+        "{}: where this mix plays, the in-ear transmitter or headphone amp input",
+        mix.output.map_or("No output".to_owned(), |o| outs.label(pick(o)))
+    ));
     let mut chosen = None;
     egui::Popup::menu(&resp).show(|ui| {
-        let mut choose = |ui: &mut Ui, o: Option<MonitorOutput>| {
-            let label = o.map_or("None".to_owned(), MonitorOutput::label);
-            if ui.selectable_label(mix.output == o, label).clicked() {
-                chosen = Some(o);
-            }
-        };
-        for n in (0..OUTPUTS).step_by(2) {
-            choose(ui, Some(MonitorOutput::Stereo(n)));
+        if let Some(p) = outs.output_menu(ui, mix.output.map(pick)) {
+            chosen = Some(Some(unpick(p)));
         }
-        ui.menu_button("Mono", |ui| {
-            for n in 0..OUTPUTS {
-                choose(ui, Some(MonitorOutput::Mono(n)));
-            }
-        });
-        choose(ui, None);
+        if ui.selectable_label(mix.output.is_none(), "None").clicked() {
+            chosen = Some(None);
+        }
     });
     if let Some(o) = chosen {
         app.edit("Set monitor output", |p| {
@@ -624,13 +628,11 @@ fn wizard_body(app: &mut ScytheApp, ui: &mut Ui, w: &mut Wizard) -> bool {
             ui.end_row();
         }
         ui.label("Output");
-        let label = w.output.map_or("None".to_owned(), MonitorOutput::label);
+        let outs = crate::ui::channels::Channels::outputs(app);
+        let label = w.output.map_or("None".to_owned(), |o| outs.label(pick(o)));
         egui::ComboBox::from_id_salt("monitor-out").selected_text(label).show_ui(ui, |ui| {
-            for n in (0..OUTPUTS).step_by(2) {
-                ui.selectable_value(&mut w.output, Some(MonitorOutput::Stereo(n)), MonitorOutput::Stereo(n).label());
-            }
-            for n in 0..OUTPUTS {
-                ui.selectable_value(&mut w.output, Some(MonitorOutput::Mono(n)), MonitorOutput::Mono(n).label());
+            if let Some(p) = outs.output_menu(ui, w.output.map(pick)) {
+                w.output = Some(unpick(p));
             }
             ui.selectable_value(&mut w.output, None, "None");
         });

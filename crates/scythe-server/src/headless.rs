@@ -63,23 +63,30 @@ fn report(result: Result<(), String>) -> i32 {
 
 pub fn run(options: Options) -> Result<(), String> {
     if options.list_devices {
-        for d in scythe_engine::devices::list() {
-            let dir = match (d.input, d.output) {
-                (true, true) => "in/out",
-                (true, false) => "in",
-                _ => "out",
-            };
-            println!("{:<10} {:<7} {}", d.host, dir, d.name);
-        }
+        crate::config::print_devices();
         return Ok(());
     }
     install_signal_handlers();
     scythe_engine::realtime::enable();
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    let mut notice = None;
     let engine = if options.null_audio {
         Engine::start_offline(pool, options.devices.sample_rate.unwrap_or(48_000))
     } else {
-        Engine::start_with(pool, &options.devices)
+        let unset = scythe_engine::DeviceRequest { no_input: options.devices.no_input, ..Default::default() };
+        let devices = if options.devices == unset {
+            let saved = std::fs::read_to_string(scythe_session::preferences_path()).unwrap_or_default();
+            let prefs = scythe_core::prefs::Preferences::parse(&saved);
+            scythe_engine::DeviceRequest {
+                no_input: unset.no_input,
+                ..scythe_session::audio::request_from_prefs(&prefs.audio)
+            }
+        } else {
+            options.devices.clone()
+        };
+        let (engine, fallback) = scythe_session::audio::start_engine(pool, &devices);
+        notice = fallback;
+        engine
     };
     let info = engine.info().clone();
     eprintln!(
@@ -92,6 +99,9 @@ pub fn run(options: Options) -> Result<(), String> {
     session.log_notices = true;
     session.no_input = options.devices.no_input;
     session.load_preferences(scythe_session::preferences_path());
+    if let Some(n) = notice {
+        session.notify(n);
+    }
     if let Some(path) = &options.project {
         session.open_path(path)?;
     }

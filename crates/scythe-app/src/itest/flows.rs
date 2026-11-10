@@ -327,7 +327,7 @@ fn toolbar_buttons_and_the_action_list_run_actions() {
 fn escape_closes_each_window_and_leaves_playback_alone() {
     use crate::palette::Action;
     type Open = fn(&mut ScytheApp) -> bool;
-    let windows: [(&str, Action, Open); 10] = [
+    let windows: [(&str, Action, Open); 11] = [
         ("track groups", Action::TrackGrouping, |a| a.view.groups.is_some()),
         ("region manager", Action::RegionManager, |a| a.view.regions.is_some()),
         ("media explorer", Action::MediaExplorer, |a| a.view.explorer.is_some()),
@@ -335,6 +335,7 @@ fn escape_closes_each_window_and_leaves_playback_alone() {
         ("theme colours", Action::ThemeColors, |a| a.view.theme_editor),
         ("virtual keyboard", Action::ShowVirtualKeyboard, |a| a.view.keyboard_open),
         ("MIDI devices", Action::MidiDevices, |a| a.view.midi_devices_open),
+        ("audio device", Action::AudioDeviceSettings, |a| a.view.audio_device.is_some()),
         ("action list", Action::ShowActionList, |a| a.view.actions.is_some()),
         ("toolbar editor", Action::CustomizeToolbars, |a| a.view.toolbar_editor.is_some()),
         ("mouse modifiers", Action::MouseModifiers, |a| a.view.mouse_editor),
@@ -373,4 +374,42 @@ fn every_input_widget_of_the_main_views_has_a_name() {
         t.click(page);
         t.h.check_accessibility();
     }
+}
+
+#[test]
+fn the_audio_device_window_opens_from_the_status_pill_and_the_action() {
+    use crate::palette::Action;
+    let mut t = TestApp::live("audio_device");
+    t.click("Audio device settings");
+    assert!(t.app().view.audio_device.is_some(), "the status pill opens the audio device window");
+    for label in ["Audio system", "Input channels", "Input device", "Output channels", "Output device", "Sample rate"] {
+        assert!(t.has(label), "{label} has no name: {:?}", t.labels());
+    }
+    for label in ["Blocksize", "Apply", "Refresh", "Input channel name aliasing", "Edit output names"] {
+        assert!(t.has(label), "{label} has no name: {:?}", t.labels());
+    }
+    t.h.check_accessibility();
+    t.key(Key::Escape);
+    assert!(t.app().view.audio_device.is_none(), "Escape closes it");
+
+    Action::AudioDeviceSettings.run(t.app());
+    t.frames(3);
+    assert!(t.app().view.audio_device.is_some(), "the action opens it");
+    t.key(Key::Escape);
+    t.key_mod(Modifiers::COMMAND, Key::P);
+    assert!(t.app().view.audio_device.is_some(), "Ctrl+P (Options: Preferences...) opens it");
+
+    let tracks = t.project().tracks.len();
+    let w = t.app().view.audio_device.as_mut().unwrap();
+    w.draft.system = "Dummy".into();
+    (w.draft.sample_rate, w.draft.block_size) = (44_100, 256);
+    t.frames(2);
+    t.click_role(Role::Button, "Apply");
+    t.frames(3);
+    let app = t.app();
+    assert_eq!(app.view.audio_device.as_ref().and_then(|w| w.error.clone()), None);
+    assert_eq!((app.engine.sample_rate(), app.engine.info().name.as_str()), (44_100, "Dummy Audio"));
+    assert_eq!(app.engine.health().block_size, Some(256));
+    assert_eq!(t.project().tracks.len(), tracks, "the project stays open");
+    assert!(t.has("Playing: Dummy Audio · 44100 Hz · 256 frames · 0 in / 2 out"), "{:?}", t.labels());
 }

@@ -106,7 +106,7 @@ impl TestApp {
 
     fn build(dir: PathBuf, setup: impl FnOnce(&mut ScytheApp)) -> Self {
         isolate();
-        let mut app = ScytheApp::new(egui::Context::default(), Project::default(), true);
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
         app.no_input = true;
         app.session.script_runner = Some(crate::script_host::control_runner());
         setup(&mut app);
