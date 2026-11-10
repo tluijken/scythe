@@ -3,7 +3,7 @@
 //! editing actions by REAPER command id ([`actions`]), the nudge/set dialog ([`nudge`]) and
 //! transient detection for dynamic split and tab-to-transient ([`transients`]).
 //!
-//! Measured in REAPER 7.73 with Lua probes (kept in the README's verification table): the
+//! Measured in REAPER 7.73 with Lua probes (kept in docs/verification.md): the
 //! RPP lines are `RIPPLE <mode> <all>`, `GRID <flags> 8 <quarter notes> 8 1 0 <kind> <swing>`,
 //! `LOCK <flags>`, `AUTOXFADE <flags>` and `GROUPOVERRIDE <off> 0 0 0`.
 

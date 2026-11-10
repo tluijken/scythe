@@ -53,7 +53,7 @@ survive restarts and opening another project, and do not travel with a copied .R
 | `GET` | `/api/ws` | WebSocket: commands in, replies and events out |
 | `POST` | `/mcp` | the same commands as MCP tools for AI agents, see [mcp.md](mcp.md); `?tools=` picks the tools listed |
 | `GET` | `/mcp` | the MCP server's notifications as server-sent events |
-| `GET` | `/`, `/monitor`, `/setlist`, … | the web UI (see the README), no token needed to load it |
+| `GET` | `/`, `/monitor`, `/setlist`, … | the web UI (see [features.md](features.md#web-ui-browser-tablet-phone)), no token needed to load it |
 
 Errors answer `{"ok": false, "error": {"kind": …, "message": …}}` with HTTP status 400 for
 `invalid` (malformed, unknown command, value out of range), 404 for `not_found` (a track, send,

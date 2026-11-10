@@ -5,7 +5,7 @@
 //! drums: a transient starts where the 1 ms peak level, above the threshold, rises by more
 //! than the sensitivity's step over the loudest level of the 40 ms before it, at the first
 //! sample past halfway (in dB) between the two. Where it agrees with REAPER it agrees to the
-//! sample (median 0.04 ms); it finds about four in five of REAPER's transients (the README
+//! sample (median 0.04 ms); it finds about four in five of REAPER's transients (docs/verification.md
 //! has the numbers).
 
 /// The detector's settings, as REAPER's "Transient detection settings" name them.

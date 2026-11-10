@@ -3,14 +3,21 @@
 A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
 format, with a modern UI based on the "REAPER redesign" mockup.
 
-## Clean-room approach
+- **REAPER-compatible.** Scythe opens and saves REAPER 7.73 `.RPP` projects losslessly: on 33
+  real projects (~237k lines) a round trip changes only the header line. Projects play
+  sample-identically to REAPER wherever that was measured, from pan laws and fades to ReaEQ,
+  ReaComp, JSFX and resampling ([how](#how-scythe-is-verified)).
+- **Built for the stage.** In-ear monitor mixes with "more me", setlists with count-in and stop
+  markers, footswitches and control surfaces, and a headless server that runs as a service.
+- **Remote and scriptable.** A web UI for tablets and phones, a JSON/WebSocket control API, an
+  MCP server for AI agents (with mix analysis) and ReaScript in Lua, EEL2 and Python.
 
-Scythe contains no code, binaries or data files from REAPER. Compatibility is checked from the
-outside: projects go through REAPER's `.RPP` format and back, and renders are compared with
-REAPER's ([docs/verification.md](docs/verification.md)). Reading and writing `.RPP` projects is an
-interoperability goal.
+![Scythe's main window: arrange view, mixer and inspector](docs/screenshots/main-window.png)
 
-## Running
+## Quick start
+
+Scythe builds with [devbox](https://www.jetify.com/devbox), which brings Rust and the audio
+libraries:
 
 ```sh
 devbox run app                     # opens the generated demo song
@@ -18,64 +25,23 @@ devbox run app -- path/to/song.RPP # opens a REAPER project
 devbox run test
 ```
 
-Flags: `--demo` (open the demo song), `--play` (start playback on launch), `--render-project`,
-`--render-queue [dir]` (render every project in REAPER's render queue, `QueuedRenders`),
-`--no-input` (never
-open the audio input for monitoring), `--null-audio` (open no audio device and play on a
-silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
-made), `--view=START-END`
-(open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).
-A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
-`scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
-Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 2, so a debug
-build plays real projects (a live set's media loads in 10 s instead of 23 s and plays at 5 %
-DSP load instead of 13 %), at about 5 s more per engine rebuild.
-`SCYTHE_UI_SCALE=0.75` scales the UI (0.5–3).
-
-The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`.
-
-### Headless (no screen) and remote control
+Without a screen, for example as an in-ear-monitor mixer in the rack:
 
 ```sh
 devbox run -- scripts/cargo.sh run -p scythe-server -- song.RPP --output-device Scarlett
 devbox run app -- --headless song.RPP          # the same, from the app binary
+```
+
+The web UI and the [control API](docs/control-api.md) listen on `127.0.0.1:8770`; to reach them
+from phones and tablets on the band's network, listen on the LAN with an admin token and open
+`http://<machine>:8770/` in a browser:
+
+```sh
+scythe-server --control 0.0.0.0:8770 --token admin-secret --folder ~/live set.RPP
 devbox run app -- --control 0.0.0.0:8770 --control-token secret song.RPP  # window + remote
 ```
 
-`scythe-server` (or `scythe --headless`) runs a session without a window and without
-X11/Wayland, for example as an in-ear-monitor mixer on a machine in the rack: it opens the
-audio device, loads the project, keeps input monitoring and effects running, auto-saves
-backups, serves the [control API](docs/control-api.md) on `127.0.0.1:8770` and stops cleanly on
-Ctrl+C or SIGTERM (writing unsaved changes to the project's `Backups` folder). Flags:
-`--audio-host`, `--output-device`, `--input-device` (exact name or part of it),
-`--sample-rate`, `--buffer-size`, `--output-channels`, `--null-audio` (open no device),
-`--no-input`, `--control ADDR` (`off` to disable), `--token` (the admin token), `--folder DIR`
-(a folder the web UI may browse for projects; repeatable, home by default), `--access-file FILE`
-(where access links are kept), `--config FILE`, `--list-devices`. The same settings can live in `$XDG_CONFIG_HOME/scythe/headless.toml`
-(see `crates/scythe-server/src/config.rs`); flags win.
-
-For a rig that has to come up on its own, `scythe-server --install-service [project] [flags]`
-writes a systemd user unit running with those settings (`Restart=on-failure`, real-time
-priority and locked memory as far as the user's limits allow); `loginctl enable-linger`
-starts it at boot without anyone logging in. The audio thread runs with real-time priority
-(`SCHED_FIFO` within the user's rtprio limit, else through RealtimeKit). `scythe-server --status`
-asks the running session for its device, buffer, CPU load, xruns, reconnects, scheduling and
-connected clients. A device that is
-unplugged mid-show leaves the session running silently (transport, setlist and clients carry
-on) while it looks for the device every five seconds and picks it up again. See
-[docs/live.md](docs/live.md) for the whole stage setup.
-
-The control API is JSON over HTTP (`POST /api/command`) and a WebSocket (`/api/ws`) that also
-streams transport, meter and project-changed events. It covers transport, project
-open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
-markers, the tempo map, monitor mixes, setlists and access links, plus a full `snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
-`--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
-The window runs the control API, control surfaces and marker actions on a thread of their own,
-so they keep their pace (commands answered in a few ms, events at 20 a second) while the window
-is hidden or minimised; only actions that need the window wait for its next frame.
-Binding beyond localhost without a token prints a warning.
-
-### AI agents (MCP)
+For AI agents, Scythe is an [MCP](docs/mcp.md) server:
 
 ```sh
 devbox run -- scripts/cargo.sh build --release -p scythe-mcp
@@ -83,76 +49,184 @@ claude mcp add scythe -- $PWD/target/release/scythe-mcp --url http://127.0.0.1:8
 claude mcp add --transport http scythe http://127.0.0.1:8770/mcp   # or without the binary
 ```
 
-Scythe is an [MCP](docs/mcp.md) server, so Claude Code, Claude Desktop and other agents can
-read and edit a running session: a compact project overview (`get_project`), transport,
-project open/save/undo, tracks, sends and hardware outputs, effects (catalog search and
-parameters), items, markers, monitor mixes and setlists, plus `scythe_command` for any control API command. Every Scythe serving the control
-API answers MCP over Streamable HTTP at `/mcp`; the `scythe-mcp` binary serves stdio, bridging
-to a running Scythe (`--url`, `--token`) or running a session of its own (`--headless
-song.RPP`). Tool schemas are generated from the API's command types; deleting, opening,
-starting a new project, saving and running scripts are marked destructive for clients to confirm.
+Every flag is described under [Command line](docs/features.md#command-line) and
+[Remote control](docs/features.md#remote-control); [docs/live.md](docs/live.md) walks through a
+whole stage setup.
 
-For building live sessions and mixing, agents also get: `media_import` and `media_probe` (audio
-and MIDI files as items, with length, rate and loudness), `analysis_segments` (songs in a
-backing-track or click file, with tempo, and proposed song and `!1016` stop markers),
-`analysis_file`, `analysis_mix`, `analysis_compare` and `analysis_match_eq` (EBU R128 loudness,
-true peak, loudness range, crest factor, third-octave spectrum and tonal balance, width and
-correlation per band, low-end mono check, brightness, transient density; mixes rendered
-offline through the render path, never played; a few limited-gain ReaEQ bands proposed and
-applied as one undo step, with compression and limiting advice), `events_since` and
-`events_meters` for polling, the access links with their QR payloads, and `script_run` for
-ReaScript text in the desktop app. A compact set of tools is listed by default; `--tools
-mix,setlist` (or `/mcp?tools=all`) and the `scythe_tools` tool list more, with
-`tools/list_changed`. Clients can subscribe to `scythe://project` and get log messages for
-notices, transport and device health (stdio, or `GET /mcp` as server-sent events). Prompts
-`build_live_session`, `setlist_from_backing_tracks` and `match_reference` walk an agent through
-the whole job.
+## Features
 
-### Web UI (browser, tablet, phone)
+A summary; [docs/features.md](docs/features.md) has the full description of each area.
 
-The control API serves a web UI on the same address, embedded in the binary (no internet
-needed on stage, no Node toolchain to build it):
+### Arrange and editing
 
-| Page | For |
+- Move, trim, split, fade, crossfade, glue, copy and paste items; razor edits, ripple editing
+  (per track or all tracks), the snap grid with swing, locking and item groups.
+- Takes, fixed lanes and comping by swiping, as in REAPER 7.
+- Folders, multi-track selection and drag-to-reorder with REAPER's drop rules.
+- The tempo map with ramps and time signatures; timebases, stretch markers, play rate, pitch
+  shifting with SoundTouch and Rubber Band, dynamic split and tab-to-transient.
+
+### Mixing and routing
+
+- REAPER's fader law, pan laws and pan modes (balance, stereo pan with width, dual pan),
+  polarity, solo in place, solo defeat and master loudness (LUFS).
+- Sends post-fader, pre-FX or pre-fader, hardware outputs, multichannel tracks up to 32
+  channels, sidechains and effect pin maps.
+- Track groups with lead and follow per parameter, and VCA groups.
+
+### Effects and plugins
+
+- **Stock effect emulations** modelled on REAPER 7.73 renders: ReaEQ, ReaComp, ReaXcomp, ReaGate,
+  ReaLimit, ReaDelay, ReaVerb, ReaVerbate, ReaFIR, ReaSynth, ReaSamplOmatic5000, ReaInsert and
+  ReaControlMIDI, saved in REAPER's own format so REAPER opens them unchanged. Each has a
+  graphical editor drawn from the emulation's own math.
+- **Plugin hosting**: CLAP, LV2, VST 2 and VST 3 (instruments too), with their own editors,
+  presets in REAPER's preset files and latency compensation across tracks, sends and folders.
+- **JSFX** from their own source through an EEL2 interpreter that follows REAPER's compiled
+  arithmetic: all 219 of REAPER's stock effects, with their `@gfx` views.
+- **FX chains** with wet/dry, parallel effects, FX containers with pin routing, take FX, input
+  FX, the monitoring chain, freeze, and `.RfxChain`/`.RTrackTemplate` files.
+- **Neural Amp Modeler** models run natively, with a model browser, A/B snapshots and click-free
+  switching; **guitar rigs** put gate, amp, cab, EQ and level in one REAPER FX container with a
+  rig window, snapshots and presets; [TONE3000](docs/tone3000.md) tones can be browsed,
+  previewed in the slot and kept.
+- Parameter modulation (LFO, audio control signal, parameter links, MIDI), MIDI and OSC learn.
+
+| ReaEQ | ReaComp |
 |---|---|
-| `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with waveforms on items (move, split, delete), markers and regions, a tempo lane (drag a tempo or time signature marker, double-tap to edit or add) and the tempo map, track headers, mixer with meters, sends, effects with their parameters, undo and redo, a file browser to open and save projects, monitor mixes (a wizard like the desktop one: musician, sources, own sources, output, limiter; copy, rename, delete, output, limiter, sources), setlists (make, rename, duplicate, delete, add songs, drag to reorder, import and export text, auto-advance) and access links with QR codes |
-| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, a click fader, the mix's meter; nothing else of the session |
-| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap, the count-in beats and a count-in switch |
+| ![ReaEQ's editor: band handles over the live spectrum](docs/screenshots/reaeq-editor.png) | ![ReaComp's editor: transfer curve, gain reduction and history](docs/screenshots/reacomp-editor.png) |
 
-The monitor and setlist pages appear once the server offers monitor mixes (`mix.*`) and
-setlists (`setlist.*`); against an older server they say so instead.
+| Guitar rig | NAM and TONE3000 browser |
+|---|---|
+| ![The rig window: gate, amp, cab, EQ and level from left to right](docs/screenshots/guitar-rig.png) | ![The rig's model browser on TONE3000 (sample data)](docs/screenshots/nam-tone3000.png) |
 
-To open it from a phone or tablet on the band's network, listen on the LAN with an admin token:
+![An FX chain with a container in the inspector](docs/screenshots/fx-container.png)
 
-```sh
-scythe-server --control 0.0.0.0:8770 --token admin-secret --folder ~/live set.RPP
-```
+### MIDI
 
-The admin token gives full control; keep it to whoever runs the session. Everyone else gets an
-**access link** made in the editor (the QR button in the top bar, or the QR button on a monitor
-mix): a phone scans its code and is in, without typing anything.
+- A docked MIDI editor with piano roll, named notes (drum maps) and event list, controller lanes
+  with REAPER 7's CC shapes, quantize with swing, humanize, transpose by scale, step input and
+  groove templates; inline editors in the arrange view.
+- MIDI files, MIDI recording and overdub, MIDI routing with buses, hardware MIDI outputs, MIDI
+  clock, MTC and LTC (generating and chasing), and a virtual MIDI keyboard.
 
-| Link | Opens | May |
-|---|---|---|
-| musician | `/monitor`, locked to their mix | read and change their own monitor mix (levels, pans, mutes, more me, its volume); see the transport and setlist status; nothing else |
-| stage | `/setlist` | play the setlist: choose, cue, play, stop, next, previous, auto-advance; plain play and stop; no editing |
+![The MIDI editor with velocity and CC lanes](docs/screenshots/midi-editor.png)
 
-Scythe checks every command against the link's role on the session's side, so a link cannot do
-more by calling the API itself, and its WebSocket only carries what the role needs (a
-musician's meters are their mix's alone). Links are kept in
-`$XDG_CONFIG_HOME/scythe/access.json` (or `--access-file`), readable by its owner only, not in
-the project: they are secrets, and a phone's link keeps working when another project is
-opened. A link finds its mix by the musician's name. Renewing a link gives it a new token;
-deleting it locks its phones out at once. When the editor runs on the machine itself
-(`localhost`), the codes carry the machine's network address instead, so phones can reach it.
+### Recording
 
-A browser with the admin token can still open `/monitor` (pick any mix, remembered per device;
-`/monitor?mix=Bass&lock=1` pins one) and `/setlist`. Pages reconnect by themselves when the
-wifi drops or Scythe restarts, and grey out while they are offline.
+- Recording of armed tracks with REAPER's record modes (input, output, MIDI overdub and
+  replace), input monitoring through the FX chain (play a guitar through a NAM amp live),
+  punch-in, auto-punch, loop recording into takes or lanes.
+- Metronome, count-in and pre-roll as REAPER sets them, the click routed to any output or into
+  the monitor mixes.
 
-`SCYTHE_WEB_DIR=crates/scythe-server/web` serves the files from disk instead, for working on
-the UI without rebuilding. Its logic tests run with `node crates/scythe-server/web/test/run.mjs`
-(part of `devbox run test`) or in any browser at `/test/`.
+### Automation
+
+- Track, send and FX parameter envelopes with every point shape, in envelope lanes on the
+  arrange time axis.
+- Automation items (pooled, looped, LFO shapes, baseline and amplitude) played as REAPER plays
+  them; automation modes (touch, latch, write, latch preview) and the global override.
+
+![Envelope lanes with an automation item](docs/screenshots/envelopes.png)
+
+### Live and stage
+
+- **Monitor mixes** for in-ear monitoring: a card per musician with "more me", a safety limiter
+  and its own output. A mix is an ordinary REAPER track, so REAPER plays it the same.
+- **Setlists** made from the project's markers, with stop markers, cues, auto-advance and a
+  count-in per song, stored where REAPER keeps them.
+- **Marker actions** (`!1016` stops on the marker's frame), footswitches, MIDI pedals, OSC with
+  REAPER's `.ReaperOSC` files, Mackie Control and HUI.
+- A **headless server** that installs itself as a systemd service, runs with real-time priority
+  and survives an unplugged audio device. See [docs/live.md](docs/live.md).
+
+| Monitor mixes | Setlist |
+|---|---|
+| ![Monitor mix cards with more me, limiter and output](docs/screenshots/monitor-mixes.png) | ![The setlist's stage view](docs/screenshots/setlist.png) |
+
+### Remote
+
+- **Web UI** served by Scythe itself, no internet needed: the session editor (`/`) for a tablet
+  or laptop, "more me" on a musician's phone (`/monitor`) and the drummer's setlist (`/setlist`).
+  Access links with QR codes give each phone exactly the role it needs.
+- **Control API**: JSON over HTTP and a WebSocket with transport, meter and project events;
+  see [docs/control-api.md](docs/control-api.md).
+- **MCP** for Claude Code, Claude Desktop and other agents: read and edit a running session,
+  import media, find songs in backing tracks, and analyse a mix (loudness, spectrum, width,
+  low end) against a reference with proposed EQ; see [docs/mcp.md](docs/mcp.md).
+
+![The web editor: arrange view, mixer and inspector in a browser](docs/screenshots/web-editor.png)
+
+| Monitor (phone) | Setlist (tablet) |
+|---|---|
+| <img src="docs/screenshots/web-monitor.png" alt="The monitor page on a phone: more me, a fader per source" width="260"> | <img src="docs/screenshots/web-setlist.png" alt="The setlist page on a tablet: now playing, next up, the songs" width="560"> |
+
+### Scripting
+
+- ReaScript in Lua 5.4, EEL2 and Python: 310 `reaper.*` functions (tracks, items, takes, MIDI,
+  envelopes, automation items, markers, tempo, effects, state chunks, actions), `defer` and
+  `gfx` windows. A script runs as one undo step.
+
+### Rendering and formats
+
+- Playback of WAV, FLAC, MP3 (with REAPER's MP3 framing), Ogg, Opus, AAC, WavPack, MIDI, video
+  and subprojects; every REAPER resample mode including r8brain.
+- Renders with the project's own settings (bounds, stems, regions and the region matrix,
+  wildcards, the render queue, normalisation, dither) to WAV, Wave64, RF64, AIFF, CAF, MP3,
+  FLAC, Ogg Vorbis, Opus, WavPack, GIF, LICEcap, FFmpeg video, CD images and DDP, with metadata.
+
+### Project and media
+
+- Project tabs, subprojects, auto-save and backups.
+- A media explorer reading REAPER's media databases, with tags, search, favourites and a
+  tempo-matched preview; the project bay and "clean project directory".
+
+![The media explorer](docs/screenshots/media-explorer.png)
+
+### Actions, windows and themes
+
+- One action registry with REAPER's command ids, the action palette (Ctrl+K), keyboard
+  shortcuts, custom actions, toolbars and mouse modifiers, kept in REAPER's own files
+  (`reaper-kb.ini`, `reaper-menu.ini`, `reaper-mouse.ini`) so a REAPER keymap works in both.
+- Window sets, remembered window positions, and themes (REAPER `.ReaperTheme` colours
+  imported).
+
+## How Scythe is verified
+
+Scythe is checked against REAPER 7.73 itself, not against a description of it.
+`crates/scythe-engine/examples/reaper_ref.rs`, `reaeq_ref.rs` and `reaverb_ref.rs` write small
+projects, let REAPER render them headless and compare with Scythe's output sample by sample;
+`examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
+compares the two files. Editing, MIDI editor actions, ReaScript calls, recordings and control
+surfaces are compared by running the same steps in both (Lua probes in REAPER, the control API
+in Scythe). Most areas null exactly or within a stated tolerance; stretched and pitch-shifted
+takes cannot (REAPER's élastique is proprietary). The full table, area by area, is in
+[docs/verification.md](docs/verification.md).
+
+## Known gaps
+
+- Windows are drawn inside the main window, so none can move to a second screen.
+- About 150 of REAPER's ~4300 main-section actions have a counterpart; there is no extension SDK,
+  so SWS and other extensions do not load, and ReaScript covers part of the API.
+- élastique and REAPER's own stretch modes use Scythe's phase vocoder, so stretched takes sound
+  close but do not null.
+- Some stock plugins (ReaPitch, ReaTune, ReaVocode, ReaSurround …) are not emulated and pass
+  audio through unless REAPER's own Linux binaries are on the VST path.
+- Video processors other than three stock presets are left out of renders.
+
+Every known difference, area by area, is in [docs/limitations.md](docs/limitations.md).
+
+## Documentation
+
+| Document | About |
+|---|---|
+| [docs/features.md](docs/features.md) | every feature in detail |
+| [docs/verification.md](docs/verification.md) | what was compared with REAPER and how close it is |
+| [docs/limitations.md](docs/limitations.md) | what is not there yet or differs from REAPER |
+| [docs/live.md](docs/live.md) | Scythe on stage: service, real-time audio, click, footswitches |
+| [docs/control-api.md](docs/control-api.md) | the control API's endpoints, commands and events |
+| [docs/mcp.md](docs/mcp.md) | the MCP server for AI agents |
+| [docs/tone3000.md](docs/tone3000.md) | TONE3000 sign-in, browsing and the model library |
 
 ## Layout
 
@@ -171,1160 +245,20 @@ the UI without rebuilding. Its logic tests run with `node crates/scythe-server/w
 in memory and lists every line whose content changed. On 33 real REAPER projects
 (~237k lines) only the header line differs.
 
-## Status
+## Clean-room approach
 
-Working:
+Scythe contains no code, binaries or data files from REAPER. Compatibility is checked from the
+outside: projects go through REAPER's `.RPP` format and back, and renders are compared with
+REAPER's ([docs/verification.md](docs/verification.md)). Reading and writing `.RPP` projects is an
+interoperability goal.
 
-- **Playback** of audio items (WAV/FLAC/MP3/OGG/AAC…), reversed and sectioned items
-  (`<SOURCE SECTION>`), click-source items and MIDI items (through a built-in preview
-  instrument: drums on channel 10, a soft synth elsewhere). MP3s are read the way REAPER reads
-  them: items keep the encoder delay and padding and play a Xing/Info header frame as a frame of
-  silence, the sampler trims them (gapless) and holds them to 16-bit range, and both scale by
-  32767/32768; mid/side granules of MPEG-2 and 2.5 streams come out 3 dB low, as REAPER's
-  decoder plays them. Opus files decode with the pure-Rust `opus-pure` (pre-skip and end trim
-  applied, the header's output gain too, surround in the file's Vorbis channel order, as REAPER
-  plays them) and WavPack through FFmpeg (16/24-bit, float, multichannel, hybrid). Subprojects
-  (`RPP_PROJECT` items) play their proxy, `<file>-PROX`: a 32-bit float WAV of the subproject's
-  master mix at its own rate, rendered when missing and again when the subproject is saved;
-  double-clicking such an item opens it in a new tab. Media at another rate, and takes at another play rate without "Keep pitch"
-  (a conversion from the file's rate times the play rate), are converted with REAPER's default
-  playback mode, the 64-point sinc, for playback; every render follows the project's
-  `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or two IIR
-  low-passes, r8brain free).
-- **Media explorer** (View: Media explorer, 50124): folders and REAPER media databases
-  (`MediaDB/*.ReaperFileList`, the shortcut list in `[reaper_sexplorer]` as reaper.ini keeps
-  it, so REAPER's own can be copied over), columns for length, rate, channels, bit depth or
-  bitrate, BPM, key, title, artist, genre and comment (from Vorbis comments, ID3, MP4 tags,
-  RIFF `INFO`, BWF `bext` and ACID tempo; the columns share the window's width), search
-  (words, `-word`, `"phrases"`, subfolders), favourites (the database's favourite flag), a
-  preview player that plays straight to the device after the master with tempo match (on, /2,
-  x2, pitch kept or not), pitch and volume, and inserting at the edit cursor on the selected or
-  a new track, tempo-matched. The explorer section's actions (preview, tempo match, insert,
-  favourite, scan) have REAPER's ids.
-- **Project bay** (41157) and **clean project directory** (40098): the project's media files
-  (with takes, items and tracks using each, missing ones marked), items and effects;
-  retargeting a file in every take; the unused files of the recording folder listed as REAPER
-  lists them and sent to the trash or deleted.
-- **Themes** (Options: Show theme color controls, 42392): a colour for each of Scythe's 16
-  palette colours in `theme.ScytheTheme`, edited in a window, saved and loaded as files, and
-  REAPER `.ReaperTheme`/`.ReaperThemeZip` colours imported where they mean the same (arrange
-  and panel backgrounds, track lanes, text, the envelope colours). WALTER layouts and images
-  are not read.
-- **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
-  meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
-  REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
-- **Track selection and folders** (`scythe_core::folders`, REAPER 7.73's behaviour measured with
-  Lua probes and by dragging in its track view): click selects a track, Ctrl+click toggles one,
-  Shift+click selects a range; "Track: Select all tracks" (40296) and "Unselect all" (40297).
-  Mute, solo, arm and polarity clicked on a selected track, and a selected strip's fader and
-  pan, carry over to the other selected tracks (REAPER's selection grouping; faders by the same
-  dB, pan by the same amount). Drag track headers, or mixer strips by their name, to reorder:
-  a line shows where they land, at its folder depth; as in REAPER the top third of a track drops
-  before it, the middle third makes it a folder holding the dragged tracks, the bottom third
-  drops after it at its depth (so the last track of a folder extends the folder). Several
-  selected tracks move together, a folder takes its children along, every folder stays closed
-  by its last track (`ISBUS` depths rewritten from nesting levels) and a drag is one undo step.
-  The folder button on a track header cycles normal, folder parent and last in folder ("Track:
-  Cycle track folder state", 1041); the triangle on a folder cycles open, small and collapsed
-  ("Cycle folder collapsed state", 1042; `BUSCOMP` field 1, `I_FOLDERCOMPACT`), not an undo step
-  as in REAPER. The mixer shows a bar per enclosing folder above each strip and a folder icon
-  that hides the children (`BUSCOMP` field 2, "Show/hide children of selected folder tracks in
-  mixer", 41665). "Move tracks to new folder" (42785) makes a folder from the selected tracks;
-  "Move tracks up/down" (43647/43648), "Remove tracks" (40005, children included), "Mute/unmute
-  tracks" (40280), "Solo/unsolo tracks" (40281), the automation mode actions, "Insert new track
-  at end of track list" (40702) and "as first track" (43093) act on the selection as REAPER's do.
-  The web UI shows the same folders with collapse, drags tracks by the header (mouse) or the
-  grip (touch) and hides collapsed mixer children; the control API has `track.move` with a
-  `parent`, `track.new_folder` and `track.collapse`.
-- **Pan modes, width and polarity** (`PANMODE`, `WIDTH`, `VOLPAN` dual pan fields, project
-  `PANMODE`): stereo balance / mono pan, REAPER 3.x balance, stereo pan with width, dual pan,
-  with width and dual pan envelopes (`WIDTHENV2`, `DUALPANENVL2`, `DUALPANENV2`). Right-click a
-  mixer strip's pan for the mode; stereo pan adds a width bar, dual pan two knobs. Polarity
-  (`IPHASE`, the strip's Ø) flips the track at its fader, as REAPER does: post-fader sends
-  follow it, pre-fader and pre-FX sends do not.
-- **Solo modes**: solo in place (REAPER's default: the soloed track is also heard through its
-  sends and the busses they reach), solo ignoring routing, and solo defeat (`MUTESOLO` fields 2
-  and 3), on the solo button's right-click. Soloing a track keeps the tracks feeding it playing
-  into it, passes its signal through its folder parents without their own material, and leaves
-  everything else silent (`scythe_core::solo`). Monitor mixes get solo defeat, so soloing in the
-  studio never takes a musician's in-ear mix away.
-- **Track groups** (`GROUP_FLAGS`, `GROUP_FLAGS_HIGH`, `GROUP_NAME`): 64 groups with lead and
-  follow per parameter (volume, pan, width, mute, solo, record arm, polarity, automation mode,
-  media edits), reverse flags and "no lead when following". A lead's edits carry over as REAPER
-  carries them: volume as a dB offset (capped at +12 dB), pan and width as an offset, switches
-  as the same state, through leads of other groups. VCA leads scale their followers instead
-  (fader, volume, trim and mute envelopes multiply; pan and pan envelopes offset; width
-  multiplies), nested VCAs included, and pre-FX followers take the level at their input. The
-  grouping matrix ("Track: Show track grouping matrix", or a group badge on a track header or
-  mixer strip) names groups and ticks memberships; the control API has `group.*`.
-- **Send modes and hardware outputs**: sends tap post-fader, pre-FX or pre-fader (post-FX),
-  with polarity and mono downmix (`AUXRECV` fields 2, 6 and 7). Track and master audio
-  hardware outputs (`HWOUT`, `MASTERHWOUT`: device output with the mono flag, send mode,
-  volume, pan, mute, polarity, source channels, pan law) play into the device's outputs, with
-  the same pan law and mono averaging as sends, line up with the master through plugin delay
-  compensation, and follow the track's own output (muting silences them; a track that is only
-  heard because it feeds a soloed bus keeps its sends but not its main or hardware outputs, as
-  in REAPER). The device opens with as many channels as the outputs reach. Edited in the
-  inspector's Sends tab.
-- **Monitor mixes** for in-ear monitoring (the headphone rail button, "View: Toggle monitor
-  mixes"): one card per musician with a fader, pan, mute and "me" toggle per source, a "more
-  me" knob that raises the musician's own sources against the rest, the mix level and meter,
-  the device output (a pair or mono) and a safety limiter. A wizard creates a mix from all or
-  some tracks (or copies one), and "SWS: Create cue buss from track selection…" makes SWS's
-  cue bus with its options (send type, volumes and pans from the tracks, hardware output,
-  track template). A monitor mix is an ordinary REAPER track: "MON <name>", pre-fader receives,
-  master send off, a hardware output, marked with `P_EXT` values (`scythe_monitor`,
-  `scythe_monitor_own`, `scythe_monitor_more_me`); "more me" changes the receive volumes
-  themselves, so REAPER plays the mixes the same. The operations are plain functions on the
-  project (`scythe_core::monitor`), served to remote clients as the control API's `mix.*`
-  commands (hardware outputs as `send.hw_*`, per-mix meters in the `meters` event).
-- **Fades** with REAPER's shapes and curvature, drawn on the items.
-- **Track envelopes** (volume, pre-FX volume, trim, pan, mute, width, dual pan) with all point
-  shapes, volume envelopes in REAPER's fader scaling (`VOLTYPE 1`: they move linearly in fader
-  position, `gain = 10^0.6 / 2 * x * (1 + x)` with `x` the cube of the position), shown
-  and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
-  envelopes play back: bypass for every effect, wet/dry for ReaVerb and ReaDelay, and
-  ReaDelay's per-tap enable, volume and feedback, every hosted plugin's parameters; they follow
-  the project play rate and, like track envelopes and their automation items, tempo edits in a
-  beats timebase.
-- **Envelope lanes** (the envelope button on the left rail): the selected track's envelopes,
-  its sends' and its effects' parameters one lane each on the arrange time axis. Points drag,
-  double-click adds and a right-click sets the shape (linear, square, slow start/end, fast
-  start, fast end, bezier with its tension); a lane's Shape menu sets every point (in the time
-  selection). Arm, bypass and show over the track per envelope, "+ Envelope" for any kind or
-  any FX parameter, and the global override buttons. API: `envelope.*`.
-- **Automation items** (`<POOLEDENV` pools and `POOLEDENVINST` instances), played as REAPER
-  7.73 renders them: pool points sit in quarter notes on the tempo map (a tempo ramp bends an
-  item piecewise between them), the start offset and play rate move through the pool, looped
-  items wrap from the last point to the first, unlooped ones hold, baseline and amplitude scale
-  around the middle of the range (unclamped), overlapping items multiply on volume and add on
-  the others, and each edge ramps linearly over the item's transition time (12 ms) from the
-  envelope without the item to the envelope with it, except on FX parameters. Insert them from
-  the envelope, as LFO shapes (sine, triangle, square, saw up/down over a number of cycles) or as
-  pooled copies; drag the strip to move, the right edge to resize; loop, baseline, amplitude,
-  duplicate (pooled or not), unpool, delete (keeping the points or not) from the right-click
-  menu; the pool's points show and edit inside the item, and every pooled copy follows.
-- **Global automation override** (`GLOBAL_AUTO`): one mode for every track, or every envelope
-  bypassed (FX parameter envelopes too).
-- **Control surfaces**, set up as REAPER keeps them in reaper.ini (`csurf_cnt`,
-  `csurf_<i>=OSC "name" flags port "ip" port …` and `MCU offset size in out flags`) under
-  Settings or with the control API's `surface.*`, run by the app and by `scythe-server`. OSC
-  follows REAPER's `.ReaperOSC` pattern files (REAPER's own files read cleanly; Scythe's default
-  has REAPER's addresses plus `/setlist/…`): track names, volumes (REAPER's fader curve, its dB
-  and pan texts), pans, mute, solo, arm, monitor, selection, sends, meters, transport, repeat,
-  click, tempo, markers and regions, device banks and track selection, `/action` with REAPER
-  command ids and Scythe's setlist commands, feedback bundled within the packet size. Mackie
-  Control and extenders (shared bank, flip, V-pots, scribble strips, meters, time display,
-  automation mode buttons, touch-sensitive faders feeding automation, F1-F8 to markers, the
-  user switches as footswitches for the setlist) and HUI partly, as REAPER (faders, touch,
-  select/mute/solo/arm, V-pots, four-letter names, meters, transport). See
-  [docs/live.md](docs/live.md#footswitches-tablets-and-control-surfaces).
-- **Parameter modulation and learn** (`<PROGRAMENV`, `PARMLEARN`, `LFOLEARN`): baseline, LFO
-  (six shapes, Hz or tempo-synced periods, strength, direction, phase, follow-the-position or
-  free-running), audio control signal from any input channel pair (sidechain on 3/4) with
-  attack, release, dB range and curve, and links from another effect's parameter (earlier or
-  later in the chain, offset and scale) or from MIDI CC/pitch bend on the effect's input, all
-  per 512-frame block in REAPER's update order; a parameter envelope stands in for the baseline.
-  MIDI learn from the inputs enabled for control (`midiins_cs`) and OSC learn from surfaces
-  that allow it: absolute, relative 1-3, toggle, soft takeover, "only when the track is
-  selected", LFO retrigger. MIDI shortcuts to actions (pedals to setlist next/previous, mutes,
-  markers) are kept in `reaper-kb.ini` as REAPER keeps them. The `~` button on an inspector
-  parameter opens the modulation window with its Learn button; the settings window learns
-  shortcuts. API: `fx.modulation.*`, `fx.learn.*`, `action.learn.*`.
-- **Actions, shortcuts, toolbars, mouse modifiers**: one action registry with REAPER's command
-  ids and names where REAPER has the action (154 of them, names checked against REAPER 7.73's
-  action list) and `_SCYTHE_…` named commands for Scythe's own; the palette (Ctrl+K), keys,
-  toolbars, mouse clicks, surfaces, learned controls, `!` markers and `Main_OnCommand` all run
-  through it, with toggle states. The Actions window (REAPER's "Show action list") searches,
-  runs, assigns and removes keyboard shortcuts (capturing the next key), makes custom actions
-  (macros of other actions, with "consolidate undo") and registers scripts as actions, and
-  imports and exports `.ReaperKeyMap` files. All of it is kept in `reaper-kb.ini` as REAPER
-  writes it (`KEY` with REAPER's key encoding and comments, `ACT`, `SCR`, MIDI shortcuts from
-  learn), so a REAPER keymap works in Scythe and back. Toolbars (`reaper-menu.ini`, `.ReaperMenu`
-  import and export): the main toolbar as a strip under the header and 32 floating toolbars,
-  with REAPER's toolbar icons when its `Data/toolbar_icons` is around, lit while their action is
-  on, and a toolbar editor; a new button reads the same on every toolbar (the main toolbar's label,
-  else the action's name without its category). Mouse modifiers (`reaper-mouse.ini`): actions on clicks and double
-  clicks of items, track lanes, track headers and the ruler, per modifier keys, with an editor that names each unassigned combination's default as
-  REAPER 7.73's preferences describe it.
-  Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
-  zoom. API: `action.*`, `toolbar.*`, `mouse.*`.
-- **Windows** share one card frame and one set of rules: tool windows (actions, regions,
-  explorer, bay, grouping, theme, effect editors, the rig window…) resize, dialogs (grid, lock,
-  monitor mix, MIDI devices…) size to their contents, floating ones (toolbars, the virtual
-  keyboard, JSFX and script graphics) keep their contents' size. A window opens centred on the
-  main window, or beside the pointer for those opened on something (crossfade, nudge and dynamic
-  split dialogs, tempo marker, note properties, toolbar editor), always fully on screen; a newly
-  opened window comes on top. Where each was moved and how it was sized is kept in
-  `windows.ini` beside the preferences and comes back in the next session (kept on a smaller
-  screen). Escape closes the window last clicked or opened instead of stopping the transport;
-  once the arrange or another part of the main window is clicked, Escape is a shortcut again.
-- **Automation modes** per track (`AUTOMODE`: trim/read, read, touch, write, latch, latch
-  preview), cycled from the inspector or set with `envelope.mode`. While playing, moves in
-  touch, latch and write mode are recorded into armed envelopes (missing ones are created):
-  fader, pan, width, mute (square points), send volume, pan and mute, and FX parameters (an
-  envelope over the parameter's own range); write mode records every armed envelope. Latch
-  preview remembers the moved values; "Write preview values" in the envelope lanes (or
-  `envelope.latch_preview_apply`) writes them over the time selection or from or to the cursor.
-- **Multichannel tracks** (`NCHAN`, up to 32 in the inspector's Sends tab): items with more
-  channels play into channels 3 and up, sends take any channel pair (or one channel) to any
-  pair of the destination (`AUXRECV` source and destination channels), folders carry every
-  channel to their parent, a track can feed its parent from a channel offset (`MAINSEND`),
-  and ReaGate and ReaComp listen to the channels their detector input names (channels 3/4 for a
-  sidechain, stored as REAPER's UI stores it).
-  Effects follow their pin maps (VST and VST 3 state headers, `<JS_PINMAP`, LV2's `<IN_PINS`
-  and `<OUT_PINS`): input pins sum the channels mapped to them, output pins replace theirs,
-  other channels pass through, and input pins 3/4 of a stereo effect are its sidechain (JSFX
-  see it as `spl2`/`spl3`). Effects with more pins (JSFX band splitters and mixers, VST 2 with
-  more inputs or outputs, VST 3 buses and CLAP audio ports beyond the main pair, such as a
-  sidechain input) work on all of them, by default pin n on channel n. VST 3 buses are set up
-  for the track's width as REAPER 7.73 does: it offers each layout up to the track's channel
-  count (mono, stereo, 3.0, 4.0, first-order ambisonics, 5.0, 5.1, 7.0, 7.1, then wider ones up
-  to 16 channels) on every bus at once and keeps the last one the plugin takes, so a 6-channel
-  track gets a 5.1 main bus (and sidechain); a new slot's header maps the input pins of the
-  plugin's own buses and an output pin per track channel, and the buses are set up anew when
-  the track's width changes. The master can
-  have more channels too ("Master: More channels"): master effects work across them, and a
-  render with more channels (`RENDER_CHANNELS`) writes them all.
-- **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
-  ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
-  cursor, the bpm control edits the tempo in effect at the cursor. As in REAPER, right-click a
-  tempo marker for "Edit time signature marker..." (also a double-click: tempo, time signature,
-  gradual transition) and "Remove time signature marker" (also Alt+click).
-- **Metronome** (`C`; right-click the metronome button for count-in, pre-roll, level and
-  output), **count-in** before playback and/or recording (REAPER's metronome settings, saved in
-  the project's `<METRONOME` chunk) with the playhead waiting at the start, **pre-roll** and
-  "start count-in at start of measure" (REAPER's reaper.ini preferences, kept in
-  `$XDG_CONFIG_HOME/scythe/preferences.ini` with the default metronome output), the click routed to a
-  chosen device output (REAPER's `METRONOMEOUT`) or into monitor mixes at each musician's own
-  level, **recording** of armed tracks (`Ctrl+R`, mono or stereo inputs per the
-  track's REAPER input setting) and **input monitoring**: an armed track with monitoring on
-  hears its input through its FX chain, also while stopped (play guitar through a NAM amp and
-  a cab IR live). Inspector: `In 1` picks the input, `Mon` cycles monitoring off, on and auto
-  (tape style: heard while stopped or recording, not during playback); right-click it or the
-  arm button for the **record mode menu**: REAPER's per-track record modes (input, input forced
-  to mono, stereo or multichannel, output stereo/mono/multichannel with or without latency
-  compensation tapped post-fader, pre-FX or post-FX, MIDI overdub, replace, touch-replace and
-  latch-replace into the MIDI item under the playhead, disable to only monitor), "monitor
-  track media when recording" (otherwise a recording track's own items fall silent, as in
-  REAPER), automatic record-arm on selection, the project record mode (normal, time selection
-  auto-punch, selected item auto-punch) and the lane options. Recordings are laid out as REAPER
-  7.73 lays them out: files named `01-Track-yymmdd_hhmm.wav` under the project's record path,
-  recording over items splits them at the recording's edges and adds the new take (with empty
-  takes where a pass did not reach), repeat makes every pass a take over the loop (incomplete
-  first and last passes kept, the last pass active) with what came before the loop start as an
-  item of its own, and on a fixed-lane track with "new recording adds lanes" each pass gets a
-  lane of its own (the newest playing, and swiped into the comp when there is a comp lane).
-  The file keeps what was played during pre-roll, ahead of the take as in REAPER. Pressing
-  record while playing punches in at the playhead.
-- **Fixed lanes and comping** (REAPER 7): lanes with names, playing lanes (`LANESOLO`), "comp
-  into new empty lane", and **swiping**: Ctrl+Shift+drag across a lane makes a comp area
-  (`LINKEDLANE`); the new area wins its range and the areas it overlaps cross-fade into it over
-  10 ms with REAPER's equal-power curve, and the comp lane's items are rebuilt from the areas as
-  REAPER rebuilds them. As with REAPER's big lanes (`FIXEDLANES` &8, the default) each lane is
-  one track height tall, so a track grows with its lanes.
-- **Editing**: move (snapped, across tracks), trim edges, fade handles, split, copy/cut/paste,
-  duplicate, reverse, delete, markers, undo/redo. Several items: Ctrl+click or drag a marquee on
-  empty lane space; moving, deleting, muting, copying (with track spacing) and duplicating then
-  act on all of them. Overlapping items crossfade automatically after a move or trim.
-  With a time selection (drag on the ruler): split items at it (`Shift+S`), remove its contents,
-  remove them and close the gap (`Ctrl+Alt+X`, markers and envelopes follow), or insert empty
-  space. Takes (`T` cycles), item mute (`U`), marker
-  navigation (`[` `]`), fixed lanes drawn as lanes, tracks moved with `Ctrl+↑/↓` and into or out of folders with
-  `Ctrl+→/←` (on every selected track), track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
-  track's colour dot for a palette; markers jump on click, rename on double-click and delete on
-  right-click. Razor edits: Alt+drag (over items too) marks a time range on every track it
-  crosses (Shift+Alt adds more); `Delete` removes what lies inside, copy/cut take those pieces
-  and paste keeps the space before them. `Ctrl+G` glues the selected items of a track into one
-  rendered file; "Apply track FX to items as new take" renders each item through its track's
-  effects into a new, active take.
-- **Editing tools** (REAPER's actions and project settings, `scythe_core::edit`): switches above
-  the track headers for ripple editing (off, per-track, all tracks: `RIPPLE`), the snap grid
-  (click toggles snap, right-click opens the grid window: 1/128 to 4 whole notes, triplets,
-  swing and measure grids from the project's `GRID`, snapping to item edges and markers too),
-  auto-crossfade (`AUTOXFADE`), locking (`LOCK`, with REAPER's eleven lock modes) and item
-  grouping (`GROUPOVERRIDE`). Ripple follows moves, deletes, cuts, pastes and duplicates as
-  REAPER's does (later items, envelope points with REAPER's edge points, and with all tracks
-  markers and regions); deleting with ripple all tracks removes that time from every track.
-  Item groups (`GROUP`, "Item grouping: Group items" and remove/select): clicking selects the
-  group, moves and splits take the group along. Locked items (`LOCK`, "Item properties:
-  Lock") do not move, split, delete or ripple, and lose their edge and fade handles. Takes:
-  explode across tracks, in place or in order, implode across tracks or on one track, crop to
-  the active take, delete the active take, previous/next take. Fades and crossfades: REAPER's
-  seven fade types for fade-ins, fade-outs and crossfades, crossfade overlapping items or
-  neighbours over the time selection, and a crossfade editor window (shape, curvature, type,
-  length, both sides of a crossfade with their curves drawn); all eight shapes (`5.1` is the
-  sharp S-curve, `1.1` the equal-power one) play as REAPER renders them. Dynamic split
-  (tab-to-transient too) with REAPER's sensitivity and threshold, splitting at the transients
-  or adding stretch markers there. The nudge/set window and REAPER's move-by-grid, "a bit"
-  (one pixel) and edge grow/shrink actions, with every unit of REAPER's nudge dialog. Razor
-  edits also on envelopes (Ctrl+Alt+drag, points removed keeping the envelope's shape) and the
-  razor area move actions. ReaScript: `GetSetProjectGrid`, `SnapToGrid`, `ApplyNudge`,
-  `C_LOCK`, `I_GROUPID`, fade shape 7, and these actions through `Main_OnCommand`.
-- **MIDI editor**: double-click a MIDI item (or `E`) for the docked editor of its active take, in
-  three modes: piano roll, named notes (a drum map of the track's note names, REAPER's
-  `MIDINOTENAMES`; `.txt` note name files load and save) and the event list (every note,
-  controller, sysex and text event with its fields editable). Click adds a note on the grid
-  (snapped into the scale with key snap); as REAPER's defaults, a left drag on empty grid draws a
-  note (drag to extend or change pitch, Shift ignores snap) and a right drag selects with a
-  marquee (Shift adds, Ctrl toggles); drag moves the selection, drag a right edge resizes, right-click deletes,
-  double-click opens a note's properties (start, length, key, velocity, off velocity, channel,
-  mute). Below the roll sit any number of controller lanes (velocity, off velocity, CC 0-127,
-  14-bit pairs, pitch bend, program, channel and poly aftertouch, sysex, text): the draw tool
-  paints values on the grid, the line tool draws a line or curve as REAPER 7 does (two events
-  joined by a CC shape: linear, slow start/end, fast start, fast end, bezier with tension,
-  square), right-click a value for its shape. Commands: quantize (grid, swing grid, strength,
-  position / position and end / end / length, a window around the grid line), humanize,
-  transpose (by scale steps with key snap), legato, split on the grid, join, mute, force into
-  key, channel for new events and a channel filter, step input (notes played on a MIDI input,
-  the virtual keyboard or the editor's keys go in at the step cursor), groove templates
-  (`.rgt`, applied with a strength; notes save as one). Other selected MIDI items show behind
-  the edited one and a click on one of their notes edits that item. Alt+double-click opens an
-  item's inline editor in the arrange view, as do "Item: Open item inline editors" (40847) for
-  the selected items, and 41887 closes them. The editor's settings are stored in the take as
-  REAPER stores them (`CFGEDIT` mode, channel, grid and swing; `KEYSNAP`; `EVTFILTER`; one
-  `VELLANE` per lane); shaped controllers play as REAPER plays them (steps every 1/`CCINTERP`
-  quarter note). The MIDI editor section's actions (32060) run by their REAPER ids through
-  `midi.action`. Edits are written back into the item's `<SOURCE MIDI` (an edited item leaves
-  its pool). Controllers, pitch bend,
-  program changes and aftertouch reach CLAP and LV2 instruments as MIDI and VST 3 instruments
-  through their MIDI mapping.
-- **MIDI files and input**: `.mid` files import (dialog or drag-and-drop) as in-project MIDI
-  items, and "Item: Export MIDI item to file" writes one back out. A track whose record input
-  is MIDI plays its instrument live while armed with monitoring on, and records an in-project
-  MIDI item; recording around a loop layers the passes into one take, as REAPER's MIDI
-  overdub. The input is one device or all of them (and one channel or all), numbered as REAPER
-  numbers them: devices keep their number in `reaper-midihw-linux.ini` beside the preferences
-  while unplugged, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
-  virtual keyboard as 30, ports from 30 up two higher), so a project listens only to its
-  keyboard or pad. A track can also send its MIDI (items, monitored input and what it receives,
-  after its effects, optionally forced to one channel) to a hardware output (Sends tab), timed
-  to sound with the audio; stopping sends all-notes-off. VST 2 instruments receive MIDI too.
-- **MIDI routing**: sends carry MIDI as REAPER's `AUXRECV` MIDI field (`I_MIDIFLAGS`) says:
-  all or one source channel, moved to a destination channel, from one MIDI bus or all, onto
-  another bus; audio and MIDI or MIDI only. Post-fader and post-FX sends carry what leaves the
-  source's effects, pre-FX sends what enters them; a muted send or source sends none, and
-  routing works between any two tracks in the same block whatever their order; solo routing gates MIDI sends as it gates audio. MIDI buses
-  1-16 travel through every chain: JSFX with `ext_midi_bus` read and write them (`midi_bus`),
-  other effects and instruments hear the normal bus only and pass the others on, as in REAPER.
-  The Sends tab's MIDI pill switches a send between no MIDI, audio and MIDI, and MIDI only
-  (right-click: destination channel).
-- **MIDI devices, clock and timecode**: "View: MIDI devices" enables inputs and outputs (REAPER's
-  `midiins`/`midiouts` masks), shows aliases (`ia`/`oa` in the device cache) and picks the
-  outputs that get MIDI clock and song position (`midiouts_clock`, `midiouts_clock_nospp`),
-  sent as REAPER sends them: ticks on the 1/24 quarter-note grid while playing, Start from the
-  project start and Continue elsewhere, Stop and a song position pointer when stopping or
-  moving, and its reset (all sound and notes off, pitch bend centred, sustain off) at play
-  unless `midiouts_noreset`. Control surfaces open their MIDI ports by the same device numbers. The timecode generator item (`<SOURCE LTC`, "Insert timecode
-  generator") plays LTC audio at -10 dBFS or, with `SEND 2`, MTC to its track's MIDI output (a
-  full frame where playback starts or jumps, then quarter frames). External timecode
-  synchronization (the project's `SMPTESYNC`, "Toggle external timecode synchronization")
-  chases MTC from one input or all, LTC on an audio input, or MIDI clock with song position:
-  the transport starts where the timecode is (minus the offset), jumps back in line past the
-  resync threshold and stops when the timecode has been gone for the freewheel time.
-- **Virtual MIDI keyboard** ("View: Show virtual MIDI keyboard", `Alt+B`): three octaves to
-  click, with octave, channel and velocity; it is device 62, so tracks armed with it as their
-  input play and record it, and `midi.keyboard` plays it from the control API.
-- **Marker actions**: a marker named `!` plus command ids runs them when the play cursor
-  crosses it (REAPER's SWS "marker actions": `!1016` stops, `!1016 40042` stops and goes to the
-  start, `!_SWS_…` names a custom/extension command). Sample-accurate on the audio thread:
-  `!1016` stops on the marker's frame; starting or seeking onto a marker does not run it, nor
-  does a loop wrap landing on it. Stop (1016, 40044) returns to the edit cursor as REAPER's Stop
-  does; pause (1008, 40073, 40328) leaves the cursor at the marker; go to start/end/loop start
-  (40042, 40043, 40632) seek while playing, 1068 toggles repeat and 1007 is a no-op. Other ids
-  run the matching Scythe action (record 1013, metronome 40364, insert marker 40157, undo…);
-  named commands only show a notice. "Options: Toggle marker actions" turns it off.
-- **Setlists** (rail button or `L`; `scythe-app --setlist set.RPP` opens on it): the project's
-  markers become songs. With stop markers (`!1016` and other stopping actions) the first plain
-  marker after a stop begins a song that runs to the next stop marker, and markers inside it
-  are its cues (drawn on the progress bar); without stop markers every marker is a song up to
-  the next. Build several setlists per project from them (`+` or drag a song in, drag to
-  reorder, double-click a tab to rename, duplicate, delete), stored in the project's
-  `<EXTSTATE` (section `SCYTHE_SETLISTS`, one value per setlist, the same store as the
-  ReaScript `SetProjExtState`), which REAPER 7.73 reads (`GetProjExtState`) and saves back
-  unchanged. Entries find their song by the start marker's GUID, else by name, so renumbering
-  or moving markers keeps them. Export as plain text (title line, one numbered song per line;
-  also copied to the clipboard) and import text typed by hand. The stage view shows the song now playing with elapsed/remaining time,
-  what is next up and big previous/play-stop/next buttons; `Enter` plays the current song from
-  its marker, `N`/`P` move to the next/previous song (cueing it when stopped, playing it when
-  playing), `Esc` stops. With auto-advance on, a song that stops at its stop marker cues the
-  next one without playing it. With count-in on (per setlist) every song starts after a bar or
-  more of click at its own tempo, so the drummer need not count. It runs in the session, so a headless server plays setlists
-  too, and the control API has a `setlist.*` domain (songs, editing, play/cue/next, status
-  and a `setlist` event; see `docs/control-api.md`).
-- **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
-  file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
-  output in a console window. A script that stops on an error keeps what it changed before it,
-  as one undo step, as in REAPER. 310 `reaper.*` functions:
-  - tracks: `CountTracks`, `GetTrack`, `GetMasterTrack`, `InsertTrackAtIndex`, `DeleteTrack`,
-    `GetTrackName`, `GetSetMediaTrackInfo_String` (`P_NAME`, `GUID`, `P_EXT:`),
-    `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo and its modes, solo defeat, polarity,
-    pan mode, width, dual pan, arm, record input and monitoring, main send and its channel
-    offset, folder depth, automation mode, channels, track number, selection, custom color, pan
-    law, fixed lanes, MIDI hardware output, `P_PARTRACK`), `Get/SetTrackColor`, `GetParentTrack`,
-    `GetTrackDepth`, `GetTrackUIVolPan`, track groups (`GetSetTrackGroupMembership`, `High`,
-    `Ex`; `TRACK_GROUP_NAME:n` in `GetSetProjectInfo_String`), control-surface edits that carry
-    over to group followers (`CSurf_OnVolume/Pan/Width/Mute/Solo/RecArmChange(Ex)`,
-    `SetTrackUIVolume/Pan/Width/Mute/Solo/RecArm/Polarity`), selection
-    (`CountSelectedTracks(2)`, `GetSelectedTrack(2)`, `IsTrackSelected`, `SetTrackSelected`,
-    `SetOnlyTrackSelected`), `ReorderSelectedTracks` with its three folder modes;
-  - sends and receives: `CreateTrackSend`, `RemoveTrackSend`, `GetTrackNumSends`,
-    `Get/SetTrackSendInfo_Value` (volume, pan, mute, channels, `P_DESTTRACK`/`P_SRCTRACK`),
-    `GetTrackSendName`, `GetTrackReceiveName`;
-  - effects: `TrackFX_GetCount/GetFXName/GetEnabled/SetEnabled/GetOffline/GetInstrument`,
-    `TrackFX_AddByName`/`GetByName` (Scythe's own effects and installed CLAP, LV2 and VST 3
-    plugins), `TrackFX_Delete`, `TrackFX_CopyToTrack` (copy or move), parameters of running
-    effects (`TrackFX_GetNumParams`, `Get/SetParam(Ex)`, `Get/SetParamNormalized`,
-    `GetFormattedParamValue`, `GetParamName`) and presets from REAPER's preset files
-    (`TrackFX_GetPreset`, `GetPresetIndex`, `SetPreset`, `SetPresetByIndex`, `NavigatePresets`);
-  - envelopes of tracks and takes: `CountTrackEnvelopes`, `GetTrackEnvelope(ByName/ByChunkName)`,
-    `Count/GetTakeEnvelope(ByName)`, `GetEnvelopeName`, `GetEnvelopeScalingMode`,
-    `ScaleTo/FromEnvelopeMode`, `CountEnvelopePoints(Ex)`, `Get/Set/InsertEnvelopePoint(Ex)`,
-    `DeleteEnvelopePointEx`, `DeleteEnvelopePointRange(Ex)`, `GetEnvelopePointByTime(Ex)`,
-    `Envelope_Evaluate`, `Envelope_SortPoints(Ex)`; volume envelopes give fader-scaled values,
-    as REAPER's API does; automation items: `CountAutomationItems`, `InsertAutomationItem`,
-    `GetSetAutomationItemInfo(_String)` and the `…Ex` point calls on an item (every pass of
-    its pool inside the item, baseline and amplitude applied, as REAPER gives them);
-    `Get/SetGlobalAutomationOverride`;
-  - items, takes and sources: `CountMediaItems`, `GetMediaItem`, `Count/GetTrackMediaItem`,
-    `GetMediaItem(_)Track`, `AddMediaItemToTrack`, `CreateNewMIDIItemInProj`, `SplitMediaItem`,
-    `DeleteTrackMediaItem`, `MoveMediaItemToTrack`, `Get/SetMediaItemInfo_Value` (position,
-    length, mute, volume, loop, fades with their shapes, active take, lane, selection, item
-    number), `GetSetMediaItemInfo_String` (`GUID`, `P_EXT:`), `SetMediaItemPosition/Length`,
-    selection (`CountSelectedMediaItems`, `GetSelectedMediaItem`, `IsMediaItemSelected`,
-    `SetMediaItemSelected`, `SelectAllMediaItems`), `CountTakes`, `GetTake`, `GetActiveTake`,
-    `SetActiveTake`, `AddTakeToMediaItem`, `GetMediaItemTake_Item/Track`, `GetTakeName`,
-    `GetSetMediaItemTakeInfo_String`, `Get/SetMediaItemTakeInfo_Value` (offset, volume, pan,
-    rate, pitch, `P_SOURCE`), `TakeIsMIDI`, `Get/SetMediaItemTake_Source`,
-    `PCM_Source_CreateFromFile`, `GetMediaSourceFileName/Type/Length`;
-  - MIDI in MIDI takes: `MIDI_CountEvts`, `MIDI_Get/Set/Insert/DeleteNote`,
-    `MIDI_Get/Set/Insert/DeleteCC`, `MIDI_Sort`, PPQ conversions; selected and muted events are
-    kept (`e`, `Em` lines) and muted ones do not play;
-  - markers and regions: `AddProjectMarker(2)`, `CountProjectMarkers`, `EnumProjectMarkers(2)(3)`,
-    `SetProjectMarker(2)(3)(4)`, `SetProjectMarkerByIndex(2)`, `DeleteProjectMarker(ByIndex)`,
-    `GetLastMarkerAndCurRegion`, `ColorToNative`, `ColorFromNative`;
-  - transport, time selection and tempo: `GetCursorPosition(Ex)`, `SetEditCurPos`,
-    `MoveEditCursor`, `GetPlayState`, `GetPlayPosition(2)(Ex)`, `OnPlayButton`, `OnStopButton`,
-    `GetSet_LoopTimeRange(2)`, `GetSetRepeat(Ex)`, `Master_GetTempo`, `SetCurrentBPM`, tempo and
-    time signature markers (`Count/Get/Set/Add/DeleteTempoTimeSigMarker`, a signature moving to
-    the next bar line as in REAPER), `TimeMap(2)_timeToQN/QNToTime`,
-    `TimeMap(2)_GetDividedBpmAtTime`, `TimeMap_GetTimeSigAtTime`, `TimeMap2_timeToBeats`,
-    `TimeMap2_beatsToTime`, `TimeMap_GetMeasureInfo`, `TimeMap2_GetNextChangeTime`,
-    `format_timestr(_pos)`, `parse_timestr(_pos)`;
-  - the project: `GetProjectName`, `GetProjectPath(Ex)`, `EnumProjects`, `GetProjectLength`,
-    `GetSetProjectInfo` (sample rate and its use, render channels and rate),
-    `GetSetProjectInfo_String` (title, author, render file and pattern, record path),
-    `GetSetProjectNotes`, `GetSetProjectAuthor`, `Set/Get/EnumProjExtState` (kept in the
-    project's `<EXTSTATE`, as REAPER writes it), `Get/Set/Has/DeleteExtState` (persisting to
-    `reaper-extstate.ini` in Scythe's data folder), `Main_OnCommand` (REAPER's command ids for
-    transport, track and item edits, selection, markers and the time selection run inside the
-    script; undo, redo, file, render, glue, copy and paste, zoom and other actions Scythe has
-    run once the script's changes are in; custom actions run their members), `Main_OnCommandEx`,
-    `Undo_*` (`Undo_CanUndo2`, `Undo_DoUndo2` …), `MarkProjectDirty`, `IsProjectDirty`;
-  - actions: `NamedCommandLookup`, `ReverseNamedCommandLookup`, `kbd_getTextFromCmd`,
-    `SectionFromUniqueID`, `CountActionShortcuts`, `GetActionShortcutDesc`,
-    `GetToggleCommandState(Ex)` (a custom action's is its members' when they agree),
-    `SetToggleCommandState`, `RefreshToolbar(2)`, `AddRemoveReaScript`, `Get/SetMouseModifier`,
-    `get_action_context`;
-  - state chunks: `Get/SetTrackStateChunk`, `Get/SetItemStateChunk`,
-    `Get/SetEnvelopeStateChunk`, through the same RPP reader and writer as project files;
-  - general: `genGuid`, `guidToString`, `stringToGuid`, `GetTrackGUID`, `AnyTrackSolo`,
-    `SoloAllTracks`, `MuteAllTracks`, `ClearAllRecArmed`, `GetNumTracks`,
-    `GetLastTouchedTrack`, `IsTrackVisible`, `GetMasterMuteSoloFlags`, `file_exists`,
-    `RecursiveCreateDirectory`, `EnumerateFiles`, `EnumerateSubdirectories`, `SetEditCurPos2`,
-    `OnPauseButton`, `Main_SaveProject`, `GetPlayStateEx`, `MB`, `Undo_OnStateChangeEx(2)`;
-  - dialogs and the rest: `ShowMessageBox` and `GetUserInputs` (modal windows; the script
-    waits for the answer), `ValidatePtr(2)`, `DB2SLIDER`, `SLIDER2DB`, `mkvolstr`, `mkpanstr`,
-    `GetAppVersion`, `GetOS`, `GetResourcePath`, `GetExePath`, `time_precise`, console and
-    refresh calls.
+## Licensing notes
 
-  `defer` and `runloop` keep a script running: its deferred functions run once per frame over
-  the current project until it stops deferring or "Script: Stop the running script" ends it,
-  which runs its `atexit` functions. Lua's `gfx.*` and EEL2's `gfx_*` draw in a window that
-  `gfx_init` opens (the JSFX graphics: shapes, text, images, blits), with `gfx_getchar`
-  returning -1 once it is closed. EEL2 scripts call the same functions without `reaper.`, with
-  outputs passed as variables or `#strings` (`GetTrackName(tr, #name)`) and pointers as
-  numbers; `defer("code")` takes code, `eval("code")` runs code, and the file (`fopen`,
-  `fread`, `fgets`, `fgetc`, `fwrite`, `fprintf`, `fseek`, `ftell`, `feof`, `fflush`,
-  `fclose`) and TCP functions (`tcp_connect`, `tcp_listen`, `tcp_send`, `tcp_recv`,
-  `tcp_set_block`, `tcp_close`) work. Python scripts (`from reaper_python import *`, then
-  `RPR_GetTrack(0, 0)`) run in a `python3` process and get REAPER's return conventions: a tuple
-  of the value and every argument when a call has outputs, pointers as `(MediaTrack*)0x…`
-  strings, `RPR_defer("step()")` taking code or a function. As in REAPER, `print` goes to
-  Scythe's standard output, not the console, and what a script writes to `sys.stderr` is shown
-  above the traceback only when it fails.
-- **FX chain graph**: per-slot wet/dry (`WET`, with delta solo and wet/dry envelopes, ramped a
-  block late as REAPER does unless the slot is sample-accurate), offline slots (unloaded,
-  passing audio), effects running in parallel with the one before (`PARALLEL`, outputs summed,
-  MIDI merged when asked) and FX containers (`<CONTAINER`) with their own channel count, input
-  and output pin routing, parallel or serial children, nesting and container parameters that
-  drive a child's; latency compensated through all of it. Take FX (`<TAKEFX`) process their
-  take after its volume and fades on the take's channel count (`TAKEFX_NCH`), with two seconds
-  of tail past the item; input FX (`<FXCHAIN_REC`) process a monitored track's live input (they run, for their
-  parameters, on tracks that are not monitored too); the
-  monitoring chain processes only what the device plays and is kept in `reaper-hwoutfx.ini`
-  beside the preferences. Freeze (actions 41223/41644, `track.freeze`) renders a track through
-  its effects to `reaper_freeze_<name>.wav` and keeps the effects and items in a `<FREEZE`
-  level, stacking and unfreezing as REAPER does. The inspector has wet, delta, parallel, offline
-  and container controls in each slot's menu, the container's effects under it, and adds to the
-  track, input or monitoring chain.
-- **FX**: chains on tracks and master, rendered in parallel across tracks. FX chains save to and
-  load from REAPER `.RfxChain` files, and tracks to and from `.RTrackTemplate` files (sends
-  between the saved tracks kept), starting in REAPER's own resource folders. FX presets are
-  REAPER's own per-plugin preset files (`presets/vst-<plugin>.ini`, `vst3-…`, `js-…`,
-  `clap-…`, `lv2-…` in REAPER's resource folder): the slot's context menu lists the presets
-  saved in REAPER, loads one into the plugin, saves the plugin's current settings under a name
-  so REAPER lists it too, and renames and deletes them. Like REAPER it first imports a plugin's
-  default library (the `.rpl` beside a VST 2 binary, such as REAPER's stock ReaComp presets, or
-  beside a JSFX) when the library changed since `LastDefImpTime`, and preset libraries (`.RPL`)
-  import into and export from the preset file. Factory presets follow: a VST 3 plugin's
-  `.vstpreset` files under `~/.vst3/presets/<vendor>/<plugin>/`, a VST 2 plugin's own programs
-  (REAPER restores the chunk, then selects the stored program) and the presets a CLAP plugin's
-  preset-discovery provider lists, loaded through its preset-load extension; like REAPER, only
-  the provider whose id is the plugin's id is asked. Loading a preset does what REAPER does
-  with the `<VST` header: the preset's pin maps and flag bits replace the
-  slot's, and its state is taken only when its state kind matches. Presets saved as `.RfxChain`
-  files by earlier versions are still listed. Plugin scans are cached per binary (path, size,
-  modification time) in `~/.cache/scythe`, so only new or changed plugins are loaded. ReaEQ, ReaVerb and
-  ReaSamplOmatic5000 and ReaDelay settings stored in projects play through built-in equivalents
-  (the sampler receives the track's MIDI, live input and MIDI an earlier effect sends; musical
-  delay lengths follow the tempo map), as do the dynamics: ReaComp (detector input, RMS,
-  detector low/high-pass and filter preview, pre-comp lookahead, soft and legacy knee, auto
-  make-up, auto release, classic attack, wet/dry), ReaGate (detector filters, RMS, hysteresis,
-  hold, pre-open, noise, wet/dry, both invert modes, MIDI note out), ReaLimit (10 ms lookahead,
-  its two-stage release) and ReaXcomp (any number of bands, feedback detector, band gains and
-  bypass, output gain), all latency compensated and modelled on REAPER 7.73 renders
-  (`scythe-engine/src/stock/`, one file per plugin, dispatched from a table of REAPER's VST
-  identities). ReaVerbate (Freeverb with REAPER's ten combs and six allpasses per channel,
-  pre-delay, width and wet filters), ReaSynth (its naive oscillators and mix laws, envelope,
-  pitch wheel, REAPER's -80 dB voice gating and 512-frame block behaviour) and ReaControlMIDI
-  (transpose, snap to a scale, and the bank/program, volume, pan and pitch-wheel sends at
-  playback start) are emulated the same way and offered as the built-ins "Algorithmic reverb",
-  "Synth" and "MIDI control", and so are ReaFIR's EQ mode (REAPER's curve drawing: straight
-  lines in Hz between three or more points, a Bézier in log frequency between two, as a
-  linear-phase FIR of the FFT size; built-in "FFT EQ"), ReaVerb's echo generator and reverse
-  modules, and ReaInsert ("Hardware insert": sends to two device outputs, plays two device
-  inputs back, its delay compensation reported as latency and measured by a ping through the
-  cable; silent in offline renders as in REAPER without a device). Settings an emulation does
-  not cover (ReaFIR's dynamics modes, other ReaVerb modules) run in REAPER's own binary when it
-  is on the VST path. JSFX run from their own
-  source through an EEL2 interpreter (sections, sliders, imports, the `<? ?>` preprocessor,
-  user functions with locals and instances, memory, strings, MIDI, FFT and MDCT in REAPER's
-  bin order and scale, files): every JSFX in the corpus and all 219 of REAPER's stock effects.
-  Arithmetic follows REAPER's compiled EEL2 on x86-64: an assignment stores 0 for NaN,
-  infinities and the smallest values unless its value comes from an operation that cannot make
-  them out of clean inputs (`+ 1`, `cos`, `floor`, integer operators, ... are clean; `* 2`,
-  `abs`, `min`, negation pass their inputs on; `/`, `*` by a variable, `log`, `exp`, `tan` are
-  checked); constant expressions are folded at load (non-finite results become 0, `1 << 40` is
-  a 32-bit shift) and `x + 0`, `x * 1`, `x * 0` are simplified; arithmetic flushes subnormal
-  results to zero; comparisons with NaN take x86's unordered flags (`<`, `<=`, `==` true);
-  `min`/`max` give their first argument for NaN, except that `max` gives its second where
-  REAPER compiles it for a pointer result (an argument of `memset`, `sprintf`, `gfx_*` and the
-  other builtins taking pointers, or a branch of a `?:` that is assigned or passed on); the
-  library functions (`exp`, `pow`, `sin`, ...) flush subnormal results too; integer
-  conversions give the most negative integer for NaN and out-of-range values; `<<`/`>>` shift
-  the low 32 bits; `invsqrt` is the bit-trick estimate; `loop()` evaluates to 1. EEL2 has no
-  exponents: a number run into letters (`1e5`, `1.5e+3`, `2x`) fails to compile, and a section
-  that does not compile is left out while the others run, as REAPER does.
-  File sliders list their folder under `Data` and are stored by file name as REAPER does;
-  `@serialize` state is read from and written to `<JS_SER` (32-bit floats), and `@serialize`
-  runs when REAPER runs it: on load after `@init` and `@slider` (writing), again after the
-  slot's slider values (`@slider`), reading the stored state and writing once more, and once
-  per save; an effect without `@serialize` is initialised once for its first playback;
-  `file_open` reads WAV files as samples and text one value per item. Effects with `@gfx`
-  (analyzers, scopes, the channel mapper) open their own view from the Edit button: `@gfx`
-  runs about 30 times a second on a thread of its own beside the audio, as REAPER runs it,
-  sharing the effect's variables, memory, strings and images (each value is an atomic, so the
-  two race a value at a time as REAPER's do), with the mouse (buttons, modifiers, wheel),
-  typed keys and files dropped onto the view (`gfx_getdropfile`). It draws into pixels as REAPER
-  does: rectangles, lines, circles, arcs, triangles, gradients and pixels blend with `gfx_a`
-  and `gfx_mode` (additive too), into the screen or any of 1024 images (`gfx_dest`,
-  `gfx_setimgdim`), colours taken to a byte as REAPER truncates them; font 0, and a font
-  before `gfx_setfont` names a face, is Scythe's own 8-pixel bitmap font with REAPER's
-  measures; other text is drawn in the face `gfx_setfont` names (found through fontconfig;
-  bold, italic, underline, turned, and outlined, shadowed, inverted and one-colour as LICE
-  draws them) and measures as it draws. Text in a box (`gfx_drawstr` with flags) is placed and
-  clipped as REAPER places it, font 0 drawing into a window on the box and leaving
-  `gfx_x`/`gfx_y` measured from that window, other fonts aligning each line and leaving them
-  after the text. `gfx_blit` and `gfx_blitext` scale, turn and filter; `gfx_deltablit` and
-  `gfx_transformblit` step through the source in LICE's fixed point with its filter;
-  `gfx_loadimg` reads PNG and JPEG files from the effect's folder or `Data`; `gfx_getpixel`,
-  `gfx_blurto` and `gfx_muladdrect` work on the pixels; `gfx_showmenu` waits inside the script
-  for a choice from a menu at the mouse while the audio goes on; `gfx_clear = -1` keeps what
-  was drawn; a script that sets `gfx_ext_retina` gets the screen's pixels per point there and
-  draws at the screen's own pixels; and sliders it sets take effect as if moved by hand. The
-  view uploads the screen only when it changed. They
-  run in REAPER's 512-frame blocks, play the track's MIDI and pass what they send on to the
-  next effect in the chain; they are read from `~/.config/REAPER/Effects` and the
-  installed REAPER's `InstallData/Effects` (or `$SCYTHE_JSFX_PATH`). The same effects are offered as built-ins in the plugin
-  browser (equalizer, gate, compressor, delay, convolution reverb, limiter, multiband
-  compressor) with editable parameters (the inspector's parameter rows, `fx.params` and
-  `fx.set_param`), and are saved in REAPER's own format, so REAPER opens them as ReaEQ, ReaGate,
-  ReaComp, ReaDelay, ReaVerb, ReaLimit and ReaXcomp. Neural Amp Modeler
-  slots (the LV2 plugin) run their `.nam` WaveNet models natively, with the stored input and
-  output levels (all 310 models in `~/music/Samples/NAM` load; ~11× realtime per instance),
-  at the model's own sample rate: like the plugin, a project at another rate is converted to
-  the model's rate and back (192-point sinc, reported as plugin latency). The NAM slot's **Edit**
-  opens the NAM panel: the model's name, gear, author, architecture and rate, input and output
-  knobs, previous/next model (Alt+Left/Right), four snapshots per slot to A/B models and levels
-  (click to switch, Shift+click to store, Alt+1…4), and a two-pane browser (list beside the
-  picked entry, stacked when the panel is narrow) with Library, Recent and TONE3000 tabs. A
-  TONE3000 tone shows its models first; **Preview** fetches one into a cache outside the library
-  and plays it in the slot (Left/Right step through the tone's models, Up/Down through the
-  list, A/B against the model from before), then **Keep** moves it into the library or
-  **Revert** puts the old model back, the whole try-out one undo step. The library indexes folders you add (read only, e.g. `~/music/Samples/NAM`) and
-  models downloaded from TONE3000 (`~/.local/share/scythe/nam`), with search, favourites and
-  tags; impulse responses load into a convolution slot after the NAM slot. Switching models is
-  click-free: the new model is read off the audio thread, warms up beside the old one and the two
-  crossfade over 12 ms. Signing in to TONE3000 (OAuth with PKCE in the system browser, tokens in a
-  0600 file) needs a publishable key you register yourself; see [docs/tone3000.md](docs/tone3000.md).
-  The model path stays in the LV2 plugin's own state, so REAPER keeps opening the slot; snapshots
-  go into the track's `<EXT` extension state, which REAPER keeps. `.nam` files dropped on a track
-  load into its NAM slot (or a new one). **Guitar rigs** put the whole tone in one slot: a REAPER
-  FX container named "Rig: <amp> + <cab>" holding a gate (ReaGate), the NAM amp, the cab (ReaVerb
-  with the impulse response, and a second one in parallel to blend), an EQ (ReaEQ: low cut, bass,
-  mid, treble, high cut) and the output level, so REAPER opens and plays it unchanged. The effects
-  list shows it as one slot whose **Edit** opens the rig window: the signal chain from left to
-  right with a switch per stage, the picked stage's knobs under it, the model browser for the
-  amp and the impulse response browser for the cab (library IRs and TONE3000 IR tones, with the
-  same Preview, A/B, Keep and Revert as models). Captures that include a cabinet (TONE3000's
-  amp-cab and full-rig tones, or the `.nam` file's `gear_type`) switch the cab off and amp-only
-  ones switch it on, which the cab shows; switching it by hand overrides that. Snapshots A-D
-  (Alt+1…4, and `_SCYTHE_RIG_SNAPSHOT_A`…`D` for footswitches and MIDI learn) and named presets
-  (`~/.local/share/scythe/rigs`, loadable on any track, `_SCYTHE_RIG_PRESET_NEXT`/`PREVIOUS`) hold
-  the whole rig; the control API and MCP have `rig.*`. **Make rig** turns a NAM slot and the
-  ReaVerb after it into a rig; a bare NAM slot works as before. Switching is click-free: models
-  crossfade, impulse responses crossfade over 20 ms, and gate, EQ and level changes reach the
-  running effects in place. The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit, ReaDelay, ReaFIR,
-  ReaVerbate, ReaVerb, ReaSynth, ReaInsert, ReaControlMIDI) get **Edit** too, opening a graphical
-  editor in a resizable window, drawn from the emulation's own math: ReaEQ's response per band
-  and in all with draggable handles (drag for frequency and gain, scroll or Shift-drag for the
-  width, double-click to switch a band, right-click for its type, add and remove bands) over a
-  live spectrum before and after; transfer curves with threshold and ratio handles, the
-  detector's level on the curve, gain reduction meters and history for ReaComp and ReaLimit;
-  ReaXcomp's crossovers on the spectrum with each band's response, transfer curve and meter;
-  ReaGate's detector level with its opening and closing thresholds and when it stood open;
-  ReaDelay's taps and their echoes on a time line with a row of values per tap; ReaFIR's curve
-  drawn with points over the spectrum; ReaVerbate's decay by frequency; ReaVerb's impulse
-  response; ReaSynth's oscillator and envelope; ReaInsert's routing and ping. Every control
-  drags, scrolls, takes the arrow keys once clicked, types a value on double-click and offers
-  Modulate/Learn on right-click; each drag (and each drag on the parameter rows, which stay a tab
-  away) is one undo step. The meters and spectra come from a probe the effect fills only while
-  its editor is open: atomics and two sample rings, nothing locked or allocated on the audio
-  thread. CLAP plugins are
-  hosted, instruments included (scan `~/.clap`, `/usr/lib/clap`, `$CLAP_PATH`), as are LV2
-  plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …; controls and state in REAPER's `<LV2` layout),
-  VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)
-  and Linux VST 2 plugins from `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`. Add them from the
-  inspector, click a slot for its parameters (input FX, monitoring FX and effects inside
-  containers too), and use **Edit** for the plugin's own editor (CLAP,
-  VST 2, VST 3 and LV2 X11 UIs, in a separate X11 window). Plugin latency is compensated across tracks,
-  sends and folders.
-- **Time-stretch and pitch**: a take's play rate keeps its pitch when "Keep pitch" is on (REAPER's
-  default), and takes can be pitch-shifted in semitones, prepared in the background. The take's
-  pitch shifter (`PLAYRATE` field 4, else the project's `DEFPITCHMODE`) picks the engine:
-  SoundTouch with REAPER's settings for its nine sub-modes (sequence/seek/overlap 82/14/12 ms;
-  high quality 41/28/12 ms with a 128-tap anti-alias filter; fast 164/7/6 ms with quick seek and
-  no anti-alias filter; multi-mono runs one instance per channel), and Rubber Band (with the
-  `rubberband` feature) with REAPER's options per sub-mode (real-time; formants, mid/side,
-  independent phase, smoothing, transients, detector, pitch mode, window). Both are fed the way
-  REAPER's take reader feeds them: 512 output frames at a time, 512 more source frames whenever
-  the shifter falls short, latency kept. élastique (REAPER's default, proprietary) and REAPER's
-  own simple windowed, Rrreeeaaa and ReaReaRea modes use Scythe's phase vocoder. Recordings are shifted by the input and output latency the audio device reports.
-- **Item timing**: take stretch markers (`SM`, with slopes) play in every stretch mode: without
-  "Keep pitch" the source is read with the render's sinc at the position the markers give, the
-  kernel following the local speed; with it (or a pitch change) the item is cut into pieces of
-  near-constant speed run through the take's shifter and joined with short crossfades. Take pitch
-  envelopes (`PITCHENV`) go through the same pieces. Take channel modes (`CHANMODE`: normal,
-  reverse stereo, mono mix, left, right, any single channel or pair). Timebase: the project
-  (`TIMELOCKMODE`), a track or an item (`BEAT`) follow tempo edits by time, beats (position,
-  length and rate; items with stretch markers spread them instead) or beats position only, and
-  tempo markers keep their beat (`TEMPOENVLOCKMODE`); markers and track envelopes move along.
-  The project play rate (`PLAYRATE`, resampled or pitch-kept) speeds up playback and renders.
-  Stretch markers are drawn on items: drag to move one, Shift-drag to slide the source under
-  it, right-click to remove, W adds one at the cursor; the item card has channel mode and
-  timebase menus, and right-clicking the tempo sets the project timebase and play rate.
-- **Files**: lossless `.RPP` load/save, `<name>.RPP-bak` on save, auto-save every 5 minutes
-  to `Backups/` (held while a song plays, up to 15 minutes, never while recording; the newest
-  50 kept), media import (dialog and drag-and-drop), render to WAV (whole project, time
-  selection or stems from the action palette; headless with
-  `scythe-app project.RPP --render=out.wav [--range=START-END]`), or with the project's own
-  render settings like REAPER's `-renderproject` (`--render-project` or the palette): bounds
-  project, time selection, custom range, all or selected regions or selected items, and the
-  render sources of `RENDER_STEMS`: the master, stems of the selected tracks (a track's own
-  output, without its folders or the master) with or without the master, selected tracks via
-  the master, selected items alone through their track or through the master, and the region
-  render matrix (`<REGIONRENDER` rows, edited in the region/marker manager window).
-  `RENDER_FILE` and wildcards such as `$project`, `$track`, `$tracknumber`, `$item`,
-  `$itemnumber`, `$region`, `$regionnumber` (two digits), `$regionname`, date and time; names
-  that come out the same get REAPER's `-001`, `-002` suffixes. The render queue: "Add project
-  to render queue" writes a copy to REAPER's `QueuedRenders` folder as REAPER does
-  (`qrender_<date>_<time>_<name>.RPP` with `QUEUED_RENDER_OUTFILE` lines), "Render all queued
-  renders" and `--render-queue` render and remove each, and REAPER's own queued copies render
-  in Scythe and the other way round. Project tabs: several open projects, the inactive ones
-  stopped with their undo history, an unsaved one named as REAPER names it (`[Unsaved]` on its tab,
-  `[unsaved project]` as the title), kept in the preferences under REAPER's `projecttab<n>` keys. MP3, FLAC, Ogg Vorbis, Opus and
-  WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
-  packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
-  complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and
-  mono renders mix both channels down (in double precision) as REAPER does. WAV is written as
-  8-bit unsigned, 16, 24 or 32-bit integer, 32 or 64-bit float, 8-bit u-law, 4-bit IMA ADPCM or
-  REAPER's 2-bit cADPCM. Integer samples are scaled by 2^(bits-1) and rounded half up, as REAPER
-  writes them; u-law is G.711 of the sample in 16-bit units plus 2, rounded down (negative
-  values one's complemented), as REAPER codes it; ADPCM follows REAPER's coder (codes rounded
-  down after taking half a step off, the prediction wrapping at 16 bits, 1024-byte blocks per
-  channel, the last block filled up by coding silence). WAV files carry the chunks REAPER's WAV
-  sink writes, in its order: the Broadcast Wave `bext` (REAPER as originator over the start of
-  the description, the local date and time, the render's start as time reference, optionally
-  `RPP:<project file>` as description), the room for a larger header (`junk`), an ACID chunk
-  with the project tempo, and project markers and regions (all, markers or regions only,
-  optionally only those named `#…`; markers from the start to before the end, regions wholly
-  inside) as `cue `, `smpl` loops and `LIST`/`adtl` labels. Wave64 and RF64/BW64 are written
-  when forced, or when a WAV left room for them outgrows 4 GB (the header is rewritten in place;
-  RF64 adds its `r64m` marker chunk, Wave64 its own UTF-16 `cue ` chunk). With "embed metadata"
-  (`RENDER_STEMS` flag 512) the project's `<RENDER_METADATA` fills `bext` and an `iXML` copy
-  (`BWF:`), `iXML` (`IXML:`), XMP as `_PMX` (`XMP:`), `axml` (`AXML:ISRC`), `cart` (`CART:`),
-  an ID3v2.4 `id3 ` chunk (`ID3:` text frames, `COMM`, `TXXX`) and `LIST`/`INFO` (`INFO:`).
-  AIFF is written with 8, 16, 24 or 32-bit samples, a beat count (`basc`) when the render is a
-  whole number of beats, and `NAME`/`AUTH`/`ANNO`/`(c) ` (`IFF:`), XMP (`APPL`) and ID3 chunks;
-  CAF with 8 (unsigned, as REAPER writes it), 16, 24 or 32-bit integer or 32/64-bit float
-  samples, markers and regions as `mark`, `regn` and `strg`, and the tempo and `CAFINFO:` tags
-  in `info` chunks. REAPER's GIF and LCF sinks write the video frames (black where no video item
-  plays) at their size and highest frame rate: GIF with giflib's LZW coder, a frame (its changed
-  rectangle, its own colour table) only when the picture changes, delays added up in
-  milliseconds; LCF (LICEcap) in groups of 20 frames of BGR565 pixels in 128x16 blocks, each
-  block stored once per run of equal frames and deflated at zlib level 9. REAPER's video sink (FFmpeg) goes through `ffmpeg`: AVI, MPEG-1, MPEG-2
-  (transport stream), MOV, MP4, Matroska, FLV and WebM with the codecs REAPER lists for each
-  (H.264, H.265, AV1, VP8, VP9, MPEG-1/2, XviD, FLV1, FFV1, Huffyuv, MJPEG, DV; MP3, AAC,
-  AC-3, MP2, Vorbis, Opus, 16/24-bit and float PCM, or no stream), the video and audio bitrate,
-  frame size (a side of 0 follows 16:9 from the other, both 0 is 1920x1080: REAPER's sink does
-  not read the project's video size) and rate, MJPEG's quality factor, and the audio and video
-  encoder option strings (`key=value` pairs up to a `;` or `#`: `codec`, `tag`, `q`/`qscale`,
-  `range=jpeg`, and any other encoder option such as `crf`, `preset`, `g` or `b`). Frames are
-  black where no video item plays; video items (top track first) are converted to YV12 and
-  scaled with REAPER's scaler (bilinear from the top-left corner, no half-pixel centring) into
-  the frame keeping their aspect ratio with black bars, or stretched. A clip shows on the frames
-  whose middle it covers, each with the source frame on screen at that middle (B-frame streams
-  timed by their decoding timestamps, as REAPER does). Video items play their own audio,
-  decoded by FFmpeg. Three stock video processor presets are rendered, recognised by their
-  code, as take or track FX: "Track opacity/zoom/pan" (without rotation or a forced size),
-  "Invert colors" and "Brightness/Contrast". Audio CD images (`.cue` and a 44.1 kHz 16-bit `.bin`, as REAPER's CD image sink
-  writes them) take their tracks from markers (each at least 4 seconds after the previous track;
-  `PERF=`, `WRIT=` and `ISRC=` markers fill in the track's cue entries; optionally only `#`
-  markers), from regions (audio outside regions left out) or as one track, after an optional
-  lead-in of silence. DDP 2.00 filesets (DDPID, DDPMS, PQDESCR, CDTEXT.BIN, the image and
-  checksum.md5) follow REAPER's DDP sink: `#` markers start tracks, `!` markers set INDEX 0,
-  `@` markers hold the album, `KEY=value|…` metadata becomes ISRC, UPC/EAN and CD-TEXT (title,
-  performer, songwriter, composer, arranger, message, disc identification, genre, language), and
-  the Red Book rules (2 s before the first track, 4 s minimum tracks) move indexes as REAPER
-  moves them. As in REAPER, a CD image or DDP render of other than two channels fails with
-  "Unable to create output file …, sample rate or channel count may not be compatible" and
-  leaves the empty `.cue` and `.bin` (or image) behind. Other sinks are written as WAV. The
-  project's normalisation (`RENDER_NORMALIZE`: LUFS-I, RMS, peak, true peak, LUFS-M/S max to a
-  target) and dither (`RENDER_DITHER`: TPDF, optionally noise-shaped, for 8-, 16- and 24-bit) apply.
-
-### Verified against REAPER
-
-`crates/scythe-engine/examples/reaper_ref.rs`, `reaeq_ref.rs` and `reaverb_ref.rs` write small
-projects, let REAPER 7.73 render them headless (with its own throw-away config directory) and
-compare with scythe's output sample by sample:
-
-| Area | Result |
-|---|---|
-| Pan laws: sine and linear tapers at every law (sweeps from 0 to -6 dB and compensated to +6 dB), all three tapers at every law, pan envelopes on REAPER's 512-frame grid; take pan, item/take gain | exact |
-| Fade-in and fade-out shapes 0–6 with every curvature (134 cases) | within 5e-4; shapes 5–6 with curvature use a time warp fitted to REAPER renders |
-| Envelopes: volume/trim/pre-FX/pan/mute, all point shapes including bezier (tension, neighbouring points, REAPER's 256-step curve) | exact (bezier within 2e-4; a single frame off at tension ±1) |
-| Automation items: 42 REAPER 7.73 renders of a DC source through volume (linear and fader-scaled), pan and JSFX parameter envelopes: pooled copies, looped and unlooped, start offset and play rate, baseline and amplitude (inverted too), overlapping, adjacent and contained items, every point shape inside an item, transitions of 0, 12 and 200 ms, a stepped and a ramped tempo, an empty pool, project play rate 1.5 (FX envelopes and items), the global override (bypass, read) and read mode | 39/42 within 1e-4, 25/42 within 1e-5 (the others differ on an item's first frame only, where REAPER sometimes leaves out the ramp); a bezier at a loop's wrap within 0.022, an empty pool's end ramp off |
-| Automation items through ReaScript: one Lua script (`InsertAutomationItem` from the envelope and pooled, the `…Ex` point calls on a looped, rate-shifted copy with baseline and amplitude, `GetSetAutomationItemInfo(_String)`, `Envelope_Evaluate` over items on pan and fader-scaled volume, the global override) run in REAPER 7.73 and in Scythe | same 56 lines, but for three evaluations on a bezier at a loop's wrap (within 0.022) |
-| RPP round trip of automation items made in REAPER (named pools with bezier points, LFO settings, instances with rate, offset, baseline and amplitude, `GLOBAL_AUTO`) | unchanged but for the header line |
-| Reversed sections | exact |
-| Media databases: REAPER 7.73 scanned a folder of WAV (16/24-bit, LIST INFO and BWF tags), FLAC, MP3 and Ogg Vorbis files with BPM, key, title, artist, album, date, genre, comment and description tags, and marked a favourite; Scythe reads that `.ReaperFileList` back, writes it out byte for byte, and its own scan of the folder gives every file the same size, time and metadata tokens (length, rate, channels, bits, file-size bitrate such as `133k`) | identical (6/6 files) |
-| "Clean current project directory" on a scratch project (used and unused media at the top and in `Media/`, peaks files of used, unused and missing files, backups, other projects, text, images, scripts and 40 extensions) with `RECORD_PATH` empty and `Media` | the same files listed ("9 of 16", "1 of 2" and "24 of 38"), the same left alone |
-| Theme colours: REAPER 7.73's `GetThemeColor` for keys of its default theme against the `.ReaperTheme` integers | `COLORREF` (red low), flags above bit 24 |
-| ReaEQ, every band type, bandwidths 0.3–3 oct, shelves ±17 dB, output gain, bands up to 21 kHz (REAPER holds the bandwidth warp at a quarter of the sample rate); the alternative band, whose width grows with its gain (the stock "Basic 11 band Kick" preset) | exact (35/35 cases, 10 high-frequency cases, 7 alternative-band cases) |
-| Sample-rate conversion of media: impulses at 44.1, 88.2 and 96 kHz in a 48 kHz project, as items and through the sampler (a Blackman-Harris sinc over 96 input frames each side, cut off at 1/1.03 of the output's Nyquist when going down, read from a 32-step table) | exact |
-| Resample modes (`RENDER_RESAMPLE` 0–9): impulses up (44.1 → 48 kHz) and down (88.2 → 48 kHz) and white noise up (44.1 → 48 kHz) and down (48 → 44.1 kHz) per mode. Sinc: Blackman-Harris over 8/32/96 input frames each side read from a 32-step table (16/64/192 points), over 192/256/384 computed exactly (384/512/768 points); linear; point (the frame before the read position, so exact hits read the previous frame); linear plus an RBJ low-pass (Q 0.707) at 0.693 (one stage) or 0.792 (two stages) of the lower Nyquist frequency, run at the higher rate | within 5e-6 (35/36 cases); point sampling misses one frame of noise (REAPER reads the exact hit at 147 input frames the other way); r8brain (mode 10) is the next row |
-| r8brain free (`RENDER_RESAMPLE 10`), a Rust implementation of r8brain-free-src 6.x (MIT, Aleksey Vaneev) with its `CDSPResampler` defaults: 2 % transition band, 206.91 dB attenuation, linear phase. Found by sweeping the two settings against impulse renders (TB 1/2/3, 136.45/180.15/206.91 dB: only 2/206.91 nulls). Impulses 44.1 → 48 and 88.2 → 48 kHz, noise for 31 rate pairs from 8 to 192 kHz covering every stage r8brain picks (2x/3x FFT convolution, whole-step and spline fractional interpolation, intermediate interpolation, half-band up- and downsamplers) | within 1e-7 (33/33) |
-| Play rates without "Keep pitch" (0.5, 0.9, 1.5) in resample modes 0, 1, 3, 4 and 10, and from a 44.1 kHz file in a 48 kHz project: REAPER resamples by the play rate with the render's mode, the same conversion as from the file's rate times the play rate (output frame `j` reads the source at `j * rate`) | within 1e-5 (17/18); the 384-point sinc at 0.9 within 3e-5 |
-| Take channel modes (`CHANMODE` 0-9, 64-70, 130-132) on mono, stereo and 4-channel files: normal, reverse, mono mix (the first two channels averaged), single channels (3 and up: channel `code - 2`, both sides) and pairs (67 and up: from channel `code - 66`, silent past the file's channels; a mono file counts as two equal channels) | exact (60/60) |
-| Stretch markers without "Keep pitch", read from ramp and tone renders: positions are take time (item time times the play rate), sources replace `SOFFS`, rate 1 before the first and after the last marker, a slope ramps the rate linearly from `1 - slope` to `1 + slope` times the segment's rate | rate 1: exact away from the markers (within 2e-8), REAPER's own glitches within a few ms after a marker, -32 dB residual overall; in some layouts REAPER's map is half a source frame later (-31 dB); at other play rates REAPER's map sits 30-120 source frames off after the second marker (envelopes still correlate 0.997); slopes: REAPER integrates the ramp in steps and lands short of the next marker (envelopes 0.93-0.97) |
-| Stretch markers with "Keep pitch" and take pitch envelopes, on resampled and pitch-kept takes (SoundTouch) | no null, as for stretched takes: envelopes correlate 0.91-0.94, spectra within 0.3-1.4 dB on average; élastique (the vocoder) 0.3-0.5 |
-| Project play rate 1.5 without "Keep pitch" (render length and content) | exact; with "Keep pitch" as stretched takes |
-| Timebase: Lua `SetTempoTimeSigMarker` halving the first tempo, adding a 90 bpm marker at 1 s and a linear ramp from 120 to 60 bpm, with the project on time, beats and beats position and items on each override, a track override, stretch markers, markers and regions | the same `D_POSITION`, `D_LENGTH`, `D_PLAYRATE`, stretch marker positions, marker and region positions and tempo marker times (tests run the same calls through the API and ReaScript) |
-| RPP round trip of `SM`, `CHANMODE`, `PITCHENV`, item and track `BEAT`, `TIMELOCKMODE`, `TEMPOENVLOCKMODE` and project `PLAYRATE` | lines kept in place and rewritten from the model; REAPER's defaults when missing (beats, beat-locked tempo markers) |
-| SoundTouch and Rubber Band takes (sub-modes 0/1/2/6 and 0/1/2/4/8/16/32/48/144; rates 0.75 and 1.5, +5 semitones) through the system libraries (SoundTouch 2.4.1, Rubber Band 4.0.0), where REAPER ships SoundTouch 1.9.0 and Rubber Band 1.8 (KissFFT, Speex resampler) | no null: same pitch and length, signal envelopes correlate 0.91-0.98 (SoundTouch) and 0.99 (Rubber Band) with REAPER's, 115-333 samples apart; long-term spectra within 0.3-0.8 dB (the phase vocoder standing in for élastique and simple windowed: 1-4.7 dB). SoundTouch 2.x changed the algorithm: no shift of its output comes near REAPER's, while SoundTouch 1.9.0 driven the same way matches REAPER's sample for sample outside each sequence's overlap |
-| MP3 media items at their own rate: LAME-tagged (CBR, VBR, 44.1/48/32 kHz, mono, a 160 kbps LAME 3.92 crash cymbal), untagged, MPEG-2 (22.05/24 kHz mono and plain stereo, a 64 kbps 22.05 kHz joint-stereo file) | within 1e-6 (18/18 cases); REAPER plays the Xing/Info frame as 1152 (MPEG-2: 576) frames of silence, keeps encoder delay and padding, and scales by 32767/32768 |
-| MP3 mid/side stereo in MPEG-2 and 2.5 (LAME `-m j` and `-m f` at 8/11.025/16/22.05/24 kHz, CBR and VBR, a 22.05 kHz file mixing left/right and mid/side frames; `-m s`, `-m d`, mono and MPEG-1 `-m j`/`-m f` as controls). REAPER's decoder plays every mid/side granule of an LSF stream at exactly 1/sqrt(2) of the correct level (MPEG-1 is right): the mid/side factor is applied twice. Scythe lowers those granules' global gain by 2 steps before symphonia decodes them, which is the same scaling ahead of the IMDCT, so transitions between frame modes match too | within 1e-6 (14/14) |
-| MP3 through ReaSamplOmatic5000 (the crash cymbal at 44.1 and 48 kHz) | within 3e-5: gapless, clipped to 16-bit range, one 16-bit step off on 0.06 % of the samples |
-| ReaVerb file-loader IR (a cab IR and a plate from `~/music/Samples`) | exact (≤ 2e-6) |
-| ReaSamplOmatic5000 (kick and snare from `drumtest.RPP`, 44.1 kHz samples in a 48 kHz project), with its voice limit: a note beyond the limit takes over the oldest voice, which fades out over the 512-frame block holding that note (or never sounds when it started in the same block); retriggers within a block, zero-length notes, 1 to 9 voices, a velocity range | exact (18 cases); a 14-sampler drum kit (seven MP3 cymbals) within 1e-4 |
-| FX parameter envelopes on hosted plugins: a ramp, a square step and a jump on CLAP and VST 3 gains (REAPER sends the value at each 512-frame block's last frame) and on a JSFX volume (its first frame, rounded to the slider step, with `@slider` and `@block` running as REAPER runs them) | exact (3 cases) |
-| FX parameter envelopes on an LV2 gain: linear, square, bezier and fast/slow shapes, points on and a rounding error short of block boundaries, several points in a block (REAPER sends a block's start value, or, when the block holds points, the value at its first point's frame, the offset floored from the point's distance to the block's start time) | exact (3 cases) |
-| JSFX arithmetic with NaN, infinities and subnormals: 394 expressions over 9 probes (assignment checks per operator and function, constant folding, simplifications, comparisons, integer conversions and shifts, `min`/`max`, user function parameters, memory, `loop`/`while` values) | exact |
-| FX parameter envelopes (`PARMENV`): ReaVerb wet ramp and bypass, a ReaEQ frequency sweep through REAPER's normalised parameter curves, set once per 512-frame block | exact for fixed values and bypass; the ReaEQ sweep within 0.3 % and the ReaVerb ramp at -49 dB, except REAPER's first block of a render, which ignores envelopes |
-| FX chain graph (WP6 probes: JSFX gain, swap, delay with and without PDC, a 4-pin mixer, MIDI note senders into a DC synth): wet/dry and delta, wet envelopes per block and sample-accurate, offline, parallel groups (with bypassed, delta, wet, latency-differing and MIDI-merging members), containers (serial, parallel, nested, wet, bypassed, pin routing in and out, 1-pin inputs and outputs, 4-channel containers on 2- and 4-channel tracks, mapped parameter envelopes, nested mappings), master chains | 72 of 72 exact (within 1e-5) |
-| Take FX: gain, DC added after item and take volume and fades, latency compensated, tails past the item end, a running counter showing when they start, 4 take channels, parallel inside, reversed sections | 9 of 14 exact; the other 5 differ only in the item's last sample, which REAPER drops in its take-FX path for some item positions |
-| Freeze (action 41223 on a JSFX chain) | the render bit-identical to REAPER's, same file name, length (one second of tail) and `<FREEZE` layout |
-| ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
-| Guitar rig (`rig_probe`): a rig container (gate, NAM slot without a model, two impulse responses blended, EQ with cuts and tone, output level), the same effects in series, a NAM + ReaVerb chain and that chain converted to a rig, a rig with gate and cab off; a Lua probe lists what REAPER loads | REAPER loads the container under its name with its six effects (the second IR parallel), renders it bit-identical to the series chain and the converted chain to the original; Scythe within 1e-5 of REAPER on all 5 |
-| Built-in effects written by scythe rendered by REAPER (`builtin_ref`): EQ, delay and convolution, then gate, compressor, multiband compressor and limiter with parameters edited through Scythe | the whole chain within 7e-5 (-95 dB); REAPER reads the stored states as its own ReaEQ/ReaGate/ReaComp/ReaDelay/ReaVerb/ReaXcomp/ReaLimit |
-| Dynamics (`stock_ref`, 109 cases on tones, noise, drums, DC steps, level ramps, impulses and bursts, one parameter at a time, set by REAPER through `TrackFX_SetParam` or a state chunk): ReaComp (every parameter: ratio, attack, release, RMS, knee and legacy knee, pre-comp, detector filters and inputs, filter preview, auto make-up, auto release, classic attack, wet/dry), ReaGate (every parameter but noise, which is random: filters, RMS, hysteresis, hold, pre-open, invert modes, wet/dry, sidechain), ReaLimit (threshold, ceiling, release, isolated peaks, bursts, limiting on a limited level), ReaXcomp (crossovers, every band parameter, feedback detector, bands off, output gain); plus ReaGate's MIDI out turned into audio by a JSFX | ReaComp and ReaGate within 1.2e-7 (49 and 22 cases), ReaXcomp within 1.3e-4 (22), ReaLimit within 2.7e-4 (15 of 16; its "inf" release within 1.8e-2), MIDI notes at the same frames |
-| ReaVerbate (`stock_ref`, 28 cases on the program material and an impulse: room size, dampening, width, pre-delay, low/high-pass, wet/dry, all at once) | within 1.2e-7 (28/28) |
-| ReaSynth (`stock_ref`, 41 cases on one note and a grid of chords, extreme keys and velocities, short and overlapping notes: attack, decay, sustain, release, each oscillator and their mixes, pulse width, extra sine and its tuning, detune, volume, legacy mode, pitch wheel) | within 3e-6 (37/41); decay towards a sustain under 0 dB within 2e-4 |
-| ReaControlMIDI (`stock_ref`, 12 cases: what reaches a JSFX that turns each MIDI message into a sample, after transpose, snap to scale with roots, bank/program and volume/pan/pitch sends on one or all channels) | exact (12/12) |
-| ReaFIR EQ mode (`stock_ref`, 26 cases on the program material and an impulse: straight segments at FFT sizes 1024 to 16384, output gain, a steep eight-point curve, two-point tilts and shelves, one point) | straight segments at 2048 to 8192 within 3e-5 on the material and 4e-7 on the impulse; two-point curves (a Bézier in log frequency), steep many-point curves and other sizes within 6e-3 (2e-4 on the impulse); flat and one-point curves exact |
-| ReaVerb echo generator and reverse modules (`stock_ref`, 14 cases: fractional start and spacing, a floor of -150 dB, two generators summed, reverse at full and half mix, a dense 818-tap response) | within 1.6e-5 (14/14), on the impulse within 1e-8 |
-| ReaInsert through a 300-frame loopback on the null engine (outputs and inputs 3/4, delay compensation 300 frames; a ping through the same cable) | the return lines up sample for sample with a second track playing the same item; the ping measures 300 frames |
-| Send envelopes (`AUXVOLENV`, `AUXPANENV`, `AUXMUTEENV`) and take envelopes (`VOLENV`, `PANENV`, `MUTEENV`), followed sample by sample; mute crossfades over 4 ms with a raised cosine | within 1e-3 (6/6 cases) |
-| Multichannel: 4-channel items, sends from channels 3/4 and single channels, pan and fader on extra channels, folders and parent channel offsets, ReaComp sidechain, effect pin maps (inputs from 3/4, outputs to 3/4 with 1/2 passing through, summed input channels; VST, JSFX and LV2), JSFX with more pins (3-band splitter, 8-into-2 mixer, expander with sidechain) | exact (21 cases) |
-| Render normalisation: peak and LUFS-I (REAPER's gating windows reach back before the start) | exact; RMS within 1 % (REAPER's exact RMS measure is not known) |
-| JSFX from the corpus (1175 compressor, soft clipper, master limiter, stereo enhancer, volume scaler, delay, time adjustment) with the projects' slider settings | within 1e-6 |
-| JSFX FFT and MDCT: `fft`/`ifft`/`fft_real`/`ifft_real`, permutation, `convolve_c`, `mdct`/`imdct` at every size limit (33 probes), and the stock effects built on them (phase adjust, FFT splitter, MDCT filter, volume sweep and pitch shift, auto peak filter, spectral hold, spectral paint, Thunderkick) | within 1e-5 (10/10 effects) |
-| JSFX files: text items (expressions, comments, separators), 16/24-bit and float WAV, `file_riff`/`file_avail`/`file_mem` (7 probes); amp model (single and dual, impulse responses chosen by name), MIDI key map and MIDI delay (milliseconds and quarter notes) | exact (6 effects) |
-| Opus items (48 and 44.1 kHz sources, mono, 5.1, an output gain of -6 dB, a looped item showing the end trim) and WavPack items (16 and 24-bit, float, 5.1, hybrid lossy, at 48 and 44.1 kHz projects) | Opus within 4e-7, WavPack identical |
-| Render sources, 20 projects with 51 files from REAPER's `-renderproject`: stems (`RENDER_STEMS` 1, 3; 2 renders nothing), selected tracks via master (128) with a folder, selected items alone (32, and bounds 4 with 0 or 1) and via the master (64) with an overlapping unselected item, region matrix (8) with the master on one region, stems with region bounds, selected regions (5), and the wildcards `$track`, `$tracknumber` (master `00`), `$item`, `$itemnumber`, `$regionnumber` and colliding names | same file names, every file within 1e-5 |
-| Render queue: REAPER's queued copies of a stems + master and a regions project rendered by Scythe's `--render-queue` | same files within 4e-9, queue emptied |
-| Subprojects at 48 and 44.1 kHz in a 48 kHz parent (offset, trimmed): parent renders with REAPER's proxy and with the proxy Scythe renders; the proxies themselves | within 1e-5; proxies within 8e-9 at REAPER's rate |
-| WavPack renders (16-bit, 24-bit, 32-bit float) decoded and compared with REAPER's, which also checks integer rounding in all renders; Opus at REAPER's default settings | identical samples; Opus within 0.012 (a lossy encoder) |
-| CD images and DDP filesets of a test signal: tracks from markers (the 4-second rule, `#`-only, lead-ins of 250, 256 and 333 ms, the first track named by the marker at the start, `PERF=`/`WRIT=`/`ISRC=` markers, a later start), from regions (overlapping, cut by the bounds, gaps left out); DDP with `#`/`!`/`@` markers, Red Book index moves, ISRC, UPC/EAN, every CD-TEXT field, genre and language; 32-bit integer WAV and WavPack | byte-identical files (14 images and filesets); 32-bit integer samples identical |
-| CD image and DDP renders of a mono and a 4-channel project | same empty files (`.cue` and `.bin`; `OUT.DAT`) and the same error; 48 kHz projects render at 44.1 kHz as REAPER's do |
-| JSFX font 0: `gfx_texth` (0 before the first `@gfx`, then 8), `gfx_measurestr`/`gfx_measurechar` of every byte and of strings with spaces, tabs, `\r` and `\n`, multi-byte UTF-8, the empty string, and `gfx_x`/`gfx_y` after `gfx_drawstr`, `gfx_drawchar` and `gfx_drawnumber` (read back through `gmem` from REAPER's JSFX window) | same values (34 cases) |
-| Python ReaScripts: `print`, `sys.stderr` and `RPR_ShowConsoleMsg` | same destinations: standard output, the error report (with the traceback, when the script fails), the console |
-| ReaScript API: one Lua script (sends, track colors and selection, markers and regions with colors, time selection, repeat, tempo and time signature markers and the time map, `format_timestr`, `mkvolstr`, fader scaling, a volume envelope's points and `Envelope_Evaluate`, MIDI notes and CCs with selection and mute, PPQ conversions, items, takes and sources, project and global extended state, project title and notes, `Main_OnCommand(40001)`), one EEL2 script (`eval`, `extension_api`, file functions, MIDI with optional arguments left out, `#retval` strings) and one Python script, run in REAPER and in Scythe with their outputs compared | same values (126 lines), but for beat positions REAPER gives as 1e-11 where Scythe gives 0; REAPER 7.73's Python module fails some calls (`RPR_MIDI_InsertNote`, `RPR_GetTakeName` of an unnamed take, `RPR_ValidatePtr`) and gives region names as empty strings, which Scythe does not copy |
-| Shortcut file: REAPER-written `reaper-kb.ini` files (made by REAPER rewriting probe files: `KEY` lines with every modifier, virtual-key and character codes, navigation and keypad keys, MIDI and mousewheel input, a disabled default; `ACT` custom actions, nested and in the MIDI editor section; `SCR` scripts in two sections) read and written back; each shortcut described as REAPER's `GetActionShortcutDesc` and comments describe it; custom action ids numbered as REAPER numbers them; consolidate-undo and toggle states of custom actions measured with `Undo_CanUndo2` and `GetToggleCommandState` | byte-identical round trips (CRLF and comments included); the descriptions of the 26 shortcuts in REAPER's comments and of 34 probed keys identical |
-| Mouse modifiers: `reaper-mouse.ini` REAPER wrote after `SetMouseModifier` calls (behaviours, command ids, custom actions) | byte-identical round trip; the same `GetMouseModifier` answers |
-| Action names: the 154 REAPER command ids Scythe registers, against REAPER 7.73's `kbd_enumerateActions` list | identical names |
-| ReaScript actions and state chunks: one Lua script (named command lookups both ways, action names, shortcut descriptions, toggle states of actions and custom actions as they change, custom actions run with `Main_OnCommand(Ex)`, `get_action_context`, track, item and envelope state chunks read, edited as text and written back, a broken chunk, mouse modifiers, `SetToggleCommandState`, `genGuid`, solo/mute/arm-all calls) and one EEL2 script (the same calls through `#string` outputs), run in REAPER with the same `reaper-kb.ini` and in Scythe (`crates/scythe-app/tests/fixtures/reascript`) | identical output (38 Lua and 14 EEL2 lines) |
-| WAV 8-bit, 16-bit and 64-bit float, IMA ADPCM and cADPCM of a test signal with 8-bit rounding ties and clipped samples, stereo and mono | identical sample data (10 files; ADPCM data chunks byte for byte) |
-| WAV, AIFF and CAF files of a ramp and a sine with markers and regions (forced project rate): every WAV bit depth code (u-law, the 16- and 24-bit fallbacks), each flag of the WAV sink (no `bext`, forced WAV, project file, markers/regions/`#` modes, ACID) and each large-file mode (Wave64, RF64, BW64, forced and automatic) with ADPCM, float and u-law, 1-8 channels, markers on the render's edges, at fractional positions and with UTF-8 names in custom ranges; AIFF and CAF bit depths, tempo and marker flags; render metadata in all three (BWF, iXML, XMP, axml, cart, ID3, INFO, IFF, CAFINFO, with and without `BWF:` tags); GIF and LCF of black frames at 640x360/30 fps and 320x240/25 fps, with transparency | byte-identical files apart from `bext`'s render date and time (326 files) |
-| WAV over 4 GB (16 channels, 64-bit float, 710 s) left room for RF64 and for Wave64, with markers | same RF64 and Wave64 headers and tail chunks, byte for byte apart from the date |
-| GIF and LCF of a video item changing colour | same frames, delays, rectangles and block runs; colours a few levels off (FFmpeg's decoder) |
-| Video sink: 12 container/codec pairs (AVI XviD/MP3, MPEG-1, MPEG-2 TS, MOV and Matroska with PCM, MP4 AAC, FLV, WebM VP8/Vorbis and VP9/Opus, FFV1, Huffyuv, audio only) without video items, then video items (aspect kept, stretched, two tracks) at 25 and 30 fps | same containers, codecs, sizes, frame rates, frame counts and durations; black frames decode identically; PCM audio identical, lossy audio within the codecs' own error; video items on the same frames showing the same source frames (exact at 30 fps; REAPER's 25 fps render of a 25 fps file at half-frame offsets picks a neighbouring frame now and then), MPEG-4 items scaled within 30-32 dB PSNR (26 and 23 dB with FFmpeg's bilinear scaler) |
-| Video sink settings: frame sizes 0x0 (with a 640x360 project video size), 640x0 and 0x480; H.264 option strings (`crf`, `preset`, `g`, `b`, `range=jpeg`, comments), audio `b`; MJPEG quality 0, 50, 80, 95 and 100 with and without `qscale` | 1920x1080 and 640x360 as REAPER (0x480 crashes REAPER); same x264 settings in the stream (rate control, bitrate, keyframe interval, subme, B-frames) and full range; MJPEG sizes within 2% |
-| Video item scaling of a high-detail test pattern: 1:1, 2.5x and 4x up, 16:9 with bars and stretched, 4x down | 1:1 identical; up 36.8-40.3 dB (14-17 dB with FFmpeg's bilinear scaler), down 23.2 dB (11 dB) |
-| Video items' own audio: PCM in Matroska and MOV at 48 and 44.1 kHz, AAC in MP4, with item position and offset | PCM at the render rate identical; resampled and AAC streams within -30 dB (REAPER's video audio drifts by a fraction of a sample) |
-| Video processors: opacity 0.5 over a lower track, zoom and pan with and without aspect and filtering, invert colours (track and take FX), brightness/contrast | brightness/contrast identical; invert 37-40 dB; opacity 22 dB and zoom/pan 18-21 dB (REAPER blits the lower track's own video by nearest neighbour, and its zoomed rectangle is not matched exactly) |
-| JSFX `@serialize`: state restored after `@init`/`@slider` (and lost to `@init` at playback start without `ext_noinit`), written byte for byte as REAPER does; ReaSamplOmatic5000 playing the notes a JSFX lets through | exact (3 cases) |
-| JSFX run order on load and at render start: `@init`, `@slider` and `@serialize` reads and writes counted by a probe effect, with and without stored state and slider values, and without `@serialize` (renders, and gmem read after adding, saving and opening in REAPER) | exact (5 renders) |
-| JSFX `gfx_drawstr` in a box: font 0 and a TrueType font, 41 flag/box/start combinations from 4 starting points (negative, fractional, off the right edge), multi-line text, empty and inverted boxes; `gfx_x`/`gfx_y` after and where the ink lands (`gmem` and `gfx_getpixel` in REAPER's JSFX window) | same positions (font 0 glyphs differ, ink within a column) |
-| JSFX font flags `o`, `s`, `v`, `m` and their pairs, `gfx_deltablit` (16 cases: filters, scales, shears, source rectangles, offsets) and `gfx_transformblit` (2 x 2 and 3 x 3 grids, nearest and filtered), read pixel by pixel with `gfx_getpixel` | blits identical to the byte; effects as LICE draws them (a different rasterizer under them) |
-| EEL2 against REAPER: number literals (20 forms), `min`/`max` with NaN in 41 contexts, subnormal results of `exp`, `pow`, `^` and the rest | same values; the same sections fail to compile |
-| System exclusive and meta text events in MIDI items (`<X` chunks) read by a JSFX with `midirecv_buf`, sent on with `midisyx` (F0/F7 added when missing) and `midisend_buf`, and played into a CLAP instrument | exact (3 cases) |
-| JSFX MIDI: the track's notes into a JSFX, transposed, swallowed, partly read (unread messages pass), added to, sent later in the block (held to its last frame), and through a JSFX that ignores MIDI | exact (7 cases) |
-| MIDI sends (`AUXRECV` MIDI fields) into JSFX probe synths and the workspace's CLAP test synth: all channels, one source channel, a destination channel, MIDI off, post-fader and post-FX (a transposing JSFX in the source), pre-FX, audio plus MIDI, a muted send, a muted source, a send from a later track merged with the destination's own items, a chain through a track without effects, destination bus 3 into bus-aware and plain JSFX and the CLAP synth, source bus filters, a bus passing a plain JSFX untouched, and solo (destination soloed, source soloed, a third track soloed) | exact (25 renders) |
-| MIDI record input: `I_RECINPUT` device numbers 0-127 set through the API against the `REC` field REAPER saved, and `REC` fields 0-129 read back through the API | same mapping (34 pairs) |
-| MIDI device settings with REAPER on a private JACK dummy server: `midiins` enabling devices by bit, aliases from `ia<n>`/`oa<n>` in `[mididevcache]`, `GetMIDIInputName`/`GetMIDIOutputName` | same names and enabled ports |
-| MIDI clock and MTC out, captured from REAPER's JACK MIDI ports with `jack_midi_dump`: play from the start, stop, move while stopped, play elsewhere, move while playing, pause; the timecode generator at 25 fps with a jump | Scythe sends the same messages in the same order (the captured sequence is a unit test); ticks 1000 frames apart at 120 BPM on the beat grid, timing checked on a virtual ALSA port |
-| Timecode generator (`<SOURCE LTC`) at 24, 25 and 30 fps, with an hour offset, from a later item position with a source offset | exact (5 renders); 23.976 and 29.97 (drop and non-drop) are a fraction of a sample to a few samples off REAPER's phase |
-| VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
-| VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
-| FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
-| Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | exact (26/26 within 1e-5) |
-| Pan modes: balance, 3.x balance, stereo pan and dual pan at pans -1 to 1, widths -1 to 1 and pan laws 0 dB, -3 dB, -6 dB, -12 dB, +3 dB and +6 dB (a left-only then right-only source gives the gain matrix); the project default mode (3.x balance, stereo pan, dual pan); width and dual pan envelopes (width multiplies, dual pan adds) and a pan envelope in stereo pan | exact (144 cases) |
-| Polarity: a track's own output, post-fader, pre-fader and pre-FX sends from an inverted track, an inverted bus, an inverted folder parent and an inverted track in stereo pan | exact (7 cases) |
-| Solo: in place and ignoring routing, of a source sending to a bus, of the bus, of both, of the start and middle of a send chain, of a folder child (its parent sending to a bus) and of a folder parent (its child sending to a bus), pre-fader sends; solo defeat on a plain track, a bus, a source and a muted track | exact (24 cases) |
-| Folders: drags of a track and of two selected tracks over the top, middle and bottom of a folder, its children and a plain track in REAPER 7.73's track view (driven with xdotool), `ReorderSelectedTracks` in its three folder modes, "Move tracks up/down" (43647/43648), "Move tracks to new folder" (42785), "Cycle track folder state" (1041) and "Cycle folder collapsed state" (1042), "Remove tracks" (40005); `BUSCOMP` as REAPER saves it, and a folder project Scythe saved after drags and a collapse read back by REAPER (`I_FOLDERDEPTH`, `I_FOLDERCOMPACT`, `GetTrackDepth`) | identical (34 cases; 11 tracks read back) |
-| VCA groups: lead fader on a follower, a lead with its own item, lead volume, trim and mute envelopes (alone and with the follower's), nested VCAs, the lead's mute button, solo and polarity (no effect), pre-FX following with post-fader, pre-fader and pre-FX sends; lead pan and width on balance, stereo pan and dual pan followers, lead pan envelopes; a plain volume group (no effect on the render) | exact (15/24 cases); the 9 with a lead pan differ in the first 512 frames only (REAPER ramps from the follower's own pan into the lead's there) |
-| Fader-scaled volume envelopes (`VOLTYPE 1`): a ramp from 0 dB to -12 dB, `ScaleToEnvelopeMode` and `DB2SLIDER` from -150 to +24 dB | exact; the scaling formula within 1e-9 of `ScaleToEnvelopeMode` |
-| Track groups: membership through `GetSetTrackGroupMembership(High/Ex)` saved as `GROUP_FLAGS` (all 25 parameters), group names; edits through `CSurf_On*ChangeEx` and `SetTrackUI*` on leads read back from followers (volume and reverse, pan and reverse, width, mute, solo, arm, chains through leads of other groups, two leads in one group, VCA leads not moving faders); one Lua script run in both | same values and lines; the script passes in both |
-| Hardware outputs and monitor mixes written by Scythe (stereo and mono outputs, send modes, levels, pans, mutes, `P_EXT` values with spaces, a SWS-style pre-FX cue bus, a master output to 11/12) read back in REAPER through `GetTrackSendInfo_Value` and `P_EXT` | identical (33 lines) |
-| Metronome settings: REAPER's "Options: Toggle metronome" (40364) and the count-in, pre-roll and output settings found by toggling in REAPER (41818 and 41819 set `preroll` &1 and &2; a fresh reaper.ini has `preroll=0`, `prerollmeas=2`, `metronome_defout=-1`), saving and reading `projmetroen`, `projmetrocountin`, `preroll`, `prerollmeas` and `metronome_defout`, and by the metronome dialog's checkbox handlers; a `<METRONOME 31 3.5` chunk with `METRONOMEOUT 2` and `1028`, and Scythe's own minimal chunk, opened and saved by REAPER | flags, count-in length and outputs read back and saved unchanged |
-| Overlapping items and fixed lanes (`FIXEDLANES 9`, `YPOS`), lane soloing on fixed-lane tracks (`FREEMODE 2` with `LANESOLO`: only the soloed lanes, such as a comp lane, play) | exact (11 cases) |
-| Comping: three lanes, "comp into new empty lane" (42797) and four comp areas made from razor edits (42475), the last overlapping two others; REAPER's saved comp lane against Scythe's swipes of the same ranges (areas, pieces, offsets, fade lines); Scythe playing REAPER's comp project and a DC probe of the cross-fade; REAPER rendering Scythe's swiped project | same lines (`LINKEDLANE`, `LANEREC`, `LANENAME`, fades `1.1 0.01 0.01` between lanes, `0` within one); renders within 1e-5; REAPER's render of Scythe's comp identical to its own; the `1.1` cross-fade is a quartic through the quarter sine (within 4e-8) |
-| Editing (`v` probes): 43 scenarios done in REAPER by Lua (`Main_OnCommand`, `ApplyNudge`, `P_RAZOREDITS`) and in Scythe through the control API from the same project: ripple per-track and all-track deletes and moves (with straddling items, markers, regions and envelopes), group moves and splits, item and global locks, explode (three ways), implode (two ways), crop, delete take, crossfade overlap and time selection, all seven fade and crossfade types, seven nudge/set cases, razor deletes with ripple and on an envelope, dynamic split on two drum recordings; plus the RPP lines of each setting (`RIPPLE`, `GRID`, `LOCK` bits, `AUTOXFADE`, `GROUPOVERRIDE`, item `LOCK`/`GROUP`, fade shape spellings) and `GetSetProjectGrid`/`SnapToGrid` with swing | 39/43 same items, takes, fades, groups, locks, envelope points and markers, and REAPER's renders of its edits null against Scythe's renders of its own (1e-5); the other four are the two dynamic splits and the two envelope cases in "Not there yet" |
-| Fade shapes: 50 renders (shapes 0-6, `5.1`, `1.1`, `7`, curvature -1 to 1) and the equal-power shape at 21 curvatures on a DC source | within 1.6e-4 (the S-curves' fitted warp), the rest exact; `6` = `5.1` and `7` = `1.1` |
-| Tab-to-transient (40375) on three drum recordings at sensitivity 0.25, 0.5 and 0.75 | Scythe finds 66-100 % of REAPER's transients per file (F-measure 0.88 / 0.84 / 0.70 by sensitivity), and those it shares agree to the sample (median 0.03-0.1 ms) |
-| Record settings: `I_RECMODE` 0-16 (each action's code, forced input formats from the recorded files' channel counts), `I_RECMON`, `I_RECMONITEMS`, `I_RECMODE_FLAGS`, `B_AUTO_RECARM` and the project record mode actions (40252/40253/40076) read back from the saved `REC`, `AUTO_RECARM` and `RECMODE` lines; the lane options (43151-43153, 40114) found as `autoxfade` bits | same lines |
-| Recording (REAPER on a dummy JACK device, `Transport: Record` and "stop, save all recorded media" from Lua): linear, repeat from the loop start, from before it and from inside it, short last passes, fixed-lane tracks with and without "new recording adds lanes", item auto-punch, time selection auto-punch on a lane track, recording over an item, output stereo (post-fader and pre-FX) and mono, record mode none, forced input formats | Scythe's placement reproduces the saved items, takes, empty takes, offsets, lanes, `LANESOLO`/`LANEREC` and `RECPASS`; REAPER's output recordings equal the track's signal sample for sample (fader 0.5, pan hard left for mono: the average of both sides); Scythe's output recording on the null engine matches its input times the fader |
-
-Control surfaces were compared with REAPER 7.73 running the same project with the same
-surface (`crates/scythe-surface/tests`; REAPER on a dummy JACK server for MIDI, its MIDI ports
-bridged to ALSA with a2jmidid and the device played by the `midi_probe` example):
-
-| Area | Result |
-|---|---|
-| reaper.ini surface lines: OSC (flags 1 = listen on the local port, 2 = send feedback, found by which sockets REAPER opened), MCU/MCUEX/HUI/FADERPORT/FADERPORT2 as `offset size input output flags` (the strip offset and devices found by what REAPER showed and opened); lines Scythe writes are read by REAPER (it binds the OSC port) and written back unchanged when it quits | same lines |
-| OSC feedback with a pattern file of Scythe's default patterns: the full first dump and the end state after 19 device messages (volumes as fader positions, dB and text, pans, mute/solo/arm/monitor toggles, rename, `/action`, device track selection and stepping, the selected track's patterns, a marker, repeat, unsolo all, empty bank, send and FX slots) | 562 of 565 addresses end on the same value; the rest: REAPER ignores `/master/volume` from the device (2) and moves markers when the tempo changes |
-| OSC fader positions and texts: `0.716`, `0.592449`, `0.852774`, `0.002514` for 0, -6, +6 dB and silence; `-11.0dB` (cut, not rounded), `-inf dB`, `25%L`, `C`, `/tempo` normalised as (bpm - 40) / 256 | same values |
-| Fader curve: REAPER's `DB2SLIDER` at every whole dB from -150 to +24 and `SLIDER2DB` at 10, 100, 500 and 999, against the fader-scaled envelope curve Scythe's faders now use | within 1e-9, but REAPER puts 0 dB at exactly 716 (the curve: 716.22), which Scythe follows |
-| Mackie Control input: a fader move, mute, solo, select, two V-pot turns, arm and click buttons, then the tracks read back with `GetMediaTrackInfo_Value` | same state (pan steps of 1/31; the fader within 0.002 dB). Surface edits go through the control API, so track groups carry them to followers |
-| Parameter modulation on a JSFX parameter (stock Volume Adjustment and a DC probe slider): LFO sine/square/saw/triangle at Hz rates and tempo-synced periods (97 and 120 BPM), phases, directions, baseline clipping; the audio follower from channels 1/2 and a 3/4 sidechain (attack/release 0-1000 ms, dB ranges, curve); links forward and backward across the chain and within an effect, with offset and scale, and MIDI CC/pitch links from a MIDI item; a parameter envelope with an LFO or link on top. Measured: LFO Hz = 1/256 + speed × (8 - 1/256), synced 8 - 8s (s ≤ 0.5) or 4 - 7.5(s - 0.5) quarter notes; the follower runs per sample on \|x\| (or the pair's mean) with τ = ms/2 and gives the block its peak over the previous block; values are worked out after each block for the next | exact (73/80 cases at 1e-5; the random shape and renders starting off the 512-frame grid differ) |
-| MIDI learn through a virtual MIDI port into REAPER on a dummy JACK server and into Scythe (absolute CC, relative 1-3, toggle, soft takeover, pitch bend, notes, other channels) and MIDI shortcuts to actions (CC on and off values, notes, channels) | same parameter values and toggles in the same order |
-| Mackie Control output: scribble strips (six characters and a space), meter mode SysEx, transport and automation LEDs, the time display in beats mode, empty strips (fader 41, ring centred), the extender's SysEx id | same bytes; REAPER sent no fader, ring or LED updates for strips holding tracks under this setup, so those follow the published protocol |
-| HUI: transport LEDs (zone 0x0E: stop, play and record; REAPER never lights stop), the ping every second | same bytes |
-| MIDI CC shapes (a JSFX turning CC 1, pitch bend and channel pressure into DC, and one counting the events it receives): square, linear, slow start/end, fast start, fast end and beziers of tension -1 to 1 on CC, pitch bend (up, down, to the middle) and channel pressure; `CCINTERP` 4, 32, 128, 0 and -1; two and three bezier segments in a row (the start tangent follows the previous slope), unequal spacing, a shape on the last event, a muted event and another channel between | exact (36 renders); the same number of events (REAPER sends a step only when the value changes) |
-| MIDI editor actions (`MIDIEditor_OnCommand` then `MIDI_GetNote`, seven notes): quantize position (1/16, 1/8, 1/8 swing 50 and 80 %, 1/8 triplet), position and end, set length to grid, lengthen and shorten, move by grid, velocity ±1/±10, semitone up, legato (all and some selected), join, split on grid, duplicate an octave up | same notes |
-| A project Scythe edited through the API (quantize with swing and strength, transpose in D major, note velocity and end, split, a bezier CC line, a slow start/end pitch line, fast-end CC points) and saved, rendered by REAPER and by Scythe through a notes, CC and pitch bend JSFX | exact |
-| Take editor settings saved by REAPER 7.73 (`CFGEDIT` mode, grid, swing, channel; `KEYSNAP`; `EVTFILTER` channel filter; `VELLANE` lane numbers -1, 0-127, 128-133, 167, 168), `MIDINOTENAMES`, sysex, text and notation (`NOTE` type 15) events read and written back unchanged | same lines |
-
-`examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
-compares the two files.
-
-### Not there yet
-
-- Windows: they are drawn inside the main window (egui), so none can be moved onto a second
-  screen or out of the main window; windows opened beside the pointer do not remember where they
-  were moved, and a tool window whose contents are shorter than its size shrinks to them.
-- Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
-  take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
-  scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's
-  gate, compressor, subtract and convolve modes have no editor (they are not emulated). Parameter
-  changes through `fx.param` are not undo steps (the editors' and the parameter rows' are).
-- Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
-  the preview plays through the device directly (REAPER's preview output and its "start on
-  bar" are not there); metadata is not written back to files, and REAPER's custom columns
-  (`USER` lines), loudness columns, waveform and peak display of the preview, image metadata
-  and the explorer's folder-tree view are not there. Folder favourites are Scythe's own list
-  (`explorer-favorites.txt`; REAPER keeps them elsewhere). The bay has no folders, comments,
-  "retain" or move/copy of source media. A theme recolours Scythe's 16 palette colours where
-  they are painted, so an element drawn in a colour outside the palette keeps it, and colours of
-  a REAPER theme without a Scythe counterpart (meters, MIDI editor, routing, groups) are not
-  used.
-- Envelopes and automation items: a bezier point at the wrap of a looped item (the last pool
-  point bending into the next pass) takes other tangents in REAPER (renders differ by up to
-  0.02-0.04, `Envelope_Evaluate` by 0.01-0.02); an empty pool's end ramp, REAPER's options to
-  connect items to the underlying envelope or bypass it outside items (`POOLEDENVATTACH`, kept)
-  and muted items are not followed; at an item's very first frame REAPER sometimes leaves the
-  ramp out (1e-5). LFO shapes are Scythe's own points: REAPER keeps only the dialog settings
-  (`LFO`) and the points it generated, so its generator could not be compared. Take envelope
-  and tempo envelope lanes, razor edits on envelopes and per-envelope automation modes are not
-  there; the lanes dock under the arrange view rather than under each track.
-- Mix analysis and reference matching (`analysis.*`): tonal balance is matched with ReaEQ
-  shelves and peaks only (no linear-phase or ReaFIR matching), loudness and dynamics come as
-  advice rather than applied processing, and the measurements are checked against synthetic
-  signals with known answers (EBU Tech 3341/3342 style sines, pink and white noise), not
-  against another meter. `script.run` needs the desktop app (the headless server has no
-  ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
-  sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
-  that address.
-- Editing: REAPER's detector for transients is not reproduced exactly (see the verification
-  table), and the dynamic split dialog's gate and "split at" options other than transients are
-  not there. Envelope points do not move with moved items (REAPER's "move envelope points with
-  media items"), and a locked item does not hold the envelope above it still during a ripple.
-  Snapping to item edges and markers is a window setting (REAPER keeps its snap targets in
-  bits of `GRID` that were not measured); the framerate grid snaps like a plain grid. Ripple
-  of edge trims ("ripple edit when editing media item edges"), ripple of the tempo map,
-  auto-crossfade on split, track media/razor edit grouping and razor copies of envelope areas
-  are not there.
-- MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
-  (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
-  Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes
-  left overlapping (it merges notes landing on one start, which Scythe does) is the only
-  overlap rule. Key snap's root and scale are not stored in the take (REAPER keeps them in the
-  editor, outside the project; Scythe keeps them per window). Pooled MIDI is not edited as a
-  pool. The inline editor draws notes only (no lanes), in every pass of a looped item. Other items show behind the edited one
-  without their takes' play rate or loops.
-
-- Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
-  only between the first and last message played (REAPER's CC timeout is not modelled). The
-  MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
-  for comparison (that needs MIDI played into it live). A
-  track records one file per pass group; "start new files on loop", record formats other than
-  24-bit WAV (`<RECORD_CFG`) and the secondary record path are kept but not acted on. File
-  names use UTC. "New recording adds lanes in layers" plays like "exclusively" (REAPER saved
-  the same `LANESOLO` for both); "record into first available lane" versus at the bottom
-  follows `C_LANESETTINGS` &16 only. Comp areas cannot be moved or have their edges dragged,
-  and "delete comp area edge", "move comp area up/down" and the comp lane's own edits copied
-  back to sources are not there; touching swipes (no overlap) do not cross-fade, as in REAPER.
-  Take explode/implode/crop are not there yet. REAPER's project `AUTOXFADE` line is kept;
-  Scythe takes the lane options from the preferences (`autoxfade`).
-
-- Opus and WavPack items: an item that starts inside an Opus file (`SOFFS`, or playback started
-  past its start) is decoded by REAPER from a fresh decoder 80 ms (3840 samples) before the
-  point, so its first ~200 ms differ from Scythe's continuous decode by up to -42 dB (measured:
-  REAPER starts at the packet holding the target minus 3840); WavPack's `.wvc` correction file,
-  which REAPER applies, is ignored (FFmpeg plays the lossy part), and WavPack needs `ffmpeg` on
-  the path. Render sources: razor-edit bounds and marker bounds (6, 7), multichannel and mono
-  stem options (4, 16), pre-fader stems (8192), "only channels sent to parent", forced channel
-  counts in the region matrix, render tail, second pass and "add rendered items" are read but
-  not acted on; a stem bypasses the master and its folders but keeps the project's solo states.
-  Region selection is not kept, so selected-region bounds render every region (as REAPER's
-  `-renderproject` does). Project tabs: background projects do not play ("Run background
-  projects" is off, REAPER's default) and tabs are not restored on start-up.
-
-- Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
-  partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the
-  system's ports as Scythe sees them, not REAPER's `reaper-midihw.ini` order, and a surface's
-  input port is also opened for MIDI recording. OSC has no FX parameters, ReaEQ, instrument,
-  play rate, scrub, zoom/scroll, virtual keyboard or "last touched" patterns; meters use 12
-  steps over 60 dB (MCU, HUI) and a position over 60 dB (OSC), not measured against REAPER
-  (which needs playing audio). The `OSC` flags' bit 4 (learn) is kept for action and FX learn.
-
-- Track groups: REAPER remembers where a follower would be past a limit (a pan pushed beyond
-  hard right comes back from there; a fader taken to -inf and back returns to where it was);
-  Scythe clamps each edit, so after hitting a limit followers keep their clamped offset.
-  The global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
-  project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
-  into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
-  as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
-- Folders and selection: the drop depth comes from where the pointer is over a track (thirds),
-  not from its horizontal position; the selection lives in the window (the `SEL` lines of the
-  project are kept, not read into it), track heights per track, hiding tracks in the track view
-  or mixer (`SHOWINMIX`), the mixer's "folders on the left" layout and "Move tracks to folder..."
-  (42786, a dialog) are not there; selection grouping covers the mixer's fader and pan and the
-  header switches, not the inspector or sends.
-- MIDI sync: REAPER's routing-window defaults for new sends are not measured; Scythe's new sends
-  carry no MIDI (`CreateTrackSend` from a script carries all, as REAPER's does). The meaning of
-  `SMPTESYNC`'s input field was not measured (REAPER's sync dialog needs a screen): Scythe reads
-  it as `I_RECINPUT`-style (4096 + device × 32 for MTC, else an audio channel for LTC); the
-  skip and look-ahead fields are kept but not used. Chasing MIDI clock is Scythe's own (REAPER
-  does not chase clock) and follows song position, not tempo. LTC chase reads 24/25/30 fps and
-  needs the audio input open. REAPER's first MTC quarter-frame run after a start carries a
-  stale seconds nibble; Scythe's does not. NTSC LTC rates are not sample-exact. Input
-  quantize and the "faders send MIDI volume/pan" flag (kept, not acted on) are not there.
-- Parameter modulation: the random LFO shape has its own generator (REAPER's is not
-  reproducible); renders that start off the 512-frame grid change modulated values at other
-  frames than REAPER (whose blocks start at the render start); links across effects are
-  block-exact in renders, which then run 512 frames at a time, but live playback with device
-  buffers off the grid can be a block late; MIDI links read bus 0 only; master FX are not
-  modulated. Learn: "only when the FX window is focused/open" needs the effect's window, which
-  Scythe does not track yet, so such bindings stay inactive; OSC action shortcuts are Scythe's
-  own `SCYTHE_OSC` lines (REAPER's OSC shortcut format was not measured); a learned control
-  reacts on the session's thread (a frame, not a block); relative modes step 1/762 of the range
-  per count, as measured.
-
-- Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
-  not advance playback without an audio device and the test setup has no SWS, so neither when
-  SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other
-  quirks were measured. Unlike SWS, a marker at the spot playback starts from or wraps to does
-  not run, and markers just before a loop end are never skipped. The on/off option is not saved
-  (SWS keeps `MarkerActionsEnabled` in reaper.ini).
-- Count-in and pre-roll are modelled on REAPER 7.73 and not measured against it yet (REAPER does not
-  play without an audio device): no count-in with the
-  metronome disabled, the count-in before the pre-roll, "Start count-in at start of measure"
-  (`preroll` &8) and "Start pre-roll at start of measure" (stored inverted as `preroll` &4), a
-  start within a tenth of a bar of the next bar line moving onto it. REAPER rounds a count-in
-  up to whole audio blocks; Scythe's is sample-accurate. REAPER's "Record audio during
-  pre-roll" is not there: a pre-roll's audio and MIDI are left out of the take (MIDI only
-  roughly when a repeat range overlaps the pre-roll). A setlist's count-in (Scythe's own)
-  clicks with the metronome off. The click is Scythe's own synthesised one at the metronome's
-  primary volume; REAPER's click sounds, patterns and secondary volume are kept in the project
-  but not played.
-
-- FX chain graph: a bypass envelope on a container (rather than an effect) is not followed, nor
-  REAPER's FX oversampling. Take FX play the item's last sample where REAPER's take-FX path
-  drops it for some positions, and their state is not reset on seeking. Input FX process the
-  monitored input only: recordings are taken before them, where REAPER records through them.
-  The monitoring chain's file is Scythe's FX chain text; REAPER's own `reaper-hwoutfx.ini` was
-  not available to compare with. Freeze renders only the track's own items (not what other
-  tracks send it or folder children), in stereo; REAPER's mono and multichannel freezes and
-  "freeze to the last FX" are not there, and a freeze needs the project saved first.
-- Guitar rigs: switching a stage on or off is instant rather than crossfaded; the impulse
-  response's length and trim are not offered (ReaVerb's trim is not modelled); the gate's
-  attack, release and hysteresis and the EQ bands' frequencies are set in ReaGate's and ReaEQ's
-  own editors. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot
-  empty (REAPER passes a missing plugin through).
-- NAM models at another rate than the project
-  are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
-- Multichannel: master channels go to the audio device's outputs in order, as many as the
-  device offers; channels beyond that reach only multichannel renders. That is REAPER's
-  default master output for a stereo master; a master with more channels and REAPER's default
-  `MASTERHWOUT 0 …` plays only 1/2 in REAPER. Once the master's outputs differ from the
-  default they are followed exactly.
-- Hardware outputs cannot be rendered by REAPER, so their mixing is checked against sends
-  (which null) and unit tests; their envelopes, `B_MONO` (REAPER does not save it) and
-  ReaRoute (`I_DSTCHAN & 512`) are not played. A pre-FX tap is not delayed for the latency of
-  the track's own effects. The monitor-mix limiter is REAPER's stock JSFX Master Limiter, which
-  needs REAPER's effects folder.
-- FX presets: VST 3 `.vstpreset` files are looked for only where REAPER 7.73 lists them
-  (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER counts a CLAP
-  plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name
-  (`TrackFX_SetPreset`), but not by index or by navigating, so where they sit in its preset
-  menu is unverified; only plugin-internal presets were tested, not preset files.
-- Actions and customisation: about 150 of REAPER's ~4300 main-section actions have a Scythe
-  counterpart; `KEY`, `ACT` and `SCR` lines of other sections (MIDI editor, Media Explorer) are
-  kept but only the main section's run. Custom actions are SWS-free macros; SWS cycle actions
-  are not there. Toolbar files follow REAPER's `item_N`/`icon_N`/`tbf_N`/`title` keys (from
-  REAPER's strings and shared toolbar files) but were not round-tripped through a REAPER-written
-  `reaper-menu.ini`, since REAPER writes one only from its customisation dialog; menus are not
-  customisable. Mouse modifiers run actions assigned to clicks and double clicks of items,
-  track lanes and headers and the ruler; REAPER's drag behaviours (`13 m` …) are kept but not
-  played, and `GetMouseModifier` answers nothing for contexts left at their defaults. Window sets
-  are Scythe's own (`scythe-screensets.ini`), not REAPER's window layouts. No `.ReaperTheme`
-  colours, and no extension SDK (`reaper_plugin.h` C ABI), so SWS and other extensions do not
-  load. Python was not cross-checked for the action and chunk calls.
-- ReaScript covers part of the API (above); Python needs `python3` on the PATH. FX
-  containers, take FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
-  returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
-  windows do not show menus (`gfx_showmenu` returns 0) or dock. MIDI events are kept
-  in time order, so `noSort` changes nothing. Effect parameters are those of running effects, set live as the inspector does; their presets come from
-  REAPER's preset files only. `Track_GetPeakInfo` returns 0.
-- JSFX views (`@gfx`): font 0 measures and places text as REAPER's, but its glyphs are Scythe's
-  own drawing, and TrueType text comes from another rasterizer, so outlines and shadows follow
-  slightly different glyphs. The blur font flag (`r`) is ignored. `gfx_ext_retina` follows
-  REAPER's documented behaviour; there was no HiDPI screen to measure REAPER on.
-- EEL2: REAPER reorders constants in a chain of operators (`x * 30 / 255` runs as
-  `x * (30 / 255)`, `x + 0.2 - 0.3` as `x + (0.2 - 0.3)`; parentheses keep the order), which
-  can change the last bit of a result; Scythe keeps the written order.
-- Dynamics: ReaComp's auto release with a release under 4 ms (REAPER then floors the release
-  near 2.5 ms in a way not modelled) is within 5e-3, ReaLimit's "inf" release within 1.8e-2, and
-  ReaComp's deprecated anti-alias setting (2 and up, no longer in REAPER's UI) is ignored.
-  ReaLimit's true-peak flag (bit 0 of the word after the version) is read but not modelled.
-  ReaGate's noise is white noise of the same level and spectrum from Scythe's own generator, so
-  it cannot null. Multichannel modes of these plugins (beyond the stereo pair and a sidechain)
-  and gain-reduction metering are not there. ReaGate and ReaComp states written by earlier
-  Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
-- Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
-  corpus such as Amp Room) pass audio through; the inspector says so per slot.
-- Stock plugins: ReaSynth's portamento (REAPER then glides monophonically) is ignored, and a
-  decay towards a sustain below 0 dB is within 2e-4 (REAPER pauses it for a frame at a block
-  boundary in a way not modelled). ReaControlMIDI's two user CC sliders are kept but not sent,
-  and its scale type comes only from the stored state. ReaFIR's two-point curves and steep
-  many-point curves are within 2e-4 of REAPER's response (6e-3 on program material), FFT sizes
-  other than 2048 to 8192 within 3e-4; its gate, compressor, subtract and convolve modes and
-  minimum-phase processing are not emulated. ReaVerb's jittered echoes and reverb generator
-  follow REAPER's own random sequence, and its filter, normalise and channel tool modules are
-  not decoded. ReaInsert's ping-detected delay takes effect when the chain is next rebuilt (an
-  edit or reload), and the ping is a -6 dB click detected above -20 dB. Not emulated (Scythe
-  hosts REAPER's own Linux binaries when they are on the VST path, otherwise the slots pass
-  audio through): ReaPitch (its default algorithm is the project's, élastique), ReaTune,
-  ReaVocode, ReaVoice, ReaSynDr (its snare's noise differs between REAPER's own renders, so it
-  cannot null), ReaSurround/ReaSurroundPan, ReaStream, ReaNINJAM and ReaCast (network
-  clients). ReaNINJAM (playing along with others over the internet through a NINJAM server,
-  intervals of encoded audio) and ReaCast (streaming the mix to an Icecast/Shoutcast server or
-  recording it) are network services rather than audio processing and are out of scope.
-- The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
-  it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
-  edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null
-  (see the table). Track timebase has no API or UI yet.
-- Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is
-  proprietary and REAPER's simple windowed, Rrreeeaaa and ReaReaRea modes are its own, so they
-  use Scythe's phase vocoder; SoundTouch and Rubber Band come from the system's libraries, newer
-  than REAPER's (above). Shifters process the file from its start, not from the item's source
-  offset, and the tempo correction in REAPER's SoundTouch wrapper (it never triggered in the
-  probes) is not modelled.
-- Licensing: SoundTouch (LGPL-2.1) is loaded at run time from the system's `libSoundTouchDll`
+- SoundTouch (LGPL-2.1) is loaded at run time from the system's `libSoundTouchDll`
   (devbox installs it), never vendored or linked statically; without it SoundTouch takes use the
-  phase vocoder. Rubber Band is GPL-2.0-or-later and only used with the `rubberband` cargo
+  phase vocoder.
+- Rubber Band is GPL-2.0-or-later and only used with the `rubberband` cargo
   feature, off by default (`cargo build -p scythe-app --features rubberband`), also loaded at run
   time (`librubberband`); without it Rubber Band takes use the phase vocoder.
-- Playback converts with REAPER's default playback mode (64-point sinc); REAPER's playback
-  preference (`playresamplemode` in reaper.ini) has no equivalent setting. Glue and apply-FX use
-  the playback media. A rate-changed take whose source offset does not land on a frame of its
-  resampled copy is read between frames with linear interpolation.
-- MPEG-2/2.5 intensity stereo is untested against REAPER (LAME cannot encode it). A VBRI
-  header frame is assumed to play as silence like a Xing/Info frame.
-- CD image and DDP renders are always 44.1 kHz. Render metadata covers the tags listed above;
-  others (ID3 pictures and non-text frames, `IXML:USER:…`, `CART:` timers, ASWG, the XMP keys
-  beyond `dc/title`, `dc/description` and `dc/rights` as text elements) are left out, and
-  which wins when both `BWF:Description` and the project-file option are set is a guess. A
-  forced Wave64 render with the tempo option leaves out the ACID chunk (REAPER writes a
-  malformed one there). GIF frames of video items get exact colour tables only up to 256
-  colours (more are mapped to the nearest of the first 256, not REAPER's palette), and their
-  colours come from FFmpeg's decoder, a few levels off REAPER's; GIF transparency is only
-  matched for a single-colour frame.
-- Video renders: video processors other than the three presets above (text and timecode
-  overlays, item fades, chroma key, transitions, blurs …, and any edited code) are left out
-  with a warning: they are EEL scripts drawing with REAPER's own graphics API. The opacity
-  preset blends over the lower tracks as Scythe composites them rather than re-blitting the
-  next track's video by nearest neighbour, and its zoomed rectangle is a few pixels off
-  REAPER's. Downscaling is the top-left bilinear scaler, which REAPER's 4x reduction follows
-  only loosely; the first frame of a B-frame stream at its very start shows a later frame.
-  Option keys `ffmpeg` does not know fail the render (REAPER ignores them). Video sources with item properties beyond the file
-  (`AUDIO`, `FLIP`, peaks settings) keep their video but not their audio. Lossy streams are
-  FFmpeg's current encoders rather than the FFmpeg 4.4 REAPER loads. DV audio is not written
-  (FFmpeg has no encoder for it). REAPER's FFmpeg sink has no transparency or colour-depth
-  settings to read (those are a video item's own properties).
-
-REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
-the host for REAPER internals.
+- r8brain free (`RENDER_RESAMPLE 10`) is a Rust implementation of r8brain-free-src 6.x (MIT,
+  Aleksey Vaneev); marker actions follow the SWS extension's rules, read from its source (MIT).

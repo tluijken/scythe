@@ -1,0 +1,272 @@
+# Not there yet
+
+What Scythe does not do yet, or does differently from REAPER 7.73, by area. The
+[features](features.md) list what is there and [verification.md](verification.md) how it was
+measured.
+
+- Windows: they are drawn inside the main window (egui), so none can be moved onto a second
+  screen or out of the main window; windows opened beside the pointer do not remember where they
+  were moved, and a tool window whose contents are shorter than its size shrinks to them.
+- Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
+  take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
+  scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's
+  gate, compressor, subtract and convolve modes have no editor (they are not emulated). Parameter
+  changes through `fx.param` are not undo steps (the editors' and the parameter rows' are).
+- Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
+  the preview plays through the device directly (REAPER's preview output and its "start on
+  bar" are not there); metadata is not written back to files, and REAPER's custom columns
+  (`USER` lines), loudness columns, waveform and peak display of the preview, image metadata
+  and the explorer's folder-tree view are not there. Folder favourites are Scythe's own list
+  (`explorer-favorites.txt`; REAPER keeps them elsewhere). The bay has no folders, comments,
+  "retain" or move/copy of source media. A theme recolours Scythe's 16 palette colours where
+  they are painted, so an element drawn in a colour outside the palette keeps it, and colours of
+  a REAPER theme without a Scythe counterpart (meters, MIDI editor, routing, groups) are not
+  used.
+- Envelopes and automation items: a bezier point at the wrap of a looped item (the last pool
+  point bending into the next pass) takes other tangents in REAPER (renders differ by up to
+  0.02-0.04, `Envelope_Evaluate` by 0.01-0.02); an empty pool's end ramp, REAPER's options to
+  connect items to the underlying envelope or bypass it outside items (`POOLEDENVATTACH`, kept)
+  and muted items are not followed; at an item's very first frame REAPER sometimes leaves the
+  ramp out (1e-5). LFO shapes are Scythe's own points: REAPER keeps only the dialog settings
+  (`LFO`) and the points it generated, so its generator could not be compared. Take envelope
+  and tempo envelope lanes, razor edits on envelopes and per-envelope automation modes are not
+  there; the lanes dock under the arrange view rather than under each track.
+- Mix analysis and reference matching (`analysis.*`): tonal balance is matched with ReaEQ
+  shelves and peaks only (no linear-phase or ReaFIR matching), loudness and dynamics come as
+  advice rather than applied processing, and the measurements are checked against synthetic
+  signals with known answers (EBU Tech 3341/3342 style sines, pink and white noise), not
+  against another meter. `script.run` needs the desktop app (the headless server has no
+  ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
+  sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
+  that address.
+- Editing: REAPER's detector for transients is not reproduced exactly (see the table in
+  [verification.md](verification.md)), and the dynamic split dialog's gate and "split at" options other than transients are
+  not there. Envelope points do not move with moved items (REAPER's "move envelope points with
+  media items"), and a locked item does not hold the envelope above it still during a ripple.
+  Snapping to item edges and markers is a window setting (REAPER keeps its snap targets in
+  bits of `GRID` that were not measured); the framerate grid snaps like a plain grid. Ripple
+  of edge trims ("ripple edit when editing media item edges"), ripple of the tempo map,
+  auto-crossfade on split, track media/razor edit grouping and razor copies of envelope areas
+  are not there.
+- MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
+  (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
+  Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes
+  left overlapping (it merges notes landing on one start, which Scythe does) is the only
+  overlap rule. Key snap's root and scale are not stored in the take (REAPER keeps them in the
+  editor, outside the project; Scythe keeps them per window). Pooled MIDI is not edited as a
+  pool. The inline editor draws notes only (no lanes), in every pass of a looped item. Other items show behind the edited one
+  without their takes' play rate or loops.
+
+- Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears
+  only between the first and last message played (REAPER's CC timeout is not modelled). The
+  MIDI overdub and replace modes follow REAPER's descriptions and were not recorded in REAPER
+  for comparison (that needs MIDI played into it live). A
+  track records one file per pass group; "start new files on loop", record formats other than
+  24-bit WAV (`<RECORD_CFG`) and the secondary record path are kept but not acted on. File
+  names use UTC. "New recording adds lanes in layers" plays like "exclusively" (REAPER saved
+  the same `LANESOLO` for both); "record into first available lane" versus at the bottom
+  follows `C_LANESETTINGS` &16 only. Comp areas cannot be moved or have their edges dragged,
+  and "delete comp area edge", "move comp area up/down" and the comp lane's own edits copied
+  back to sources are not there; touching swipes (no overlap) do not cross-fade, as in REAPER.
+  Take explode/implode/crop are not there yet. REAPER's project `AUTOXFADE` line is kept;
+  Scythe takes the lane options from the preferences (`autoxfade`).
+
+- Opus and WavPack items: an item that starts inside an Opus file (`SOFFS`, or playback started
+  past its start) is decoded by REAPER from a fresh decoder 80 ms (3840 samples) before the
+  point, so its first ~200 ms differ from Scythe's continuous decode by up to -42 dB (measured:
+  REAPER starts at the packet holding the target minus 3840); WavPack's `.wvc` correction file,
+  which REAPER applies, is ignored (FFmpeg plays the lossy part), and WavPack needs `ffmpeg` on
+  the path. Render sources: razor-edit bounds and marker bounds (6, 7), multichannel and mono
+  stem options (4, 16), pre-fader stems (8192), "only channels sent to parent", forced channel
+  counts in the region matrix, render tail, second pass and "add rendered items" are read but
+  not acted on; a stem bypasses the master and its folders but keeps the project's solo states.
+  Region selection is not kept, so selected-region bounds render every region (as REAPER's
+  `-renderproject` does). Project tabs: background projects do not play ("Run background
+  projects" is off, REAPER's default) and tabs are not restored on start-up.
+
+- Control surfaces: PreSonus FaderPort and FaderPort v2 lines are kept but not driven; HUI is
+  partial (no assignment, cursor, keypad or edit zones). MIDI device numbers count the
+  system's ports as Scythe sees them, not REAPER's `reaper-midihw.ini` order, and a surface's
+  input port is also opened for MIDI recording. OSC has no FX parameters, ReaEQ, instrument,
+  play rate, scrub, zoom/scroll, virtual keyboard or "last touched" patterns; meters use 12
+  steps over 60 dB (MCU, HUI) and a position over 60 dB (OSC), not measured against REAPER
+  (which needs playing audio). The `OSC` flags' bit 4 (learn) is kept for action and FX learn.
+
+- Track groups: REAPER remembers where a follower would be past a limit (a pan pushed beyond
+  hard right comes back from there; a fader taken to -inf and back returns to where it was);
+  Scythe clamps each edit, so after hitting a limit followers keep their clamped offset.
+  The global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
+  project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
+  into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
+  as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
+- Folders and selection: the drop depth comes from where the pointer is over a track (thirds),
+  not from its horizontal position; the selection lives in the window (the `SEL` lines of the
+  project are kept, not read into it), track heights per track, hiding tracks in the track view
+  or mixer (`SHOWINMIX`), the mixer's "folders on the left" layout and "Move tracks to folder..."
+  (42786, a dialog) are not there; selection grouping covers the mixer's fader and pan and the
+  header switches, not the inspector or sends.
+- MIDI sync: REAPER's routing-window defaults for new sends are not measured; Scythe's new sends
+  carry no MIDI (`CreateTrackSend` from a script carries all, as REAPER's does). The meaning of
+  `SMPTESYNC`'s input field was not measured (REAPER's sync dialog needs a screen): Scythe reads
+  it as `I_RECINPUT`-style (4096 + device × 32 for MTC, else an audio channel for LTC); the
+  skip and look-ahead fields are kept but not used. Chasing MIDI clock is Scythe's own (REAPER
+  does not chase clock) and follows song position, not tempo. LTC chase reads 24/25/30 fps and
+  needs the audio input open. REAPER's first MTC quarter-frame run after a start carries a
+  stale seconds nibble; Scythe's does not. NTSC LTC rates are not sample-exact. Input
+  quantize and the "faders send MIDI volume/pan" flag (kept, not acted on) are not there.
+- Parameter modulation: the random LFO shape has its own generator (REAPER's is not
+  reproducible); renders that start off the 512-frame grid change modulated values at other
+  frames than REAPER (whose blocks start at the render start); links across effects are
+  block-exact in renders, which then run 512 frames at a time, but live playback with device
+  buffers off the grid can be a block late; MIDI links read bus 0 only; master FX are not
+  modulated. Learn: "only when the FX window is focused/open" needs the effect's window, which
+  Scythe does not track yet, so such bindings stay inactive; OSC action shortcuts are Scythe's
+  own `SCYTHE_OSC` lines (REAPER's OSC shortcut format was not measured); a learned control
+  reacts on the session's thread (a frame, not a block); relative modes step 1/762 of the range
+  per count, as measured.
+
+- Marker actions follow the SWS extension's rules, read from its source (MIT): REAPER 7.73 does
+  not advance playback without an audio device and the test setup has no SWS, so neither when
+  SWS stops (it polls on a UI timer, tens of milliseconds after the marker) nor its other
+  quirks were measured. Unlike SWS, a marker at the spot playback starts from or wraps to does
+  not run, and markers just before a loop end are never skipped. The on/off option is not saved
+  (SWS keeps `MarkerActionsEnabled` in reaper.ini).
+- Count-in and pre-roll are modelled on REAPER 7.73 and not measured against it yet (REAPER does not
+  play without an audio device): no count-in with the
+  metronome disabled, the count-in before the pre-roll, "Start count-in at start of measure"
+  (`preroll` &8) and "Start pre-roll at start of measure" (stored inverted as `preroll` &4), a
+  start within a tenth of a bar of the next bar line moving onto it. REAPER rounds a count-in
+  up to whole audio blocks; Scythe's is sample-accurate. REAPER's "Record audio during
+  pre-roll" is not there: a pre-roll's audio and MIDI are left out of the take (MIDI only
+  roughly when a repeat range overlaps the pre-roll). A setlist's count-in (Scythe's own)
+  clicks with the metronome off. The click is Scythe's own synthesised one at the metronome's
+  primary volume; REAPER's click sounds, patterns and secondary volume are kept in the project
+  but not played.
+
+- FX chain graph: a bypass envelope on a container (rather than an effect) is not followed, nor
+  REAPER's FX oversampling. Take FX play the item's last sample where REAPER's take-FX path
+  drops it for some positions, and their state is not reset on seeking. Input FX process the
+  monitored input only: recordings are taken before them, where REAPER records through them.
+  The monitoring chain's file is Scythe's FX chain text; REAPER's own `reaper-hwoutfx.ini` was
+  not available to compare with. Freeze renders only the track's own items (not what other
+  tracks send it or folder children), in stereo; REAPER's mono and multichannel freezes and
+  "freeze to the last FX" are not there, and a freeze needs the project saved first.
+- Guitar rigs: switching a stage on or off is instant rather than crossfaded; the impulse
+  response's length and trim are not offered (ReaVerb's trim is not modelled); the gate's
+  attack, release and hysteresis and the EQ bands' frequencies are set in ReaGate's and ReaEQ's
+  own editors. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot
+  empty (REAPER passes a missing plugin through).
+- NAM models at another rate than the project
+  are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
+- Multichannel: master channels go to the audio device's outputs in order, as many as the
+  device offers; channels beyond that reach only multichannel renders. That is REAPER's
+  default master output for a stereo master; a master with more channels and REAPER's default
+  `MASTERHWOUT 0 …` plays only 1/2 in REAPER. Once the master's outputs differ from the
+  default they are followed exactly.
+- Hardware outputs cannot be rendered by REAPER, so their mixing is checked against sends
+  (which null) and unit tests; their envelopes, `B_MONO` (REAPER does not save it) and
+  ReaRoute (`I_DSTCHAN & 512`) are not played. A pre-FX tap is not delayed for the latency of
+  the track's own effects. The monitor-mix limiter is REAPER's stock JSFX Master Limiter, which
+  needs REAPER's effects folder.
+- FX presets: VST 3 `.vstpreset` files are looked for only where REAPER 7.73 lists them
+  (`~/.vst3/presets`), not in the plugin bundle or system folders. REAPER counts a CLAP
+  plugin's discovered presets after its own (`TrackFX_GetPresetIndex`) and loads them by name
+  (`TrackFX_SetPreset`), but not by index or by navigating, so where they sit in its preset
+  menu is unverified; only plugin-internal presets were tested, not preset files.
+- Actions and customisation: about 150 of REAPER's ~4300 main-section actions have a Scythe
+  counterpart; `KEY`, `ACT` and `SCR` lines of other sections (MIDI editor, Media Explorer) are
+  kept but only the main section's run. Custom actions are SWS-free macros; SWS cycle actions
+  are not there. Toolbar files follow REAPER's `item_N`/`icon_N`/`tbf_N`/`title` keys (from
+  REAPER's strings and shared toolbar files) but were not round-tripped through a REAPER-written
+  `reaper-menu.ini`, since REAPER writes one only from its customisation dialog; menus are not
+  customisable. Mouse modifiers run actions assigned to clicks and double clicks of items,
+  track lanes and headers and the ruler; REAPER's drag behaviours (`13 m` …) are kept but not
+  played, and `GetMouseModifier` answers nothing for contexts left at their defaults. Window sets
+  are Scythe's own (`scythe-screensets.ini`), not REAPER's window layouts. No `.ReaperTheme`
+  colours, and no extension SDK (`reaper_plugin.h` C ABI), so SWS and other extensions do not
+  load. Python was not cross-checked for the action and chunk calls.
+- ReaScript covers part of the API (see [features.md](features.md#scripting)); Python needs `python3` on the PATH. FX
+  containers, take FX, hardware outputs, the MIDI editor's API and the arrange view are not there. `extension_api`
+  returns 0, as REAPER's does for its own API, since Scythe has no extensions. Scripts' `gfx`
+  windows do not show menus (`gfx_showmenu` returns 0) or dock. MIDI events are kept
+  in time order, so `noSort` changes nothing. Effect parameters are those of running effects, set live as the inspector does; their presets come from
+  REAPER's preset files only. `Track_GetPeakInfo` returns 0.
+- JSFX views (`@gfx`): font 0 measures and places text as REAPER's, but its glyphs are Scythe's
+  own drawing, and TrueType text comes from another rasterizer, so outlines and shadows follow
+  slightly different glyphs. The blur font flag (`r`) is ignored. `gfx_ext_retina` follows
+  REAPER's documented behaviour; there was no HiDPI screen to measure REAPER on.
+- EEL2: REAPER reorders constants in a chain of operators (`x * 30 / 255` runs as
+  `x * (30 / 255)`, `x + 0.2 - 0.3` as `x + (0.2 - 0.3)`; parentheses keep the order), which
+  can change the last bit of a result; Scythe keeps the written order.
+- Dynamics: ReaComp's auto release with a release under 4 ms (REAPER then floors the release
+  near 2.5 ms in a way not modelled) is within 5e-3, ReaLimit's "inf" release within 1.8e-2, and
+  ReaComp's deprecated anti-alias setting (2 and up, no longer in REAPER's UI) is ignored.
+  ReaLimit's true-peak flag (bit 0 of the word after the version) is read but not modelled.
+  ReaGate's noise is white noise of the same level and spectrum from Scythe's own generator, so
+  it cannot null. Multichannel modes of these plugins (beyond the stereo pair and a sidechain)
+  and gain-reduction metering are not there. ReaGate and ReaComp states written by earlier
+  Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
+- Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
+  corpus such as Amp Room) pass audio through; the inspector says so per slot.
+- Stock plugins: ReaSynth's portamento (REAPER then glides monophonically) is ignored, and a
+  decay towards a sustain below 0 dB is within 2e-4 (REAPER pauses it for a frame at a block
+  boundary in a way not modelled). ReaControlMIDI's two user CC sliders are kept but not sent,
+  and its scale type comes only from the stored state. ReaFIR's two-point curves and steep
+  many-point curves are within 2e-4 of REAPER's response (6e-3 on program material), FFT sizes
+  other than 2048 to 8192 within 3e-4; its gate, compressor, subtract and convolve modes and
+  minimum-phase processing are not emulated. ReaVerb's jittered echoes and reverb generator
+  follow REAPER's own random sequence, and its filter, normalise and channel tool modules are
+  not decoded. ReaInsert's ping-detected delay takes effect when the chain is next rebuilt (an
+  edit or reload), and the ping is a -6 dB click detected above -20 dB. Not emulated (Scythe
+  hosts REAPER's own Linux binaries when they are on the VST path, otherwise the slots pass
+  audio through): ReaPitch (its default algorithm is the project's, élastique), ReaTune,
+  ReaVocode, ReaVoice, ReaSynDr (its snare's noise differs between REAPER's own renders, so it
+  cannot null), ReaSurround/ReaSurroundPan, ReaStream, ReaNINJAM and ReaCast (network
+  clients). ReaNINJAM (playing along with others over the internet through a NINJAM server,
+  intervals of encoded audio) and ReaCast (streaming the mix to an Icecast/Shoutcast server or
+  recording it) are network services rather than audio processing and are out of scope.
+- The master play-rate envelope (`MASTERPLAYSPEEDENV`) is kept but not applied; REAPER evaluates
+  it per block. FX parameter envelopes are not retimed by the project play rate or by tempo
+  edits. Resampled stretch markers at play rates other than 1 and sloped markers do not null
+  (see [verification.md](verification.md)). Track timebase has no API or UI yet.
+- Stretched and pitch-shifted takes do not null against REAPER. élastique (REAPER's default) is
+  proprietary and REAPER's simple windowed, Rrreeeaaa and ReaReaRea modes are its own, so they
+  use Scythe's phase vocoder; SoundTouch and Rubber Band come from the system's libraries, newer
+  than REAPER's (see [verification.md](verification.md)). Shifters process the file from its start, not from the item's source
+  offset, and the tempo correction in REAPER's SoundTouch wrapper (it never triggered in the
+  probes) is not modelled.
+- Licensing: SoundTouch (LGPL-2.1) is loaded at run time from the system's `libSoundTouchDll`
+  (devbox installs it), never vendored or linked statically; without it SoundTouch takes use the
+  phase vocoder. Rubber Band is GPL-2.0-or-later and only used with the `rubberband` cargo
+  feature, off by default (`cargo build -p scythe-app --features rubberband`), also loaded at run
+  time (`librubberband`); without it Rubber Band takes use the phase vocoder.
+- Playback converts with REAPER's default playback mode (64-point sinc); REAPER's playback
+  preference (`playresamplemode` in reaper.ini) has no equivalent setting. Glue and apply-FX use
+  the playback media. A rate-changed take whose source offset does not land on a frame of its
+  resampled copy is read between frames with linear interpolation.
+- MPEG-2/2.5 intensity stereo is untested against REAPER (LAME cannot encode it). A VBRI
+  header frame is assumed to play as silence like a Xing/Info frame.
+- CD image and DDP renders are always 44.1 kHz. Render metadata covers the tags listed in [features.md](features.md#playback-rendering-and-formats);
+  others (ID3 pictures and non-text frames, `IXML:USER:…`, `CART:` timers, ASWG, the XMP keys
+  beyond `dc/title`, `dc/description` and `dc/rights` as text elements) are left out, and
+  which wins when both `BWF:Description` and the project-file option are set is a guess. A
+  forced Wave64 render with the tempo option leaves out the ACID chunk (REAPER writes a
+  malformed one there). GIF frames of video items get exact colour tables only up to 256
+  colours (more are mapped to the nearest of the first 256, not REAPER's palette), and their
+  colours come from FFmpeg's decoder, a few levels off REAPER's; GIF transparency is only
+  matched for a single-colour frame.
+- Video renders: video processors other than the three presets in [features.md](features.md#playback-rendering-and-formats) (text and timecode
+  overlays, item fades, chroma key, transitions, blurs …, and any edited code) are left out
+  with a warning: they are EEL scripts drawing with REAPER's own graphics API. The opacity
+  preset blends over the lower tracks as Scythe composites them rather than re-blitting the
+  next track's video by nearest neighbour, and its zoomed rectangle is a few pixels off
+  REAPER's. Downscaling is the top-left bilinear scaler, which REAPER's 4x reduction follows
+  only loosely; the first frame of a B-frame stream at its very start shows a later frame.
+  Option keys `ffmpeg` does not know fail the render (REAPER ignores them). Video sources with item properties beyond the file
+  (`AUDIO`, `FLIP`, peaks settings) keep their video but not their audio. Lossy streams are
+  FFmpeg's current encoders rather than the FFmpeg 4.4 REAPER loads. DV audio is not written
+  (FFmpeg has no encoder for it). REAPER's FFmpeg sink has no transparency or colour-depth
+  settings to read (those are a video item's own properties).
+
+REAPER's own plugins (`reaeq.vst.so` …) are not hosted: they only run inside REAPER and ask
+the host for REAPER internals.

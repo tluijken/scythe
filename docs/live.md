@@ -6,7 +6,7 @@ and keeps going when something goes wrong.
 
 ## The session
 
-`scythe-server` runs a session without a window (see the README's "Headless" section and
+`scythe-server` runs a session without a window (see [Remote control](features.md#remote-control) in the features and
 [control-api.md](control-api.md)). Put the settings in `~/.config/scythe/headless.toml`:
 
 ```toml
