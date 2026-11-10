@@ -1,0 +1,37 @@
+[package]
+name = "scythe-itest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# End-to-end tests of the real binaries. They need the binaries built first and are left out
+# of `cargo test --workspace`; `devbox run itest` builds and runs them.
+[features]
+itest = []
+
+[dependencies]
+serde_json.workspace = true
+hound.workspace = true
+libc.workspace = true
+tungstenite = "0.29.0"
+
+[[test]]
+name = "server"
+path = "tests/server.rs"
+required-features = ["itest"]
+
+[[test]]
+name = "mcp"
+path = "tests/mcp.rs"
+required-features = ["itest"]
+
+[[test]]
+name = "app"
+path = "tests/app.rs"
+required-features = ["itest"]
+
+[[test]]
+name = "web"
+path = "tests/web.rs"
+required-features = ["itest"]
