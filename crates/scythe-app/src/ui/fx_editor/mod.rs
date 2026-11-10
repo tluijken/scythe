@@ -7,6 +7,7 @@
 mod delay;
 mod dynamics;
 mod eq;
+mod fir;
 pub mod model;
 
 use std::collections::HashMap;
@@ -50,6 +51,7 @@ impl Kind {
             "ReaGate" => Self::Gate,
             "ReaLimit" => Self::Limit,
             "ReaDelay" => Self::Delay,
+            "ReaFir (FFT EQ+Dynamics Processor)" => Self::Fir,
             _ => return None,
         })
     }
@@ -445,6 +447,7 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
             Kind::Gate => dynamics::gate(cx, ui, content),
             Kind::Limit => dynamics::limit(cx, ui, content),
             Kind::Delay => delay::show(cx, ui, content),
+            Kind::Fir => fir::show(cx, ui, content),
         },
     }
     keys(cx, ui);
