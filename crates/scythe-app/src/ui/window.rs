@@ -204,8 +204,7 @@ impl ScytheWindow {
                 return;
             }
             let previous = r.placements.get(&self.key).copied();
-            let size =
-                if remembers_size { rect.size() } else { previous.map_or(rect.size(), |p| p.size()) };
+            let size = if remembers_size { rect.size() } else { previous.map_or(rect.size(), |p| p.size()) };
             let next = Rect::from_min_size(rect.min.round(), size.round());
             if previous != Some(next) {
                 r.placements.insert(self.key.clone(), next);
