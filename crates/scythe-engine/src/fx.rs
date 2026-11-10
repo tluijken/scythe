@@ -12,6 +12,7 @@ use crate::clap_host::{ClapDescriptor, ClapLibrary, ClapPlugin, ParamInfo};
 use crate::midi_io::LiveMidi;
 use crate::modulation::{FxMods, ModContext, ModState};
 use crate::nam::{NamControl, NamEffect, NamModel, NamVoice};
+use crate::probe::{FxProbe, Side};
 use crate::synth::NoteList;
 use crate::vst2::{ReaperVstState, Vst2Plugin};
 
@@ -310,6 +311,16 @@ pub trait Effect: Send {
     fn nam_control(&self) -> Option<Arc<crate::nam::NamControl>> {
         None
     }
+
+    /// Hands the effect the probe its editor reads; effects that measure more than their
+    /// input and output (gain reduction, a gate's state) keep it and publish while it is
+    /// active.
+    fn set_probe(&mut self, _probe: Arc<crate::probe::FxProbe>) {}
+
+    /// The effect itself, for editors that know its type.
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        None
+    }
 }
 
 /// What a `PARMENV` drives: the generic bypass, or a parameter by name.
@@ -509,11 +520,16 @@ pub struct FxInstance {
     pub midi_buses: bool,
     /// Audio input and output pins.
     pub pins: (usize, usize),
+    /// What the effect's editor reads while it is open.
+    pub probe: Arc<FxProbe>,
 }
 
 impl FxInstance {
-    pub fn new(fx: Box<dyn Effect>) -> Self {
+    pub fn new(mut fx: Box<dyn Effect>) -> Self {
+        let probe = Arc::new(FxProbe::default());
+        fx.set_probe(probe.clone());
         Self {
+            probe,
             instrument: fx.is_instrument(),
             audio: fx.processes_audio(),
             midi_buses: fx.midi_buses(),
@@ -542,8 +558,15 @@ impl FxInstance {
             let inputs: [&[f32]; 4] = [&*left, &*right, aux[0], aux[1]];
             self.before(fx.as_mut(), ctx, automation, t, n, mods, &inputs)
         };
+        let probing = self.probe.active();
+        if probing {
+            self.probe.tap(Side::Pre, left, right, ctx.sample_rate);
+        }
         if !bypassed {
             fx.process(left, right, ctx);
+        }
+        if probing {
+            self.probe.tap(Side::Post, left, right, ctx.sample_rate);
         }
         self.after(fx.as_mut(), ctx, automation, t, n, mods);
         !bypassed
@@ -565,8 +588,15 @@ impl FxInstance {
             let inputs: Vec<&[f32]> = bufs.iter().map(|b| &b[range.clone()]).collect();
             self.before(fx.as_mut(), ctx, automation, t, n, mods, &inputs)
         };
+        let probing = self.probe.active();
+        if probing {
+            self.tap_pins(Side::Pre, bufs, range.clone(), ctx.sample_rate);
+        }
         if !bypassed {
-            fx.process_pins(bufs, range, ctx);
+            fx.process_pins(bufs, range.clone(), ctx);
+        }
+        if probing {
+            self.tap_pins(Side::Post, bufs, range, ctx.sample_rate);
         }
         self.after(fx.as_mut(), ctx, automation, t, n, mods);
         !bypassed
@@ -630,8 +660,22 @@ impl FxInstance {
 
     pub fn process_pins(&self, bufs: &mut [Vec<f32>], range: std::ops::Range<usize>, ctx: &ProcessContext) -> bool {
         let Ok(mut fx) = self.effect.try_lock() else { return false };
-        fx.process_pins(bufs, range, ctx);
+        let probing = self.probe.active();
+        if probing {
+            self.tap_pins(Side::Pre, bufs, range.clone(), ctx.sample_rate);
+        }
+        fx.process_pins(bufs, range.clone(), ctx);
+        if probing {
+            self.tap_pins(Side::Post, bufs, range, ctx.sample_rate);
+        }
         true
+    }
+
+    fn tap_pins(&self, side: Side, bufs: &[Vec<f32>], range: std::ops::Range<usize>, sample_rate: u32) {
+        if let Some(l) = bufs.first() {
+            let r = bufs.get(1).unwrap_or(l);
+            self.probe.tap(side, &l[range.clone()], &r[range], sample_rate);
+        }
     }
 
     pub fn take_midi(&self, out: &mut MidiBlock) -> bool {

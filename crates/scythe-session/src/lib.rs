@@ -104,6 +104,8 @@ pub struct Session {
     load_window: (f32, Instant),
     toast: Option<(String, Instant)>,
     gesture: Option<(String, Project)>,
+    /// The gesture changes a running effect, whose state reaches the project when it ends.
+    fx_gesture: bool,
     meters_at: Instant,
     /// Controls being written as automation during this pass.
     auto_writes: Vec<AutoWrite>,
@@ -175,6 +177,7 @@ impl Session {
             load_window: (0.0, Instant::now()),
             toast: None,
             gesture: None,
+            fx_gesture: false,
             meters_at: Instant::now(),
             auto_writes: Vec::new(),
             latch_preview: Vec::new(),
@@ -308,9 +311,46 @@ impl Session {
         self.end_gesture_crossfading([]);
     }
 
+    /// Changes a running effect (its parameters or its own state) as one undo step per gesture:
+    /// the effect's state is stored in the project when the gesture starts and again when it
+    /// ends, so undo brings the earlier state back. Ends with [`Session::end_gesture`].
+    pub fn fx_gesture<R>(
+        &mut self,
+        label: &str,
+        inst: &scythe_engine::fx::FxInstance,
+        f: impl FnOnce(&mut dyn scythe_engine::fx::Effect) -> R,
+    ) -> Option<R> {
+        if self.gesture.is_none() {
+            self.engine.store_plugin_states(&mut self.project);
+            self.gesture = Some((label.to_owned(), self.project.clone()));
+            self.fx_gesture = true;
+        }
+        let out = inst.with(f);
+        self.engine.wake_effects();
+        self.dirty = true;
+        out
+    }
+
+    /// A single change to a running effect as its own undo step.
+    pub fn fx_edit<R>(
+        &mut self,
+        label: &str,
+        inst: &scythe_engine::fx::FxInstance,
+        f: impl FnOnce(&mut dyn scythe_engine::fx::Effect) -> R,
+    ) -> Option<R> {
+        self.end_gesture();
+        let out = self.fx_gesture(label, inst, f);
+        self.end_gesture();
+        out
+    }
+
     /// Ends the gesture; item moves and trims end with automatic crossfades on `tracks`, the
     /// tracks they touched.
     pub fn end_gesture_crossfading(&mut self, tracks: impl IntoIterator<Item = TrackId>) {
+        if std::mem::take(&mut self.fx_gesture) {
+            self.engine.store_plugin_states(&mut self.project);
+            self.sync();
+        }
         if self
             .gesture
             .as_ref()
@@ -664,5 +704,39 @@ mod tests {
         assert_eq!(new_error(&mut last, Err("busy".into())).as_deref(), Some("busy"));
         assert_eq!(new_error(&mut last, Ok(())), None);
         assert_eq!(new_error(&mut last, Err("busy".into())).as_deref(), Some("busy"));
+    }
+    /// A drag on an effect's parameter (from its editor or its parameter rows) is one undo
+    /// step, and undo brings the running effect back to where it was.
+    #[test]
+    fn an_effect_gesture_is_one_undo_step() {
+        use scythe_engine::builtin::Builtin;
+        let pool = std::sync::Arc::new(scythe_engine::MediaPool::with_resample(
+            scythe_core::render_settings::ResampleMode::PLAYBACK,
+        ));
+        let mut s = super::Session::new(scythe_engine::Engine::start_offline(pool, 48_000));
+        let t = s.project.add_track("a");
+        s.edit("Add plugin", |p| p.track_mut(t).unwrap().fx.push(Builtin::Compressor.slot()));
+        let inst = || {
+            let s: &super::Session = &s;
+            let slot = s.project.track(t).unwrap().fx[0].clone();
+            s.engine.fx().instance(Some(t), &slot, 0).unwrap()
+        };
+        let threshold = |s: &super::Session| {
+            let slot = s.project.track(t).unwrap().fx[0].clone();
+            s.engine.fx().instance(Some(t), &slot, 0).unwrap().with(|e| e.param(0).unwrap().0).unwrap()
+        };
+        let first = inst();
+        let before = threshold(&s);
+        for v in [-3.0, -9.0, -18.0] {
+            s.fx_gesture("Adjust Threshold", &first, |e| e.set_param(0, v));
+        }
+        s.end_gesture();
+        assert!((threshold(&s) + 18.0).abs() < 0.01);
+        assert_eq!(s.history.undo_label(), Some("Adjust Threshold"));
+        s.undo();
+        assert!((threshold(&s) - before).abs() < 0.01);
+        assert_eq!(s.history.undo_label(), Some("Add plugin"));
+        s.redo();
+        assert!((threshold(&s) + 18.0).abs() < 0.01);
     }
 }

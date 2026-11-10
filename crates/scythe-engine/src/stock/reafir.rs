@@ -159,6 +159,57 @@ impl Fir {
     }
 }
 
+impl Fir {
+    /// The drawn points, (Hz, dB), in the order stored.
+    pub fn points(&self) -> &[(f32, f32)] {
+        &self.state.points
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate as f64
+    }
+
+    /// The output gain in dB.
+    pub fn gain_db(&self) -> f64 {
+        20.0 * (self.state.gain as f64).max(1e-9).log10()
+    }
+
+    /// Replaces the drawn points and rebuilds the filter.
+    pub fn set_points(&mut self, points: Vec<(f32, f32)>) {
+        let old = 32 + self.state.points.len() * 8;
+        if self.chunk.len() >= old {
+            let mut chunk = self.chunk[..24].to_vec();
+            let n = (points.len() as u32).to_le_bytes();
+            chunk.extend(n);
+            chunk.extend(n);
+            for (hz, db) in &points {
+                chunk.extend(hz.to_le_bytes());
+                chunk.extend(db.to_le_bytes());
+            }
+            chunk.extend(&self.chunk[old..]);
+            self.chunk = chunk;
+        }
+        self.state.points = points;
+        self.rebuild();
+    }
+
+    /// The curve the filter is built from, in dB at each of `freqs`, before the output gain.
+    pub fn curve_db(&self, freqs: &[f64]) -> Vec<f64> {
+        let m = self.state.fft.max(8192);
+        let shift = 0.5 + m as f64 / (2 * self.state.fft) as f64;
+        let bins = curve(&self.state.points, m, shift, self.sample_rate);
+        let last = bins.len() - 1;
+        freqs
+            .iter()
+            .map(|hz| {
+                let x = (hz * m as f64 / self.sample_rate as f64).clamp(0.0, last as f64);
+                let (i, t) = (x.floor() as usize, x - x.floor());
+                bins[i] + (bins[(i + 1).min(last)] - bins[i]) * t
+            })
+            .collect()
+    }
+}
+
 impl Effect for Fir {
     fn params(&mut self) -> Vec<ParamInfo> {
         vec![param(4, "Output Gain", -60.0, 6.0, 0.0, false)]
@@ -182,6 +233,10 @@ impl Effect for Fir {
         self.state.gain = (v.clamp(0.0, 1.0) * 2.0) as f32;
         self.rebuild();
         true
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn latency(&mut self) -> usize {
@@ -248,6 +303,29 @@ mod tests {
     fn straight_segments_match_reaper() {
         let ir = impulse_response(&[(1000.0, 0.0), (2000.0, -3.0), (5000.0, -12.0)], 4096, 48000);
         assert!((ir[2048] - 0.331_059_7).abs() < 1e-6);
+    }
+
+    /// The curve the editor draws is the gain a steady sine gets, and edited points survive
+    /// the saved state.
+    #[test]
+    fn drawn_curve_matches_what_plays() {
+        let mut fir = Fir::from_reafir(&chunk(&[(382.45, 0.0), (3202.7, 0.0)], 4096, 0), 48000).unwrap();
+        fir.set_points(vec![(200.0, 0.0), (1000.0, -6.0), (4000.0, -12.0), (9000.0, 3.0)]);
+        for hz in [100.0, 600.0, 2500.0, 12000.0] {
+            fir.reset();
+            let n = 24000;
+            let sine: Vec<f32> =
+                (0..n).map(|i| (std::f64::consts::TAU * hz * i as f64 / 48000.0).sin() as f32).collect();
+            let (mut l, mut r) = (sine.clone(), sine);
+            fir.process(&mut l, &mut r, &crate::stock::testing::context());
+            let tail = &l[n / 2..];
+            let peak = (tail.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() * 2.0 / tail.len() as f64).sqrt();
+            let want = fir.curve_db(&[hz])[0] + fir.gain_db();
+            assert!((20.0 * peak.log10() - want).abs() < 0.2, "{hz} Hz: {} vs {want}", 20.0 * peak.log10());
+        }
+        let back = Fir::from_reafir(&fir.save_state().unwrap(), 48000).unwrap();
+        assert_eq!(back.points(), fir.points());
+        assert_eq!(back.state.gain, 1.0);
     }
 
     #[test]

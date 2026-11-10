@@ -193,6 +193,117 @@ pub fn response_db(band: &Band, freq: f64, sample_rate: f64) -> f64 {
     10.0 * (num / den.max(1e-30)).max(1e-30).log10()
 }
 
+/// Bytes a band takes in ReaEQ's chunk.
+const BAND_BYTES: usize = 33;
+
+impl BandKind {
+    /// The code ReaEQ stores for this type (the plain band as REAPER's default "Band").
+    pub fn code(self) -> u32 {
+        match self {
+            Self::LowShelf => 0,
+            Self::HighShelf => 1,
+            Self::PeakWide => 2,
+            Self::LowPass => 3,
+            Self::HighPass => 4,
+            Self::AllPass => 5,
+            Self::Notch => 6,
+            Self::BandPass => 7,
+            Self::Peak => 8,
+        }
+    }
+
+    /// Whether the type has a gain (shelves and bands); the others only cut or shift phase.
+    pub fn has_gain(self) -> bool {
+        matches!(self, Self::LowShelf | Self::HighShelf | Self::Peak | Self::PeakWide)
+    }
+
+    pub fn name(self) -> &'static str {
+        kind_name(self)
+    }
+}
+
+impl ReaEqCompat {
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate as f64
+    }
+
+    /// The whole EQ's gain in dB at `freq`: every enabled band and the output gain.
+    pub fn response_db(&self, freq: f64) -> f64 {
+        let sr = self.sample_rate as f64;
+        self.bands.iter().filter(|b| b.enabled).map(|b| response_db(b, freq, sr)).sum::<f64>()
+            + 20.0 * self.output.max(1e-9).log10()
+    }
+
+    /// Changes band `i`'s type.
+    pub fn set_kind(&mut self, i: usize, kind: BandKind) {
+        let Some(b) = self.bands.get_mut(i) else { return };
+        if b.kind == kind {
+            return;
+        }
+        b.kind = kind;
+        if let Some(&o) = self.offsets.get(i)
+            && let Some(bytes) = self.chunk.get_mut(o..o + 4)
+        {
+            bytes.copy_from_slice(&kind.code().to_le_bytes());
+        }
+        self.redesign_all();
+    }
+
+    /// Adds a band after the others; returns its index.
+    pub fn add_band(&mut self, band: Band) -> usize {
+        if self.chunk.len() >= 8 {
+            let count = self.band_count();
+            let at = 8 + count * BAND_BYTES;
+            let flag = self.offsets.last().and_then(|&o| self.chunk.get(o + 32).copied()).unwrap_or(1);
+            let mut bytes = Vec::with_capacity(BAND_BYTES);
+            bytes.extend(band.kind.code().to_le_bytes());
+            bytes.extend((band.enabled as u32).to_le_bytes());
+            bytes.extend(band.freq.to_le_bytes());
+            bytes.extend(band.gain.to_le_bytes());
+            bytes.extend(band.bandwidth.to_le_bytes());
+            bytes.push(flag);
+            if at <= self.chunk.len() {
+                self.chunk.splice(at..at, bytes);
+                self.chunk[4..8].copy_from_slice(&((count + 1) as u32).to_le_bytes());
+                self.offsets.push(at);
+            }
+        }
+        self.bands.push(band);
+        self.redesign_all();
+        self.bands.len() - 1
+    }
+
+    /// Removes band `i`.
+    pub fn remove_band(&mut self, i: usize) {
+        if i >= self.bands.len() {
+            return;
+        }
+        self.bands.remove(i);
+        if i < self.offsets.len() {
+            let o = self.offsets.remove(i);
+            let count = self.band_count();
+            if o + BAND_BYTES <= self.chunk.len() && count > 0 {
+                self.chunk.drain(o..o + BAND_BYTES);
+                self.chunk[4..8].copy_from_slice(&((count - 1) as u32).to_le_bytes());
+                for later in self.offsets.iter_mut().filter(|later| **later > o) {
+                    *later -= BAND_BYTES;
+                }
+            }
+        }
+        self.redesign_all();
+    }
+
+    fn band_count(&self) -> usize {
+        self.chunk.get(4..8).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+    }
+
+    /// New filters from scratch, for changes to the set of bands or their types.
+    fn redesign_all(&mut self) {
+        let sr = self.sample_rate as f64;
+        self.filters = self.bands.iter().filter(|b| b.enabled).map(|b| Biquad::design(b, sr)).collect();
+    }
+}
+
 fn kind_name(kind: BandKind) -> &'static str {
     match kind {
         BandKind::LowShelf => "low shelf",
@@ -297,6 +408,10 @@ impl Effect for ReaEqCompat {
         false
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         if self.chunk.is_empty() {
             return None;
@@ -365,5 +480,59 @@ mod tests {
         assert!((response(low, 5000.0) - 1.0).abs() < 0.03);
         let hp = Band { kind: BandKind::HighPass, enabled: true, freq: 1000.0, gain: 1.0, bandwidth: 2.0 };
         assert!(response(hp, 100.0) < 0.05);
+    }
+    fn eq_chunk(bands: &[(u32, f64, f64, f64)]) -> Vec<u8> {
+        let mut c = Vec::new();
+        c.extend(10u32.to_le_bytes());
+        c.extend((bands.len() as u32).to_le_bytes());
+        for &(code, freq, gain, bw) in bands {
+            c.extend(code.to_le_bytes());
+            c.extend(1u32.to_le_bytes());
+            c.extend(freq.to_le_bytes());
+            c.extend(gain.to_le_bytes());
+            c.extend(bw.to_le_bytes());
+            c.push(1);
+        }
+        c.extend(1u32.to_le_bytes());
+        c.extend(0u32.to_le_bytes());
+        c.extend(1.0f64.to_le_bytes());
+        c
+    }
+
+    /// The curve the editor draws is the gain the EQ applies to a steady sine.
+    #[test]
+    fn drawn_curve_matches_what_plays() {
+        let chunk =
+            eq_chunk(&[(0, 120.0, 2.0, 1.0), (8, 1000.0, 0.5, 0.7), (4, 40.0, 1.0, 1.5), (1, 8000.0, 1.4, 1.0)]);
+        let mut eq = ReaEqCompat::from_chunk(&chunk, 48000).unwrap();
+        for hz in [30.0, 100.0, 700.0, 1000.0, 3000.0, 12000.0] {
+            eq.reset();
+            let n = 48000;
+            let sine: Vec<f32> =
+                (0..n).map(|i| (std::f64::consts::TAU * hz * i as f64 / 48000.0).sin() as f32).collect();
+            let (mut l, mut r) = (sine.clone(), sine);
+            eq.process(&mut l, &mut r, &crate::stock::testing::context());
+            let tail = &l[n / 2..];
+            let peak = (tail.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() * 2.0 / tail.len() as f64).sqrt();
+            let measured = 20.0 * peak.log10();
+            assert!((measured - eq.response_db(hz)).abs() < 0.05, "{hz} Hz: {measured} vs {}", eq.response_db(hz));
+        }
+    }
+
+    /// Bands added, retyped and removed in the editor survive the saved state.
+    #[test]
+    fn band_edits_round_trip_through_the_chunk() {
+        let mut eq = ReaEqCompat::from_chunk(&eq_chunk(&[(0, 100.0, 1.0, 1.0), (8, 1000.0, 1.0, 1.0)]), 48000).unwrap();
+        let added = eq.add_band(Band { kind: BandKind::Notch, enabled: true, freq: 3000.0, gain: 1.0, bandwidth: 0.5 });
+        assert_eq!(added, 2);
+        eq.set_kind(0, BandKind::HighPass);
+        eq.set_param(4 + 2, 6.0);
+        eq.remove_band(1);
+        let back = ReaEqCompat::from_chunk(&eq.save_state().unwrap(), 48000).unwrap();
+        assert_eq!(back.bands.len(), 2);
+        assert_eq!(back.bands[0].kind, BandKind::HighPass);
+        assert_eq!(back.bands[1].kind, BandKind::Notch);
+        assert_eq!(back.bands[1].freq, 3000.0);
+        assert_eq!(back.output, 1.0);
     }
 }

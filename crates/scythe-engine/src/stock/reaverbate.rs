@@ -148,6 +148,25 @@ impl Reverb {
     }
 }
 
+impl Reverb {
+    /// Seconds the reverb takes to fall by 60 dB at `hz`, from its combs' feedback and
+    /// damping (averaged over the combs).
+    pub fn decay_seconds(&self, hz: f64) -> f64 {
+        let sr = self.sample_rate as f64;
+        let mean = COMBS.iter().map(|&t| t as f64 * sr / 44100.0).sum::<f64>() / COMBS.len() as f64;
+        let w = std::f64::consts::TAU * hz / sr;
+        let d = self.damp;
+        let lowpass = (1.0 - d) / ((1.0 - d * w.cos()).powi(2) + (d * w.sin()).powi(2)).sqrt();
+        let g = (self.feedback * lowpass).clamp(1e-9, 0.999_999);
+        -3.0 * mean / (sr * g.log10())
+    }
+
+    /// The pre-delay in seconds.
+    pub fn predelay(&self) -> f64 {
+        self.predelay.len() as f64 / self.sample_rate as f64
+    }
+}
+
 impl Effect for Reverb {
     fn params(&mut self) -> Vec<ParamInfo> {
         self.params.infos()
@@ -173,6 +192,10 @@ impl Effect for Reverb {
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
         Some(self.params.chunk())
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
@@ -225,5 +248,27 @@ mod tests {
         assert!((l[1214] - 0.007_500_518).abs() < 1e-8);
         assert!((l[1214 + 166] + 0.007_500_518).abs() < 1e-8);
         assert!(r.iter().all(|v| *v == 0.0));
+    }
+    /// The decay the editor shows is how fast the impulse response falls.
+    #[test]
+    fn shown_decay_follows_the_impulse_response() {
+        let mut params = DEFAULTS.to_vec();
+        (params[1], params[3]) = (0.0, 0.0);
+        let mut verb = Reverb::from_reaverbate(&chunk(&params), 48000).unwrap();
+        let n = 96000;
+        let (mut l, mut r) = (vec![0.0f32; n], vec![0.0f32; n]);
+        l[0] = 1.0;
+        r[0] = 1.0;
+        verb.process(&mut l, &mut r, &context());
+        let window = 960;
+        let levels: Vec<f64> = l
+            .chunks(window)
+            .map(|w| 10.0 * (w.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / window as f64).max(1e-30).log10())
+            .collect();
+        let top = levels.iter().copied().fold(f64::MIN, f64::max);
+        let when = |drop: f64| levels.iter().rposition(|&v| v > top - drop).unwrap() as f64 * 0.02;
+        let measured = (when(45.0) - when(15.0)) * 2.0;
+        let shown = verb.decay_seconds(0.0);
+        assert!((measured / shown - 1.0).abs() < 0.25, "{measured} vs {shown}");
     }
 }

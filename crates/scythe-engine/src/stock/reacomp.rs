@@ -6,7 +6,10 @@
 use super::params::{Params, Spec, Unit, spec};
 use super::{DetectorFilter, DetectorInput, Rms, marked_params};
 use crate::clap_host::ParamInfo;
+use std::sync::Arc;
+
 use crate::fx::{Effect, ProcessContext};
+use crate::probe::{self, FxProbe};
 
 const SPECS: &[Spec] = &[
     spec(0, "Threshold", Unit::Gain, 2.0),
@@ -144,6 +147,10 @@ pub(crate) struct Envelope {
 }
 
 impl Envelope {
+    pub(crate) fn reduction_db(&self) -> f64 {
+        self.reduction_db
+    }
+
     /// Follows detector level `level` for one frame; returns the gain, make-up included.
     pub fn step(&mut self, c: &Curve, level: f64) -> f64 {
         if level > self.env {
@@ -188,6 +195,11 @@ impl Curve {
         coefficient(ms * 0.001 * self.sample_rate as f64)
     }
 
+    /// The steady-state output in dB for an input at `in_db`.
+    pub(crate) fn output_db(&self, in_db: f64) -> f64 {
+        in_db - self.reduction_db(10f64.powf(in_db / 20.0)) + 20.0 * self.makeup.log10()
+    }
+
     /// Where reduction begins: the threshold, or the bottom of the knee.
     fn onset(&self) -> f64 {
         if self.knee_db > 0.0 { self.threshold / self.knee } else { self.threshold }
@@ -209,6 +221,7 @@ pub struct Compressor {
     levels: Vec<f64>,
     at: usize,
     envelope: Envelope,
+    probe: Option<Arc<FxProbe>>,
 }
 
 impl Compressor {
@@ -229,6 +242,7 @@ impl Compressor {
             levels: Vec::new(),
             at: 0,
             envelope: Envelope::default(),
+            probe: None,
             params,
             sample_rate,
         };
@@ -260,6 +274,19 @@ impl Compressor {
     }
 }
 
+impl Compressor {
+    /// The steady-state output level in dB for an input at `in_db`, from the gain computer the
+    /// compressor plays (make-up included, dry and wet aside).
+    pub fn transfer_db(&self, in_db: f64) -> f64 {
+        self.settings.curve.output_db(in_db)
+    }
+
+    /// The threshold and the knee's width, in dB.
+    pub fn threshold_db(&self) -> (f64, f64) {
+        (20.0 * self.settings.curve.threshold.log10(), self.settings.curve.knee_db)
+    }
+}
+
 impl Effect for Compressor {
     fn params(&mut self) -> Vec<ParamInfo> {
         self.params.infos()
@@ -287,12 +314,22 @@ impl Effect for Compressor {
         self.lookahead
     }
 
+    fn set_probe(&mut self, probe: Arc<FxProbe>) {
+        self.probe = Some(probe);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
         Some(self.params.chunk())
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         let s = &self.settings;
+        let probing = self.probe.as_ref().is_some_and(|p| p.active());
+        let (mut deepest, mut loudest) = (0.0f64, 0.0f64);
         for (i, (l, r)) in left.iter_mut().zip(right.iter_mut()).enumerate() {
             let (dl, dr) = self.input.frame(i, *l, *r, ctx);
             let (fl, fr) = self.filter.run(dl as f64, dr as f64);
@@ -312,9 +349,17 @@ impl Effect for Compressor {
                 continue;
             }
             let g = self.envelope.step(&s.curve, level);
+            if probing {
+                deepest = deepest.max(self.envelope.reduction_db);
+                loudest = loudest.max(level);
+            }
             let gain = s.dry + s.wet * g as f32;
             *l = out_l * gain;
             *r = out_r * gain;
+        }
+        if let Some(p) = self.probe.as_ref().filter(|_| probing) {
+            p.publish_max(probe::REDUCTION, deepest as f32);
+            p.publish_max(probe::DETECTOR, loudest as f32);
         }
     }
 
@@ -351,6 +396,26 @@ mod tests {
                 (38400, 0.9986),
             ],
         );
+    }
+
+    /// The editor's transfer curve is what a steady level comes out at.
+    #[test]
+    fn transfer_curve_matches_the_steady_state() {
+        let mut params = DEFAULTS.to_vec();
+        (params[0], params[1], params[14], params[15]) = (0.2512, 0.0303, 0.25, 1.0);
+        let mut comp = Compressor::from_reacomp(&chunk(&params), 48000).unwrap();
+        for in_db in [-30.0, -14.0, -12.0, -9.0, -3.0] {
+            comp.reset();
+            let level = 10f64.powf(in_db / 20.0) as f32;
+            let (mut l, mut r) = (vec![level; 96000], vec![level; 96000]);
+            comp.process(&mut l, &mut r, &crate::stock::testing::context());
+            let out_db = 20.0 * (l[95999] as f64).log10();
+            assert!(
+                (out_db - comp.transfer_db(in_db)).abs() < 0.01,
+                "{in_db}: {out_db} vs {}",
+                comp.transfer_db(in_db)
+            );
+        }
     }
 
     /// The static curve REAPER 7.73 renders for a level ramp: threshold -12 dB, infinite ratio

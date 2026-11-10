@@ -1604,3 +1604,46 @@ fn folded_edits_undo_in_one_step() {
     s.undo();
     assert_eq!(s.project.tracks[0].name, "A", "folding needs the last step to carry the label");
 }
+
+#[test]
+fn stock_editors_change_bands_taps_and_curves_as_undo_steps() {
+    let mut s = session();
+    let t = add_track(&mut s, "fx");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:equalizer"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:delay"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:fft-eq"}));
+    let bands = |s: &mut Session| ok(s, json!({"cmd": "fx.params", "track": t, "index": 0})).as_array().unwrap().len();
+    let before = bands(&mut s);
+    let added = ok(
+        &mut s,
+        json!({"cmd": "fx.eq_band", "track": t, "index": 0, "action": "add", "kind": "notch", "freq": 3000.0}),
+    );
+    let count = added["bands"].as_u64().unwrap() as usize;
+    assert!(bands(&mut s) > before);
+    ok(&mut s, json!({"cmd": "fx.eq_band", "track": t, "index": 0, "action": "set", "band": 0, "kind": "high_pass"}));
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    assert!(params[0]["name"].as_str().unwrap().contains("high pass"));
+    assert_eq!(s.history.undo_label(), Some("Change EQ band type"));
+    s.undo();
+    s.undo();
+    assert_eq!(bands(&mut s), before);
+    let gone = execute_json(
+        &mut s,
+        json!({"cmd": "fx.eq_band", "track": t, "index": 0, "action": "remove", "band": count + 5}),
+    );
+    assert!(gone.is_err());
+    let taps = ok(
+        &mut s,
+        json!({"cmd": "fx.delay_tap", "track": t, "index": 1, "action": "add", "time_ms": 375.0, "pan": -1.0}),
+    );
+    assert_eq!(taps["taps"], 2);
+    let wrong = execute_json(&mut s, json!({"cmd": "fx.delay_tap", "track": t, "index": 0, "action": "add"}));
+    assert!(wrong.is_err());
+    let pts = ok(
+        &mut s,
+        json!({"cmd": "fx.fir_points", "track": t, "index": 2, "points": [[100, 0], [1000, -6], [8000, 3]]}),
+    );
+    assert_eq!(pts["points"], 3);
+    let meters = ok(&mut s, json!({"cmd": "fx.meters", "track": t, "index": 0}));
+    assert!(meters["input_db"].as_f64().is_some());
+}

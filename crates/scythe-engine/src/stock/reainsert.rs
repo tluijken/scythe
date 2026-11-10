@@ -198,6 +198,10 @@ impl Effect for Insert {
         self.settings.delay
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn device_outputs(&self) -> usize {
         self.outputs()
     }

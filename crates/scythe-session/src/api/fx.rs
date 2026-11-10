@@ -83,6 +83,91 @@ pub enum FxCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
+    /// What a running effect measures: its input and output peaks, and for compressors, gates,
+    /// limiters and multiband compressors the gain reduction, detector level and gate state.
+    /// Measuring starts with the first call and runs for about two seconds after each one, so
+    /// a first call can read nothing.
+    #[serde(rename = "fx.meters")]
+    Meters {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
+    /// Adds, removes or retypes a band of a ReaEQ (the built-in equalizer).
+    #[serde(rename = "fx.eq_band")]
+    EqBand {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        action: ListAction,
+        /// The band to remove or change, from 0.
+        #[serde(default)]
+        band: Option<usize>,
+        /// The band's type, for `add` (a band when left out) and `set`.
+        #[serde(default)]
+        kind: Option<EqKind>,
+        /// Frequency in Hz of a band added (1000 when left out).
+        #[serde(default)]
+        freq: Option<f64>,
+        /// Gain in dB of a band added (0 when left out).
+        #[serde(default)]
+        gain_db: Option<f64>,
+        /// Width in octaves of a band added (1 when left out).
+        #[serde(default)]
+        width: Option<f64>,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
+    /// Adds, removes or changes a tap of a ReaDelay (the built-in delay).
+    #[serde(rename = "fx.delay_tap")]
+    DelayTap {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        action: ListAction,
+        /// The tap to remove or change, from 0.
+        #[serde(default)]
+        tap: Option<usize>,
+        /// Delay in milliseconds, added to `musical`.
+        #[serde(default)]
+        time_ms: Option<f64>,
+        /// Delay in eighth notes, added to `time_ms`.
+        #[serde(default)]
+        musical: Option<f64>,
+        /// Feedback in dB (-60 and below for none).
+        #[serde(default)]
+        feedback_db: Option<f64>,
+        /// The tap's level in dB.
+        #[serde(default)]
+        volume_db: Option<f64>,
+        /// -1 (left) to 1 (right).
+        #[serde(default)]
+        pan: Option<f64>,
+        /// Low-pass cutoff in Hz (20000 for off).
+        #[serde(default)]
+        lowpass: Option<f64>,
+        /// High-pass cutoff in Hz (0 for off).
+        #[serde(default)]
+        highpass: Option<f64>,
+        #[serde(default)]
+        enabled: Option<bool>,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
+    /// Replaces the curve of a ReaFIR (the built-in FFT EQ) in its EQ mode: points of
+    /// frequency in Hz and gain in dB.
+    #[serde(rename = "fx.fir_points")]
+    FirPoints {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        /// `[hz, db]` pairs.
+        points: Vec<[f32; 2]>,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
     /// Sets the effect's wet/dry mix and delta solo (playing only the difference it makes).
     #[serde(rename = "fx.wet")]
     Wet {
@@ -480,6 +565,76 @@ fn params(session: &Session, loc: Loc, at: &ChainAt, index: usize) -> Result<Vec
     Ok(values)
 }
 
+/// What a list command does with its entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ListAction {
+    Add,
+    Remove,
+    Set,
+}
+
+/// A ReaEQ band type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EqKind {
+    LowShelf,
+    HighShelf,
+    Band,
+    Notch,
+    LowPass,
+    HighPass,
+    BandPass,
+    AllPass,
+}
+
+impl EqKind {
+    fn kind(self) -> scythe_engine::reaeq::BandKind {
+        use scythe_engine::reaeq::BandKind as K;
+        match self {
+            Self::LowShelf => K::LowShelf,
+            Self::HighShelf => K::HighShelf,
+            Self::Band => K::Peak,
+            Self::Notch => K::Notch,
+            Self::LowPass => K::LowPass,
+            Self::HighPass => K::HighPass,
+            Self::BandPass => K::BandPass,
+            Self::AllPass => K::AllPass,
+        }
+    }
+}
+
+/// Runs `f` on the effect as the stock type `T`, as one undo step.
+fn edit_stock<T: 'static, R>(
+    session: &mut Session,
+    inst: &scythe_engine::fx::FxInstance,
+    label: &str,
+    what: &str,
+    f: impl FnOnce(&mut T) -> Result<R, ApiError>,
+) -> Result<R, ApiError> {
+    session
+        .fx_edit(label, inst, |e| e.as_any_mut().and_then(|a| a.downcast_mut::<T>()).map(f))
+        .flatten()
+        .ok_or_else(|| ApiError::invalid(format!("the effect is not a {what}")))?
+}
+
+fn meters(inst: &scythe_engine::fx::FxInstance) -> Value {
+    use scythe_engine::probe;
+    let p = &inst.probe;
+    p.lease(200);
+    let db = |v: f32| if v > 1e-8 { 20.0 * (v as f64).log10() } else { -150.0 };
+    let bands: Vec<f64> = (0..probe::BANDS).map(|k| p.take(probe::BAND_REDUCTION + k) as f64).collect();
+    let used = bands.iter().rposition(|v| *v > 0.0).map_or(0, |k| k + 1);
+    serde_json::json!({
+        "input_db": db(p.take(probe::INPUT)),
+        "output_db": db(p.take(probe::OUTPUT)),
+        "reduction_db": p.take(probe::REDUCTION),
+        "detector_db": db(p.take(probe::DETECTOR)),
+        "gate_open": p.take(probe::GATE),
+        "band_reduction_db": &bands[..used],
+    })
+}
+
 pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiError> {
     match command {
         FxCommand::List { track, at } => {
@@ -683,6 +838,114 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
                 }
             });
             Ok(serde_json::json!({ "channels": channels }))
+        }
+        FxCommand::Meters { track, index, at } => {
+            let loc = locate(session, &track, &at)?;
+            Ok(meters(&*instance(session, loc, &at, index)?))
+        }
+        FxCommand::EqBand { track, index, action, band, kind, freq, gain_db, width, at } => {
+            use scythe_engine::reaeq::{Band, ReaEqCompat};
+            let loc = locate(session, &track, &at)?;
+            let inst = instance(session, loc, &at, index)?;
+            let label = match action {
+                ListAction::Add => "Add EQ band",
+                ListAction::Remove => "Remove EQ band",
+                ListAction::Set => "Change EQ band type",
+            };
+            let bands = edit_stock(session, &inst, label, "ReaEQ", |eq: &mut ReaEqCompat| {
+                let existing = |b: Option<usize>, n: usize| {
+                    b.filter(|b| *b < n).ok_or_else(|| ApiError::not_found(format!("the EQ has {n} band(s)")))
+                };
+                match action {
+                    ListAction::Add => {
+                        eq.add_band(Band {
+                            kind: kind.map_or(scythe_engine::reaeq::BandKind::Peak, EqKind::kind),
+                            enabled: true,
+                            freq: freq.unwrap_or(1000.0).clamp(10.0, 24000.0),
+                            gain: 10f64.powf(gain_db.unwrap_or(0.0).clamp(-60.0, 36.0) / 20.0),
+                            bandwidth: width.unwrap_or(1.0).clamp(0.01, 8.0),
+                        });
+                    }
+                    ListAction::Remove => eq.remove_band(existing(band, eq.bands.len())?),
+                    ListAction::Set => {
+                        let kind = kind.ok_or_else(|| ApiError::invalid("`set` needs `kind`"))?;
+                        eq.set_kind(existing(band, eq.bands.len())?, kind.kind());
+                    }
+                }
+                Ok(eq.bands.len())
+            })?;
+            Ok(serde_json::json!({ "bands": bands }))
+        }
+        FxCommand::DelayTap {
+            track,
+            index,
+            action,
+            tap,
+            time_ms,
+            musical,
+            feedback_db,
+            volume_db,
+            pan,
+            lowpass,
+            highpass,
+            enabled,
+            at,
+        } => {
+            use scythe_engine::delay::ReaDelayCompat;
+            let loc = locate(session, &track, &at)?;
+            let inst = instance(session, loc, &at, index)?;
+            let label = match action {
+                ListAction::Add => "Add delay tap",
+                ListAction::Remove => "Remove delay tap",
+                ListAction::Set => "Change delay tap",
+            };
+            let gain = |db: f64| if db <= -59.9 { 0.0 } else { 10f64.powf(db.min(12.0) / 20.0) };
+            let taps = edit_stock(session, &inst, label, "ReaDelay", |d: &mut ReaDelayCompat| {
+                let taps = d.taps();
+                let at = match action {
+                    ListAction::Add => None,
+                    _ => Some(
+                        tap.filter(|t| *t < taps.len())
+                            .ok_or_else(|| ApiError::not_found(format!("the delay has {} tap(s)", taps.len())))?,
+                    ),
+                };
+                if action == ListAction::Remove {
+                    d.remove_tap(at.unwrap_or_default());
+                    return Ok(d.taps().len());
+                }
+                let mut t = at.map_or_else(|| *taps.last().unwrap(), |k| taps[k]);
+                t.time_ms = time_ms.map_or(t.time_ms, |v| v.clamp(0.0, 10_000.0));
+                t.musical = musical.map_or(t.musical, |v| v.clamp(0.0, 256.0));
+                t.feedback = feedback_db.map_or(t.feedback, |v| gain(v).min(1.0));
+                t.volume = volume_db.map_or(t.volume, gain);
+                t.pan = pan.map_or(t.pan, |v| v.clamp(-1.0, 1.0));
+                t.lowpass = lowpass.map_or(t.lowpass, |v| v.clamp(0.0, 20_000.0));
+                t.hipass = highpass.map_or(t.hipass, |v| v.clamp(0.0, 20_000.0));
+                t.enabled = enabled.unwrap_or(t.enabled);
+                match at {
+                    Some(k) => d.set_tap(k, t),
+                    None => {
+                        d.add_tap(t);
+                    }
+                }
+                Ok(d.taps().len())
+            })?;
+            Ok(serde_json::json!({ "taps": taps }))
+        }
+        FxCommand::FirPoints { track, index, points, at } => {
+            use scythe_engine::stock::reafir::Fir;
+            let loc = locate(session, &track, &at)?;
+            let inst = instance(session, loc, &at, index)?;
+            if points.iter().flatten().any(|v| !v.is_finite()) || points.len() > 256 {
+                return Err(ApiError::invalid("up to 256 points of finite numbers"));
+            }
+            let points: Vec<(f32, f32)> =
+                points.iter().map(|[hz, db]| (hz.clamp(1.0, 24000.0), db.clamp(-90.0, 24.0))).collect();
+            let n = edit_stock(session, &inst, "Draw FFT EQ curve", "ReaFIR", |f: &mut Fir| {
+                f.set_points(points);
+                Ok(f.points().len())
+            })?;
+            Ok(serde_json::json!({ "points": n }))
         }
         FxCommand::Params { track, index, at } => {
             let loc = locate(session, &track, &at)?;

@@ -331,6 +331,16 @@ impl Biquad {
         self.z = [0.0; 2];
     }
 
+    /// The complex response at `w` radians per sample, as (re, im).
+    pub fn response(&self, w: f64) -> (f64, f64) {
+        let z1 = (w.cos(), -w.sin());
+        let z2 = ((2.0 * w).cos(), -(2.0 * w).sin());
+        let num = (self.b[0] + self.b[1] * z1.0 + self.b[2] * z2.0, self.b[1] * z1.1 + self.b[2] * z2.1);
+        let den = (1.0 + self.a[0] * z1.0 + self.a[1] * z2.0, self.a[0] * z1.1 + self.a[1] * z2.1);
+        let d = (den.0 * den.0 + den.1 * den.1).max(1e-300);
+        ((num.0 * den.0 + num.1 * den.1) / d, (num.1 * den.0 - num.0 * den.1) / d)
+    }
+
     /// Takes `other`'s coefficients, keeping the filter's memory.
     pub fn retune(&mut self, other: &Biquad) {
         self.b = other.b;

@@ -29,6 +29,7 @@ pub mod nam;
 pub mod normalized;
 pub mod pcmfile;
 pub mod preview;
+pub mod probe;
 mod r8brain;
 pub mod reaeq;
 pub mod realtime;

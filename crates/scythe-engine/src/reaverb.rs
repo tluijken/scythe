@@ -123,7 +123,13 @@ pub struct ReaVerbCompat {
     pub chunk: Vec<u8>,
     left: Option<Convolver>,
     right: Option<Convolver>,
+    /// The impulse response's peak level in dB over [`ENVELOPE_POINTS`] stretches, and its length.
+    envelope: Vec<f32>,
+    length: f64,
 }
+
+/// Stretches the impulse response's envelope is kept in, for the editor.
+pub const ENVELOPE_POINTS: usize = 200;
 
 impl ReaVerbCompat {
     pub fn new(settings: ReaVerbSettings, sample_rate: u32, project_dir: Option<&Path>) -> Result<Self, String> {
@@ -149,11 +155,35 @@ impl ReaVerbCompat {
             None => None,
         };
         let ir = settings.generators.iter().fold(file, |ir, g| Some(g.apply(ir, sample_rate)));
+        let (envelope, length) = ir.as_ref().map_or((Vec::new(), 0.0), |[l, r]| {
+            let per = l.len().div_ceil(ENVELOPE_POINTS).max(1);
+            let peaks = l
+                .chunks(per)
+                .zip(r.chunks(per))
+                .map(|(a, b)| {
+                    let peak = a.iter().chain(b).fold(0.0f32, |m, s| m.max(s.abs()));
+                    20.0 * peak.max(1e-8).log10()
+                })
+                .collect();
+            (peaks, l.len() as f64 / sample_rate as f64)
+        });
         let (left, right) = match ir {
             Some([l, r]) => (Some(Convolver::new(&l)), Some(Convolver::new(&r))),
             None => (None, None),
         };
-        Ok(Self { settings, left, right, chunk: Vec::new() })
+        Ok(Self { settings, left, right, chunk: Vec::new(), envelope, length })
+    }
+}
+
+impl ReaVerbCompat {
+    /// The impulse response's envelope (peak dB per stretch) and its length in seconds.
+    pub fn envelope(&self) -> (&[f32], f64) {
+        (&self.envelope, self.length)
+    }
+
+    /// The impulse response's file, if it loads one.
+    pub fn file(&self) -> Option<&std::path::Path> {
+        self.settings.ir.as_deref()
     }
 }
 
@@ -187,6 +217,10 @@ impl Effect for ReaVerbCompat {
         }
         self.set_param(index as u32, crate::normalized::amp2_db(v));
         true
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {

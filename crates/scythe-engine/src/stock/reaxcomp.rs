@@ -8,10 +8,13 @@
 //! back to the input exactly), and every band runs ReaComp's detector, soft knee, timing and
 //! make-up. A band that is off passes through untouched.
 
+use std::sync::Arc;
+
 use super::reacomp::{Curve, CurveSpec, Envelope};
 use super::{Biquad, Rms};
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
+use crate::probe::{self, FxProbe};
 
 const VERSION: u32 = 56;
 const BAND_BYTES: usize = 56;
@@ -157,6 +160,7 @@ pub struct MultibandCompressor {
     sample_rate: u32,
     crossovers: Vec<[Biquad; 2]>,
     states: Vec<BandState>,
+    probe: Option<Arc<FxProbe>>,
 }
 
 impl MultibandCompressor {
@@ -173,7 +177,7 @@ impl MultibandCompressor {
             .map(|k| Band::parse(chunk.get(8 + k * BAND_BYTES..8 + (k + 1) * BAND_BYTES)?))
             .collect::<Option<Vec<_>>>()?;
         let tail = chunk[8 + count * BAND_BYTES..].to_vec();
-        let mut comp = Self { bands, tail, sample_rate, crossovers: Vec::new(), states: Vec::new() };
+        let mut comp = Self { bands, tail, sample_rate, crossovers: Vec::new(), states: Vec::new(), probe: None };
         comp.configure(true);
         Some(comp)
     }
@@ -238,6 +242,70 @@ impl MultibandCompressor {
     fn band_param(&self, id: u32) -> Option<(usize, u32)> {
         let band = (id / PARAMS_PER_BAND) as usize;
         (band < self.bands.len()).then_some((band, id % PARAMS_PER_BAND))
+    }
+}
+
+/// A band as an editor shows it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BandView {
+    /// The crossover at the band's top (the last band's is unused).
+    pub top: f64,
+    pub threshold_db: f64,
+    pub ratio: f64,
+    pub knee_db: f64,
+    pub active: bool,
+}
+
+/// Parameter ids per band: band `k`'s parameter `p` is `k * PARAMS_PER_BAND + p`.
+pub const BAND_PARAMS: u32 = PARAMS_PER_BAND;
+/// Parameter numbers within a band.
+pub const TOP: u32 = 0;
+pub const THRESHOLD: u32 = 2;
+pub const RATIO: u32 = 3;
+pub const KNEE: u32 = 4;
+pub const ATTACK: u32 = 5;
+pub const RELEASE: u32 = 6;
+pub const RMS: u32 = 7;
+pub const ACTIVE: u32 = 11;
+
+impl MultibandCompressor {
+    pub fn band_views(&self) -> Vec<BandView> {
+        let db = |v: f64| if v <= 1e-7 { -150.0 } else { 20.0 * v.log10() };
+        self.bands
+            .iter()
+            .map(|b| BandView {
+                top: b.top,
+                threshold_db: db(b.threshold),
+                ratio: b.ratio,
+                knee_db: b.knee_db,
+                active: b.flags & OFF == 0,
+            })
+            .collect()
+    }
+
+    /// Band `k`'s steady-state output in dB for an input at `in_db`, band gain included.
+    pub fn transfer_db(&self, k: usize, in_db: f64) -> f64 {
+        let (Some(b), Some(s)) = (self.bands.get(k), self.states.get(k)) else { return in_db };
+        if b.flags & OFF != 0 {
+            return in_db;
+        }
+        s.curve.output_db(in_db) + 20.0 * b.gain.max(1e-9).log10()
+    }
+
+    /// How much of the input at `hz` reaches band `k` through the crossovers, in dB.
+    pub fn band_response_db(&self, k: usize, hz: f64) -> f64 {
+        let w = std::f64::consts::TAU * hz / self.sample_rate as f64;
+        let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        let mut rest = (1.0, 0.0);
+        for (i, [f, _]) in self.crossovers.iter().enumerate() {
+            let low = f.response(w);
+            if i == k {
+                let h = mul(rest, low);
+                return 10.0 * (h.0 * h.0 + h.1 * h.1).max(1e-30).log10();
+            }
+            rest = mul(rest, (1.0 - low.0, -low.1));
+        }
+        10.0 * (rest.0 * rest.0 + rest.1 * rest.1).max(1e-30).log10()
     }
 }
 
@@ -307,6 +375,8 @@ impl Effect for MultibandCompressor {
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         let out_gain = self.output_gain();
+        let probing = self.probe.as_ref().is_some_and(|p| p.active());
+        let mut deepest = [0.0f64; probe::BANDS];
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let mut rest = [*l as f64, *r as f64];
             let mut out = [0.0f64; 2];
@@ -327,6 +397,9 @@ impl Effect for MultibandCompressor {
                 let detector = if band.flags & FEEDBACK != 0 { state.last } else { signal };
                 let level = state.rms.run(detector[0], detector[1]);
                 let g = state.envelope.step(&state.curve, level);
+                if probing && k < probe::BANDS {
+                    deepest[k] = deepest[k].max(state.envelope.reduction_db());
+                }
                 state.last = [signal[0] * g * band.gain, signal[1] * g * band.gain];
                 out[0] += state.last[0];
                 out[1] += state.last[1];
@@ -334,6 +407,19 @@ impl Effect for MultibandCompressor {
             *l = (out[0] * out_gain) as f32;
             *r = (out[1] * out_gain) as f32;
         }
+        if let Some(p) = self.probe.as_ref().filter(|_| probing) {
+            for (k, d) in deepest.iter().enumerate().take(self.bands.len()) {
+                p.publish_max(probe::BAND_REDUCTION + k, *d as f32);
+            }
+        }
+    }
+
+    fn set_probe(&mut self, probe: Arc<FxProbe>) {
+        self.probe = Some(probe);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn reset(&mut self) {
@@ -383,6 +469,23 @@ mod tests {
         x.process(&mut l, &mut r, &context());
         assert!((l[100] - 0.5).abs() < 1e-6);
         assert!(l.iter().enumerate().all(|(i, v)| i == 100 || v.abs() < 1e-6));
+    }
+
+    /// The editor's curves come from the bands the compressor plays: DC only reaches the
+    /// lowest band and settles where its transfer curve says.
+    #[test]
+    fn editor_curves_follow_the_bands() {
+        let mut x = MultibandCompressor::from_reaxcomp(&chunk(0.1), 48000).unwrap();
+        let (mut l, mut r) = (vec![0.5f32; 96000], vec![0.5f32; 96000]);
+        x.process(&mut l, &mut r, &context());
+        let out_db = 20.0 * (l[95999] as f64).log10();
+        let want = x.transfer_db(0, 20.0 * 0.5f64.log10());
+        assert!((out_db - want).abs() < 0.02, "{out_db} vs {want}");
+        assert!(x.band_response_db(0, 30.0).abs() < 0.1);
+        assert!(x.band_response_db(0, 10000.0) < -30.0);
+        assert!(x.band_response_db(3, 20000.0).abs() < 0.5);
+        assert!(x.band_response_db(3, 50.0) < -30.0);
+        assert_eq!(x.band_views().len(), 4);
     }
 
     #[test]

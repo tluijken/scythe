@@ -12,9 +12,11 @@
 //! rate and falls at the release rate, and the deeper of the two applies.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::clap_host::ParamInfo;
 use crate::fx::{Effect, ProcessContext};
+use crate::probe::{self, FxProbe};
 
 /// The release REAPER uses for "inf dB/s".
 const FASTEST_RELEASE: f64 = 150.0;
@@ -39,6 +41,7 @@ pub struct Limiter {
     fast: f64,
     climb: f64,
     slow_db: f64,
+    probe: Option<Arc<FxProbe>>,
 }
 
 fn f64_at(chunk: &[u8], at: usize) -> Option<f64> {
@@ -70,6 +73,7 @@ impl Limiter {
             fast: 1.0,
             climb: 0.0,
             slow_db: 0.0,
+            probe: None,
         };
         lim.update();
         lim.fast = lim.makeup;
@@ -188,6 +192,8 @@ impl Effect for Limiter {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
+        let probing = self.probe.as_ref().is_some_and(|p| p.active());
+        let mut least = f64::INFINITY;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let peak = l.abs().max(r.abs()) as f64;
             if peak * self.makeup > self.target {
@@ -195,12 +201,26 @@ impl Effect for Limiter {
             }
             // Until the delay line has filled, its output is silence.
             let gain = if self.frame >= self.lookahead as u64 { self.gain() } else { self.makeup };
+            if probing {
+                least = least.min(gain);
+            }
             let [dl, dr] = std::mem::replace(&mut self.audio[self.at], [*l, *r]);
             self.at = (self.at + 1) % self.lookahead.max(1);
             *l = (dl as f64 * gain) as f32;
             *r = (dr as f64 * gain) as f32;
             self.frame += 1;
         }
+        if let Some(p) = self.probe.as_ref().filter(|_| probing && least.is_finite()) {
+            p.publish_max(probe::REDUCTION, (20.0 * (self.makeup / least.max(1e-9)).log10()) as f32);
+        }
+    }
+
+    fn set_probe(&mut self, probe: Arc<FxProbe>) {
+        self.probe = Some(probe);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn reset(&mut self) {

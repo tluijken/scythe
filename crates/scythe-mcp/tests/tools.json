@@ -2726,6 +2726,510 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "What a running effect measures: its input and output peaks, and for compressors, gates,\nlimiters and multiband compressors the gain reduction, detector level and gate state.\nMeasuring starts with the first call and runs for about two seconds after each one, so\na first call can read nothing.\n\nControl API command `fx.meters`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "fx_meters",
+    "title": "FX meters"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds, removes or retypes a band of a ReaEQ (the built-in equalizer).\n\nControl API command `fx.eq_band`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "description": "What a list command does with its entry.",
+          "enum": [
+            "add",
+            "remove",
+            "set"
+          ],
+          "type": "string"
+        },
+        "band": {
+          "default": null,
+          "description": "The band to remove or change, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "freq": {
+          "default": null,
+          "description": "Frequency in Hz of a band added (1000 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "gain_db": {
+          "default": null,
+          "description": "Gain in dB of a band added (0 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "default": null,
+          "description": "The band's type, for `add` (a band when left out) and `set`.",
+          "enum": [
+            "low_shelf",
+            "high_shelf",
+            "band",
+            "notch",
+            "low_pass",
+            "high_pass",
+            "band_pass",
+            "all_pass",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "width": {
+          "default": null,
+          "description": "Width in octaves of a band added (1 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "fx_eq_band",
+    "title": "FX eq band"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds, removes or changes a tap of a ReaDelay (the built-in delay).\n\nControl API command `fx.delay_tap`.",
+    "inputSchema": {
+      "properties": {
+        "action": {
+          "description": "What a list command does with its entry.",
+          "enum": [
+            "add",
+            "remove",
+            "set"
+          ],
+          "type": "string"
+        },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "feedback_db": {
+          "default": null,
+          "description": "Feedback in dB (-60 and below for none).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "highpass": {
+          "default": null,
+          "description": "High-pass cutoff in Hz (0 for off).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "lowpass": {
+          "default": null,
+          "description": "Low-pass cutoff in Hz (20000 for off).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "musical": {
+          "default": null,
+          "description": "Delay in eighth notes, added to `time_ms`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pan": {
+          "default": null,
+          "description": "-1 (left) to 1 (right).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tap": {
+          "default": null,
+          "description": "The tap to remove or change, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "time_ms": {
+          "default": null,
+          "description": "Delay in milliseconds, added to `musical`.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "volume_db": {
+          "default": null,
+          "description": "The tap's level in dB.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "action"
+      ],
+      "type": "object"
+    },
+    "name": "fx_delay_tap",
+    "title": "FX delay tap"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Replaces the curve of a ReaFIR (the built-in FFT EQ) in its EQ mode: points of\nfrequency in Hz and gain in dB.\n\nControl API command `fx.fir_points`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "points": {
+          "description": "`[hz, db]` pairs.",
+          "items": {
+            "items": {
+              "format": "float",
+              "type": "number"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "points"
+      ],
+      "type": "object"
+    },
+    "name": "fx_fir_points",
+    "title": "FX fir points"
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,

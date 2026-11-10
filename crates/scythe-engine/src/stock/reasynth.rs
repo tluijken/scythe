@@ -83,7 +83,7 @@ struct Voice {
 }
 
 /// What the parameters work out to.
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Shape {
     attack: f64,
     /// The decay's factor per frame, rounded to a float as REAPER keeps it.
@@ -296,9 +296,78 @@ impl Synth {
     }
 }
 
+impl Synth {
+    /// One cycle of the oscillator mix (the extra sine at its own ratio), `n` points, from the
+    /// same mixing the voices play.
+    pub fn cycle(&self, n: usize) -> Vec<f64> {
+        let s = &self.shape;
+        let n = n.max(2);
+        let mut v = Voice {
+            channel: 0,
+            key: 69,
+            velocity: 1.0,
+            stage: Stage::Decay,
+            level: 1.0,
+            started: true,
+            releasing: false,
+            phase: 0.0,
+            extra: 0.0,
+            start: 0,
+            hold: false,
+            inc: TAU / n as f64,
+            extra_inc: TAU * s.extra_ratio / n as f64,
+        };
+        let flat = Shape { decay_step: 1.0, sustain: 1.0, volume: 1.0, ..*s };
+        (0..n).map(|_| Self::run(&flat, &mut v, false).unwrap_or(0.0)).collect()
+    }
+
+    /// The envelope of a full-velocity note held for `hold` seconds, as (seconds, level)
+    /// points `step` seconds apart until it has died away (or `limit` seconds).
+    pub fn envelope(&self, hold: f64, step: f64, limit: f64) -> Vec<(f64, f64)> {
+        let s = &self.shape;
+        let sr = self.sample_rate as f64;
+        let mut v = Voice {
+            channel: 0,
+            key: 69,
+            velocity: 1.0,
+            stage: Stage::Attack,
+            level: 0.0,
+            started: true,
+            releasing: false,
+            phase: 0.0,
+            extra: 0.0,
+            start: 0,
+            hold: false,
+            inc: 0.0,
+            extra_inc: 0.0,
+        };
+        let quiet = Shape { volume: 1.0, square: 0.0, saw: 0.0, triangle: 0.0, sine: 0.0, extra: 0.0, ..*s };
+        let every = ((step * sr) as usize).max(1);
+        let (hold_frames, end) = ((hold * sr) as usize, (limit * sr) as usize);
+        let mut out = vec![(0.0, 0.0)];
+        for frame in 1..end {
+            if frame == hold_frames {
+                v.releasing = true;
+            }
+            if Self::run(&quiet, &mut v, false).is_none() {
+                out.push((frame as f64 / sr, 0.0));
+                break;
+            }
+            if frame % every == 0 {
+                out.push((frame as f64 / sr, v.level));
+            }
+        }
+        out
+    }
+}
+
 impl Effect for Synth {
     fn is_instrument(&self) -> bool {
         true
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
@@ -407,5 +476,20 @@ mod tests {
         assert!((l[2] + 0.022_716_81).abs() < 1e-7, "{}", l[2]);
         assert!(l[100] != 0.0 && l[101] == 0.0);
         assert_eq!(l, r);
+    }
+    /// The editor's pictures come from the voice model: a lone sine cycle, and an envelope
+    /// that rises over the attack, settles at the sustain and falls over the release.
+    #[test]
+    fn editor_pictures_follow_the_voice() {
+        let mut params = DEFAULTS.to_vec();
+        (params[0], params[1], params[6], params[9]) = (0.02, 0.01, 0.0, 0.5);
+        let synth = Synth::from_reasynth(&chunk(&params), 48000).unwrap();
+        let cycle = synth.cycle(64);
+        assert!((cycle[16] + 1.0).abs() < 1e-9 && cycle[0].abs() < 1e-9);
+        let env = synth.envelope(0.2, 0.001, 1.0);
+        let at = |t: f64| env.iter().find(|p| p.0 >= t).unwrap().1;
+        assert!((at(0.005) - 0.5).abs() < 0.02);
+        assert!((at(0.15) - 0.5).abs() < 0.02);
+        assert!(env.last().unwrap().0 < 0.3);
     }
 }

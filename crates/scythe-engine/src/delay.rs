@@ -113,26 +113,72 @@ pub struct ReaDelayCompat {
     /// Per tap and channel: input plus feedback.
     lines: Vec<[Vec<f32>; 2]>,
     pos: usize,
+    sample_rate: f64,
+    /// Which stored tap each tap came from (`None` for taps added since), so a save keeps
+    /// the words of each.
+    sources: Vec<Option<usize>>,
 }
 
 impl ReaDelayCompat {
     pub fn new(settings: ReaDelaySettings, sample_rate: u32) -> Self {
         let sr = sample_rate as f64;
         let len = (MAX_DELAY * sr) as usize;
-        let taps: Vec<TapState> = settings
-            .taps
-            .iter()
-            .map(|&tap| {
-                let (l, r) = PanLaw::default().gains(tap.pan);
-                let filters = [Filter::new(tap.lowpass, sr, false), Filter::new(tap.hipass, sr, true)]
-                    .into_iter()
-                    .flatten()
-                    .collect();
-                TapState { tap, gain: (l * tap.volume, r * tap.volume), filters }
-            })
-            .collect();
+        let taps: Vec<TapState> = settings.taps.iter().map(|&tap| TapState::new(tap, sr)).collect();
         let lines = taps.iter().map(|_| [vec![0.0; len], vec![0.0; len]]).collect();
-        Self { settings, taps, lines, pos: 0, chunk: Vec::new() }
+        let sources = (0..taps.len()).map(Some).collect();
+        Self { settings, taps, lines, pos: 0, chunk: Vec::new(), sample_rate: sr, sources }
+    }
+
+    pub fn taps(&self) -> Vec<Tap> {
+        self.taps.iter().map(|t| t.tap).collect()
+    }
+
+    pub fn wet_dry(&self) -> (f64, f64) {
+        (self.settings.wet, self.settings.dry)
+    }
+
+    /// Replaces tap `i`'s settings.
+    pub fn set_tap(&mut self, i: usize, tap: Tap) {
+        if let Some(t) = self.taps.get_mut(i) {
+            let filters_same = (t.tap.lowpass, t.tap.hipass) == (tap.lowpass, tap.hipass);
+            let fresh = TapState::new(tap, self.sample_rate);
+            if filters_same {
+                t.tap = fresh.tap;
+                t.gain = fresh.gain;
+            } else {
+                *t = fresh;
+            }
+        }
+    }
+
+    /// Adds a tap after the others; returns its index.
+    pub fn add_tap(&mut self, tap: Tap) -> usize {
+        if self.taps.len() >= 64 {
+            return self.taps.len() - 1;
+        }
+        let len = (MAX_DELAY * self.sample_rate) as usize;
+        self.taps.push(TapState::new(tap, self.sample_rate));
+        self.lines.push([vec![0.0; len], vec![0.0; len]]);
+        self.sources.push(None);
+        self.taps.len() - 1
+    }
+
+    /// Removes tap `i` (the last one stays).
+    pub fn remove_tap(&mut self, i: usize) {
+        if i < self.taps.len() && self.taps.len() > 1 {
+            self.taps.remove(i);
+            self.lines.remove(i);
+            self.sources.remove(i);
+        }
+    }
+}
+
+impl TapState {
+    fn new(tap: Tap, sr: f64) -> Self {
+        let (l, r) = PanLaw::default().gains(tap.pan);
+        let filters =
+            [Filter::new(tap.lowpass, sr, false), Filter::new(tap.hipass, sr, true)].into_iter().flatten().collect();
+        TapState { tap, gain: (l * tap.volume, r * tap.volume), filters }
     }
 }
 
@@ -189,8 +235,30 @@ impl Effect for ReaDelayCompat {
         true
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn save_state(&mut self) -> Option<Vec<u8>> {
+        let old = ReaDelaySettings::parse(&self.chunk)?;
+        let word = |i: usize| self.chunk.get(i * 4..i * 4 + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+        let size = word(3)? as usize / 4;
         let mut c = self.chunk.clone();
+        let unchanged =
+            old.taps.len() == self.taps.len() && self.sources.iter().enumerate().all(|(k, s)| *s == Some(k));
+        if !unchanged {
+            // Taps added or removed: each keeps its stored words, new ones start from the first.
+            let tap_words = |k: usize| c.get((8 + k * size) * 4..(8 + (k + 1) * size) * 4).map(<[u8]>::to_vec);
+            let template = tap_words(0).unwrap_or_else(|| vec![0; size * 4]);
+            let mut rebuilt = c[..32].to_vec();
+            rebuilt[8..12].copy_from_slice(&(self.taps.len() as u32).to_le_bytes());
+            for k in 0..self.taps.len() {
+                let kept = self.sources.get(k).copied().flatten().and_then(tap_words);
+                rebuilt.extend(kept.unwrap_or_else(|| template.clone()));
+            }
+            rebuilt.extend(c.get((8 + old.taps.len() * size) * 4..).unwrap_or_default());
+            c = rebuilt;
+        }
         let mut put = |i: usize, v: f64| -> Option<()> {
             c.get_mut(i * 4..i * 4 + 4)?.copy_from_slice(&(v as f32).to_le_bytes());
             Some(())
@@ -201,6 +269,27 @@ impl Effect for ReaDelayCompat {
             put(10, t.tap.time_ms / 10_000.0)?;
             put(11, t.tap.musical / 256.0)?;
             put(12, t.tap.feedback)?;
+        }
+        for (k, state) in self.taps.iter().enumerate() {
+            let t = state.tap;
+            let stored = self.sources.get(k).copied().flatten().and_then(|s| old.taps.get(s)).copied();
+            let at = 8 + k * size;
+            let fields = [
+                (1, t.enabled as u8 as f64, stored.map(|s| s.enabled as u8 as f64)),
+                (2, t.time_ms / 10_000.0, stored.map(|s| s.time_ms / 10_000.0)),
+                (3, t.musical / 256.0, stored.map(|s| s.musical / 256.0)),
+                (4, t.feedback, stored.map(|s| s.feedback)),
+                (5, t.lowpass / 20_000.0, stored.map(|s| s.lowpass / 20_000.0)),
+                (6, t.hipass / 20_000.0, stored.map(|s| s.hipass / 20_000.0)),
+                (8, (t.width + 1.0) / 2.0, stored.map(|s| (s.width + 1.0) / 2.0)),
+                (9, t.volume, stored.map(|s| s.volume)),
+                (10, (t.pan + 1.0) / 2.0, stored.map(|s| (s.pan + 1.0) / 2.0)),
+            ];
+            for (field, value, was) in fields {
+                if was != Some(value) {
+                    put(at + field, value)?;
+                }
+            }
         }
         Some(c)
     }
@@ -234,14 +323,11 @@ impl Effect for ReaDelayCompat {
         let sr = ctx.sample_rate as f64;
         let len = self.lines.first().map_or(1, |l| l[0].len());
         let (wet, dry) = (self.settings.wet as f32, self.settings.dry as f32);
-        let delays: Vec<usize> = self
-            .taps
-            .iter()
-            .map(|t| {
-                let secs = t.tap.time_ms / 1000.0 + t.tap.musical * 30.0 / ctx.bpm.max(1.0);
-                ((secs * sr).round() as usize).clamp(1, len - 1)
-            })
-            .collect();
+        let mut delays = [1usize; 64];
+        for (d, t) in delays.iter_mut().zip(&self.taps) {
+            let secs = t.tap.time_ms / 1000.0 + t.tap.musical * 30.0 / ctx.bpm.max(1.0);
+            *d = ((secs * sr).round() as usize).clamp(1, len - 1);
+        }
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let (x_l, x_r) = (*l, *r);
             let (mut out_l, mut out_r) = (0.0f32, 0.0f32);
@@ -337,5 +423,30 @@ mod tests {
         pan[9] = 0.0;
         let (l, r) = impulse_response(ReaDelaySettings::parse(&chunk(1.0, 0.0, pan)).unwrap(), 120.0, 400);
         assert_eq!((l[250], r[250]), (1.0, 0.0));
+    }
+    /// The tap list the editor changes is what a save stores, and an untouched delay saves
+    /// its chunk unchanged.
+    #[test]
+    fn tap_edits_round_trip_through_the_chunk() {
+        let c = chunk(0.5, 1.0, [1.0, 0.25, 0.0, 0.5, 1.0, 0.0, 0.5, 1.0, 1.0, 0.5]);
+        let mut d = ReaDelayCompat::new(ReaDelaySettings::parse(&c).unwrap(), 48000);
+        d.chunk = c.clone();
+        assert_eq!(d.save_state().unwrap(), c);
+        let mut second = d.taps()[0];
+        (second.time_ms, second.pan, second.lowpass) = (750.0, -0.5, 5000.0);
+        assert_eq!(d.add_tap(second), 1);
+        let mut first = d.taps()[0];
+        first.volume = 0.5;
+        d.set_tap(0, first);
+        let back = ReaDelaySettings::parse(&d.save_state().unwrap()).unwrap();
+        assert_eq!(back.taps.len(), 2);
+        assert_eq!(back.taps[0].volume, 0.5);
+        assert!((back.taps[1].time_ms - 750.0).abs() < 1e-3);
+        assert!((back.taps[1].pan + 0.5).abs() < 1e-6);
+        assert!((back.taps[1].lowpass - 5000.0).abs() < 1e-2);
+        d.remove_tap(0);
+        let back = ReaDelaySettings::parse(&d.save_state().unwrap()).unwrap();
+        assert_eq!(back.taps.len(), 1);
+        assert!((back.taps[0].time_ms - 750.0).abs() < 1e-3);
     }
 }

@@ -5,7 +5,10 @@
 use super::params::{Params, Spec, Unit, spec};
 use super::{DetectorFilter, DetectorInput, Lookahead, Rms, marked_params};
 use crate::clap_host::ParamInfo;
+use std::sync::Arc;
+
 use crate::fx::{Effect, MidiBlock, ProcessContext};
+use crate::probe::{self, FxProbe};
 
 const SPECS: &[Spec] = &[
     spec(0, "Threshold", Unit::Gain, 2.0),
@@ -89,6 +92,7 @@ pub struct Gate {
     rng: u32,
     /// The MIDI passed on in this block (the chain's and the gate's notes), by frame.
     notes: Vec<(usize, [u8; 3])>,
+    probe: Option<Arc<FxProbe>>,
 }
 
 impl Gate {
@@ -122,6 +126,7 @@ impl Gate {
             note_on: false,
             rng: 0x2545_f491,
             notes: Vec::new(),
+            probe: None,
         };
         gate.configure(true);
         Some(gate)
@@ -211,6 +216,8 @@ impl Effect for Gate {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        let probing = self.probe.as_ref().is_some_and(|p| p.active());
+        let (mut loudest, mut widest) = (0.0f64, 0.0f64);
         if self.midi.is_some()
             && let Some(incoming) = ctx.chain_midi(left.len())
         {
@@ -247,6 +254,10 @@ impl Effect for Gate {
                 let msg = if self.note_on { [0x90 | channel, note, 127] } else { [0x80 | channel, note, 0] };
                 self.notes.push((ctx.midi_from + i, msg));
             }
+            if probing {
+                loudest = loudest.max(level);
+                widest = widest.max(self.gain);
+            }
             let (dl, dr) = self.lookahead.swap(*l, *r);
             if self.preview {
                 *l = fl as f32;
@@ -267,6 +278,18 @@ impl Effect for Gate {
                 *r += a * self.noise_sample();
             }
         }
+        if let Some(p) = self.probe.as_ref().filter(|_| probing) {
+            p.publish_max(probe::DETECTOR, loudest as f32);
+            p.publish_max(probe::GATE, widest as f32);
+        }
+    }
+
+    fn set_probe(&mut self, probe: Arc<FxProbe>) {
+        self.probe = Some(probe);
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn reset(&mut self) {
