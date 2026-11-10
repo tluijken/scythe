@@ -427,8 +427,9 @@ Working:
   three modes: piano roll, named notes (a drum map of the track's note names, REAPER's
   `MIDINOTENAMES`; `.txt` note name files load and save) and the event list (every note,
   controller, sysex and text event with its fields editable). Click adds a note on the grid
-  (snapped into the scale with key snap), drag on empty grid selects, Shift adds to the
-  selection, drag moves the selection, drag a right edge resizes, right-click deletes,
+  (snapped into the scale with key snap); as REAPER's defaults, a left drag on empty grid draws a
+  note (drag to extend or change pitch, Shift ignores snap) and a right drag selects with a
+  marquee (Shift adds, Ctrl toggles); drag moves the selection, drag a right edge resizes, right-click deletes,
   double-click opens a note's properties (start, length, key, velocity, off velocity, channel,
   mute). Below the roll sit any number of controller lanes (velocity, off velocity, CC 0-127,
   14-bit pairs, pitch bend, program, channel and poly aftertouch, sysex, text): the draw tool
@@ -1027,7 +1028,7 @@ compares the two files.
   left overlapping (it merges notes landing on one start, which Scythe does) is the only
   overlap rule. Key snap's root and scale are not stored in the take (REAPER keeps them in the
   editor, outside the project; Scythe keeps them per window). Pooled MIDI is not edited as a
-  pool. The inline editor draws notes only (no lanes). Other items show behind the edited one
+  pool. The inline editor draws notes only (no lanes), in every pass of a looped item. Other items show behind the edited one
   without their takes' play rate or loops.
 
 - Recording: "Output (MIDI)" records nothing yet (Scythe says so), and touch-replace clears

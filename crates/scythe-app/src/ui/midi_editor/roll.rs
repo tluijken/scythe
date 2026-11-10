@@ -54,9 +54,31 @@ pub(crate) fn key_name(key: u8) -> String {
 
 #[derive(Clone, Copy)]
 enum Drag {
-    Move { grab_tick: f64, grab_key: i32, anchor: usize },
-    Resize { anchor: usize },
-    Select { from: Pos2 },
+    Move {
+        grab_tick: f64,
+        grab_key: i32,
+        anchor: usize,
+    },
+    Resize {
+        anchor: usize,
+    },
+    /// Right-drag marquee (REAPER's "MIDI editor" right drag): Shift adds to the selection,
+    /// Ctrl toggles it.
+    Select {
+        from: Pos2,
+        add: bool,
+        toggle: bool,
+    },
+    /// Left-drag on empty grid (REAPER's piano roll default): "Insert note, drag to extend or
+    /// change pitch".
+    Draw {
+        start: u64,
+    },
+}
+
+/// The end of a note drawn from `start`: the snapped pointer, but at least one grid step on.
+fn drawn_end(start: u64, step: u64, at: f64) -> u64 {
+    (at.round().max(0.0) as u64).max(start + step.max(1))
 }
 
 /// Which rows show and where: the piano roll shows every key from `top`, named notes one row
@@ -202,7 +224,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
             r.contains(p).then_some((i, p.x > r.right() - EDGE))
         })
     };
-    let shift_held = ui.input(|i| i.modifiers.shift);
+    let (shift_held, ctrl_held) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+    let secondary = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
+    let step = (grid.qn * ppq as f64).round().max(1.0) as u64;
     let snap_key = |key: i32| {
         let k = key.clamp(0, 127) as u8;
         if take.view.key_snap { snap.nearest(k) } else { k }
@@ -212,6 +236,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
     {
         let drag = match hit(&notes, p) {
+            _ if secondary => Drag::Select { from: p, add: shift_held, toggle: ctrl_held },
             Some((i, edge)) => {
                 if !notes[i].selected {
                     if !shift_held {
@@ -230,9 +255,25 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
                     }
                 }
             }
-            None => Drag::Select { from: p },
+            None => match rows.key_at(p.y) {
+                Some(key) => {
+                    let start = axis.floor(&grid, axis.tick(p.x));
+                    notes.iter_mut().for_each(|n| n.selected = false);
+                    let before = notes.clone();
+                    let mut n = EditNote::new(start, start + step, take.view.channel, snap_key(key as i32), 100);
+                    n.selected = true;
+                    notes.push(n);
+                    notes.sort_by_key(|n| (n.start, n.key, n.channel));
+                    apply_notes(app, take.id, &notes, "Insert note", true);
+                    ui.data_mut(|d| d.insert_temp(drag_id, (Drag::Draw { start }, before)));
+                    Drag::Draw { start }
+                }
+                None => Drag::Select { from: p, add: shift_held, toggle: ctrl_held },
+            },
         };
-        ui.data_mut(|d| d.insert_temp(drag_id, (drag, notes.clone())));
+        if !matches!(drag, Drag::Draw { .. }) {
+            ui.data_mut(|d| d.insert_temp(drag_id, (drag, notes.clone())));
+        }
     }
     let drag: Option<(Drag, Vec<EditNote>)> = ui.data(|d| d.get_temp(drag_id));
     if resp.dragged()
@@ -265,7 +306,18 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
                 }
                 apply_notes(app, take.id, &notes, "Resize notes", true);
             }
-            Drag::Select { from } => {
+            Drag::Draw { start } => {
+                let at = if shift_held { axis.tick(p.x) } else { grid.nearest(ppq, axis.tick(p.x)) };
+                let end = drawn_end(start, if shift_held { 1 } else { step }, at);
+                let key = rows.key_at(p.y).map_or(60, |k| snap_key(k as i32));
+                notes = before.clone();
+                let mut n = EditNote::new(start, end, take.view.channel, key, 100);
+                n.selected = true;
+                notes.push(n);
+                notes.sort_by_key(|n| (n.start, n.key, n.channel));
+                apply_notes(app, take.id, &notes, "Insert note", true);
+            }
+            Drag::Select { from, .. } => {
                 let r = Rect::from_two_pos(from, p);
                 painter.rect_filled(r, CornerRadius::same(2), with_alpha(ACCENT, 30));
                 painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
@@ -273,11 +325,15 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         }
     }
     if resp.drag_stopped() {
-        if let (Some((Drag::Select { from }, _)), Some(p)) = (drag, resp.interact_pointer_pos()) {
+        if let (Some((Drag::Select { from, add, toggle }, _)), Some(p)) = (drag, resp.interact_pointer_pos()) {
             let r = Rect::from_two_pos(from, p);
             for n in notes.iter_mut() {
                 let inside = shown(take, n.channel) && rect_of(n).is_some_and(|nr| nr.intersects(r));
-                n.selected = inside || (shift_held && n.selected);
+                n.selected = match (inside, toggle, add) {
+                    (true, true, _) => !n.selected,
+                    (true, false, _) => true,
+                    (false, _, keep) => (keep || toggle) && n.selected,
+                };
             }
             apply_notes(app, take.id, &notes, "Select notes", false);
         }
@@ -438,5 +494,17 @@ fn note_properties(app: &mut ScytheApp, ui: &mut Ui, take: &Take, notes: &mut [E
     if !open {
         ui.data_mut(|d| d.remove::<usize>(id));
         app.end_gesture();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::drawn_end;
+
+    #[test]
+    fn a_drawn_note_follows_the_pointer_and_keeps_one_grid_step() {
+        assert_eq!(drawn_end(960, 240, 1920.0), 1920);
+        assert_eq!(drawn_end(960, 240, 900.0), 1200, "dragged left of its start");
+        assert_eq!(drawn_end(960, 0, 960.0), 961);
     }
 }
