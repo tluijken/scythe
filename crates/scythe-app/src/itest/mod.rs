@@ -88,12 +88,6 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    /// A window on an empty project.
-    pub fn empty(name: &str) -> Self {
-        let dir = test_dir(name);
-        Self::build(dir, |_| {})
-    }
-
     /// A window with the `live.RPP` fixture open, as `scythe live.RPP` opens it.
     pub fn live(name: &str) -> Self {
         let dir = test_dir(name);
@@ -184,10 +178,6 @@ impl TestApp {
 
     pub fn has(&self, label: &str) -> bool {
         self.h.query_by_label(label).is_some()
-    }
-
-    pub fn has_containing(&self, label: &str) -> bool {
-        self.h.query_by_label_contains(label).is_some()
     }
 
     /// Where the widget labelled `label` is on screen.

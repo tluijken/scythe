@@ -300,3 +300,41 @@ fn toolbar_buttons_and_the_action_list_run_actions() {
     t.key(Key::Escape);
     assert!(t.app().view.actions.is_none(), "Escape closes the focused action list");
 }
+
+#[test]
+fn escape_closes_each_window_and_leaves_playback_alone() {
+    use crate::palette::Action;
+    type Open = fn(&mut ScytheApp) -> bool;
+    let windows: [(&str, Action, Open); 10] = [
+        ("track groups", Action::TrackGrouping, |a| a.view.groups.is_some()),
+        ("region manager", Action::RegionManager, |a| a.view.regions.is_some()),
+        ("media explorer", Action::MediaExplorer, |a| a.view.explorer.is_some()),
+        ("project bay", Action::ProjectBay, |a| a.view.bay.is_some()),
+        ("theme colours", Action::ThemeColors, |a| a.view.theme_editor),
+        ("virtual keyboard", Action::ShowVirtualKeyboard, |a| a.view.keyboard_open),
+        ("MIDI devices", Action::MidiDevices, |a| a.view.midi_devices_open),
+        ("action list", Action::ShowActionList, |a| a.view.actions.is_some()),
+        ("toolbar editor", Action::CustomizeToolbars, |a| a.view.toolbar_editor.is_some()),
+        ("mouse modifiers", Action::MouseModifiers, |a| a.view.mouse_editor),
+    ];
+    let mut failed = Vec::new();
+    for (name, action, open) in windows {
+        let mut t = TestApp::live(&format!("escape_windows/{name}"));
+        t.app().toggle_play();
+        t.until("playback", 5.0, |t| t.app().is_playing());
+        action.run(t.app());
+        t.frames(3);
+        if !open(t.app()) {
+            failed.push(format!("{name}: did not open"));
+            continue;
+        }
+        t.key(Key::Escape);
+        if open(t.app()) {
+            failed.push(format!("{name}: Escape left it open"));
+        }
+        if !t.app().is_playing() {
+            failed.push(format!("{name}: Escape stopped the transport"));
+        }
+    }
+    assert!(failed.is_empty(), "{failed:#?}");
+}

@@ -30,7 +30,7 @@ fn settled(name: &str) -> Option<TestApp> {
 /// toast naming the folder the project was opened from.
 fn snap(t: &mut TestApp, name: &str) {
     t.h.mask(egui::Rect::from_min_max(egui::pos2(1030.0, 24.0), egui::pos2(1200.0, 68.0)));
-    t.h.mask(egui::Rect::from_min_max(egui::pos2(0.0, SIZE.y - 60.0), egui::pos2(SIZE.x, SIZE.y - 12.0)));
+    t.h.mask(egui::Rect::from_min_max(egui::pos2(0.0, SIZE.y - 70.0), egui::pos2(SIZE.x, SIZE.y - 12.0)));
     t.h.snapshot_options(name, &options());
 }
 
@@ -44,6 +44,8 @@ fn arrange_view_snapshot() {
 fn setlist_page_snapshot() {
     let Some(mut t) = settled("snapshot_setlist") else { return };
     t.click("Setlist (L)");
+    let view = &t.h.state().view;
+    assert!(view.setlist && view.show_mixer, "setlist {} mixer {}", view.setlist, view.show_mixer);
     t.h.remove_cursor();
     t.frames(2);
     snap(&mut t, "setlist");
