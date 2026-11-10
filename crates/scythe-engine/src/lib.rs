@@ -40,6 +40,7 @@ pub mod render;
 pub mod rig;
 pub mod sampler;
 pub mod scan_cache;
+pub mod scythe_eq;
 pub mod shifters;
 pub mod stock;
 pub mod stretch;
