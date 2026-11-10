@@ -32,7 +32,7 @@ own, each limited to a role:
 |---|---|---|
 | `admin` | all, MCP, `/api/files`, `/api/peaks` | all |
 | `musician` (one musician's mix, found by name) | `mix.list` (their mix alone), `mix.get`, `mix.level`, `mix.pan`, `mix.mute`, `mix.more_me`, `mix.volume`, `mix.click` on their own mix; `transport.state`, `setlist.status`, `access.whoami`; `snapshot` answers `{"revision", "name", "transport", "access"}` | `meters` with only their mix in `mixes` (no tracks, no master), `project_changed` |
-| `stage` | `setlist.songs`, `list`, `get`, `export`, `status`, `select`, `cue`, `play`, `stop`, `next`, `previous`, `auto_advance`, `count_in`; `transport.play`, `transport.stop`, `transport.state`, `transport.health`; `access.whoami`; the same short `snapshot` | `transport` (with the count-in), `setlist`, `health`, `project_changed` |
+| `stage` | `setlist.songs`, `list`, `get`, `export`, `status`, `select`, `cue`, `play`, `stop`, `next`, `previous`, `auto_advance`, `count_in`; `transport.play`, `transport.stop`, `transport.state`, `transport.health`, `transport.performance`; `access.whoami`; the same short `snapshot` | `transport` (with the count-in), `setlist`, `health`, `project_changed` |
 
 Anything else answers `forbidden` (HTTP 403). The check runs on the session's thread for every
 command, from HTTP, the WebSocket or anything else, so a page cannot widen it. Without an admin
@@ -111,6 +111,7 @@ Every transport command answers with the transport state (see `transport` events
 | `transport.count_in` | `playback?`, `record?`, `measures?` (above 0, up to 16), `measure_start?` | count in before playback and/or recording; `measure_start` (a preference) counts in from the bar line before the start |
 | `transport.preroll` | `playback?`, `record?`, `measures?` (above 0, up to 16), `measure_start?` | pre-roll before playback and/or recording (preferences) |
 | `transport.health` | | the health state (below), not the transport state |
+| `transport.performance` | | the performance meter: `rt_cpu` (percent of the block's time the last callback took), `rt_longest_block_ms` of the last few seconds against `block_ms`, `xruns`, `overloads` (late blocks), `tracks_cpu`, and `tracks`: per track in project order (`index` from 1, `name`, `cpu` in percent of one core, `longest_block_ms`, `pdc` in frames, `fx` with each effect's `name` and `cpu`), then the master's effects (`index` 0) when it has any; a new reading about once a second |
 | `transport.state` | | |
 
 A transport state:

@@ -243,6 +243,8 @@ the undo step it made, and the light by the title pulsing while it measures the 
   (`reaper-kb.ini`, `reaper-menu.ini`, `reaper-mouse.ini`) so a REAPER keymap works in both.
 - Window sets, remembered window positions, and themes (REAPER `.ReaperTheme` colours
   imported).
+- A **performance meter** like REAPER's: real-time CPU, the longest block, xruns, and the CPU
+  each track and effect takes.
 
 ## How Scythe is verified
 
@@ -266,6 +268,8 @@ takes cannot (REAPER's élastique is proprietary). The full table, area by area,
 - Some stock plugins (ReaPitch, ReaTune, ReaVocode, ReaSurround …) are not emulated and pass
   audio through unless REAPER's own Linux binaries are on the VST path.
 - Video processors other than three stock presets are left out of renders.
+- No anticipative (render-ahead) FX processing: every track renders within the device's block,
+  so the heaviest chain of dependent tracks has to fit one block.
 
 Every known difference, area by area, is in [docs/limitations.md](docs/limitations.md).
 

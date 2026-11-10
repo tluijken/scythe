@@ -145,5 +145,18 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 | Key snap root and scale set in REAPER's editor, then the saved project | REAPER saves them in the project as `<KEYSIG 0 <root> -1 0x<mask>>` (D natural minor: `0 2 -1 0x5AD`) as the undo step "Change key signature"; a project Scythe saved with D minor opens in REAPER with `scale_root` 2 and scale `102304056070` |
 | Send automation mode (`SetTrackSendInfo_Value('I_AUTOMODE')`, then the saved project) | `AUXRECV` field 12 holds it, -1 following the track |
 
+Performance was compared with REAPER 7.73 on a 48-track band session (drum multitrack, two
+bass DIs and a bass amp, five guitars each through a container of ReaGate, Neural Amp Modeler,
+ReaVerb cab and two ReaEQs, vocals, keys, 22 Scythe EQs; 1.7 GB of 44.1 kHz media), REAPER
+with the same NAM LV2 plugin (nixpkgs `neural-amp-modeler-lv2`), both on a dummy JACK server
+at 44.1 kHz for 30 s of playback, on a 6 P + 8 E core laptop CPU (`examples/perf_probe.rs` for
+the per-track figures):
+
+| Area | Result |
+|---|---|
+| JACK client xruns in 30 s at 128 / 256 / 512 frames | REAPER 0 / 0 / 0 (anticipative FX on); Scythe 0 / 0 / 0, before these changes 120 / 1 / 0 |
+| Process CPU while playing (percent of one core) at 128 / 256 / 512 | REAPER 185 / 162 / 145; Scythe 79 / 73 / 67, before 503 / 310 / 217 |
+| One NAM instance (standard WaveNet, 48 kHz model in a 44.1 kHz project) | REAPER's LV2 plugin 15.6 % of a core (rendering with and without the six NAM slots: 69 against 13 CPU-seconds for 60 s); Scythe 7-8 %, before 22 % |
+
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and
 compares the two files.

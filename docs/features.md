@@ -412,7 +412,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     frame (`SCYTHE_EQ_PROFILE=1` prints both).
 - **Neural Amp Modeler**: Neural Amp Modeler slots (the LV2 plugin) run their `.nam` WaveNet
   models natively, with the stored input and output levels (all 310 models in
-  `~/music/Samples/NAM` load; ~11× realtime per instance), at the model's own sample rate: like
+  `~/music/Samples/NAM` load; a standard model runs at about 25× realtime on one core of a
+  2023 laptop CPU, with AVX2/FMA where the CPU has them), at the model's own sample rate: like
   the plugin, a project at another rate is converted to the model's rate and back (192-point sinc,
   reported as plugin latency). The NAM slot's **Edit** opens the NAM panel: the model's name,
   gear, author, architecture and rate, input and output knobs, previous/next model
@@ -1154,6 +1155,21 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   monitors that input, an output mapped to hardware output 3 plays there. The map is kept per
   device as REAPER keeps it (`[alias_in_<device>]` and `[alias_out_<device>]` with `name<i>`,
   `ch<i>` (-1 for none), `map_size`, `map_hwnch`; `useinnc` bit 1 for inputs, 2 for outputs).
+- **Performance meter** (REAPER's View: Show performance meter window, 40240): RT CPU (render
+  time over buffer time of the last callback), the RT longest block of the last few seconds
+  against the block's budget, xruns and late blocks, and a row per track, slowest first: the CPU
+  its items and effects take (percent of one core), its longest block, effect count and plugin
+  delay in frames, with each effect's share when hovering the name (the master's effects in a row
+  of their own). A reading is taken about once a second. API: `transport.performance`;
+  `examples/perf_probe.rs` prints the same per track and effect for any project, with block
+  time percentiles.
+- **Track threads**: tracks that do not feed each other render in parallel, on one thread per
+  fast physical core (the performance cores of a hybrid CPU; 2 to 8; `SCYTHE_TRACK_THREADS`
+  overrides), each taking the slowest track left by the last block's time. They run at the
+  audio thread's real-time priority once it has it (asked for after the audio thread, as
+  RealtimeKit grants a user only a few threads), so a busy desktop cannot hold up a block. On
+  a 48-track session with six NAM amps (6 P + 8 E cores) 128-frame blocks at 44.1 kHz took
+  0.72 ms at the median with six threads and 1.25 ms with one per logical CPU.
 
 ## Command line
 

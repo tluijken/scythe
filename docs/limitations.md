@@ -30,6 +30,14 @@ measured.
   its filters with a click if it plays. The instance list covers top-level slots on tracks and
   the master (not input, take or monitoring chains or containers). There is no undo history of
   the analyzer settings (they are stored with the instance but not automatable).
+- Audio performance: there is no anticipative FX processing (REAPER renders tracks that are
+  not monitored live up to ~200 ms ahead on worker threads, so a heavy chain only has to keep up
+  on average); every track renders inside the device callback, so the slowest chain of tracks
+  that feed each other (a track, its folder parents, send receivers) must finish within one
+  block. Tracks wait for a whole dependency level (all tracks at the same depth) rather than
+  only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
+  the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
+  "prevent anticipative FX" flags; the NAM slot reports no separate model and resampling cost.
 - Audio device page: ALSA periods (`linux_audio_bufs`) are kept but not applied: the audio
   backend (cpal) always opens an ALSA device with two periods of the block size, and the window
   says so. JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
