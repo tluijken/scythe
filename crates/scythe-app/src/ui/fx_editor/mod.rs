@@ -4,6 +4,7 @@
 //! parameter rows stay one tab away. Every change goes through `Session::fx_gesture`, so a
 //! drag is one undo step.
 
+mod dynamics;
 mod eq;
 pub mod model;
 
@@ -43,6 +44,10 @@ impl Kind {
     fn of_stock(name: &str) -> Option<Self> {
         Some(match name {
             "ReaEQ" => Self::Eq,
+            "ReaComp" => Self::Comp,
+            "ReaXcomp" => Self::Xcomp,
+            "ReaGate" => Self::Gate,
+            "ReaLimit" => Self::Limit,
             _ => return None,
         })
     }
@@ -433,6 +438,10 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
         Tab::Editor => match cx.ed.kind {
             Kind::Eq => eq::show(cx, ui, content),
             _ => parameters(cx, ui, content),
+            Kind::Comp => dynamics::comp(cx, ui, content),
+            Kind::Xcomp => dynamics::xcomp(cx, ui, content),
+            Kind::Gate => dynamics::gate(cx, ui, content),
+            Kind::Limit => dynamics::limit(cx, ui, content),
         },
     }
     keys(cx, ui);
