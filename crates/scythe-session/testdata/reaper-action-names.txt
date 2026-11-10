@@ -320,3 +320,14 @@
 40277	Options: Show lock settings
 40847	Item: Open item inline editors
 41887	Item: Close item inline editors
+40702	Track: Insert new track at end of track list
+43093	Track: Insert new track as first track
+40005	Track: Remove tracks
+40296	Track: Select all tracks
+40297	Track: Unselect (clear selection of) all tracks
+40280	Track: Mute/unmute tracks
+40281	Track: Solo/unsolo tracks
+1041	Track: Cycle track folder state
+1042	Track: Cycle folder collapsed state
+41665	Track: Show/hide children of selected folder tracks in mixer
+42785	Track: Move tracks to new folder

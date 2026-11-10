@@ -549,9 +549,7 @@ impl Action {
                 app.session.set_record_mode(next);
             }
             Action::ToggleArm => {
-                if let Some(t) = app.sel.track {
-                    crate::ui::groups::toggle(app, t, scythe_core::groups::GroupedControl::RecArm);
-                }
+                crate::ui::groups::toggle_selected(app, scythe_core::groups::GroupedControl::RecArm);
             }
             Action::AddTrack => app.add_track(),
             Action::SaveFxChain => app.save_fx_chain(),
@@ -726,9 +724,7 @@ impl Action {
                     Action::ToggleSoloTrack => GroupedControl::Solo,
                     _ => GroupedControl::Polarity,
                 };
-                if let Some(t) = app.sel.track {
-                    crate::ui::groups::toggle(app, t, control);
-                }
+                crate::ui::groups::toggle_selected(app, control);
             }
             Action::ToggleSoloDefeat => {
                 if let Some(t) = app.sel.track {
@@ -741,28 +737,30 @@ impl Action {
             }
             Action::TrackGrouping => app.view.groups = Some(app.view.groups.unwrap_or(0)),
             Action::PreviousTrack | Action::NextTrack => {
-                let n = app.project.tracks.len();
-                if n > 0 {
-                    let cur = app.selected_track_index();
-                    let next = match (self, cur) {
-                        (Action::PreviousTrack, Some(i)) => i.saturating_sub(1),
-                        (_, Some(i)) => (i + 1).min(n - 1),
-                        (_, None) => 0,
-                    };
-                    app.sel.track = Some(app.project.tracks[next].id);
-                    app.sel.item = None;
+                let shown = app.project.row_shows();
+                let visible = |i: &usize| shown[*i] != scythe_core::folders::RowShow::Hidden;
+                let next = match app.selected_track_index() {
+                    Some(i) if self == Action::PreviousTrack => (0..i).rev().find(visible).or(Some(i)),
+                    Some(i) => (i + 1..shown.len()).find(visible).or(Some(i)),
+                    None => (0..shown.len()).find(visible),
+                };
+                if let Some(k) = next {
+                    let id = app.project.tracks[k].id;
+                    app.set_track_selection(vec![id], Some(id));
                 }
             }
             Action::MoveTrackUp | Action::MoveTrackDown | Action::IndentTrack | Action::OutdentTrack => {
-                if let Some(t) = app.sel.track {
+                let tracks = app.selected_tracks();
+                if !tracks.is_empty() {
                     let label = self.label().trim_start_matches("Track: ").to_owned();
-                    app.edit(&label, |p| {
-                        match self {
-                            Action::MoveTrackUp => p.move_track(t, true),
-                            Action::MoveTrackDown => p.move_track(t, false),
-                            Action::IndentTrack => p.indent_track(t, true),
-                            _ => p.indent_track(t, false),
-                        };
+                    app.edit(&label, |p| match self {
+                        Action::MoveTrackUp => _ = p.step_tracks(&tracks, true),
+                        Action::MoveTrackDown => _ = p.step_tracks(&tracks, false),
+                        _ => {
+                            for &t in &tracks {
+                                p.indent_track(t, self == Action::IndentTrack);
+                            }
+                        }
                     });
                 }
             }

@@ -158,6 +158,13 @@ pub struct TrackInfo {
     pub folder_depth: i32,
     /// How deep in folders the track sits, 0 at the top.
     pub level: usize,
+    /// How a folder shows its children in the track view (`I_FOLDERCOMPACT`): 0 normal, 1 small,
+    /// 2 collapsed.
+    #[serde(default)]
+    pub folder_compact: u8,
+    /// Whether the mixer hides the folder's children.
+    #[serde(default)]
+    pub mixer_collapsed: bool,
     pub channels: u32,
     pub fx: Vec<FxInfo>,
     pub sends: Vec<SendInfo>,
@@ -444,6 +451,8 @@ pub fn track(session: &Session, t: &Track, index: Option<usize>, level: usize) -
         input: t.rec_input,
         folder_depth: t.folder_depth,
         level,
+        folder_compact: t.folder_compact,
+        mixer_collapsed: t.mixer_collapsed,
         channels: t.channels,
         fx: fx_list(session, if index.is_some() { Target::Track(t.id) } else { Target::Master }, t),
         sends: send_list(t),

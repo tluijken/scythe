@@ -188,3 +188,84 @@ export function moveEntry(list, from, to) {
 export function dropIndex(from, dy, rowHeight, count) {
   return Math.max(0, Math.min(count - 1, from + Math.round(dy / rowHeight)));
 }
+
+// Folders, from the snapshot's `level` per track (as the desktop app keeps them; see
+// scythe-core's folders module). The parent index of every track, null at the top.
+export function folderParents(tracks) {
+  const stack = [];
+  return tracks.map((t, i) => {
+    while (stack.length && tracks[stack[stack.length - 1]].level >= t.level) stack.pop();
+    const parent = stack.length ? stack[stack.length - 1] : null;
+    stack.push(i);
+    return parent;
+  });
+}
+
+// How the arrange view shows each track: "normal", "small" (in a folder set to small) or
+// "hidden" (in a collapsed folder).
+export function rowShows(tracks) {
+  const parents = folderParents(tracks);
+  const out = [];
+  tracks.forEach((_, i) => {
+    const p = parents[i];
+    if (p == null) out.push("normal");
+    else if (out[p] === "hidden" || tracks[p].folder_compact === 2) out.push("hidden");
+    else if (out[p] === "small" || tracks[p].folder_compact === 1) out.push("small");
+    else out.push("normal");
+  });
+  return out;
+}
+
+const folderEnd = (tracks, i) => {
+  let end = i;
+  while (end + 1 < tracks.length && tracks[end + 1].level > tracks[i].level) end++;
+  return end;
+};
+
+// The indices a drag of track `i` moves: a folder takes its children along.
+export function withChildren(tracks, i) {
+  const out = [];
+  for (let k = i; k <= folderEnd(tracks, i); k++) out.push(k);
+  return out;
+}
+
+// Where a track dragged over track `i` at `frac` (0 top, 1 bottom) lands, as REAPER decides:
+// the top third goes before it, the middle third into it (as a folder), the bottom third after
+// it at its level. Null over a dragged track.
+export function trackDrop(tracks, moving, i, frac) {
+  if (moving.includes(i)) return null;
+  const own = tracks[i].level;
+  let before = i + 1;
+  let want = own;
+  if (frac < 1 / 3) before = i;
+  else if (frac < 2 / 3) want = own + 1;
+  else if (tracks[i].folder_depth > 0 && tracks[i].folder_compact === 2) before = folderEnd(tracks, i) + 1;
+  const rest = (k) => !moving.includes(k);
+  let prev = null;
+  for (let k = Math.min(before, tracks.length) - 1; k >= 0; k--) if (rest(k)) { prev = k; break; }
+  let next = null;
+  for (let k = before; k < tracks.length; k++) if (rest(k)) { next = k; break; }
+  const max = prev == null ? 0 : tracks[prev].level + 1;
+  const min = Math.min(next == null ? 0 : tracks[next].level, max);
+  return { before, level: Math.max(min, Math.min(max, want)) };
+}
+
+// The `track.move` command for a drop: the folder it goes into ("master" for the top level)
+// and its place among that folder's other children.
+export function moveCommand(tracks, moving, drop) {
+  const rest = tracks.map((t, i) => ({ t, i })).filter(({ i }) => !moving.includes(i));
+  const at = rest.filter(({ i }) => i < drop.before).length;
+  let parent = "master";
+  let from = 0;
+  if (drop.level > 0) {
+    for (let k = at - 1; k >= 0; k--) {
+      if (rest[k].t.level < drop.level) {
+        parent = rest[k].t.id;
+        from = k + 1;
+        break;
+      }
+    }
+  }
+  const index = rest.slice(from, at).filter(({ t }) => t.level === drop.level).length;
+  return { cmd: "track.move", track: tracks[moving[0]].id, parent, index };
+}

@@ -3,7 +3,7 @@ use scythe_core::TrackId;
 use scythe_core::fader::{PanMode, db_to_slider, slider_to_db};
 use scythe_core::units::{db_to_gain, format_db, format_pan, gain_to_db};
 
-use crate::app::{AutoTarget, ScytheApp, Selection};
+use crate::app::{AutoTarget, ScytheApp};
 use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW, track_color};
 use crate::ui::arrange::meter_fraction;
 use crate::ui::widgets;
@@ -45,7 +45,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     painter.text(inner.right_top() + vec2(0.0, 9.0), Align2::RIGHT_CENTER, header, theme::mono(11.0), TEXT_DIM);
 
     let strips_area = Rect::from_min_max(pos2(inner.left(), inner.top() + 30.0), inner.max);
-    let count = app.project.tracks.len() + 1;
+    let hidden = app.project.mixer_hidden();
+    let ids: Vec<(usize, TrackId)> =
+        app.project.tracks.iter().enumerate().filter(|(i, _)| !hidden[*i]).map(|(i, t)| (i, t.id)).collect();
+    let count = ids.len() + 1;
     let content_w = count as f32 * (STRIP_W + STRIP_GAP) - STRIP_GAP;
     let max_scroll = (content_w - strips_area.width()).max(0.0);
     let scroll_id = Id::unique("mixer-scroll");
@@ -58,17 +61,89 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ui.data_mut(|d| d.insert_temp(scroll_id, scroll));
 
     let clip = painter.with_clip_rect(strips_area.expand(2.0));
-    let ids: Vec<TrackId> = app.project.tracks.iter().map(|t| t.id).collect();
     let routing = app.project.solo_routing();
-    for (i, target) in ids.into_iter().map(StripTarget::Track).chain([StripTarget::Master]).enumerate() {
-        let x = strips_area.left() + i as f32 * (STRIP_W + STRIP_GAP) - scroll;
-        let r = Rect::from_min_size(pos2(x, strips_area.top()), vec2(STRIP_W, strips_area.height().min(190.0)));
+    let levels = app.project.folder_levels();
+    let parents = app.project.folder_parents();
+    let strip_x = |k: usize| strips_area.left() + k as f32 * (STRIP_W + STRIP_GAP) - scroll;
+    let strip_h = strips_area.height().min(190.0);
+    let targets = ids.iter().map(|&(i, id)| (Some(i), StripTarget::Track(id))).chain([(None, StripTarget::Master)]);
+    for (k, (index, target)) in targets.enumerate() {
+        let x = strip_x(k);
+        let r = Rect::from_min_size(pos2(x, strips_area.top()), vec2(STRIP_W, strip_h));
         if r.right() < strips_area.left() || r.left() > strips_area.right() {
             continue;
         }
-        let heard = routing.content.get(i).zip(routing.hw_out.get(i)).is_none_or(|(c, h)| *c || *h);
+        let heard = match index {
+            Some(i) => routing.content.get(i).zip(routing.hw_out.get(i)).is_none_or(|(c, h)| *c || *h),
+            None => true,
+        };
+        // One bar per enclosing folder above the strip, in the folder's colour, joining its
+        // children.
+        let mut up = index.and_then(|i| parents[i]);
+        while let Some(p) = up {
+            let y = strips_area.top() - 5.0 - levels[p] as f32 * 4.0;
+            let bar = Rect::from_min_max(
+                pos2(r.left() - STRIP_GAP / 2.0, y - 1.5),
+                pos2(r.right() + STRIP_GAP / 2.0, y + 1.5),
+            );
+            painter.rect_filled(
+                bar.intersect(strips_area.expand2(vec2(0.0, 30.0))),
+                CornerRadius::same(2),
+                track_color(app.project.tracks[p].color),
+            );
+            up = parents[p];
+        }
         strip(app, ui, &clip, r, strips_area, target, heard);
     }
+    drag_strips(app, ui, &clip, strips_area, &ids, &strip_x, strip_h);
+}
+
+/// Moving strips by their name: the line shows where they land; over the middle of a strip
+/// they go into it as a folder, as in the track headers.
+#[allow(clippy::too_many_arguments)]
+fn drag_strips(
+    app: &mut ScytheApp,
+    ui: &Ui,
+    clip: &egui::Painter,
+    area: Rect,
+    ids: &[(usize, TrackId)],
+    strip_x: &dyn Fn(usize) -> f32,
+    strip_h: f32,
+) {
+    let Some(mut d) = crate::ui::folders::drag(ui).filter(|d| d.mixer) else { return };
+    let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
+    d.drop = pointer.and_then(|p| {
+        let k = ((p.x - strip_x(0)) / (STRIP_W + STRIP_GAP)).floor().max(0.0) as usize;
+        match ids.get(k) {
+            Some(&(i, _)) => {
+                let frac = ((p.x - strip_x(k)) / STRIP_W).clamp(0.0, 1.0);
+                app.project.drop_at(&d.moving, i, frac)
+            }
+            None => {
+                let n = app.project.tracks.len();
+                let (min, _) = app.project.drop_levels(&d.moving, n);
+                Some(scythe_core::folders::Drop { before: n, level: min })
+            }
+        }
+    });
+    for &(i, _) in ids.iter().filter(|(i, _)| d.moving.contains(i)) {
+        if let Some(k) = ids.iter().position(|(j, _)| *j == i) {
+            let r = Rect::from_min_size(pos2(strip_x(k), area.top()), vec2(STRIP_W, strip_h));
+            clip.rect_filled(r, CornerRadius::same(14), theme::with_alpha(ACCENT, 40));
+        }
+    }
+    if let Some(drop) = d.drop {
+        let k = ids.iter().position(|(i, _)| *i >= drop.before).unwrap_or(ids.len());
+        let x = strip_x(k) - STRIP_GAP / 2.0;
+        let top = area.top() + 4.0 + drop.level as f32 * 8.0;
+        crate::ui::folders::paint_drop_line(clip, pos2(x, top), pos2(x, area.top() + strip_h - 4.0));
+    }
+    let released = ui.ctx().input(|i| i.pointer.any_released());
+    crate::ui::folders::set_drag(ui, Some(d));
+    if released {
+        crate::ui::folders::finish_drag(app, ui);
+    }
+    ui.ctx().request_repaint();
 }
 
 fn strip(
@@ -88,7 +163,7 @@ fn strip(
                 track_color(t.color),
                 app.automation_value(id, AutoTarget::Volume).unwrap_or(t.volume),
                 app.automation_value(id, AutoTarget::Pan).unwrap_or(t.pan),
-                app.sel.track == Some(id),
+                app.is_track_selected(id),
                 app.levels.get(&id).copied().unwrap_or_default(),
                 heard,
             )
@@ -114,17 +189,49 @@ fn strip(
     let pad = 10.0;
     let mut y = r.top() + pad + 6.0;
     painter.circle_filled(pos2(r.left() + pad + 4.0, y), 4.0, color);
-    let label = widgets::truncate(ui, &name, &theme::semibold(12.0), STRIP_W - 2.0 * pad - 14.0);
+    let folder = match target {
+        StripTarget::Track(id) => app.project.track(id).filter(|t| t.folder_depth > 0).map(|t| (id, t.mixer_collapsed)),
+        StripTarget::Master => None,
+    };
+    let room = STRIP_W - 2.0 * pad - 14.0 - if folder.is_some() { 18.0 } else { 0.0 };
+    let label = widgets::truncate(ui, &name, &theme::semibold(12.0), room);
     painter.text(pos2(r.left() + pad + 14.0, y), Align2::LEFT_CENTER, label, theme::semibold(12.0), TEXT);
     let select = ui.interact(
         Rect::from_min_size(r.min, vec2(STRIP_W, 26.0)).intersect(visible),
         Id::unique(("strip-head", id_salt)),
-        Sense::click(),
+        Sense::click_and_drag(),
     );
-    if select.clicked()
-        && let StripTarget::Track(id) = target
-    {
-        app.sel = Selection { track: Some(id), item: None };
+    if let StripTarget::Track(id) = target {
+        if select.clicked() {
+            let mods = ui.ctx().input(|i| i.modifiers);
+            app.click_track(id, mods);
+        }
+        if select.drag_started() {
+            crate::ui::folders::start_drag(app, ui, id, true);
+        }
+    }
+    if let Some((id, collapsed)) = folder {
+        let icon = Rect::from_center_size(pos2(r.right() - pad - 7.0, y), vec2(18.0, 18.0)).intersect(visible);
+        let tip = if collapsed { "Folder: click to show its tracks" } else { "Folder: click to hide its tracks" };
+        let resp = ui.interact(icon, Id::unique(("mixer-folder", id_salt)), Sense::click()).on_hover_text(tip);
+        let c = if resp.hovered() {
+            TEXT
+        } else if collapsed {
+            TEXT_DIM
+        } else {
+            ACCENT
+        };
+        widgets::paint_icon(ui, icon, widgets::Icon::Folder, c, 14.0);
+        if collapsed {
+            crate::ui::folders::chevron(painter, icon.center() + vec2(0.0, 1.5), 2, c);
+        }
+        if resp.clicked() {
+            app.change_view(|p| {
+                if let Some(t) = p.track_mut(id) {
+                    t.mixer_collapsed = !t.mixer_collapsed;
+                }
+            });
+        }
     }
 
     // Pan.
@@ -170,10 +277,14 @@ fn strip(
             StripTarget::Master => false,
         };
         if !written {
+            let peers = match target {
+                StripTarget::Track(id) => app.selection_peers(id),
+                StripTarget::Master => Vec::new(),
+            };
             app.gesture("Adjust volume", |p| match target {
                 StripTarget::Track(id) => {
                     if let Some(i) = p.track_index(id) {
-                        p.set_volume_grouped(i, new_gain);
+                        p.set_volume_selected(i, new_gain, &peers);
                     }
                 }
                 StripTarget::Master => p.master.volume = new_gain,
@@ -256,14 +367,14 @@ enum PanPart {
 }
 
 /// Sets one pan control on a track, carrying pan and width over to group followers.
-fn set_pan_part(p: &mut scythe_core::Project, target: StripTarget, part: PanPart, value: f64) {
+fn set_pan_part(p: &mut scythe_core::Project, target: StripTarget, part: PanPart, value: f64, peers: &[usize]) {
     let value = value.clamp(-1.0, 1.0);
     match target {
         StripTarget::Master => p.master.pan = value,
         StripTarget::Track(id) => {
             let Some(i) = p.track_index(id) else { return };
             match part {
-                PanPart::Pan => p.set_pan_grouped(i, value),
+                PanPart::Pan => p.set_pan_selected(i, value, peers),
                 PanPart::Width => p.set_width_grouped(i, value),
                 PanPart::Dual(k) => p.tracks[i].dual_pan[k] = value,
             }
@@ -282,6 +393,10 @@ fn pan_controls(
     target: StripTarget,
     pan: f64,
 ) -> f32 {
+    let peers = match target {
+        StripTarget::Track(id) => app.selection_peers(id),
+        StripTarget::Master => Vec::new(),
+    };
     let salt = match target {
         StripTarget::Track(id) => id.0,
         StripTarget::Master => u64::MAX,
@@ -354,7 +469,7 @@ fn pan_controls(
                 PanPart::Dual(k) => dual[k],
                 _ => pan,
             };
-            app.gesture("Adjust pan", |p| set_pan_part(p, target, part, current + d));
+            app.gesture("Adjust pan", |p| set_pan_part(p, target, part, current + d, &peers));
         }
     }
     if pan_hit.drag_stopped() {
@@ -368,10 +483,10 @@ fn pan_controls(
     if pan_hit.double_clicked() {
         app.edit("Center pan", |p| match mode {
             PanMode::Dual => {
-                set_pan_part(p, target, PanPart::Dual(0), -1.0);
-                set_pan_part(p, target, PanPart::Dual(1), 1.0);
+                set_pan_part(p, target, PanPart::Dual(0), -1.0, &[]);
+                set_pan_part(p, target, PanPart::Dual(1), 1.0, &[]);
             }
-            _ => set_pan_part(p, target, PanPart::Pan, 0.0),
+            _ => set_pan_part(p, target, PanPart::Pan, 0.0, &peers),
         });
     }
     if let StripTarget::Track(id) = target {
@@ -394,7 +509,7 @@ fn pan_controls(
             }
             ui.separator();
             if ui.button("Reset width").clicked() {
-                app.edit("Reset width", |p| set_pan_part(p, target, PanPart::Width, 1.0));
+                app.edit("Reset width", |p| set_pan_part(p, target, PanPart::Width, 1.0, &[]));
                 ui.close();
             }
         });
@@ -425,13 +540,13 @@ fn pan_controls(
             .on_hover_text(format!("Width {:.0}%: drag to change, double-click for 100%", width * 100.0));
         if w_hit.dragged() {
             let d = w_hit.drag_delta().x as f64 / w_rect.width() as f64 * 2.0;
-            app.gesture("Adjust width", |p| set_pan_part(p, target, PanPart::Width, width + d));
+            app.gesture("Adjust width", |p| set_pan_part(p, target, PanPart::Width, width + d, &[]));
         }
         if w_hit.drag_stopped() {
             app.end_gesture();
         }
         if w_hit.double_clicked() {
-            app.edit("Reset width", |p| set_pan_part(p, target, PanPart::Width, 1.0));
+            app.edit("Reset width", |p| set_pan_part(p, target, PanPart::Width, 1.0, &[]));
         }
     }
     y

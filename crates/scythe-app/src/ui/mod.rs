@@ -5,6 +5,7 @@ mod comp;
 pub mod editing;
 mod envelope_lanes;
 pub mod explorer;
+pub mod folders;
 pub mod fx_editor;
 pub mod gfx_view;
 pub mod groups;

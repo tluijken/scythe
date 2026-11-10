@@ -782,14 +782,40 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Moves the track to position `index` from the top.\n\nControl API command `track.move`.",
+    "description": "Moves the track, a folder with its children, keeping every folder closed: to position\n`index` in the track list, or with `parent` into a folder (the master for the top level).\n\nControl API command `track.move`.",
     "inputSchema": {
       "properties": {
         "index": {
-          "description": "The new position, counted from 0.",
+          "default": null,
+          "description": "Without `parent`: the new position in the track list, counted from 0; the track keeps\nits nesting where the tracks around it allow. With `parent`: the position among the\nfolder's other children, the end when left out.",
           "format": "uint",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The folder to move the track into, which becomes a folder if it is a plain track;\n\"master\" for the top level."
         },
         "track": {
           "anyOf": [
@@ -806,13 +832,104 @@
         }
       },
       "required": [
-        "track",
-        "index"
+        "track"
       ],
       "type": "object"
     },
     "name": "track_move",
     "title": "Track move"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "REAPER's \"Move tracks to new folder\": a new folder track takes the place of the first\ntrack, and the tracks (folders with their children) become its children. Answers the\nfolder.\n\nControl API command `track.new_folder`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "default": null,
+          "description": "\"Track N\" when left out.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tracks": {
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tracks"
+      ],
+      "type": "object"
+    },
+    "name": "track_new_folder",
+    "title": "Track new folder"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "How a folder shows its children: `compact` in the track view (0 normal, 1 small, 2\ncollapsed, as `I_FOLDERCOMPACT`), `mixer` hides them in the mixer. With neither, the\ntrack view cycles normal, small, collapsed (REAPER's \"Cycle folder collapsed state\").\nNot an undo step, as in REAPER.\n\nControl API command `track.collapse`.",
+    "inputSchema": {
+      "properties": {
+        "compact": {
+          "default": null,
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mixer": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "track_collapse",
+    "title": "Track collapse"
   },
   {
     "annotations": {

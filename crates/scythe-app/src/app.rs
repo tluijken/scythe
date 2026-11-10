@@ -137,6 +137,8 @@ pub struct ScytheApp {
     pub clipboard: Vec<(usize, Item)>,
     /// Items selected besides `sel.item`.
     pub multi: HashSet<ItemId>,
+    /// The selected tracks besides `sel.track` (see `ui::folders`).
+    pub track_sel: crate::ui::folders::TrackSel,
     /// Razor edit areas: time ranges on single tracks, made with Alt+drag.
     pub razor: Vec<(TrackId, TimeRange)>,
     /// Razor edit areas on envelopes, made with Ctrl+Alt+drag.
@@ -226,6 +228,7 @@ impl ScytheApp {
         let mut app = Self {
             session: crate::pump::SessionCell::new(session),
             sel: Selection::default(),
+            track_sel: Default::default(),
             view: ViewState {
                 start: 0.0,
                 px_per_sec: 40.0,
@@ -310,7 +313,11 @@ impl ScytheApp {
         if self.sel.item.is_some_and(|i| self.project.find_item(i).is_none()) {
             self.sel.item = None;
         }
+        if let Some(tracks) = self.session.take_track_selection() {
+            self.set_track_selection(tracks.clone(), tracks.first().copied());
+        }
         self.session.set_selected_track(self.sel.track);
+        self.session.selected_tracks = self.selected_tracks();
     }
 
     pub fn poll(&mut self) {
@@ -618,10 +625,7 @@ impl ScytheApp {
     }
 
     fn render_selection(&self) -> scythe_core::render_settings::RenderSelection {
-        scythe_core::render_settings::RenderSelection {
-            tracks: self.sel.track.into_iter().collect(),
-            items: self.selected_items(),
-        }
+        scythe_core::render_settings::RenderSelection { tracks: self.selected_tracks(), items: self.selected_items() }
     }
 
     /// Adds the project, as it is now, to REAPER's render queue.
@@ -825,11 +829,12 @@ impl ScytheApp {
             self.multi.clear();
         } else if let Some(track) = self.sel.track {
             let idx = self.project.track_index(track).unwrap_or(0);
-            self.edit("Delete track", |p| {
-                p.remove_track(track);
+            let tracks = self.selected_tracks();
+            self.edit("Remove tracks", |p| {
+                p.remove_tracks(&tracks);
             });
-            self.sel.track =
-                self.project.tracks.get(idx.min(self.project.tracks.len().saturating_sub(1))).map(|t| t.id);
+            let next = self.project.tracks.get(idx.min(self.project.tracks.len().saturating_sub(1))).map(|t| t.id);
+            self.set_track_selection(next.into_iter().collect(), next);
         }
     }
 
@@ -1387,7 +1392,7 @@ impl ScytheApp {
         let resource_dir = reaper_resource_dir().unwrap_or_else(crate::demo::data_dir);
         let closed = std::mem::take(&mut self.script_gfx.closed);
         crate::script::ScriptContext {
-            selected_tracks: self.sel.track.into_iter().collect(),
+            selected_tracks: self.selected_tracks(),
             selected_items: self.selected_items(),
             cursor: self.project.cursor,
             playing: self.is_playing(),
@@ -1412,7 +1417,8 @@ impl ScytheApp {
             self.edit(&label, |p| *p = project);
         }
         if let Some((tracks, items)) = out.selection {
-            self.sel.track = tracks.iter().copied().find(|t| self.project.track(*t).is_some());
+            let tracks: Vec<TrackId> = tracks.iter().copied().filter(|t| self.project.track(*t).is_some()).collect();
+            self.set_track_selection(tracks, None);
             self.multi = items.iter().copied().collect();
             self.sel.item = items.first().copied();
         }

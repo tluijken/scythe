@@ -881,6 +881,11 @@ pub struct Track {
     /// Folder structure delta after this track: +1 opens a folder (this track is its parent),
     /// -n closes n levels (this track is the last child).
     pub folder_depth: i32,
+    /// How a folder shows its children in the track view (`BUSCOMP` field 1,
+    /// `I_FOLDERCOMPACT`): 0 normal, 1 small, 2 collapsed (the children hidden).
+    pub folder_compact: u8,
+    /// The mixer hides the folder's children (`BUSCOMP` field 2).
+    pub mixer_collapsed: bool,
     /// Whether the track feeds its parent folder, or the master when it has none.
     pub main_send: bool,
     /// Track pan law (`VOLPAN` field 3); negative means the project default.
@@ -1018,6 +1023,8 @@ impl Track {
             monitor_items: false,
             auto_arm: false,
             folder_depth: 0,
+            folder_compact: 0,
+            mixer_collapsed: false,
             main_send: true,
             pan_law: -1.0,
             auto_mode: AutoMode::TrimRead,
@@ -1293,17 +1300,6 @@ impl Project {
             let next = fixed.get(i + 1).copied().unwrap_or(0) as i32;
             self.tracks[i].folder_depth = next - fixed[i] as i32;
         }
-    }
-
-    /// Moves a track one place up or down; it takes the nesting level of the place it lands on.
-    pub fn move_track(&mut self, id: TrackId, up: bool) -> bool {
-        let Some(i) = self.track_index(id) else { return false };
-        let j = if up { i.checked_sub(1) } else { (i + 1 < self.tracks.len()).then_some(i + 1) };
-        let Some(j) = j else { return false };
-        let levels = self.folder_levels();
-        self.tracks.swap(i, j);
-        self.set_folder_levels(&levels);
-        true
     }
 
     /// Moves a track one folder level deeper (into the folder above) or shallower.

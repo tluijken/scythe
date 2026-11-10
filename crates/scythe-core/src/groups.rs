@@ -302,6 +302,30 @@ impl Project {
         }
     }
 
+    /// Sets a track's volume and moves the other selected tracks (`peers`) by the same number
+    /// of dB, as REAPER's faders do on a selection; everyone's group followers follow.
+    pub fn set_volume_selected(&mut self, track: usize, volume: f64, peers: &[usize]) {
+        let Some(old) = self.tracks.get(track).map(|t| t.volume) else { return };
+        self.set_volume_grouped(track, volume);
+        let n = self.tracks.len();
+        for &u in peers.iter().filter(|&&u| u != track && u < n) {
+            let v = self.tracks[u].volume;
+            let next = if old <= 0.0 || volume <= 0.0 { volume } else { (v * volume / old).min(MAX_VOLUME) };
+            self.set_volume_grouped(u, next);
+        }
+    }
+
+    /// Sets a track's pan and offsets the other selected tracks' pans by the same amount.
+    pub fn set_pan_selected(&mut self, track: usize, pan: f64, peers: &[usize]) {
+        let Some(old) = self.tracks.get(track).map(|t| t.pan) else { return };
+        self.set_pan_grouped(track, pan);
+        let n = self.tracks.len();
+        for &u in peers.iter().filter(|&&u| u != track && u < n) {
+            let next = (self.tracks[u].pan + pan - old).clamp(-1.0, 1.0);
+            self.set_pan_grouped(u, next);
+        }
+    }
+
     /// Applies `f` to a track and to the followers of its `control` groups.
     fn set_grouped(&mut self, track: usize, control: GroupedControl, f: impl Fn(&mut crate::Track)) {
         if track >= self.tracks.len() {
@@ -468,5 +492,16 @@ mod tests {
         assert_eq!(p.vca_leads(2), vec![(1, true), (0, true)]);
         assert_eq!(p.vca_leads(1), vec![(0, false)]);
         assert!(p.vca_leads(0).is_empty());
+    }
+
+    #[test]
+    fn selected_tracks_move_together() {
+        let mut p = project(3);
+        p.tracks[1].volume = 0.5;
+        p.tracks[2].pan = 0.9;
+        p.set_volume_selected(0, 2.0, &[0, 1]);
+        assert_eq!((p.tracks[0].volume, p.tracks[1].volume, p.tracks[2].volume), (2.0, 1.0, 1.0));
+        p.set_pan_selected(0, 0.5, &[0, 2]);
+        assert_eq!((p.tracks[0].pan, p.tracks[2].pan), (0.5, 1.0));
     }
 }

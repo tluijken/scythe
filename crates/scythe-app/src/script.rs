@@ -740,6 +740,7 @@ static API: &[Sig] = sigs! {
     "IsTrackSelected" Bool [T];
     "SetTrackSelected" Void [T, B];
     "SetOnlyTrackSelected" Void [T];
+    "ReorderSelectedTracks" Bool [Z, Z];
     "Track_GetPeakInfo" Num [T, Z];
 
     // Sends and receives.

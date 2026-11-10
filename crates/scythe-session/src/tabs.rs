@@ -100,6 +100,7 @@ impl Session {
         self.parked_tabs[self.active_tab] = Some(outgoing);
         self.active_tab = index;
         self.selected_track = None;
+        self.selected_tracks.clear();
         self.after_load();
         self.remember_tabs();
         true

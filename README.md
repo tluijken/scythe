@@ -213,6 +213,29 @@ Working:
 - **Mixing**: volume, pan with REAPER's pan laws, mute/solo, folders, sends, master, peak
   meters, master loudness (BS.1770 momentary and short-term LUFS, in the mixer header),
   REAPER's fader law (0 dB at 71.6 % of the travel, +12 dB at the top).
+- **Track selection and folders** (`scythe_core::folders`, REAPER 7.73's behaviour measured with
+  Lua probes and by dragging in its track view): click selects a track, Ctrl+click toggles one,
+  Shift+click selects a range; "Track: Select all tracks" (40296) and "Unselect all" (40297).
+  Mute, solo, arm and polarity clicked on a selected track, and a selected strip's fader and
+  pan, carry over to the other selected tracks (REAPER's selection grouping; faders by the same
+  dB, pan by the same amount). Drag track headers, or mixer strips by their name, to reorder:
+  a line shows where they land, at its folder depth; as in REAPER the top third of a track drops
+  before it, the middle third makes it a folder holding the dragged tracks, the bottom third
+  drops after it at its depth (so the last track of a folder extends the folder). Several
+  selected tracks move together, a folder takes its children along, every folder stays closed
+  by its last track (`ISBUS` depths rewritten from nesting levels) and a drag is one undo step.
+  The folder button on a track header cycles normal, folder parent and last in folder ("Track:
+  Cycle track folder state", 1041); the triangle on a folder cycles open, small and collapsed
+  ("Cycle folder collapsed state", 1042; `BUSCOMP` field 1, `I_FOLDERCOMPACT`), not an undo step
+  as in REAPER. The mixer shows a bar per enclosing folder above each strip and a folder icon
+  that hides the children (`BUSCOMP` field 2, "Show/hide children of selected folder tracks in
+  mixer", 41665). "Move tracks to new folder" (42785) makes a folder from the selected tracks;
+  "Move tracks up/down" (43647/43648), "Remove tracks" (40005, children included), "Mute/unmute
+  tracks" (40280), "Solo/unsolo tracks" (40281), the automation mode actions, "Insert new track
+  at end of track list" (40702) and "as first track" (43093) act on the selection as REAPER's do.
+  The web UI shows the same folders with collapse, drags tracks by the header (mouse) or the
+  grip (touch) and hides collapsed mixer children; the control API has `track.move` with a
+  `parent`, `track.new_folder` and `track.collapse`.
 - **Pan modes, width and polarity** (`PANMODE`, `WIDTH`, `VOLPAN` dual pan fields, project
   `PANMODE`): stereo balance / mono pan, REAPER 3.x balance, stereo pan with width, dual pan,
   with width and dual pan envelopes (`WIDTHENV2`, `DUALPANENVL2`, `DUALPANENV2`). Right-click a
@@ -398,7 +421,7 @@ Working:
   remove them and close the gap (`Ctrl+Alt+X`, markers and envelopes follow), or insert empty
   space. Takes (`T` cycles), item mute (`U`), marker
   navigation (`[` `]`), fixed lanes drawn as lanes, tracks moved with `Ctrl+↑/↓` and into or out of folders with
-  `Ctrl+→/←`, track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
+  `Ctrl+→/←` (on every selected track), track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
   track's colour dot for a palette; markers jump on click, rename on double-click and delete on
   right-click. Razor edits: Alt+drag (over items too) marks a time range on every track it
   crosses (Shift+Alt adds more); `Delete` removes what lies inside, copy/cut take those pieces
@@ -534,7 +557,7 @@ Working:
     over to group followers (`CSurf_OnVolume/Pan/Width/Mute/Solo/RecArmChange(Ex)`,
     `SetTrackUIVolume/Pan/Width/Mute/Solo/RecArm/Polarity`), selection
     (`CountSelectedTracks(2)`, `GetSelectedTrack(2)`, `IsTrackSelected`, `SetTrackSelected`,
-    `SetOnlyTrackSelected`);
+    `SetOnlyTrackSelected`), `ReorderSelectedTracks` with its three folder modes;
   - sends and receives: `CreateTrackSend`, `RemoveTrackSend`, `GetTrackNumSends`,
     `Get/SetTrackSendInfo_Value` (volume, pan, mute, channels, `P_DESTTRACK`/`P_SRCTRACK`),
     `GetTrackSendName`, `GetTrackReceiveName`;
@@ -990,6 +1013,7 @@ compare with scythe's output sample by sample:
 | Pan modes: balance, 3.x balance, stereo pan and dual pan at pans -1 to 1, widths -1 to 1 and pan laws 0 dB, -3 dB, -6 dB, -12 dB, +3 dB and +6 dB (a left-only then right-only source gives the gain matrix); the project default mode (3.x balance, stereo pan, dual pan); width and dual pan envelopes (width multiplies, dual pan adds) and a pan envelope in stereo pan | exact (144 cases) |
 | Polarity: a track's own output, post-fader, pre-fader and pre-FX sends from an inverted track, an inverted bus, an inverted folder parent and an inverted track in stereo pan | exact (7 cases) |
 | Solo: in place and ignoring routing, of a source sending to a bus, of the bus, of both, of the start and middle of a send chain, of a folder child (its parent sending to a bus) and of a folder parent (its child sending to a bus), pre-fader sends; solo defeat on a plain track, a bus, a source and a muted track | exact (24 cases) |
+| Folders: drags of a track and of two selected tracks over the top, middle and bottom of a folder, its children and a plain track in REAPER 7.73's track view (driven with xdotool), `ReorderSelectedTracks` in its three folder modes, "Move tracks up/down" (43647/43648), "Move tracks to new folder" (42785), "Cycle track folder state" (1041) and "Cycle folder collapsed state" (1042), "Remove tracks" (40005); `BUSCOMP` as REAPER saves it, and a folder project Scythe saved after drags and a collapse read back by REAPER (`I_FOLDERDEPTH`, `I_FOLDERCOMPACT`, `GetTrackDepth`) | identical (34 cases; 11 tracks read back) |
 | VCA groups: lead fader on a follower, a lead with its own item, lead volume, trim and mute envelopes (alone and with the follower's), nested VCAs, the lead's mute button, solo and polarity (no effect), pre-FX following with post-fader, pre-fader and pre-FX sends; lead pan and width on balance, stereo pan and dual pan followers, lead pan envelopes; a plain volume group (no effect on the render) | exact (15/24 cases); the 9 with a lead pan differ in the first 512 frames only (REAPER ramps from the follower's own pan into the lead's there) |
 | Fader-scaled volume envelopes (`VOLTYPE 1`): a ramp from 0 dB to -12 dB, `ScaleToEnvelopeMode` and `DB2SLIDER` from -150 to +24 dB | exact; the scaling formula within 1e-9 of `ScaleToEnvelopeMode` |
 | Track groups: membership through `GetSetTrackGroupMembership(High/Ex)` saved as `GROUP_FLAGS` (all 25 parameters), group names; edits through `CSurf_On*ChangeEx` and `SetTrackUI*` on leads read back from followers (volume and reverse, pan and reverse, width, mute, solo, arm, chains through leads of other groups, two leads in one group, VCA leads not moving faders); one Lua script run in both | same values and lines; the script passes in both |
@@ -1116,11 +1140,16 @@ compares the two files.
 - Track groups: REAPER remembers where a follower would be past a limit (a pan pushed beyond
   hard right comes back from there; a fader taken to -inf and back returns to where it was);
   Scythe clamps each edit, so after hitting a limit followers keep their clamped offset.
-  Selected-track ganging (moving one selected track's fader moves the other selected tracks),
-  the global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
+  The global grouping override (`GROUPOVERRIDE`) and media/razor edit grouping are kept in the
   project but not acted on. A VCA lead's pan reaches its followers at once, where REAPER ramps
   into it over the first 512 frames of playback. Safe solo (`I_SOLO` 5 and 6) is kept but plays
   as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
+- Folders and selection: the drop depth comes from where the pointer is over a track (thirds),
+  not from its horizontal position; the selection lives in the window (the `SEL` lines of the
+  project are kept, not read into it), track heights per track, hiding tracks in the track view
+  or mixer (`SHOWINMIX`), the mixer's "folders on the left" layout and "Move tracks to folder..."
+  (42786, a dialog) are not there; selection grouping covers the mixer's fader and pan and the
+  header switches, not the inspector or sends.
 - MIDI sync: REAPER's routing-window defaults for new sends are not measured; Scythe's new sends
   carry no MIDI (`CreateTrackSend` from a script carries all, as REAPER's does). The meaning of
   `SMPTESYNC`'s input field was not measured (REAPER's sync dialog needs a screen): Scythe reads

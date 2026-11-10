@@ -200,7 +200,7 @@ or `none`, with `reason` saying why.
 | `track.rename` | `track`, `name` | the track |
 | `track.freeze` | `track` | `{"file", "levels"}`: renders the items through the effects (pre-fader, one second of tail) beside the saved project and plays that instead; again stacks a level |
 | `track.unfreeze` | `track` | `{"levels"}`: the last level's effects and items are back |
-| `track.move` | `track`, `index` | the track |
+| `track.move` | `track`, `index?`, `parent?` | the track, a folder with its children, every folder kept closed: to position `index` in the track list (keeping its depth where the tracks around allow), or with `parent` into that folder (`"master"` for the top level) at `index` among its other children (the end when left out); a plain parent becomes a folder |
 | `track.volume` | `track`, `volume` or `db` | the track; volume groups follow (a dB offset, reversed followers the other way) |
 | `track.pan` | `track`, `pan` | the track; pan groups follow (an offset) |
 | `track.mute` | `track`, `muted?` | the track; mute groups follow |
@@ -216,6 +216,8 @@ or `none`, with `reason` saying why.
 | `track.midi_input` | `track`, `device?` (`"all"`, `"keyboard"` or a device number from `midi.devices`; all when left out), `channel?` (1-16, 0 or left out for all) | the track, its input set to that MIDI device and channel |
 | `track.color` (or `track.colour`) | `track`, `color` (`"#rrggbb"` or `null`) | the track |
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
+| `track.new_folder` | `tracks`, `name?` | the new folder: REAPER's "Move tracks to new folder" puts it where the first track was and the tracks (with their children) inside |
+| `track.collapse` | `track`, `compact?` (0 normal, 1 small, 2 collapsed: `I_FOLDERCOMPACT`), `mixer?` (hide the children in the mixer) | the track; with neither it cycles 0, 1, 2 as "Track: Cycle folder collapsed state". Not an undo step, as in REAPER |
 
 ### Recording and lanes
 
@@ -843,7 +845,7 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
   "tracks": [{
     "id": 12, "index": 0, "guid": "{…}", "name": "Vox", "color": "#66d9ef",
     "volume": 0.6, "volume_db": -4.4, "pan": 0.0, "muted": false, "solo": false,
-    "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "channels": 2,
+    "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "folder_compact": 0, "mixer_collapsed": false, "channels": 2,
     "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
     "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
                "mode": "post_fader", "mono": false, "phase": false}],

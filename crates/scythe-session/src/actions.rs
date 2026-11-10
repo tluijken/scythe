@@ -1,6 +1,6 @@
 //! The action registry: every action Scythe has, by REAPER command id where REAPER has the same
 //! action (named as REAPER's action list names it) or by a Scythe named command
-//! (`_SCYTHE_SETLIST_NEXT`), plus the custom actions and scripts of `reaper-kb.ini`. Keyboard
+//! (`_SCYTHE_SETLIST_NEXT`),             session.change_view(|p| {lus the custom actions and scripts of `reaper-kb.ini`. Keyboard
 //! shortcuts, the action list, toolbars, mouse modifiers, control surfaces, MIDI/OSC learn,
 //! marker actions and ReaScript's `Main_OnCommand` all run actions through it.
 //!
@@ -127,6 +127,17 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("_SCYTHE_TOGGLE_MARKER_ACTIONS", "Options: Toggle marker actions (run !markers during playback)", S),
     // Tracks.
     ("40001", "Track: Insert new track", W),
+    ("40702", "Track: Insert new track at end of track list", S),
+    ("43093", "Track: Insert new track as first track", S),
+    ("40005", "Track: Remove tracks", S),
+    ("40296", "Track: Select all tracks", S),
+    ("40297", "Track: Unselect (clear selection of) all tracks", S),
+    ("40280", "Track: Mute/unmute tracks", S),
+    ("40281", "Track: Solo/unsolo tracks", S),
+    ("1041", "Track: Cycle track folder state", S),
+    ("1042", "Track: Cycle folder collapsed state", S),
+    ("41665", "Track: Show/hide children of selected folder tracks in mixer", S),
+    ("42785", "Track: Move tracks to new folder", S),
     ("6", "Track: Toggle mute for selected tracks", S),
     ("7", "Track: Toggle solo for selected tracks", S),
     ("9", "Track: Toggle record arm for selected tracks", S),
@@ -687,9 +698,9 @@ pub(crate) fn run_here(session: &mut Session, c: &str) -> Option<Result<(), ApiE
         }
         id if track_mode_for(id).is_some() => {
             let (mode, all) = track_mode_for(id).unwrap_or_default();
-            let sel = session.selected_track;
+            let sel = session.selection();
             session.edit("Automation mode", |p| {
-                for t in p.tracks.iter_mut().filter(|t| all || Some(t.id) == sel) {
+                for t in p.tracks.iter_mut().filter(|t| all || sel.contains(&t.id)) {
                     t.auto_mode = mode;
                 }
             });
@@ -704,6 +715,7 @@ fn run_id(session: &mut Session, id: u32) -> Option<Result<(), ApiError>> {
     let cmd = |c: &str| json!({ "cmd": c });
     let playing = session.is_playing() || session.is_recording();
     let selected = session.selected_track;
+    let chosen = session.selection();
     Some(match id {
         ids::PLAY => exec(session, cmd("transport.play")),
         ids::PAUSE => exec(session, cmd("transport.pause")),
@@ -784,21 +796,84 @@ fn run_id(session: &mut Session, id: u32) -> Option<Result<(), ApiError>> {
             });
             Ok(())
         }
-        6 | 7 | 9 => {
-            let Some(t) = selected else { return Some(Ok(())) };
+        6 | 7 | 9 | 40280 | 40281 => {
             let label = match id {
-                6 => "Toggle mute",
-                7 => "Toggle solo",
+                6 | 40280 => "Toggle mute",
+                7 | 40281 => "Toggle solo",
                 _ => "Toggle record arm",
             };
             session.edit(label, |p| {
-                if let Some(t) = p.track_mut(t) {
+                for t in p.tracks.iter_mut().filter(|t| chosen.contains(&t.id)) {
                     match id {
-                        6 => t.muted ^= true,
-                        7 => t.solo ^= true,
+                        6 | 40280 => t.muted ^= true,
+                        7 | 40281 => t.solo ^= true,
                         _ => t.armed ^= true,
                     }
                 }
+            });
+            Ok(())
+        }
+        40702 | 43093 => {
+            let name = format!("Track {}", session.project.tracks.len() + 1);
+            let mut added = scythe_core::TrackId(0);
+            session.edit("Insert track", |p| {
+                let levels = p.folder_levels();
+                added = p.add_track(name);
+                let n = p.tracks.len();
+                if id == 43093 {
+                    let t = p.tracks.pop().expect("the track just added");
+                    p.tracks.insert(0, t);
+                } else if n > 1 {
+                    let mut levels = levels;
+                    levels.push(0);
+                    p.set_folder_levels(&levels);
+                }
+            });
+            session.select_tracks(vec![added]);
+            Ok(())
+        }
+        40005 => {
+            if !chosen.is_empty() {
+                session.edit("Remove tracks", |p| {
+                    p.remove_tracks(&chosen);
+                });
+                session.select_tracks(Vec::new());
+            }
+            Ok(())
+        }
+        40296 => {
+            let all = session.project.tracks.iter().map(|t| t.id).collect();
+            session.select_tracks(all);
+            Ok(())
+        }
+        40297 => {
+            session.select_tracks(Vec::new());
+            Ok(())
+        }
+        1041 => {
+            session.edit("Toggle track folder", |p| chosen.iter().for_each(|t| p.cycle_folder_state(*t)));
+            Ok(())
+        }
+        // REAPER makes no undo point for it.
+        1042 => {
+            session.change_view(|p| chosen.iter().for_each(|t| p.cycle_folder_compact(*t)));
+            Ok(())
+        }
+        41665 => {
+            session.change_view(|p| {
+                for t in p.tracks.iter_mut().filter(|t| t.folder_depth > 0 && chosen.contains(&t.id)) {
+                    t.mixer_collapsed ^= true;
+                }
+            });
+            Ok(())
+        }
+        42785 => {
+            let Some(&first) = session.project.with_children(&chosen).first() else { return Some(Ok(())) };
+            let name = format!("Track {}", first + 1);
+            session.edit("Change track order", |p| {
+                p.add_track(name);
+                let folder = p.tracks.pop().expect("the track just added");
+                p.move_to_new_folder(&chosen, folder);
             });
             Ok(())
         }

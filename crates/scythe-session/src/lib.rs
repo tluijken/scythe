@@ -122,6 +122,11 @@ pub struct Session {
     pub surface_status: Vec<SurfaceStatus>,
     /// The selected track, as the window shows it; control surfaces light it and select it.
     pub selected_track: Option<TrackId>,
+    /// Every selected track in track order, the selected track among them: what "selected
+    /// tracks" actions work on.
+    pub selected_tracks: Vec<TrackId>,
+    /// A track selection the session made (select all, a new folder) for the window to take.
+    track_select: Option<Vec<TrackId>>,
     /// MIDI and OSC learn: listening, and the action shortcuts.
     pub learn: learn::LearnState,
     /// `reaper-kb.ini` but for the MIDI and OSC shortcuts `learn` keeps: keyboard shortcuts,
@@ -190,6 +195,8 @@ impl Session {
             merge: None,
             surface_status: Vec::new(),
             selected_track: None,
+            selected_tracks: Vec::new(),
+            track_select: None,
             learn: Default::default(),
             keymap: Default::default(),
             explorer: Default::default(),
@@ -234,9 +241,29 @@ impl Session {
         self.select.take()
     }
 
+    /// The selected tracks, or the selected track when the window keeps no list.
+    pub fn selection(&self) -> Vec<TrackId> {
+        let all: Vec<TrackId> =
+            self.project.tracks.iter().map(|t| t.id).filter(|id| self.selected_tracks.contains(id)).collect();
+        if all.is_empty() { self.selected_track.into_iter().collect() } else { all }
+    }
+
+    /// Selects `tracks` (the first becomes the selected track) and asks the window to show it.
+    pub fn select_tracks(&mut self, tracks: Vec<TrackId>) {
+        self.selected_track = tracks.first().copied();
+        self.selected_tracks = tracks.clone();
+        self.track_select = Some(tracks);
+    }
+
+    /// A track selection the session made since the last call.
+    pub fn take_track_selection(&mut self) -> Option<Vec<TrackId>> {
+        self.track_select.take()
+    }
+
     /// Asks the views to select `track`, as a control surface's select button does.
     pub fn select_track(&mut self, track: TrackId) {
         self.selected_track = Some(track);
+        self.selected_tracks = vec![track];
         self.select = Some(Selection { track: Some(track), item: None });
     }
 
@@ -296,6 +323,15 @@ impl Session {
             }
         } else {
             self.edit(label, f);
+        }
+    }
+
+    /// A change saved with the project that is not an undo step (how a folder shows).
+    pub fn change_view(&mut self, f: impl FnOnce(&mut Project)) {
+        let before = self.project.clone();
+        f(&mut self.project);
+        if self.project != before {
+            self.changed();
         }
     }
 

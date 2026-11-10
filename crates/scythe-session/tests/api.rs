@@ -1647,3 +1647,63 @@ fn stock_editors_change_bands_taps_and_curves_as_undo_steps() {
     let meters = ok(&mut s, json!({"cmd": "fx.meters", "track": t, "index": 0}));
     assert!(meters["input_db"].as_f64().is_some());
 }
+
+#[test]
+fn folders_are_built_moved_and_collapsed() {
+    let mut s = session();
+    let [a, b, c, d] = ["A", "B", "C", "D"].map(|n| add_track(&mut s, n));
+    let depths = |s: &Session| s.project.tracks.iter().map(|t| (t.name.clone(), t.folder_depth)).collect::<Vec<_>>();
+    let named = |v: &[(&str, i32)]| v.iter().map(|(n, d)| ((*n).to_owned(), *d)).collect::<Vec<_>>();
+
+    let folder = ok(&mut s, json!({"cmd": "track.new_folder", "tracks": [b, c], "name": "Bus"}));
+    assert_eq!(folder["name"], "Bus");
+    assert_eq!(depths(&s), named(&[("A", 0), ("Bus", 1), ("B", 0), ("C", -1), ("D", 0)]));
+    assert_eq!(s.history.undo_label(), Some("Change track order"));
+
+    let moved = ok(&mut s, json!({"cmd": "track.move", "track": d, "parent": folder["id"], "index": 0}));
+    assert_eq!((moved["index"].as_u64(), moved["level"].as_u64()), (Some(2), Some(1)));
+    ok(&mut s, json!({"cmd": "track.move", "track": a, "parent": "Bus"}));
+    assert_eq!(depths(&s), named(&[("Bus", 1), ("D", 0), ("B", 0), ("C", 0), ("A", -1)]));
+    ok(&mut s, json!({"cmd": "track.move", "track": a, "parent": "master", "index": 0}));
+    assert_eq!(depths(&s), named(&[("A", 0), ("Bus", 1), ("D", 0), ("B", 0), ("C", -1)]));
+    let err = execute_json(&mut s, json!({"cmd": "track.move", "track": "Bus", "parent": b})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    ok(&mut s, json!({"cmd": "track.move", "track": "Bus", "index": 0}));
+    assert_eq!(depths(&s), named(&[("Bus", 1), ("D", 0), ("B", 0), ("C", -1), ("A", 0)]));
+
+    let undo_before = s.history.undo_label().map(str::to_owned);
+    let t = ok(&mut s, json!({"cmd": "track.collapse", "track": "Bus"}));
+    assert_eq!(t["folder_compact"], 1);
+    let t = ok(&mut s, json!({"cmd": "track.collapse", "track": "Bus", "compact": 2, "mixer": true}));
+    assert_eq!((t["folder_compact"].as_u64(), t["mixer_collapsed"].as_bool()), (Some(2), Some(true)));
+    assert_eq!(s.history.undo_label().map(str::to_owned), undo_before, "no undo step, as in REAPER");
+    assert!(execute_json(&mut s, json!({"cmd": "track.collapse", "track": "Bus", "compact": 3})).is_err());
+}
+
+#[test]
+fn folder_actions_work_on_the_selected_tracks() {
+    let mut s = session();
+    let ids: Vec<u64> = ["T1", "T2", "T3", "T4"].map(|n| add_track(&mut s, n)).to_vec();
+    let track = |s: &Session, i: usize| s.project.tracks[i].clone();
+    let id = |n: u64| scythe_core::TrackId(n);
+    s.selected_tracks = vec![id(ids[1]), id(ids[2])];
+    s.selected_track = Some(id(ids[1]));
+    ok(&mut s, json!({"cmd": "action.run", "action": "42785"}));
+    let d: Vec<i32> = s.project.tracks.iter().map(|t| t.folder_depth).collect();
+    assert_eq!(d, [0, 1, 0, -1, 0]);
+    s.selected_tracks = vec![s.project.tracks[1].id];
+    ok(&mut s, json!({"cmd": "action.run", "action": "1042"}));
+    assert_eq!(track(&s, 1).folder_compact, 1);
+    ok(&mut s, json!({"cmd": "action.run", "action": "41665"}));
+    assert!(track(&s, 1).mixer_collapsed);
+    ok(&mut s, json!({"cmd": "action.run", "action": "1041"}));
+    assert_eq!(track(&s, 1).folder_depth, 0);
+    s.selected_tracks = vec![id(ids[0]), id(ids[3])];
+    ok(&mut s, json!({"cmd": "action.run", "action": "6"}));
+    assert!(s.project.tracks.iter().filter(|t| t.muted).count() == 2);
+    ok(&mut s, json!({"cmd": "action.run", "action": "40296"}));
+    assert_eq!(s.take_track_selection().map(|v| v.len()), Some(5));
+    s.selected_tracks = vec![s.project.tracks[0].id];
+    ok(&mut s, json!({"cmd": "action.run", "action": "40005"}));
+    assert_eq!(s.project.tracks.len(), 4);
+}

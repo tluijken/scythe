@@ -1,5 +1,7 @@
 import { equal, test } from "./harness.js";
-import { dropIndex, linkUrl, moveEntry, pageForAccess, songSelector } from "../js/domains.js";
+import {
+  dropIndex, folderParents, linkUrl, moveCommand, moveEntry, pageForAccess, rowShows, songSelector, trackDrop, withChildren,
+} from "../js/domains.js";
 import { crumbs, savePath } from "../js/files.js";
 import { createCommand, mixCandidates, outputChoices, outputValue } from "../js/mixes.js";
 import { tempoEdit, tempoLabel } from "../js/tempo.js";
@@ -63,4 +65,37 @@ test("a tempo marker editor sends only what changed", () => {
     { cmd: "tempo.edit", index: 2, time: 10, bpm: 96, linear: true, time_signature: [7, 8] });
   equal(tempoEdit({ ...marker, time_signature: [7, 8] }, { timeSignature: null }), { cmd: "tempo.edit", index: 2, time_signature: null });
   equal(tempoLabel({ bpm: 96, time_signature: [7, 8] }), "96 7/8");
+});
+
+// F holds A and B; C and D are at the top (the drags of D measured in REAPER 7.73).
+const FOLDER = [
+  { id: 1, level: 0, folder_depth: 1, folder_compact: 0 },
+  { id: 2, level: 1, folder_depth: 0, folder_compact: 0 },
+  { id: 3, level: 1, folder_depth: -1, folder_compact: 0 },
+  { id: 4, level: 0, folder_depth: 0, folder_compact: 0 },
+  { id: 5, level: 0, folder_depth: 0, folder_compact: 0 },
+];
+
+test("track drops follow REAPER's thirds", () => {
+  const d = withChildren(FOLDER, 4);
+  equal(trackDrop(FOLDER, d, 2, 0.3), { before: 2, level: 1 });
+  equal(trackDrop(FOLDER, d, 2, 0.5), { before: 3, level: 2 });
+  equal(trackDrop(FOLDER, d, 2, 0.8), { before: 3, level: 1 });
+  equal(trackDrop(FOLDER, d, 3, 0.1), { before: 3, level: 0 });
+  equal(trackDrop(FOLDER, d, 0, 0.9), { before: 1, level: 1 });
+  equal(trackDrop(FOLDER, d, 4, 0.5), null);
+  equal(withChildren(FOLDER, 0), [0, 1, 2]);
+  const collapsed = FOLDER.map((t, i) => (i === 0 ? { ...t, folder_compact: 2 } : t));
+  equal(trackDrop(collapsed, d, 0, 0.9), { before: 3, level: 0 });
+  equal(rowShows(collapsed), ["normal", "hidden", "hidden", "normal", "normal"]);
+  equal(folderParents(FOLDER), [null, 0, 0, null, null]);
+});
+
+test("drops become track.move commands with a parent and an index", () => {
+  const d = withChildren(FOLDER, 4);
+  equal(moveCommand(FOLDER, d, { before: 3, level: 1 }), { cmd: "track.move", track: 5, parent: 1, index: 2 });
+  equal(moveCommand(FOLDER, d, { before: 3, level: 2 }), { cmd: "track.move", track: 5, parent: 3, index: 0 });
+  equal(moveCommand(FOLDER, d, { before: 1, level: 1 }), { cmd: "track.move", track: 5, parent: 1, index: 0 });
+  equal(moveCommand(FOLDER, d, { before: 0, level: 0 }), { cmd: "track.move", track: 5, parent: "master", index: 0 });
+  equal(moveCommand(FOLDER, withChildren(FOLDER, 0), { before: 5, level: 0 }), { cmd: "track.move", track: 1, parent: "master", index: 2 });
 });

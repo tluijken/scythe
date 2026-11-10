@@ -1,4 +1,5 @@
 use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
+use scythe_core::folders::RowShow;
 use scythe_core::groups::GroupedControl;
 use scythe_core::units::format_db;
 use scythe_core::{EnvelopeKind, ItemId, TimeRange, TrackId};
@@ -15,6 +16,8 @@ const RULER_H: f32 = 52.0;
 /// Track header layout needs this much height for its button row.
 const FULL_ROW_H: f32 = 56.0;
 const ROW_GAP: f32 = 4.0;
+/// Height of a track inside a folder set to small.
+const SMALL_ROW_H: f32 = 26.0;
 
 /// Maps between project time and screen x for the lanes.
 #[derive(Clone, Copy)]
@@ -35,7 +38,8 @@ impl TimeAxis {
 }
 
 /// Where each track's row sits, from the top of the track list: a track with fixed lanes is
-/// one track height per lane (REAPER's big lanes).
+/// one track height per lane (REAPER's big lanes), a track in a folder set to small is
+/// [`SMALL_ROW_H`] high, one in a collapsed folder takes no room.
 struct RowLayout {
     tops: Vec<f32>,
     heights: Vec<f32>,
@@ -45,8 +49,16 @@ impl RowLayout {
     fn new(app: &ScytheApp) -> Self {
         let mut top = 0.0;
         let (mut tops, mut heights) = (Vec::new(), Vec::new());
-        for t in &app.project.tracks {
-            let h = app.view.row_h * t.height_in_lanes() as f32;
+        for (t, show) in app.project.tracks.iter().zip(app.project.row_shows()) {
+            let h = match show {
+                RowShow::Hidden => {
+                    tops.push(top);
+                    heights.push(0.0);
+                    continue;
+                }
+                RowShow::Small => SMALL_ROW_H.min(app.view.row_h),
+                RowShow::Normal => app.view.row_h * t.height_in_lanes() as f32,
+            };
             tops.push(top);
             heights.push(h);
             top += h + ROW_GAP;
@@ -55,12 +67,19 @@ impl RowLayout {
     }
 
     fn total(&self) -> f32 {
-        self.tops.last().zip(self.heights.last()).map_or(0.0, |(t, h)| t + h + ROW_GAP)
+        self.tops
+            .iter()
+            .zip(&self.heights)
+            .filter(|(_, h)| **h > 0.0)
+            .map(|(t, h)| t + h + ROW_GAP)
+            .next_back()
+            .unwrap_or(0.0)
     }
 
     /// The row at `y` from the top of the track list (the last for below it).
     fn index_at(&self, y: f32) -> usize {
-        self.tops.partition_point(|&t| t <= y).saturating_sub(1)
+        let i = self.tops.partition_point(|&t| t <= y).saturating_sub(1);
+        (0..=i).rev().find(|&k| self.heights[k] > 0.0).unwrap_or(i)
     }
 }
 
@@ -402,7 +421,7 @@ fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: R
                     .tracks
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| (first..=last).contains(i))
+                    .filter(|(i, _)| (first..=last).contains(i) && layout.heights[*i] > 0.0)
                     .map(|(_, t)| (t.id, range)),
             );
         }
@@ -574,7 +593,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
                 .tracks
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| (first..=last).contains(i))
+                .filter(|(i, _)| (first..=last).contains(i) && layout.heights[*i] > 0.0)
                 .flat_map(|(_, t)| {
                     t.items.iter().filter(|it| it.end() > t0 && it.position < t1).map(move |it| (t.id, it.id))
                 })
@@ -591,23 +610,52 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     }
 
     let mut clicked_track: Option<(TrackId, Option<f64>)> = None;
+    let shows = app.project.row_shows();
+    let parents = app.project.folder_parents();
+    let dragging = crate::ui::folders::drag(ui).filter(|d| !d.mixer);
     for (i, &level) in levels.iter().enumerate() {
         let row = row_rect(i);
-        if row.bottom() < rows.top() || row.top() > rows.bottom() {
+        if layout.heights[i] <= 0.0 || row.bottom() < rows.top() || row.top() > rows.bottom() {
             continue;
         }
+        let row_h = if shows[i] == RowShow::Small { layout.heights[i] } else { row_h };
         let track = app.project.tracks[i].clone();
-        let selected = app.sel.track == Some(track.id);
+        let selected = app.is_track_selected(track.id);
         let audible = routing.heard(i);
         let color = track_color(track.color);
 
         // Header.
         let head = Rect::from_min_size(row.min, vec2(HEADER_W, row.height()));
-        let head_resp = ui.interact(head.intersect(rows), Id::unique(("head", track.id)), Sense::click());
+        let head_resp = ui.interact(head.intersect(rows), Id::unique(("head", track.id)), Sense::click_and_drag());
         clip.rect_filled(head, CornerRadius::same(12), if selected { RAISED_HI } else { RAISED });
-        let indent = level as f32 * 10.0;
-        let dot = pos2(head.left() + 17.0 + indent, head.top() + 19.0f32.min(row_h / 2.0));
-        if track.folder_depth > 0 {
+        if selected && app.selected_tracks().len() > 1 {
+            clip.rect_stroke(
+                head,
+                CornerRadius::same(12),
+                Stroke::new(1.5, with_alpha(ACCENT, 160)),
+                StrokeKind::Inside,
+            );
+        }
+        if dragging.as_ref().is_some_and(|d| d.moving.contains(&i)) {
+            clip.rect_filled(head, CornerRadius::same(12), with_alpha(ACCENT, 40));
+        }
+        // A line per enclosing folder, in the folder's colour, down the indent.
+        let mut up = parents[i];
+        while let Some(p) = up {
+            let x = head.left() + 7.0 + levels[p] as f32 * 12.0;
+            let c = track_color(app.project.tracks[p].color);
+            clip.vline(x, (head.top() + 3.0)..=(head.bottom() - 3.0), Stroke::new(2.0, with_alpha(c, 170)));
+            up = parents[p];
+        }
+        let indent = level as f32 * 12.0;
+        let folder = track.folder_depth > 0;
+        let dot =
+            pos2(head.left() + 17.0 + indent + if folder { 12.0 } else { 0.0 }, head.top() + 19.0f32.min(row_h / 2.0));
+        if folder {
+            let chevron = Rect::from_center_size(pos2(dot.x - 14.0, dot.y), vec2(14.0, 16.0)).intersect(rows);
+            if chevron.height() > 0.0 {
+                crate::ui::folders::collapse_button(app, ui, chevron, track.id, track.folder_compact);
+            }
             clip.rect_filled(Rect::from_center_size(dot, vec2(12.0, 10.0)), CornerRadius::same(3), color);
         } else {
             clip.circle_filled(dot, 5.0, color);
@@ -624,7 +672,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         let db = format_db(track.volume);
         let db_w = widgets::text_width(ui, &db, theme::mono(11.0));
         let has_groups = track.groups.groups() != 0;
-        let name_max = HEADER_W - 44.0 - indent - db_w - 12.0 - if has_groups { 30.0 } else { 0.0 };
+        let name_max = head.right() - dot.x - 25.0 - db_w - if has_groups { 30.0 } else { 0.0 };
         let name = widgets::truncate(ui, &track.name, &theme::semibold(13.0), name_max);
         clip.text(pos2(dot.x + 13.0, dot.y), Align2::LEFT_CENTER, name, theme::semibold(13.0), TEXT);
         clip.text(pos2(head.right() - 12.0, dot.y), Align2::RIGHT_CENTER, db, theme::mono(11.0), TEXT_DIM);
@@ -657,6 +705,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
                 crate::ui::groups::toggle(app, track.id, GroupedControl::RecArm);
             }
             arm.context_menu(|ui| crate::ui::recording::track_menu(app, ui, track.id));
+            crate::ui::folders::folder_button(app, ui, btn(3.0), track.id, level);
         }
         let fx_label = format!("{} fx", track.fx.len());
         let fx_w = widgets::text_width(ui, &fx_label, theme::mono(10.0));
@@ -671,27 +720,34 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         let meter = if full {
             Rect::from_min_max(
-                pos2(head.left() + 12.0 + 3.0 * 32.0 + 8.0, by + 8.0),
+                pos2(head.left() + 12.0 + 4.0 * 32.0 + 6.0, by + 8.0),
                 pos2(head.right() - 20.0 - fx_w, by + 12.0),
             )
         } else {
             Rect::from_min_max(
-                pos2(head.left() + 12.0, head.top() + row_h - 6.0),
+                pos2(head.left() + 12.0 + indent, head.top() + row_h - 6.0),
                 pos2(head.right() - 12.0, head.top() + row_h - 3.0),
             )
         };
-        clip.rect_filled(meter, CornerRadius::same(255), BG);
-        let (l, r) = app.levels.get(&track.id).copied().unwrap_or_default();
-        let level = meter_fraction(l.max(r));
-        if level > 0.0 && audible {
-            let fill = Rect::from_min_size(meter.min, vec2(meter.width() * level, meter.height()));
-            clip.rect_filled(fill, CornerRadius::same(255), color);
+        // A track shown small has no room for a meter under its name.
+        if row_h >= 32.0 {
+            clip.rect_filled(meter, CornerRadius::same(255), BG);
+            let (l, r) = app.levels.get(&track.id).copied().unwrap_or_default();
+            let level = meter_fraction(l.max(r));
+            if level > 0.0 && audible {
+                let fill = Rect::from_min_size(meter.min, vec2(meter.width() * level, meter.height()));
+                clip.rect_filled(fill, CornerRadius::same(255), color);
+            }
         }
         if head_resp.clicked() {
-            app.sel = Selection { track: Some(track.id), item: None };
+            let mods = ui.ctx().input(|i| i.modifiers);
+            app.click_track(track.id, mods);
         }
         if head_resp.double_clicked() {
             crate::ui::toolbars::mouse_action(app, ui, "MM_CTX_TCP_DBLCLK");
+        }
+        if head_resp.drag_started() {
+            crate::ui::folders::start_drag(app, ui, track.id, false);
         }
 
         // Lane.
@@ -756,13 +812,33 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         clip.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, theme::PINK), StrokeKind::Inside);
     }
 
+    if let Some(mut d) = dragging {
+        let pointer = ui.ctx().input(|i| i.pointer.hover_pos());
+        d.drop = pointer.and_then(|p| drop_under(app, &layout, p.y - rows.top() + scroll, &d.moving));
+        if let Some(drop) = d.drop {
+            let visible = |k: &usize| layout.heights[*k] > 0.0;
+            let y = match (drop.before..n).find(visible) {
+                Some(k) => row_rect(k).top() - ROW_GAP / 2.0,
+                None => (0..n).rev().find(visible).map_or(rows.top(), |k| row_rect(k).bottom() + ROW_GAP / 2.0),
+            };
+            let x = rows.left() + 6.0 + drop.level as f32 * 12.0;
+            crate::ui::folders::paint_drop_line(clip, pos2(x, y), pos2(rows.right() - 4.0, y));
+        }
+        let released = ui.ctx().input(|i| i.pointer.any_released());
+        crate::ui::folders::set_drag(ui, Some(d));
+        if released {
+            crate::ui::folders::finish_drag(app, ui);
+        }
+        ui.ctx().request_repaint();
+    }
+
     if let Some(r) = marquee_rect {
         clip.rect_filled(r, CornerRadius::same(4), with_alpha(ACCENT, 0x22));
         clip.rect_stroke(r, CornerRadius::same(4), Stroke::new(1.0, ACCENT), StrokeKind::Inside);
     }
 
     if let Some((track, t)) = clicked_track {
-        app.sel = Selection { track: Some(track), item: None };
+        app.set_track_selection(vec![track], Some(track));
         app.multi.clear();
         app.razor.clear();
         app.razor_envelopes.clear();
@@ -1443,4 +1519,18 @@ pub fn color_picker(app: &mut ScytheApp, ui: &mut Ui) {
     } else if resp.response.clicked_elsewhere() {
         app.view.color_picker = None;
     }
+}
+
+/// Where dragged tracks would land with the pointer `y` from the top of the track list: below
+/// the last track they go to the end, at the top level.
+fn drop_under(app: &ScytheApp, layout: &RowLayout, y: f32, moving: &[usize]) -> Option<scythe_core::folders::Drop> {
+    let n = app.project.tracks.len();
+    let last = (0..n).rev().find(|&k| layout.heights[k] > 0.0)?;
+    if y > layout.tops[last] + layout.heights[last] + ROW_GAP / 2.0 {
+        let (min, _) = app.project.drop_levels(moving, n);
+        return Some(scythe_core::folders::Drop { before: n, level: min });
+    }
+    let i = layout.index_at(y.max(0.0));
+    let frac = ((y - layout.tops[i]) / layout.heights[i]).clamp(0.0, 1.0);
+    app.project.drop_at(moving, i, frac)
 }

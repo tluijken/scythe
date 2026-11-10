@@ -37,12 +37,42 @@ pub enum TrackCommand {
     /// Restores the effects and items of the track's last freeze level.
     #[serde(rename = "track.unfreeze")]
     Unfreeze { track: TrackRef },
-    /// Moves the track to position `index` from the top.
+    /// Moves the track, a folder with its children, keeping every folder closed: to position
+    /// `index` in the track list, or with `parent` into a folder (the master for the top level).
     #[serde(rename = "track.move")]
     Move {
         track: TrackRef,
-        /// The new position, counted from 0.
-        index: usize,
+        /// Without `parent`: the new position in the track list, counted from 0; the track keeps
+        /// its nesting where the tracks around it allow. With `parent`: the position among the
+        /// folder's other children, the end when left out.
+        #[serde(default)]
+        index: Option<usize>,
+        /// The folder to move the track into, which becomes a folder if it is a plain track;
+        /// "master" for the top level.
+        #[serde(default)]
+        parent: Option<TrackRef>,
+    },
+    /// REAPER's "Move tracks to new folder": a new folder track takes the place of the first
+    /// track, and the tracks (folders with their children) become its children. Answers the
+    /// folder.
+    #[serde(rename = "track.new_folder")]
+    NewFolder {
+        tracks: Vec<TrackRef>,
+        /// "Track N" when left out.
+        #[serde(default)]
+        name: Option<String>,
+    },
+    /// How a folder shows its children: `compact` in the track view (0 normal, 1 small, 2
+    /// collapsed, as `I_FOLDERCOMPACT`), `mixer` hides them in the mixer. With neither, the
+    /// track view cycles normal, small, collapsed (REAPER's "Cycle folder collapsed state").
+    /// Not an undo step, as in REAPER.
+    #[serde(rename = "track.collapse")]
+    Collapse {
+        track: TrackRef,
+        #[serde(default)]
+        compact: Option<u8>,
+        #[serde(default)]
+        mixer: Option<bool>,
     },
     /// Sets the fader, as gain (`volume`) or in dB (`db`); capped at +24 dB.
     #[serde(rename = "track.volume")]
@@ -276,16 +306,58 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
             }
             Ok(serde_json::json!({ "levels": session.project.track(id).map_or(0, scythe_core::freeze::levels) }))
         }
-        TrackCommand::Move { track, index } => {
+        TrackCommand::Move { track, index, parent } => {
             let id = track.track(&session.project)?;
-            let n = session.project.tracks.len();
-            if index >= n {
-                return Err(ApiError::invalid(format!("index runs from 0 to {}", n - 1)));
+            match parent {
+                Some(parent) => {
+                    let parent = match parent.resolve(&session.project)? {
+                        Target::Master => None,
+                        Target::Track(p) => Some(p),
+                    };
+                    let mut fits = None;
+                    session.edit("Move track", |p| fits = p.move_into(&[id], parent, index));
+                    if fits.is_none() {
+                        return Err(ApiError::invalid("a folder cannot move into itself"));
+                    }
+                }
+                None => {
+                    let n = session.project.tracks.len();
+                    let Some(index) = index.filter(|&i| i < n) else {
+                        return Err(ApiError::invalid(format!("index runs from 0 to {}", n - 1)));
+                    };
+                    session.edit("Move track", |p| {
+                        p.move_to_index(&[id], index);
+                    });
+                }
             }
-            session.edit("Move track", |p| {
-                if let Some(from) = p.track_index(id) {
-                    let t = p.tracks.remove(from);
-                    p.tracks.insert(index, t);
+            Ok(info(session, Target::Track(id)))
+        }
+        TrackCommand::NewFolder { tracks, name } => {
+            let ids = tracks.iter().map(|t| t.track(&session.project)).collect::<Result<Vec<_>, _>>()?;
+            let Some(&first) = session.project.with_children(&ids).first() else {
+                return Err(ApiError::invalid("name at least one track"));
+            };
+            let name = name.unwrap_or_else(|| format!("Track {}", first + 1));
+            let mut folder = None;
+            session.edit("Change track order", |p| {
+                p.add_track(name);
+                let t = p.tracks.pop().expect("the track just added");
+                folder = p.move_to_new_folder(&ids, t);
+            });
+            Ok(folder.map_or(Value::Null, |f| info(session, Target::Track(f))))
+        }
+        TrackCommand::Collapse { track, compact, mixer } => {
+            let id = track.track(&session.project)?;
+            if compact.is_some_and(|c| c > 2) {
+                return Err(ApiError::invalid("compact is 0 (normal), 1 (small) or 2 (collapsed)"));
+            }
+            session.change_view(|p| {
+                if compact.is_none() && mixer.is_none() {
+                    p.cycle_folder_compact(id);
+                }
+                if let Some(t) = p.track_mut(id) {
+                    t.folder_compact = compact.unwrap_or(t.folder_compact);
+                    t.mixer_collapsed = mixer.unwrap_or(t.mixer_collapsed);
                 }
             });
             Ok(info(session, Target::Track(id)))

@@ -3,6 +3,7 @@
 // ruler stay in view with `position: sticky`.
 
 import { html, useEffect, useLayoutEffect, useRef, useState } from "../vendor/preact-htm.js";
+import { folderParents, moveCommand, rowShows, trackDrop, withChildren } from "./domains.js";
 import { barIndexAt, barStep, clamp, formatDb, formatTime, SWATCHES } from "./format.js";
 import { useStoreValue } from "./store.js";
 import { TempoDialog, TempoLane, TempoMapDialog } from "./tempo.js";
@@ -15,6 +16,7 @@ const MARKER_H = 26;
 const TEMPO_H = 24;
 const TOP_H = RULER_H + MARKER_H + TEMPO_H;
 const ROW_HEIGHTS = [44, 64, 92];
+const SMALL_H = 26;
 const MIN_PPS = 0.5;
 const MAX_PPS = 800;
 
@@ -73,12 +75,22 @@ export function FlagButtons({ store, track, compact = false }) {
   </div>`;
 }
 
-function TrackHeader({ store, track, selected, onSelect, rowH }) {
+function TrackHeader({ store, track, selected, onSelect, rowH, small, folders, onDrag }) {
   const [picking, setPicking] = useState(false);
   const indent = track.level * 12;
-  return html`<div class=${`track-head ${selected ? "selected" : ""}`} style=${{ height: `${rowH}px` }} onPointerDown=${onSelect}>
+  const folder = track.folder_depth > 0;
+  const fold = ["Folder open: tap to show its tracks small", "Folder tracks small: tap to collapse", "Folder collapsed: tap to open"];
+  return html`<div class=${`track-head ${selected ? "selected" : ""} ${small ? "small" : ""}`} style=${{ height: `${rowH}px` }}
+      onPointerDown=${(e) => {
+        onSelect();
+        onDrag(e);
+      }}>
+    ${folders.map((f) => html`<span class="fold-line" style=${{ left: `${7 + f.level * 12}px`, background: f.color || "var(--text-dim)" }}></span>`)}
     <div class="head-line" style=${{ paddingLeft: `${12 + indent}px` }}>
-      <button class=${`color-dot ${track.folder_depth > 0 ? "folder" : ""}`} style=${{ background: track.color || "var(--text-dim)" }}
+      <span class="grip" title="Drag to move the track, into a folder over the middle of a track"><${Icon} name="grip" size=${12} /></span>
+      ${folder && html`<button class=${`fold-toggle c${track.folder_compact}`} title=${fold[track.folder_compact] || fold[0]}
+        onClick=${() => store.fire({ cmd: "track.collapse", track: track.id })}><${Icon} name=${track.folder_compact === 2 ? "next" : "down"} size=${13} /></button>`}
+      <button class=${`color-dot ${folder ? "folder" : ""}`} style=${{ background: track.color || "var(--text-dim)" }}
         title="Track colour" onClick=${() => setPicking(true)}></button>
       <${EditableText} cls="track-name" value=${track.name} placeholder=${`Track ${track.index + 1}`}
         onCommit=${(name) => store.fire({ cmd: "track.rename", track: track.id, name })} />
@@ -299,7 +311,51 @@ export function Arrange({ store, snap, sel, setSel }) {
   const tracks = snap.tracks;
   const end = Math.max(snap.length, ...snap.markers.map((m) => m.end ?? m.position), 60) + 30;
   const contentW = end * pps;
-  const rowsH = tracks.length * (rowH + 4);
+  const shows = rowShows(tracks);
+  const parents = folderParents(tracks);
+  const layout = [];
+  let rowsH = 0;
+  tracks.forEach((_, i) => {
+    if (shows[i] === "hidden") return;
+    const h = shows[i] === "small" ? SMALL_H : rowH;
+    layout.push({ i, top: rowsH, h });
+    rowsH += h + 4;
+  });
+  const shownTracks = layout.map(({ i }) => tracks[i]);
+  const rowsEl = useRef(null);
+  const [drag, setDrag] = useState(null);
+  // Where a dragged track lands with the pointer `y` from the top of the rows.
+  const dropAt = (y, moving) => {
+    const last = layout[layout.length - 1];
+    if (!last) return null;
+    if (y > last.top + last.h + 2) return { before: tracks.length, level: 0 };
+    const row = layout.find((r) => y < r.top + r.h + 2) || last;
+    return trackDrop(tracks, moving, row.i, clamp((y - row.top) / row.h, 0, 1));
+  };
+  const dropTop = (drop) => {
+    const row = layout.find((r) => r.i >= drop.before);
+    return (row ? row.top : rowsH) - 3;
+  };
+  // Mouse drags move a track from anywhere on its header; touch drags from the grip, so
+  // scrolling still works.
+  const startDrag = (i) => (e) => {
+    if (e.button > 0 || e.target.closest("button, input, .editable")) return;
+    if (e.pointerType !== "mouse" && !e.target.closest(".grip")) return;
+    const moving = withChildren(tracks, i);
+    let drop = null;
+    dragPointer(
+      e,
+      ({ dy, event }) => {
+        if (!drop && Math.abs(dy) < 5) return;
+        drop = dropAt(event.clientY - rowsEl.current.getBoundingClientRect().top, moving);
+        setDrag({ moving, drop });
+      },
+      ({ cancelled }) => {
+        setDrag(null);
+        if (!cancelled && drop) store.fire(moveCommand(tracks, moving, drop));
+      },
+    );
+  };
 
   useEffect(() => {
     try {
@@ -450,22 +506,29 @@ export function Arrange({ store, snap, sel, setSel }) {
               snapTo=${(t) => (snapOn ? snapTime(t, snap.bars, snap.time_signature[0]) : t)} />
           </div>
         </div>
-        <div class="arr-rows">
-          ${tracks.map(
-            (track, i) => html`<div class="arr-row" key=${track.id} style=${{ height: `${rowH}px` }}>
-              <${TrackHeader} store=${store} track=${track} rowH=${rowH} selected=${sel.track === track.id}
+        <div class="arr-rows" ref=${rowsEl}>
+          ${layout.map(
+            ({ i, h }, k) => {
+              const track = tracks[i];
+              const ancestors = [];
+              for (let p = parents[i]; p != null; p = parents[p]) ancestors.push({ level: tracks[p].level, color: tracks[p].color });
+              return html`<div class=${`arr-row ${drag?.moving.includes(i) ? "dragged" : ""}`} key=${track.id} style=${{ height: `${h}px` }}>
+              <${TrackHeader} store=${store} track=${track} rowH=${h} small=${shows[i] === "small"} folders=${ancestors}
+                selected=${sel.track === track.id} onDrag=${startDrag(i)}
                 onSelect=${() => sel.track !== track.id && setSel({ track: track.id, item: null })} />
               <div class=${`lane ${sel.track === track.id ? "selected" : ""}`} style=${{ width: `${contentW}px` }} onClick=${laneClick(track)}>
                 ${track.items
                   .filter((it) => it.position <= visible1 + 5 && it.position + it.length >= visible0 - 5)
                   .map(
-                    (it) => html`<${Item} key=${it.id} store=${store} item=${it} track=${track} pps=${pps} rowH=${rowH}
+                    (it) => html`<${Item} key=${it.id} store=${store} item=${it} track=${track} pps=${pps} rowH=${h}
                       selected=${sel.item === it.id} onSelect=${() => setSel({ track: track.id, item: it.id })}
-                      snap=${snap} snapOn=${snapOn} rowIndex=${i} rows=${tracks} />`,
+                      snap=${snap} snapOn=${snapOn} rowIndex=${k} rows=${shownTracks} />`,
                   )}
               </div>
-            </div>`,
+            </div>`;
+            },
           )}
+          ${drag?.drop && html`<div class="drop-line" style=${{ top: `${dropTop(drag.drop)}px`, left: `${6 + drag.drop.level * 12}px` }}></div>`}
           ${tracks.length === 0 && html`<div class="empty">No tracks yet. <button class="btn small" onClick=${() => store.fire({ cmd: "track.add" })}>Add a track</button></div>`}
         </div>
         <${Playhead} store=${store} pps=${pps} />

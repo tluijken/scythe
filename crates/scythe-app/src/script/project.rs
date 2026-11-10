@@ -1208,6 +1208,30 @@ mod tests {
         assert_eq!(st.out.commands, [40029, 99999]);
     }
 
+    /// `ReorderSelectedTracks` results of REAPER 7.73 on T1 (folder of T2, T3) and T4.
+    #[test]
+    fn reorder_selected_tracks_matches_reaper() {
+        let depths =
+            |st: &State| st.project.tracks.iter().map(|t| (t.name.clone(), t.folder_depth)).collect::<Vec<_>>();
+        let named = |v: &[(&str, i32)]| v.iter().map(|(n, d)| ((*n).to_owned(), *d)).collect::<Vec<_>>();
+        for (mode, want) in [
+            (0, [("T1", 1), ("T2", 0), ("T3", -1), ("T4", 0)]),
+            (1, [("T1", 1), ("T2", 0), ("T3", 1), ("T4", -2)]),
+            (2, [("T1", 1), ("T2", 0), ("T3", 0), ("T4", -1)]),
+        ] {
+            let mut p = scythe_core::Project::default();
+            for (name, depth) in [("T1", 1), ("T2", 0), ("T3", -1), ("T4", 0)] {
+                let id = p.add_track(name);
+                p.track_mut(id).unwrap().folder_depth = depth;
+            }
+            let t4 = p.tracks[3].id;
+            let mut st =
+                State::new(&p, super::super::ScriptContext { selected_tracks: vec![t4], ..Default::default() });
+            api(&mut st, "ReorderSelectedTracks", &[Val::Int(3), Val::Int(mode)]);
+            assert_eq!(depths(&st), named(&want), "mode {mode}");
+        }
+    }
+
     /// REAPER 7.73 moves the same items this way after the same calls (Lua probe of D_POSITION,
     /// D_LENGTH and D_PLAYRATE with the project timebase on beats).
     #[test]

@@ -9,22 +9,53 @@ use crate::app::ScytheApp;
 use crate::theme::{self, BG, GREEN, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
 use crate::ui::widgets::text_pill;
 
-/// Flips a switch on a track and the followers of its groups for it.
-pub fn toggle(app: &mut ScytheApp, id: TrackId, control: GroupedControl) {
-    let label = match control {
+fn label(control: GroupedControl) -> &'static str {
+    match control {
         GroupedControl::Mute => "Toggle mute",
         GroupedControl::Solo => "Toggle solo",
         GroupedControl::RecArm => "Toggle record arm",
         _ => "Toggle polarity",
-    };
-    app.edit(label, |p| {
+    }
+}
+
+fn state(t: &Track, control: GroupedControl) -> bool {
+    match control {
+        GroupedControl::Mute => t.muted,
+        GroupedControl::Solo => t.solo,
+        GroupedControl::RecArm => t.armed,
+        _ => t.phase,
+    }
+}
+
+fn set(p: &mut scythe_core::Project, i: usize, control: GroupedControl, on: bool) {
+    match control {
+        GroupedControl::Mute => p.set_mute_grouped(i, on),
+        GroupedControl::Solo => p.set_solo_grouped(i, on),
+        GroupedControl::RecArm => p.set_arm_grouped(i, on),
+        _ => p.set_phase_grouped(i, on),
+    }
+}
+
+/// Flips a switch on a track and the followers of its groups for it. On a selected track the
+/// other selected tracks take the same state, as in REAPER.
+pub fn toggle(app: &mut ScytheApp, id: TrackId, control: GroupedControl) {
+    let peers = app.selection_peers(id);
+    app.edit(label(control), |p| {
         let Some(i) = p.track_index(id) else { return };
-        let t = &p.tracks[i];
-        match control {
-            GroupedControl::Mute => p.set_mute_grouped(i, !t.muted),
-            GroupedControl::Solo => p.set_solo_grouped(i, !t.solo),
-            GroupedControl::RecArm => p.set_arm_grouped(i, !t.armed),
-            _ => p.set_phase_grouped(i, !t.phase),
+        let on = !state(&p.tracks[i], control);
+        for k in std::iter::once(i).chain(peers) {
+            set(p, k, control, on);
+        }
+    });
+}
+
+/// Flips a switch on each selected track ("Track: Toggle mute for selected tracks" and such).
+pub fn toggle_selected(app: &mut ScytheApp, control: GroupedControl) {
+    let tracks: Vec<usize> = app.selected_tracks().into_iter().filter_map(|t| app.project.track_index(t)).collect();
+    app.edit(label(control), |p| {
+        for i in tracks {
+            let on = !state(&p.tracks[i], control);
+            set(p, i, control, on);
         }
     });
 }

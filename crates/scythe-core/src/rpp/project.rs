@@ -127,6 +127,15 @@ fn line_from(lines: &LineMemo, key: &str, default: &[&str], set: &[(usize, Strin
     toks
 }
 
+/// `BUSCOMP` with the track view's folder compaction and the mixer's collapse; the fields after
+/// them are kept.
+fn buscomp_line(t: &Track, mut toks: Vec<String>) -> Vec<String> {
+    toks.resize(toks.len().max(3), "0".into());
+    toks[1] = t.folder_compact.to_string();
+    toks[2] = bit(t.mixer_collapsed);
+    toks
+}
+
 fn bit(b: bool) -> String {
     if b { "1" } else { "0" }.to_owned()
 }
@@ -454,6 +463,11 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.dual_pan = [num(&t, 4, -1.0), num(&t, 5, 1.0)];
                     }
                     "ISBUS" => track.folder_depth = num(&t, 2, 0.0) as i32,
+                    "BUSCOMP" => {
+                        track.folder_compact = num(&t, 1, 0.0).clamp(0.0, 2.0) as u8;
+                        track.mixer_collapsed = flag(&t, 2);
+                        track.extra.push(node.clone());
+                    }
                     "MAINSEND" => {
                         track.main_send = flag(&t, 1);
                         track.main_send_offset = num(&t, 2, 0.0).max(0.0) as u32;
@@ -1312,6 +1326,10 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
         _ => "0",
     };
     c.line(line_from(l, "ISBUS", &["ISBUS"], &[(1, state.into()), (2, t.folder_depth.to_string())]));
+    let has_buscomp = t.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == "BUSCOMP"));
+    if !has_buscomp && (t.folder_compact != 0 || t.mixer_collapsed) {
+        c.line(buscomp_line(t, vec!["BUSCOMP".into(), "0".into(), "0".into(), "0".into(), "0".into(), "0".into()]));
+    }
     let has_mainsend = t.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == "MAINSEND"));
     let has_hw_marker = t.extra.iter().any(|n| matches!(n, Node::Line(l) if line_key(l) == "HWOUT"));
     // New hardware outputs follow `MAINSEND`, as REAPER writes them.
@@ -1348,6 +1366,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
                 }
                 wrote_midi_out = true;
             }
+            Node::Line(l) if line_key(l) == "BUSCOMP" => c.line(buscomp_line(t, tokenize(l))),
             Node::Line(l) if line_key(l) == "AUTOMODE" => {
                 c.line(["AUTOMODE".to_owned(), t.auto_mode.rpp_code().to_string()]);
                 wrote_auto = true;
@@ -2529,5 +2548,41 @@ mod section_tests {
         let out = project_to_rpp(&fresh);
         assert!(out.contains("CHANMODE 1") && out.contains("SM 0.5 0.25"), "{out}");
         assert!(!out.contains("TIMELOCKMODE") && !out.contains("PLAYRATE 1 0"), "{out}");
+    }
+
+    // `BUSCOMP` as REAPER 7.73 saved it after `I_FOLDERCOMPACT` 2 and "Track: Show/hide children
+    // of selected folder tracks in mixer" (41665).
+    #[test]
+    fn folder_collapse_round_trips() {
+        let rpp = "<REAPER_PROJECT 0.1 \"7.73/linux-x86_64\" 1
+  <TRACK
+    NAME F
+    ISBUS 1 1
+    BUSCOMP 2 1 0 0 0
+  >
+  <TRACK
+    NAME A
+    ISBUS 2 -1
+    BUSCOMP 0 0 0 0 0
+  >
+>
+";
+        let mut p = project_from_rpp(rpp).unwrap();
+        assert_eq!((p.tracks[0].folder_compact, p.tracks[0].mixer_collapsed), (2, true));
+        assert_eq!((p.tracks[1].folder_compact, p.tracks[1].mixer_collapsed), (0, false));
+        p.tracks[0].folder_compact = 1;
+        p.tracks[0].mixer_collapsed = false;
+        let out = project_to_rpp(&p);
+        assert!(out.contains("BUSCOMP 1 0 0 0 0") && out.contains("BUSCOMP 0 0 0 0 0"), "{out}");
+        let mut fresh = Project::default();
+        fresh.add_track("F");
+        fresh.tracks[0].folder_depth = 1;
+        fresh.add_track("A");
+        fresh.tracks[1].folder_depth = -1;
+        assert!(!project_to_rpp(&fresh).contains("BUSCOMP"));
+        fresh.tracks[0].folder_compact = 2;
+        let out = project_to_rpp(&fresh);
+        assert!(out.contains("ISBUS 1 1\n    BUSCOMP 2 0 0 0 0"), "{out}");
+        assert_eq!(project_from_rpp(&out).unwrap().tracks[0].folder_compact, 2);
     }
 }

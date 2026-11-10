@@ -172,6 +172,27 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             }
             ret(Val::Nil)
         }
+        // The folder modes: 0 keeps the folders around the place as they are, 1 makes the
+        // track before it a folder holding the moved tracks, 2 extends the folder that track
+        // closes.
+        "ReorderSelectedTracks" => {
+            let sel = selected_tracks(s, false);
+            let before = a.int(0).max(0) as usize;
+            let moving = s.project.with_children(&sel);
+            let (min, max) = s.project.drop_levels(&moving, before);
+            let levels = s.project.folder_levels();
+            let prev = (0..before.min(levels.len())).rev().find(|i| moving.binary_search(i).is_err());
+            let level = match a.int(1) {
+                1 => max,
+                2 => prev.filter(|&p| s.project.tracks[p].folder_depth < 0).map_or(min, |p| levels[p]),
+                _ => min,
+            };
+            if !sel.is_empty() {
+                s.project.move_tracks(&sel, before, level);
+                s.changed = true;
+            }
+            ret(Val::Bool(!sel.is_empty()))
+        }
         "SetOnlyTrackSelected" => {
             if let Some(t) = a.get(0).track() {
                 s.sel_tracks = vec![t];
