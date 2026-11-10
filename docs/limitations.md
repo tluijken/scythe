@@ -6,11 +6,14 @@ measured.
 
 - Windows: they are drawn inside the main window (egui), so none can be moved onto a second
   screen or out of the main window; windows opened beside the pointer do not remember where they
-  were moved, and a tool window whose contents are shorter than its size shrinks to them.
-- Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
-  take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
-  scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's
-  gate, compressor, subtract and convolve modes have no editor (they are not emulated).
+  were moved.
+- Stock effect editors: ReaFIR's gate, compressor, subtract and convolve modes have no editor
+  (they are not emulated); a ReaXcomp band is added by splitting one at the middle of its range
+  (where REAPER puts a new band was not measured); a ReaControlMIDI scale edited by hand is saved
+  as "Custom" unless it is one of Scythe's scales; ReaInsert names device channels "Out n" and
+  "In n" with the device's name (the audio backend gives no channel names). Modulation and learn
+  from an editor work on a track's own top-level effects only. `TrackFX_Show` with flag 1 shows
+  the effect's parameters in the inspector, as Scythe has no FX chain window.
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns
@@ -27,9 +30,11 @@ measured.
   connect items to the underlying envelope or bypass it outside items (`POOLEDENVATTACH`, kept)
   and muted items are not followed; at an item's very first frame REAPER sometimes leaves the
   ramp out (1e-5). LFO shapes are Scythe's own points: REAPER keeps only the dialog settings
-  (`LFO`) and the points it generated, so its generator could not be compared. Take envelope
-  and tempo envelope lanes, razor edits on envelopes and per-envelope automation modes are not
-  there; the lanes dock under the arrange view rather than under each track.
+  (`LFO`) and the points it generated, so its generator could not be compared. Razor edits on
+  envelopes are not there; the lanes dock under the arrange view rather than under each track,
+  take envelope lanes show for the selected item only, and the tempo lane does not edit time
+  signatures (the tempo marker dialog does). REAPER has an automation mode of its own only for
+  sends (`I_AUTOMODE`), which Scythe follows; other envelopes use their track's.
 - Mix analysis and reference matching (`analysis.*`): tonal balance is matched with ReaEQ
   shelves and peaks only (no linear-phase or ReaFIR matching), loudness and dynamics come as
   advice rather than applied processing, and the measurements are checked against synthetic
@@ -49,14 +54,13 @@ measured.
   on moves the items before it one by one, as REAPER does; points between those items stay.
   Track media/razor edit grouping and razor copies of envelope areas are not there (REAPER's
   split does not crossfade by default, nor does Scythe's).
-- MIDI editor: no notation view or MusicXML export, no "legato preserving relative spacing"
-  (40766), no humanize or quantize dialog settings read from REAPER (humanize is random, so
+- MIDI editor: no notation view or MusicXML export, no humanize or quantize dialog settings read from REAPER (humanize is random, so
   Scythe's timing and velocity amounts are its own), and REAPER's quantize of same-key notes
   left overlapping (it merges notes landing on one start, which Scythe does) is the only
-  overlap rule. Key snap's root and scale are not stored in the take (REAPER keeps them in the
-  editor, outside the project; Scythe keeps them per window). Pooled MIDI is not edited as a
-  pool. The inline editor draws notes only (no lanes), in every pass of a looped item. Other items show behind the edited one
-  without their takes' play rate or loops.
+  overlap rule. Pooled MIDI is not edited as a pool. The inline editor draws notes only (no lanes). Of
+  REAPER's left-drag modifiers in the piano roll the default ones are there; the MIDI editor's
+  mouse modifier preferences (`MM_CTX_MIDI_*`) are not read, and Ctrl+Shift+Alt on empty grid
+  draws a note. A line of notes painted past a looped source's end lengthens the source.
 
 - Recording: "Output (MIDI)" records the messages the track's effects put out, at the block's
   timing (not compared with REAPER live). Touch-replace replaces notes between the first and
@@ -105,11 +109,11 @@ measured.
   project but not acted on. Safe solo (`I_SOLO` 5 and 6) is kept but plays
   as plain solo; the master's pan mode (`MASTER_PANMODE`) is kept, the master pans as before.
 - Folders and selection: the drop depth comes from where the pointer is over a track (thirds),
-  not from its horizontal position; the selection lives in the window (the `SEL` lines of the
-  project are kept, not read into it), track heights per track, hiding tracks in the track view
+  not from its horizontal position; track heights per track, hiding tracks in the track view
   or mixer (`SHOWINMIX`), the mixer's "folders on the left" layout and "Move tracks to folder..."
-  (42786, a dialog) are not there; selection grouping covers the mixer's fader and pan and the
-  header switches, not the inspector or sends.
+  (42786, a dialog) are not there; selection grouping covers the mixer's fader and pan,
+  the header switches, record input and monitoring in the inspector and send levels to the same
+  destination (not send pan or mute, nor hardware outputs).
 - MIDI sync: REAPER's routing-window defaults for new sends are not measured; Scythe's new sends
   carry no MIDI (`CreateTrackSend` from a script carries all, as REAPER's does). The meaning of
   `SMPTESYNC`'s input field was not measured (REAPER's sync dialog needs a screen): Scythe reads
@@ -159,9 +163,8 @@ measured.
 - Guitar rigs: switching a stage on or off crossfades over 10 ms (Scythe's own; a stage with
   latency still switches at once); `rig.preview` and `nam.preview` try local files only (the
   TONE3000 previews are the desktop app's); the impulse
-  response's length and trim are not offered (ReaVerb's trim is not modelled); the gate's
-  attack, release and hysteresis and the EQ bands' frequencies are set in ReaGate's and ReaEQ's
-  own editors. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot
+  response's length and trim are not offered (ReaVerb's trim is not modelled); the EQ bands'
+  widths are set in ReaEQ's editor. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot
   empty (REAPER passes a missing plugin through).
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.

@@ -63,13 +63,17 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   (`LINKEDLANE`); the new area wins its range and the areas it overlaps cross-fade into it over
   10 ms with REAPER's equal-power curve, and the comp lane's items are rebuilt from the areas as
   REAPER rebuilds them. As with REAPER's big lanes (`FIXEDLANES` &8, the default) each lane is
-  one track height tall, so a track grows with its lanes.
+  one track height tall, so a track grows with its lanes; a line separates the lanes and the
+  header has a button per lane with its name, lit while it plays (click plays only that lane,
+  Ctrl+click adds or removes it).
 - **Track selection and folders** (`scythe_core::folders`, REAPER 7.73's behaviour measured with
   Lua probes and by dragging in its track view): click selects a track, Ctrl+click toggles one,
   Shift+click selects a range; "Track: Select all tracks" (40296) and "Unselect all" (40297).
   Mute, solo, arm and polarity clicked on a selected track, and a selected strip's fader and
   pan, carry over to the other selected tracks (REAPER's selection grouping; faders by the same
-  dB, pan by the same amount). Drag track headers, or mixer strips by their name, to reorder:
+  dB, pan by the same amount), as do record input and monitoring in the inspector and send
+  levels to the same destination. The selection is read from the tracks' `SEL` lines when a
+  project opens and written back on save, as REAPER keeps it. Drag track headers, or mixer strips by their name, to reorder:
   a line shows where they land, at its folder depth; as in REAPER the top third of a track drops
   before it, the middle third makes it a folder holding the dragged tracks, the bottom third
   drops after it at its depth (so the last track of a folder extends the folder). Several
@@ -238,7 +242,9 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   ReaXcomp.
 - **Stock effect editors**: The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit,
   ReaDelay, ReaFIR, ReaVerbate, ReaVerb, ReaSynth, ReaInsert, ReaControlMIDI) get **Edit** too,
-  opening a graphical editor in a resizable window, drawn from the emulation's own math: ReaEQ's
+  opening a graphical editor in a resizable window (for a track's or the master's effects, input
+  FX, monitoring FX, the active take's FX in the item card and effects inside containers; also
+  from ReaScript's `TrackFX_Show`), drawn from the emulation's own math: ReaEQ's
   response per band and in all with draggable handles (drag for frequency and gain, scroll or
   Shift-drag for the width, double-click to switch a band, right-click for its type, add and
   remove bands) over a live spectrum before and after; transfer curves with threshold and ratio
@@ -247,7 +253,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   meter; ReaGate's detector level with its opening and closing thresholds and when it stood open;
   ReaDelay's taps and their echoes on a time line with a row of values per tap; ReaFIR's curve
   drawn with points over the spectrum; ReaVerbate's decay by frequency; ReaVerb's impulse
-  response; ReaSynth's oscillator and envelope; ReaInsert's routing and ping. Every control drags,
+  response; ReaSynth's oscillator and envelope; ReaInsert's routing (the device's channel pairs by name) and
+  ping; ReaXcomp's bands split and removed; ReaControlMIDI's scale clicked key by key. Every control drags,
   scrolls, takes the arrow keys once clicked, types a value on double-click and offers
   Modulate/Learn on right-click; each drag (and each drag on the parameter rows, which stay a tab
   away) is one undo step. The meters and spectra come from a probe the effect fills only while its
@@ -333,7 +340,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   one in parallel to blend), an EQ (ReaEQ: low cut, bass, mid, treble, high cut) and the output
   level, so REAPER opens and plays it unchanged. The effects list shows it as one slot whose
   **Edit** opens the rig window: the signal chain from left to right with a switch per stage, the
-  picked stage's knobs under it, the model browser for the amp and the impulse response browser
+  picked stage's knobs under it (the gate's threshold, attack, release and hysteresis; the EQ's
+  cuts, tones and their frequencies), the model browser for the amp and the impulse response browser
   for the cab (library IRs and TONE3000 IR tones, with the same Preview, A/B, Keep and Revert as
   models). Captures that include a cabinet (TONE3000's amp-cab and full-rig tones, or the `.nam`
   file's `gear_type`) switch the cab off and amp-only ones switch it on, which the cab shows;
@@ -367,7 +375,12 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   controller, sysex and text event with its fields editable). Click adds a note on the grid
   (snapped into the scale with key snap); as REAPER's defaults, a left drag on empty grid draws a
   note (drag to extend or change pitch, Shift ignores snap) and a right drag selects with a
-  marquee (Shift adds, Ctrl toggles); drag moves the selection, drag a right edge resizes, right-click deletes,
+  marquee (Shift adds, Ctrl toggles); drag moves the selection, drag a right edge resizes, right-click deletes.
+  The other left-drag modifiers are REAPER's defaults: on a note Shift moves ignoring snap, Ctrl
+  copies, Ctrl+Shift moves on one axis, Alt edits the velocity, Ctrl+Shift+Alt moves vertically
+  ignoring the scale; on empty grid Ctrl copies the selected notes by the drag, Alt erases the
+  notes it passes and Ctrl+Alt (Shift+Alt ignoring snap) paints a line of notes. A looped item's
+  passes show after the first and edit the same notes;
   double-click opens a note's properties (start, length, key, velocity, off velocity, channel,
   mute). Below the roll sit any number of controller lanes (velocity, off velocity, CC 0-127,
   14-bit pairs, pitch bend, program, channel and poly aftertouch, sysex, text): the draw tool
@@ -375,15 +388,17 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   joined by a CC shape: linear, slow start/end, fast start, fast end, bezier with tension,
   square), right-click a value for its shape. Commands: quantize (grid, swing grid, strength,
   position / position and end / end / length, a window around the grid line), humanize,
-  transpose (by scale steps with key snap), legato, split on the grid, join, mute, force into
+  transpose (by scale steps with key snap), legato (also keeping the notes' relative spacing,
+  40766), split on the grid, join, mute, force into
   key, channel for new events and a channel filter, step input (notes played on a MIDI input,
   the virtual keyboard or the editor's keys go in at the step cursor), groove templates
   (`.rgt`, applied with a strength; notes save as one). Other selected MIDI items show behind
-  the edited one and a click on one of their notes edits that item. Alt+double-click opens an
+  the edited one, at their takes' play rate and in every pass of their loops, and a click on one of their notes edits that item. Alt+double-click opens an
   item's inline editor in the arrange view, as do "Item: Open item inline editors" (40847) for
   the selected items, and 41887 closes them. The editor's settings are stored in the take as
   REAPER stores them (`CFGEDIT` mode, channel, grid and swing; `KEYSNAP`; `EVTFILTER`; one
-  `VELLANE` per lane); shaped controllers play as REAPER plays them (steps every 1/`CCINTERP`
+  `VELLANE` per lane), and key snap's root and scale are the project's key signature, saved in
+  its `<KEYSIG` as REAPER saves it (`midi.key`); shaped controllers play as REAPER plays them (steps every 1/`CCINTERP`
   quarter note). The MIDI editor section's actions (32060) run by their REAPER ids through
   `midi.action`. Edits are written back into the item's `<SOURCE MIDI` (an edited item leaves
   its pool). Controllers, pitch bend,
@@ -467,11 +482,15 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   the project play rate and, like track envelopes and their automation items, tempo edits in a
   beats timebase.
 - **Envelope lanes** (the envelope button on the left rail): the selected track's envelopes,
-  its sends' and its effects' parameters one lane each on the arrange time axis. Points drag,
+  its sends' and its effects' parameters one lane each on the arrange time axis, the selected
+  item's take envelopes (volume, pan, mute, pitch) and the tempo map (REAPER's master tempo
+  envelope: a point per tempo change, square or linear). Points drag,
   double-click adds and a right-click sets the shape (linear, square, slow start/end, fast
   start, fast end, bezier with its tension); a lane's Shape menu sets every point (in the time
   selection). Arm, bypass and show over the track per envelope, "+ Envelope" for any kind or
-  any FX parameter, and the global override buttons. API: `envelope.*`.
+  any FX parameter or take envelope, a send lane's own automation mode (REAPER's per-send
+  `I_AUTOMODE`, which automation writing follows) and the global override buttons. API:
+  `envelope.*`.
 - **Automation items** (`<POOLEDENV` pools and `POOLEDENVINST` instances), played as REAPER
   7.73 renders them: pool points sit in quarter notes on the tempo map (a tempo ramp bends an
   item piecewise between them), the start offset and play rate move through the pool, looped
