@@ -38,7 +38,9 @@ devbox run test
 
 The audio interface is chosen in the audio device window (Ctrl+P, or click the
 `48k · 512 · CPU` pill in the top bar): JACK, ALSA or Dummy, the devices, how many inputs and
-outputs to open, rate and block size. It switches without closing the project and opens the
+outputs to open, rate and block size; on ALSA it lists one entry per sound card, as REAPER does
+(`hw:QUADCAPTURE ; USB-Audio - QUAD-CAPTURE`), and the pill shows REAPER's latency figure. It
+switches without closing the project and opens the
 same device next time; `--output-device`, `--sample-rate` and the other device flags override it
 for one run.
 

@@ -15,16 +15,24 @@ control = "0.0.0.0:8770"
 token = "change-me"
 
 [audio]
-output = "Scarlett 18i20"
-input = "Scarlett 18i20"
+output = "hw:USB"
+input = "hw:USB"
 sample_rate = 48000
 buffer_size = 128
 output_channels = 20
 input_channels = 18
 ```
 
-`scythe-server --list-devices` prints every device with the id to put in `output` and `input`
-(`hw:CARD=USB,DEV=0`); a name or part of one works too. Without an `[audio]` section or device
+`scythe-server --list-devices` prints the sound cards as REAPER's device page lists them, with
+the id to put in `output` and `input` (`hw:USB ; USB-Audio - Scarlett 18i20 USB`);
+`--list-devices --all` adds every other ALSA name (`hw:1,0`, `plughw:…`) and the PulseAudio
+sinks, and a name or part of one works too. Pick the card itself on the ALSA system for the
+lowest latency: the system default (PipeWire) adds the sound server's own buffering, and the
+top bar pill shows REAPER's latency figure (`~2.6/2.6ms` for 128 frames at 48 kHz) with the
+delay the device measures in its tooltip. When PipeWire still holds the card (it lets go a few
+seconds after its last stream stops) Scythe waits for it rather than failing; if it stays
+busy, turn the card's profile Off (`wpctl set-profile <id> 0`, or pavucontrol's
+Configuration tab) so ALSA can have it. Without an `[audio]` section or device
 flags the server opens what the desktop app's audio device window last saved (Ctrl+P, or click
 the rate pill in the top bar), so the rig can be set up on a screen first; `audio.set_device`
 over the control API switches it while the session runs. Each channel then shows by its name

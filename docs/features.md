@@ -1067,16 +1067,54 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   device page from the audio status in its menu bar. Each audio system shows REAPER's settings
   for it: JACK the input and output channels, auto-start (with the launch command, blank for
   libjack's own) and auto-connect to the hardware ports; ALSA the channels with the input and
-  output devices (listed as REAPER lists them, `id ; name`), sample rate, block size, bit depth
-  (16, 24 or 32-bit integer, the device's own format when it has not that one) and RT priority
-  for the audio thread (0 is non-RT); PulseAudio (a sound server of its own, or PipeWire's) the
-  channels, rate and block size, opened as 32-bit as REAPER opens it; Dummy Audio the rate and
-  block size. "Allow projects to override device sample rate", "Disable power management"
-  (`/dev/cpu_dma_latency` held at 0) and "Lock process memory with mlockall()" are there too.
-  Apply stops the transport and opens the new device without closing the project: effects keep
-  their state, media is decoded again at a new rate, plugin editors close. When the device
-  cannot be opened the error shows in the window and the previous device plays on. The window
-  shows what plays: device, rate, block, latency and channel counts.
+  output devices, sample rate, block size, bit depth (16, 24 or 32-bit integer, the device's
+  own format when it has not that one) and RT priority for the audio thread (0 is non-RT);
+  PulseAudio (a sound server of its own, or PipeWire's) the channels, rate and block size,
+  opened as 32-bit as REAPER opens it; Dummy Audio the rate and block size. "Allow projects to
+  override device sample rate", "Disable power management" (`/dev/cpu_dma_latency` held at 0)
+  and "Lock process memory with mlockall()" are there too. Apply stops the transport and opens
+  the new device without closing the project: effects keep their state, media is decoded again
+  at a new rate, plugin editors close. When the device cannot be opened the error shows in the
+  window and the previous device plays on.
+- **ALSA device lists as REAPER's**: one entry per sound card, read from `/proc/asound/cards`
+  (no device is opened to list them), the same list for input and output, labelled as REAPER
+  7.73 labels them: `hw:QUADCAPTURE ; USB-Audio - QUAD-CAPTURE`. Cards without a PCM device (a
+  MIDI keyboard) are left out; a card with several PCM devices still shows once (`hw:<id>` is
+  its first device). The long tail ALSA also knows (`default`, `pipewire`, `sysdefault`,
+  `front`, `surround51`, `iec958`, `plughw` twins) and PulseAudio's sinks, sources and monitors
+  are not listed, as REAPER does not list them; `--list-devices --all` and `audio.devices
+  {"all": true}` print them, and any ALSA name (`hw:1,0`, `plughw:QUADCAPTURE`, a PCM of your own
+  `asoundrc`) can still be set through `--output-device`, `[audio]` or `audio.set_device`.
+  REAPER's `alsa_outdev=hw:QUADCAPTURE` opens the same card. "System default (PipeWire)" is the
+  entry for no device; while it plays, the window and the top bar pill's tooltip say so, so the
+  interface still gets picked.
+- **What the chosen device offers**: on choosing a device the window asks it for its rates,
+  channel counts and bit depths and offers only those, defaulting to its own (a QUAD-CAPTURE:
+  44100 Hz, 6 in, 4 out, 32 bit). A USB interface another program holds is read from
+  `/proc/asound/cardN/streamM` instead. A rate the device does not run at opens at the nearest
+  one it does (REAPER's ALSA device asks for the nearest rate); a channel count below a
+  device's fixed count opens it whole and offers every channel, as REAPER 7.73 shows 6 in / 4
+  out of a 6-in, 4-out device asked for 2/2.
+- **Latency as REAPER shows it**: the window's "Playing" line and the top bar pill show REAPER's
+  figure, `~2.9/2.9ms`: one block in, the periods but one out, in milliseconds cut to a tenth
+  below ten (measured in REAPER 7.73: 128 frames in 2 periods at 48 kHz is `~2.6/2.6ms`, 512 in 4
+  `~10/32ms`, 64 in 3 at 96 kHz `~0.6/1.3ms`). Their tooltips add the delay the device measures
+  (the driver's queue, a USB interface's transfer buffers included) for output and, while the
+  input is open, input. ALSA devices open with exactly the block size in two periods (the
+  fewest the backend allows); the input runs at the same block size; the monitored input is
+  played in the block it arrives in, with at most one block of slack between the capture and
+  playback clocks. A PulseAudio/PipeWire stream asks for a two-block buffer of the block size
+  (512 frames when none is set) instead of the server's default, and opens at the sink's own
+  channel count. API: `latency`, `output_latency` and `input_latency` in `audio.device`,
+  `latency` in `transport.health`.
+- **A device another program holds**: switching closes the old device's streams before opening
+  the new one, as REAPER does. A device that is busy (PipeWire keeps an interface open until its
+  node suspends, about five seconds after its last stream stops) is tried again every quarter
+  second for up to seven seconds while the window and pill say "Waiting for PipeWire to release
+  hw:QUADCAPTURE…"; the same happens at start. When it stays busy the previous device comes
+  back and the "Error opening devices" window says who holds it (the owner of the PCM from
+  `/proc/asound`, PipeWire named as such) and what to do: choose the interface on the PipeWire
+  or JACK system, or free it for ALSA (its profile Off in pavucontrol or `wpctl set-profile`).
 - **Saved as REAPER saves it**: the choice goes into the preferences under REAPER 7.73's Linux
   reaper.ini keys (`linux_audio_mode` 0 JACK, 1 ALSA, 2 Dummy, 3 PulseAudio; `alsa_indev`,
   `alsa_outdev`, `linux_audio_nch_in`, `linux_audio_nch_out`, `linux_audio_srate`,
@@ -1130,8 +1168,9 @@ Flags: `--demo` (open the demo song), `--play` (start playback on launch), `--re
 `--no-input` (never
 open the audio input for monitoring), `--audio-host`, `--output-device`, `--input-device`,
 `--sample-rate`, `--buffer-size`, `--output-channels`, `--input-channels` (as `scythe-server`
-takes them, overriding the saved audio device for this run), `--list-devices` (print every
-audio device with its id and exit), `--null-audio` (open no audio device and play on a
+takes them, overriding the saved audio device for this run), `--list-devices` (print the
+audio devices the device window lists, as `id ; name`, and exit; with `--all` every name the
+audio systems know), `--null-audio` (open no audio device and play on a
 silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
 made), `--view=START-END`
 (open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).

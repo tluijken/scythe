@@ -35,8 +35,9 @@ measured.
   says so. JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
   channels" are kept but not used: Scythe's MIDI goes through the ALSA sequencer, which JACK and
   PipeWire bridge. "Auto-suspend PulseAudio" (`linux_auto_pasuspend`, REAPER running its ALSA
-  device under `pasuspender`) is not done; on PipeWire systems the ALSA `pipewire` or `default`
-  device is the way to share the hardware. The ReWire option of "close audio device when
+  device under `pasuspender`) is not done; on PipeWire systems the system default (PipeWire's
+  ALSA `default` device, or the PulseAudio system) is the way to share the hardware, and a card
+  PipeWire holds is waited for (see below). The ReWire option of "close audio device when
   inactive" does not apply (no ReWire on Linux), nor does "Virtual loopback audio hardware
   channels". RT priority applies to ALSA as REAPER's ALSA page has it; with JACK the server sets
   it, and PulseAudio streams get Scythe's default promotion. REAPER greys Dummy Audio's channels
@@ -47,6 +48,19 @@ measured.
   one capture stream was checked on a private PulseAudio server (one source output while both
   run); no ALSA setup that refuses a second capture open was available without kernel modules,
   so a `hw:` device was not tried.
+- ALSA device lists: REAPER's input and output combo boxes are editable (any ALSA name can be
+  typed, `null` say); Scythe's window lists only the cards and the system default, and other
+  names go through `--output-device`, `[audio]` or `audio.set_device`. On first start REAPER
+  7.73 picks JACK (and, with no JACK server running, opens nothing); Scythe opens the system
+  default (PipeWire's or PulseAudio's default device) instead and says so in the window and the
+  pill, so a fresh install plays without setup. The latency figure assumes the two periods the
+  backend opens; on JACK the server's period count is not known and two are assumed. The
+  busy-device wait was tried with an ALSA PCM of a private configuration made to refuse opens
+  with `EBUSY` (an `LD_PRELOAD` shim) and in unit tests, not with a card PipeWire holds; the
+  holder's name comes from `/proc/asound/cardN/pcmMp/subS/status`, which the kernel fills only
+  while the PCM is open. Rates that a device does not run at are not offered once it has been
+  asked; when it cannot be asked (busy and not a USB interface) REAPER's rates are offered and
+  the nearest supported rate opens.
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns
