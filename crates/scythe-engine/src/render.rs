@@ -248,6 +248,9 @@ pub enum Clicks {
     Beats,
     /// A count-in, `at` frames into it where the block starts.
     CountIn { clicks: CountInClicks, at: i64 },
+    /// Playback just after a count-in, `at` frames into the count-in where the block starts:
+    /// its last clicks ring out (as REAPER 7.73's do), over the beat clicks with `beats`.
+    CountInTail { clicks: CountInClicks, at: i64, beats: bool },
 }
 
 /// Where the transport metronome plays, from the project's metronome settings.
@@ -597,6 +600,9 @@ impl<'a> LiveInput<'a> {
             midi_out: self.midi_out,
             clicks: match self.clicks {
                 Clicks::CountIn { clicks, at } => Clicks::CountIn { clicks, at: at + from as i64 },
+                Clicks::CountInTail { clicks, at, beats } => {
+                    Clicks::CountInTail { clicks, at: at + from as i64, beats }
+                }
                 c => c,
             },
         }
@@ -2018,20 +2024,36 @@ impl RenderGraph {
         match clicks {
             Clicks::Off => {}
             Clicks::Beats => self.beat_clicks(start, start..start + n as i64, f),
-            Clicks::CountIn { clicks, at } => {
-                let end = (at + n as i64).min(clicks.audible);
-                for k in 0..clicks.beats() {
-                    let pos = clicks.click_at(k);
-                    if pos >= end {
-                        break;
-                    }
-                    let sound = if clicks.accented(k) { &self.clicks.accent } else { &self.clicks.beat };
-                    for frame in pos.max(at)..(pos + sound.len() as i64).min(end) {
-                        f((frame - at) as usize, sound[(frame - pos) as usize]);
-                    }
+            Clicks::CountIn { clicks, at } => self.count_in_clicks(&clicks, at, n, f),
+            Clicks::CountInTail { clicks, at, beats } => {
+                if beats {
+                    self.beat_clicks(start, start..start + n as i64, &mut f);
                 }
+                self.count_in_clicks(&clicks, at, n, f);
             }
         }
+    }
+
+    /// The count-in clicks sounding in its frames `at..at + n`: those starting while it is
+    /// audible, each played to its end.
+    fn count_in_clicks(&self, clicks: &CountInClicks, at: i64, n: usize, mut f: impl FnMut(usize, f32)) {
+        let end = at + n as i64;
+        let last = clicks.audible.min(clicks.frames);
+        for k in 0..clicks.beats() {
+            let pos = clicks.click_at(k);
+            if pos >= end || pos >= last {
+                break;
+            }
+            let sound = if clicks.accented(k) { &self.clicks.accent } else { &self.clicks.beat };
+            for frame in pos.max(at)..(pos + sound.len() as i64).min(end) {
+                f((frame - at) as usize, sound[(frame - pos) as usize]);
+            }
+        }
+    }
+
+    /// How long the longest click sound lasts, in frames.
+    pub fn click_len(&self) -> i64 {
+        self.clicks.accent.len().max(self.clicks.beat.len()) as i64
     }
 
     /// Calls `f(offset, sample)` for the beat clicks sounding in project frames `range` of a

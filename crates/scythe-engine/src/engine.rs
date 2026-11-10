@@ -336,6 +336,9 @@ struct Processor {
     midi_out_rx: Receiver<Option<MidiOutQueue>>,
     midi_out: Option<MidiOutQueue>,
     was_playing: bool,
+    /// After a count-in: its clicks and the frame into it where the next block starts, while
+    /// its last clicks still ring.
+    count_in_tail: Option<(CountInClicks, i64)>,
     hits: rtrb::Producer<Hit>,
     /// Notes from the virtual MIDI keyboard.
     keyboard: rtrb::Consumer<LiveMidi>,
@@ -377,6 +380,7 @@ impl Processor {
             midi_out_rx: feeds.midi_out_rx,
             midi_out: None,
             was_playing: false,
+            count_in_tail: None,
             hits: feeds.hits,
             keyboard: feeds.keyboard,
             sync_rx: feeds.sync_rx,
@@ -598,15 +602,24 @@ impl Processor {
             graph.device_out_at(0, frames, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, 0, frames, l, r, &mut self.extra);
         }
+        let tail = match count_in {
+            Some((clicks, at, len)) if at + len as i64 >= clicks.frames => Some((clicks, at)),
+            Some(_) => None,
+            None => self.count_in_tail.filter(|_| n > 0),
+        };
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 && counted == 0 { &self.live } else { &[] };
+            let clicks = match tail {
+                Some((clicks, at)) => Clicks::CountInTail { clicks, at: at + off as i64, beats },
+                None => song_clicks,
+            };
             let live = LiveInput {
                 channels: channels(off, len),
                 midi,
                 play_items: true,
                 recording,
                 midi_out: clock(pos, off),
-                clicks: song_clicks,
+                clicks,
             };
             self.hardware.segment(off);
             graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
@@ -614,6 +627,9 @@ impl Processor {
             graph.device_out_at(off, len, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, off, len, l, r, &mut self.extra);
         }
+        self.count_in_tail = tail
+            .map(|(clicks, at)| (clicks, at + frames as i64))
+            .filter(|(clicks, at)| *at < clicks.frames + graph.click_len());
         self.hardware.mix_into(&mut self.left[..frames], &mut self.right[..frames], &mut self.extra);
         self.preview.mix_into(&mut self.left[..frames], &mut self.right[..frames]);
         let budget = frames as f32 / self.transport.sample_rate as f32;
@@ -1920,6 +1936,30 @@ mod tests {
         };
         let (first, fourth) = (accent(0), accent(3));
         assert!(first > fourth, "the bar's first beat is accented");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_last_count_in_click_rings_past_the_start() {
+        let (p, pool, dir) = ones_project(2.0);
+        let transport = Arc::new(Transport::new(8000));
+        let mut proc = processor(&p, &pool, &transport);
+        transport.position.store(16_000, Ordering::Relaxed);
+        // The only click 100 frames before the playhead moves, played across block edges.
+        transport.start_count_in(CountInClicks {
+            frames: 4100,
+            beat: 4000.0,
+            first: 4000.0,
+            first_in_bar: 0,
+            beats_per_bar: 4,
+            audible: 4100,
+        });
+        transport.playing.store(true, Ordering::Relaxed);
+        let out = run(&mut proc, 9000);
+        assert!(out[..4000].iter().all(|&s| s == 0.0));
+        assert!(out[4000..4100].iter().any(|&s| s != 0.0), "the click");
+        assert!(out[4100..4200].iter().any(|&s| (s - 1.0).abs() > 1e-3), "it rings on over the song");
+        assert!(out[8000..].iter().all(|&s| (s - 1.0).abs() < 1e-6), "and then the song alone");
         std::fs::remove_dir_all(&dir).ok();
     }
 
