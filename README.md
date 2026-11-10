@@ -747,7 +747,23 @@ Working:
   0600 file) needs a publishable key you register yourself; see [docs/tone3000.md](docs/tone3000.md).
   The model path stays in the LV2 plugin's own state, so REAPER keeps opening the slot; snapshots
   go into the track's `<EXT` extension state, which REAPER keeps. `.nam` files dropped on a track
-  load into its NAM slot (or a new one). CLAP plugins are
+  load into its NAM slot (or a new one). The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit, ReaDelay, ReaFIR,
+  ReaVerbate, ReaVerb, ReaSynth, ReaInsert, ReaControlMIDI) get **Edit** too, opening a graphical
+  editor in a resizable window, drawn from the emulation's own math: ReaEQ's response per band
+  and in all with draggable handles (drag for frequency and gain, scroll or Shift-drag for the
+  width, double-click to switch a band, right-click for its type, add and remove bands) over a
+  live spectrum before and after; transfer curves with threshold and ratio handles, the
+  detector's level on the curve, gain reduction meters and history for ReaComp and ReaLimit;
+  ReaXcomp's crossovers on the spectrum with each band's response, transfer curve and meter;
+  ReaGate's detector level with its opening and closing thresholds and when it stood open;
+  ReaDelay's taps and their echoes on a time line with a row of values per tap; ReaFIR's curve
+  drawn with points over the spectrum; ReaVerbate's decay by frequency; ReaVerb's impulse
+  response; ReaSynth's oscillator and envelope; ReaInsert's routing and ping. Every control
+  drags, scrolls, takes the arrow keys once clicked, types a value on double-click and offers
+  Modulate/Learn on right-click; each drag (and each drag on the parameter rows, which stay a tab
+  away) is one undo step. The meters and spectra come from a probe the effect fills only while
+  its editor is open: atomics and two sample rings, nothing locked or allocated on the audio
+  thread. CLAP plugins are
   hosted, instruments included (scan `~/.clap`, `/usr/lib/clap`, `$CLAP_PATH`), as are LV2
   plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …; controls and state in REAPER's `<LV2` layout),
   VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)
@@ -996,6 +1012,11 @@ compares the two files.
 
 ### Not there yet
 
+- Stock effect editors: they open for a track's own chain only (not input FX, monitoring FX,
+  take FX or effects inside containers); ReaXcomp bands cannot be added or removed, ReaControlMIDI's
+  scale is shown but not edited, ReaInsert lists device channel pairs as numbers, and ReaFIR's
+  gate, compressor, subtract and convolve modes have no editor (they are not emulated). Parameter
+  changes through `fx.param` are not undo steps (the editors' and the parameter rows' are).
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns

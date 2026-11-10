@@ -328,6 +328,10 @@ itself).
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |
 | `fx.params` | `track`, `index` | `[{"id", "name", "value", "text", "min", "max", "default"}]` of a hosted plugin |
 | `fx.param` | `track`, `index`, `param` (an id from `fx.params`), `value` (clamped to the range) | the parameter |
+| `fx.meters` | `track`, `index` | `{"input_db", "output_db", "reduction_db", "detector_db", "gate_open", "band_reduction_db"}`; measuring runs for about two seconds after each call, so the first can read nothing |
+| `fx.eq_band` | `track`, `index`, `action` (`add`, `remove`, `set`), `band`, `kind` (`low_shelf`, `high_shelf`, `band`, `notch`, `low_pass`, `high_pass`, `band_pass`, `all_pass`), `freq`, `gain_db`, `width` | `{"bands"}`; one undo step |
+| `fx.delay_tap` | `track`, `index`, `action`, `tap`, `time_ms`, `musical`, `feedback_db`, `volume_db`, `pan`, `lowpass`, `highpass`, `enabled` | `{"taps"}`; one undo step |
+| `fx.fir_points` | `track`, `index`, `points` (`[[hz, db], …]`) | `{"points"}`; one undo step |
 | `fx.wet` | `track`, `index`, `wet?` (0-1), `delta?` (play only the difference the effect makes) | the chain |
 | `fx.parallel` | `track`, `index`, `mode` (`serial`, `parallel`: on the same input as the effect before, outputs summed; `merge_midi`: also merging its MIDI output) | the chain |
 | `fx.offline` | `track`, `index`, `offline?` (toggles when left out) | the chain |

@@ -8,6 +8,7 @@ mod delay;
 mod dynamics;
 mod eq;
 mod fir;
+mod misc;
 pub mod model;
 
 use std::collections::HashMap;
@@ -52,6 +53,11 @@ impl Kind {
             "ReaLimit" => Self::Limit,
             "ReaDelay" => Self::Delay,
             "ReaFir (FFT EQ+Dynamics Processor)" => Self::Fir,
+            "ReaVerbate" => Self::Verbate,
+            "ReaVerb" => Self::Verb,
+            "ReaSynth" => Self::Synth,
+            "ReaInsert" => Self::Insert,
+            "ReaControlMIDI" => Self::ControlMidi,
             _ => return None,
         })
     }
@@ -441,13 +447,17 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
         Tab::Parameters => parameters(cx, ui, content),
         Tab::Editor => match cx.ed.kind {
             Kind::Eq => eq::show(cx, ui, content),
-            _ => parameters(cx, ui, content),
             Kind::Comp => dynamics::comp(cx, ui, content),
             Kind::Xcomp => dynamics::xcomp(cx, ui, content),
             Kind::Gate => dynamics::gate(cx, ui, content),
             Kind::Limit => dynamics::limit(cx, ui, content),
             Kind::Delay => delay::show(cx, ui, content),
             Kind::Fir => fir::show(cx, ui, content),
+            Kind::Verbate => misc::verbate(cx, ui, content),
+            Kind::Verb => misc::verb(cx, ui, content),
+            Kind::Synth => misc::synth(cx, ui, content),
+            Kind::Insert => misc::insert(cx, ui, content),
+            Kind::ControlMidi => misc::control_midi(cx, ui, content),
         },
     }
     keys(cx, ui);
