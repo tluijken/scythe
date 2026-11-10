@@ -335,6 +335,10 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
+        let row = match &rig {
+            Some(s) => row.on_hover_text(format!("{short}\n{}\nClick or Edit to open the rig", rig_summary(s))),
+            None => row,
+        };
         if nam.is_some() || rig.is_some() {
             let open = app.nam.panel.is_some() && app.nam.panel == app.nam_target(track_id, i);
             let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
