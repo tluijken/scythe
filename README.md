@@ -228,6 +228,7 @@ Every known difference, area by area, is in [docs/limitations.md](docs/limitatio
 | [docs/features.md](docs/features.md) | every feature in detail |
 | [docs/verification.md](docs/verification.md) | what was compared with REAPER and how close it is |
 | [docs/limitations.md](docs/limitations.md) | what is not there yet or differs from REAPER |
+| [docs/testing.md](docs/testing.md) | the unit, UI and end-to-end tests: `devbox run test` and `devbox run itest` |
 | [docs/live.md](docs/live.md) | Scythe on stage: service, real-time audio, click, footswitches |
 | [docs/control-api.md](docs/control-api.md) | the control API's endpoints, commands and events |
 | [docs/mcp.md](docs/mcp.md) | the MCP server for AI agents |
