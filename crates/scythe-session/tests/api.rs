@@ -186,6 +186,24 @@ fn chains_take_wet_parallel_and_containers() {
 }
 
 #[test]
+fn fx_param_changes_undo() {
+    let mut s = session();
+    let t = add_track(&mut s, "Bass");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    let p = &params[0];
+    let (id, before) = (p["id"].as_u64().unwrap(), p["value"].as_f64().unwrap());
+    let (min, max) = (p["min"].as_f64().unwrap(), p["max"].as_f64().unwrap());
+    let target = if (before - max).abs() > 1e-9 { max } else { min };
+    let set = ok(&mut s, json!({"cmd": "fx.param", "track": t, "index": 0, "param": id, "value": target}));
+    assert!((set["value"].as_f64().unwrap() - target).abs() < 1e-9, "{set}");
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    let after = params.as_array().unwrap().iter().find(|p| p["id"].as_u64() == Some(id)).unwrap();
+    assert!((after["value"].as_f64().unwrap() - before).abs() < 1e-9, "{after}");
+}
+
+#[test]
 fn items_move_split_and_go() {
     let mut s = session();
     let a = add_track(&mut s, "A");

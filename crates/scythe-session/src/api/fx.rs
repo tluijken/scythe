@@ -70,7 +70,8 @@ pub enum FxCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// Sets parameter `param` (an id from `fx.params`) to `value`, within its range.
+    /// Sets parameter `param` (an id from `fx.params`) to `value`, within its range, as one
+    /// undo step.
     #[serde(rename = "fx.param")]
     SetParam {
         track: TrackRef,
@@ -959,10 +960,8 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
             if !value.is_finite() {
                 return Err(ApiError::invalid("the value must be a number"));
             }
-            inst.with(|e| e.set_param(param, value.clamp(info.min, info.max)));
-            // Plugin state is not part of the undoable model; it reaches the project on save.
-            session.engine.wake_effects();
-            session.dirty = true;
+            let label = format!("Adjust {}", info.name);
+            session.fx_edit(&label, &inst, |e| e.set_param(param, value.clamp(info.min, info.max)));
             let values = params(session, loc, &at, index)?;
             Ok(values.into_iter().find(|p| p.id == param).map_or(Value::Null, json))
         }
