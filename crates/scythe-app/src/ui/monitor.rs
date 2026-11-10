@@ -165,7 +165,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         let track = Rect::from_min_max(pos2(area.left(), area.bottom() + 3.0), pos2(area.right(), area.bottom() + 6.0));
         painter.rect_filled(track, CornerRadius::same(255), BG);
         let w = track.width() * area.width() / content_w;
-        let thumb = Rect::from_min_size(pos2(track.left() + (track.width() - w) * scroll / max_scroll, track.top()), vec2(w, 3.0));
+        let thumb = Rect::from_min_size(
+            pos2(track.left() + (track.width() - w) * scroll / max_scroll, track.top()),
+            vec2(w, 3.0),
+        );
         painter.rect_filled(thumb, CornerRadius::same(255), RAISED_HI);
     }
 }

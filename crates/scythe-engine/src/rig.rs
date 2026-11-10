@@ -762,8 +762,16 @@ mod tests {
 
     #[test]
     fn gate_timing_and_tone_frequencies_live_in_reagate_and_reaeq() {
-        let mut s = RigSettings::default();
-        s.gate = GateSettings { enabled: true, threshold_db: -40.0, attack_ms: 20.0, release_ms: 300.0, hysteresis_db: -6.0 };
+        let mut s = RigSettings {
+            gate: GateSettings {
+                enabled: true,
+                threshold_db: -40.0,
+                attack_ms: 20.0,
+                release_ms: 300.0,
+                hysteresis_db: -6.0,
+            },
+            ..RigSettings::default()
+        };
         s.eq.mid_hz = 1200.0;
         s.eq.bass_hz = 90.0;
         s.eq.treble_hz = 4000.0;

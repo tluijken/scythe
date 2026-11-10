@@ -108,7 +108,7 @@ fn main() {
     write_mono(&cab_b, &cab(0x0bad_cafe, 3000));
 
     let settings = RigSettings {
-        gate: GateSettings { enabled: true, threshold_db: -40.0 },
+        gate: GateSettings { enabled: true, threshold_db: -40.0, ..GateSettings::default() },
         amp: AmpSettings { enabled: true, model: None, input_db: 0.0, output_db: 0.0 },
         cab: CabSettings {
             ir: Some(cab_a.display().to_string()),
@@ -149,7 +149,7 @@ fn main() {
         let demo = RigSettings {
             amp: AmpSettings { model: Some(amp.clone()), input_db: 2.0, output_db: -3.0, ..Default::default() },
             cab: CabSettings { ir: Some(ir.clone()), ..CabSettings::default() },
-            gate: GateSettings { enabled: true, threshold_db: -56.0 },
+            gate: GateSettings { enabled: true, threshold_db: -56.0, ..GateSettings::default() },
             ..RigSettings::default()
         };
         let mut p = Project::default();

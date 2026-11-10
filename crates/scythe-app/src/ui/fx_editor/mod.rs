@@ -1103,7 +1103,8 @@ pub(crate) struct FieldChange {
 /// type. The caller applies the value within a gesture and ends it when `done`.
 pub(crate) fn field_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, f: &Field, label: &str) -> FieldChange {
     let info = ParamInfo { id: 0, name: label.into(), min: f.min, max: f.max, default: f.min, log: f.log };
-    let resp = ui.interact(rect, Id::unique(("fx-ed-field", &cx.ed.owner, &cx.ed.path, f.key)), Sense::click_and_drag());
+    let resp =
+        ui.interact(rect, Id::unique(("fx-ed-field", &cx.ed.owner, &cx.ed.path, f.key)), Sense::click_and_drag());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(8), if resp.hovered() || resp.dragged() { RAISED_HI } else { BG });
     if !label.is_empty() {

@@ -129,7 +129,9 @@ fn the_key_signature_lives_in_the_project() {
     let text = scythe_core::rpp::project_to_rpp(&s.project);
     assert!(text.contains("<KEYSIG\n    0 2 -1 0x5AD"), "{text}");
     let edited = ok(&mut s, json!({"cmd": "midi.action", "item": item, "command": 40767}));
-    assert!(edited.as_array().unwrap().iter().all(|n| [2, 4, 5, 7, 9, 10, 0].contains(&(n["key"].as_u64().unwrap() % 12))));
+    assert!(
+        edited.as_array().unwrap().iter().all(|n| [2, 4, 5, 7, 9, 10, 0].contains(&(n["key"].as_u64().unwrap() % 12)))
+    );
     ok(&mut s, json!({"cmd": "midi.edit", "item": item, "op": "legato_relative"}));
 }
 

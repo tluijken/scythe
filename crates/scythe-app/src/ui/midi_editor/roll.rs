@@ -95,10 +95,7 @@ enum Drag {
     },
     /// Alt-drag on a note: its velocity (the selection's, when it is selected) follows the
     /// pointer up and down.
-    Velocity {
-        from_y: f32,
-        anchor: usize,
-    },
+    Velocity { from_y: f32, anchor: usize },
     /// Alt-drag on empty grid: notes the pointer passes are erased.
     Erase,
     /// Ctrl+Alt (Shift+Alt ignoring snap) drag on empty grid: a line of grid-long notes from
@@ -112,17 +109,10 @@ enum Drag {
     },
     /// Right-drag marquee (REAPER's "MIDI editor" right drag): Shift adds to the selection,
     /// Ctrl toggles it.
-    Select {
-        from: Pos2,
-        add: bool,
-        toggle: bool,
-    },
+    Select { from: Pos2, add: bool, toggle: bool },
     /// Left-drag on empty grid (REAPER's piano roll default): "Insert note, drag to extend or
     /// change pitch".
-    Draw {
-        start: u64,
-        off: f64,
-    },
+    Draw { start: u64, off: f64 },
 }
 
 /// The end of a note drawn from `start`: the snapped pointer, but at least one grid step on.
@@ -319,9 +309,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         let from_key = |fallback: u8| rows.key_at(p.y).map_or(fallback as i32, |k| k as i32);
         let drag = match hit(&notes, p) {
             _ if secondary => Drag::Select { from: p, add: shift_held, toggle: ctrl_held },
-            Some((i, _, _)) if alt_held && !ctrl_held && !shift_held => {
-                Drag::Velocity { from_y: p.y, anchor: i }
-            }
+            Some((i, _, _)) if alt_held && !ctrl_held && !shift_held => Drag::Velocity { from_y: p.y, anchor: i },
             Some((i, edge, off)) => {
                 if !notes[i].selected {
                     if !shift_held {

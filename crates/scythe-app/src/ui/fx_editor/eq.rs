@@ -98,7 +98,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     // The handles are painted, not widgets: hover-only nodes let AccessKit find them without
     // taking clicks or drags from the graph under them.
     for (k, p) in at.iter().enumerate().filter(|(_, p)| graph.contains(**p)) {
-        let id = Id::unique(("fx-eq-handle", cx.ed.track, cx.ed.index, k));
+        let id = Id::unique(("fx-eq-handle", &cx.ed.owner, &cx.ed.path, k));
         let r = ui.interact(Rect::from_center_size(*p, vec2(16.0, 16.0)), id, Sense::hover());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Band {}", k + 1)));
     }

@@ -273,7 +273,8 @@ fn add_menu(app: &mut ScytheApp, ui: &mut Ui, track: TrackId) {
     }
     if let Some((_, item)) = app.sel.item.and_then(|i| app.project.find_item(i)).filter(|(t, _)| *t == track) {
         let id = item.id;
-        let have: Vec<EnvelopeKind> = item.take().map(|t| t.envelopes.iter().map(|e| e.kind).collect()).unwrap_or_default();
+        let have: Vec<EnvelopeKind> =
+            item.take().map(|t| t.envelopes.iter().map(|e| e.kind).collect()).unwrap_or_default();
         for (kind, name) in [
             (EnvelopeKind::Volume, "volume"),
             (EnvelopeKind::Pan, "pan"),
@@ -312,7 +313,12 @@ fn add_menu(app: &mut ScytheApp, ui: &mut Ui, track: TrackId) {
                     if slot.parameter_envelope(&param.to_string()).is_some() || !ui.button(&p.name).clicked() {
                         continue;
                     }
-                    let at = EnvRef { track: track_ref(track), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
+                    let at = EnvRef {
+                        track: track_ref(track),
+                        envelope: format!("fx:{fx}:{param}"),
+                        send: None,
+                        item: None,
+                    };
                     let value = api::param_info(&app.session, Target::Track(track), fx, param).map_or(0.0, |i| i.3);
                     change(app, &at, "Add FX parameter envelope", false, |env, _| {
                         env.points.push(EnvPoint::new(0.0, value));
@@ -356,8 +362,8 @@ fn lane_header(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rec
     let (abg, afg) = if env.armed { (theme::PINK, BG) } else { (RAISED_HI, TEXT_MID) };
     if !tempo
         && text_pill(ui, pill(0.0), "Arm", theme::semibold(10.0), abg, afg)
-        .on_hover_text("Armed envelopes are written by touch, latch and write")
-        .clicked()
+            .on_hover_text("Armed envelopes are written by touch, latch and write")
+            .clicked()
     {
         let armed = !env.armed;
         change(app, &lane.at, "Arm envelope", false, |e, _| e.armed = armed);

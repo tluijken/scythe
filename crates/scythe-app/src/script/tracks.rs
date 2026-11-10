@@ -570,7 +570,8 @@ fn fx(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         }
         "TrackFX_GetFloatingWindow" => {
             // The window's handle only says whether it is open: no script can draw into it.
-            let open = t.zip(slot_index(s, a.int(1))).and_then(|(id, i)| s.ctx.open_fx.iter().position(|o| *o == (id, i)));
+            let open =
+                t.zip(slot_index(s, a.int(1))).and_then(|(id, i)| s.ctx.open_fx.iter().position(|o| *o == (id, i)));
             ret(open.map_or(Val::Nil, |k| Val::Int(0x5c7e_0000 + k as i64)))
         }
         "TrackFX_GetFXName" => {

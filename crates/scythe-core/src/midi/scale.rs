@@ -178,7 +178,11 @@ mod tests {
     fn the_key_signature_is_reapers_keysig_block() {
         let saved = crate::rpp::parse("<REAPER_PROJECT\n  <KEYSIG\n    0 2 -1 0x5AD\n  >\n>\n").unwrap();
         let k = KeySnap::read_project(&saved.children).unwrap();
-        assert_eq!((k.root, k.scale.name.as_str(), k.mask()), (2, "Minor", 0x5AD), "D natural minor, as REAPER saved it");
+        assert_eq!(
+            (k.root, k.scale.name.as_str(), k.mask()),
+            (2, "Minor", 0x5AD),
+            "D natural minor, as REAPER saved it"
+        );
         assert_eq!(KeySnap::c_major().mask(), 0xAB5);
         let mut extra = Vec::new();
         assert!(KeySnap::read_project(&extra).is_none());

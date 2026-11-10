@@ -622,7 +622,8 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
             for (fx, slot) in t.fx.iter().enumerate() {
                 for p in slot.parameter_envelopes() {
                     let Some(param) = p.param() else { continue };
-                    let at = EnvRef { track: track.clone(), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
+                    let at =
+                        EnvRef { track: track.clone(), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
                     out.push(info(&session.project, &at, &p.envelope, p.label.clone()));
                 }
             }
@@ -927,7 +928,9 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
             }
             let t = session.project.track(id).ok_or_else(|| ApiError::not_found("the track is gone"))?;
             let own = t.sends[send].auto_mode().map_or("track", |m| m.name());
-            Ok(serde_json::json!({ "track": id.0, "send": send, "mode": own, "effective": session.project.send_auto_mode(t, send).name() }))
+            Ok(
+                serde_json::json!({ "track": id.0, "send": send, "mode": own, "effective": session.project.send_auto_mode(t, send).name() }),
+            )
         }
         C::Mode { send: Some(_), .. } => Err(ApiError::invalid("a send's mode needs its track")),
         C::Mode { track, mode, send: None } => {

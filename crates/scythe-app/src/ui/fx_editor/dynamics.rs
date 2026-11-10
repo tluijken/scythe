@@ -76,8 +76,11 @@ fn curve_handles(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, threshold: f64, out_at_
     let (thr_id, ratio_id, knee_id) = ids;
     let thr = plot.point(threshold, threshold);
     let ratio = plot.point(0.0, out_at_zero.max(LO_DB));
-    let resp =
-        ui.interact(plot.rect, Id::unique(("fx-dyn-curve", &cx.ed.owner, &cx.ed.path, thr_id)), Sense::click_and_drag());
+    let resp = ui.interact(
+        plot.rect,
+        Id::unique(("fx-dyn-curve", &cx.ed.owner, &cx.ed.path, thr_id)),
+        Sense::click_and_drag(),
+    );
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     if resp.drag_started() {
         let origin = widgets::drag_origin(ui, &resp);

@@ -551,8 +551,7 @@ mod selection_tests {
         let (a, c) = (p.tracks[0].id, p.tracks[2].id);
         p.store_selection(&[a, c]);
         let back = project_from_rpp(&project_to_rpp(&p)).unwrap();
-        let names: Vec<&str> =
-            back.tracks.iter().filter(|t| t.saved_selected()).map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = back.tracks.iter().filter(|t| t.saved_selected()).map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["a", "c"]);
         assert_eq!(project_to_rpp(&back).matches("SEL ").count(), 3);
     }

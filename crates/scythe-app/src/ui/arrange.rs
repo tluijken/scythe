@@ -784,7 +784,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
 
         if track.fixed_lanes && track.lane_count() > 1 {
-            fixed_lanes(app, ui, &clip, head, lane, rows, &track);
+            fixed_lanes(app, ui, clip, head, lane, rows, &track);
         }
 
         let dim = !audible || (any_solo && !track.solo && !audible);

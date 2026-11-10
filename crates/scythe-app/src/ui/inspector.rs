@@ -304,7 +304,9 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         let (short, kind) = split_plugin_name(&fx.name);
         let short = match &rig {
             Some(s) => match app.nam_target(track_id, i) {
-                Some(t) => crate::ui::rig::shown_rig_name(app, &t, scythe_session::rig::RigAt { track: track_id, index: i }, s),
+                Some(t) => {
+                    crate::ui::rig::shown_rig_name(app, &t, scythe_session::rig::RigAt { track: track_id, index: i }, s)
+                }
                 None => scythe_engine::rig::container_name(fx).unwrap_or_else(|| "Rig".into()),
             },
             None => short.to_string(),
@@ -1564,10 +1566,7 @@ const ITEM_H: f32 = 16.0 + 30.0 + 10.0 * (ITEM_ROW + 6.0) + 10.0;
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let item = app.sel.item.filter(|id| app.project.find_item(*id).is_some());
     let mut top = rect.top();
-    let take_fx = item
-        .and_then(|id| app.project.find_item(id))
-        .and_then(|(_, i)| i.take())
-        .map_or(0, |t| t.fx().len());
+    let take_fx = item.and_then(|id| app.project.find_item(id)).and_then(|(_, i)| i.take()).map_or(0, |t| t.fx().len());
     let item_h = ITEM_H + take_fx as f32 * (ITEM_ROW + 6.0);
     if let Some(id) = item
         && rect.height() > item_h + 200.0

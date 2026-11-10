@@ -392,9 +392,19 @@ impl Row {
     ) {
         let tip = "Where the band sits; drag, Shift for fine steps, double-click for the default";
         let v = value.clamp(range.0, range.1).log2();
-        self.knob(app, ui, at, label, label, v, (range.0.log2(), range.1.log2()), default.log2(), &hz_text(value), tip, |s, v| {
-            set(s, 2f64.powf(v).round())
-        });
+        self.knob(
+            app,
+            ui,
+            at,
+            label,
+            label,
+            v,
+            (range.0.log2(), range.1.log2()),
+            default.log2(),
+            &hz_text(value),
+            tip,
+            |s, v| set(s, 2f64.powf(v).round()),
+        );
     }
 
     fn end(self, ui: &mut Ui) -> Rect {
@@ -509,9 +519,19 @@ fn gate(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
     );
     let ms = |v: f64| format!("{} ms", trim(v));
     let timing = "Drag, Shift for fine steps, double-click for the default";
-    row.knob(app, ui, at, "gate-attack", "Attack", s.gate.attack_ms, (0.0, 500.0), 3.0, &ms(s.gate.attack_ms), timing, |s, v| {
-        s.gate.attack_ms = v.round()
-    });
+    row.knob(
+        app,
+        ui,
+        at,
+        "gate-attack",
+        "Attack",
+        s.gate.attack_ms,
+        (0.0, 500.0),
+        3.0,
+        &ms(s.gate.attack_ms),
+        timing,
+        |s, v| s.gate.attack_ms = v.round(),
+    );
     row.knob(
         app,
         ui,
@@ -591,7 +611,8 @@ fn note(ui: &mut Ui, rect: Rect, text: &str) {
 /// The rig's name: the container's, or while a preview plays, one made from the previewed
 /// model's (or IR's) own name rather than its cache file's.
 pub(crate) fn shown_rig_name(app: &ScytheApp, target: &Target, at: RigAt, s: &RigSettings) -> String {
-    let stored = app.project.track(at.track).and_then(|t| t.fx.get(at.index)).and_then(scythe_engine::rig::container_name);
+    let stored =
+        app.project.track(at.track).and_then(|t| t.fx.get(at.index)).and_then(scythe_engine::rig::container_name);
     let (amp, cab) = (previewed(app, target, false), previewed(app, target, true));
     if amp.is_none() && cab.is_none() {
         return stored.unwrap_or_else(|| "Rig".into());

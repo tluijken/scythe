@@ -28,7 +28,10 @@ fn the_selection_is_read_from_and_written_to_sel_lines() {
     assert_eq!(text.matches("SEL 1").count(), 1, "{text}");
     let first = text.find("NAME a").unwrap();
     assert!(text[first..].find("SEL 1").unwrap() < text[first..].find("NAME b").unwrap());
-    let _ = scythe_session::api::execute_json(&mut s, json!({"cmd": "track.move", "track": ids[0].0, "index": 2, "also": [ids[1].0]}));
+    let _ = scythe_session::api::execute_json(
+        &mut s,
+        json!({"cmd": "track.move", "track": ids[0].0, "index": 2, "also": [ids[1].0]}),
+    );
     let names: Vec<&str> = s.project.tracks.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["c", "a", "b"], "both tracks moved, keeping their order");
     let _ = std::fs::remove_dir_all(dir);

@@ -129,4 +129,3 @@ pub fn inline_editor(
         apply_notes(app, id, &notes, "Delete note", false);
     }
 }
-
