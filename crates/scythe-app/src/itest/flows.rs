@@ -161,6 +161,28 @@ fn midi_editor_draws_a_note() {
 }
 
 #[test]
+fn ctrl_drag_copies_a_note_and_alt_drag_sets_its_velocity() {
+    let mut t = TestApp::live("midi_copy");
+    let r = t.rect("Item keys");
+    t.double_click_at(r.center());
+    let notes = |t: &mut TestApp| {
+        let item = t.item("keys").clone();
+        t.app().midi_notes(&item).unwrap_or_default()
+    };
+    let before = notes(&mut t).len();
+    let at = t.rect("Piano roll").center() + vec2(40.0, 0.0);
+    t.click_at(at);
+    assert_eq!(notes(&mut t).len(), before + 1);
+    t.drag_mod(at, at + vec2(90.0, 0.0), CMD);
+    assert_eq!(notes(&mut t).len(), before + 2, "Ctrl+drag copies the note, as REAPER's piano roll does");
+    let velocities = |t: &mut TestApp| notes(t).iter().map(|n| n.velocity).collect::<Vec<_>>();
+    let was = velocities(&mut t);
+    t.drag_mod(at, at - vec2(0.0, 20.0), Modifiers::ALT);
+    assert_ne!(velocities(&mut t), was, "Alt+drag edits the velocity");
+    assert_eq!(notes(&mut t).len(), before + 2, "and moves nothing");
+}
+
+#[test]
 fn folder_button_and_header_drag_make_folders() {
     let mut t = TestApp::live("folders");
     let folder_tip = "Normal track: click to make it a folder holding the tracks below";

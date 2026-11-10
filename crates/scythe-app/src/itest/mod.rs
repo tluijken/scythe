@@ -208,6 +208,9 @@ impl TestApp {
     }
 
     pub fn drag_mod(&mut self, from: egui::Pos2, to: egui::Pos2, modifiers: egui::Modifiers) {
+        // Held through the drag: widgets read the held modifiers, which the pointer events do not
+        // change.
+        self.h.event(egui::Event::ModifiersChanged(modifiers));
         let button =
             |pressed, pos| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers };
         self.h.event(egui::Event::PointerMoved(from));
@@ -222,6 +225,8 @@ impl TestApp {
         }
         self.h.event(button(false, to));
         self.frames(3);
+        self.h.event(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+        self.frames(1);
     }
 
     /// A click (press and release without moving) at `pos`.
