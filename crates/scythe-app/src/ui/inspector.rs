@@ -283,9 +283,24 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         painter.rect_filled(num, CornerRadius::same(8), BG);
         painter.text(num.center(), Align2::CENTER_CENTER, (i + 1).to_string(), theme::mono(11.0), TEXT_DIM);
         let rig = scythe_engine::rig::is_rig(fx).then(|| scythe_engine::rig::read(fx)).flatten();
+        // While a model or IR is previewed, its own name stands in for the cache file's.
+        let rig = rig.map(|mut s| {
+            if let Some(t) = app.nam_target(track_id, i) {
+                if let Some(n) = crate::ui::rig::previewed(app, &t, false) {
+                    s.amp.model = Some(format!("{n}.nam"));
+                }
+                if let Some(n) = crate::ui::rig::previewed(app, &t, true) {
+                    s.cab.ir = Some(format!("{n}.wav"));
+                }
+            }
+            s
+        });
         let (short, kind) = split_plugin_name(&fx.name);
         let short = match &rig {
-            Some(_) => scythe_engine::rig::container_name(fx).unwrap_or_else(|| "Rig".into()),
+            Some(s) => match app.nam_target(track_id, i) {
+                Some(t) => crate::ui::rig::shown_rig_name(app, &t, scythe_session::rig::RigAt { track: track_id, index: i }, s),
+                None => scythe_engine::rig::container_name(fx).unwrap_or_else(|| "Rig".into()),
+            },
             None => short.to_string(),
         };
         let nam = scythe_engine::fx::nam_settings(fx);

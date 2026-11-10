@@ -76,12 +76,7 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, target: &Target, at: RigAt, s: &Rig
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::same(14), RAISED);
-    let name = app
-        .project
-        .track(at.track)
-        .and_then(|t| t.fx.get(at.index))
-        .and_then(scythe_engine::rig::container_name)
-        .unwrap_or_else(|| "Rig".into());
+    let name = shown_rig_name(app, target, at, s);
     let extras = app.rig_extras(at);
     let size = 32.0;
     let cy = rect.center().y;
@@ -382,6 +377,26 @@ impl Row {
         });
     }
 
+    /// A knob over a frequency on a log scale.
+    #[allow(clippy::too_many_arguments)]
+    fn freq(
+        &mut self,
+        app: &mut ScytheApp,
+        ui: &mut Ui,
+        at: RigAt,
+        label: &str,
+        value: f64,
+        range: (f64, f64),
+        default: f64,
+        set: impl FnOnce(&mut RigSettings, f64),
+    ) {
+        let tip = "Where the band sits; drag, Shift for fine steps, double-click for the default";
+        let v = value.clamp(range.0, range.1).log2();
+        self.knob(app, ui, at, label, label, v, (range.0.log2(), range.1.log2()), default.log2(), &hz_text(value), tip, |s, v| {
+            set(s, 2f64.powf(v).round())
+        });
+    }
+
     fn end(self, ui: &mut Ui) -> Rect {
         end_block(ui, self.rect);
         Rect::from_min_max(pos2(self.x + 8.0, self.rect.top()), self.rect.max)
@@ -492,13 +507,39 @@ fn gate(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
             s.gate.enabled = true;
         },
     );
-    let rest = row.end(ui);
-    note(
+    let ms = |v: f64| format!("{} ms", trim(v));
+    let timing = "Drag, Shift for fine steps, double-click for the default";
+    row.knob(app, ui, at, "gate-attack", "Attack", s.gate.attack_ms, (0.0, 500.0), 3.0, &ms(s.gate.attack_ms), timing, |s, v| {
+        s.gate.attack_ms = v.round()
+    });
+    row.knob(
+        app,
         ui,
-        rest,
-        "A noise gate before the amp (ReaGate): it keeps a high-gain amp quiet between notes. Its attack, \
-         release and hysteresis are in ReaGate's own editor in the container.",
+        at,
+        "gate-release",
+        "Release",
+        s.gate.release_ms,
+        (0.0, 2000.0),
+        100.0,
+        &ms(s.gate.release_ms),
+        timing,
+        |s, v| s.gate.release_ms = v.round(),
     );
+    row.knob(
+        app,
+        ui,
+        at,
+        "gate-hysteresis",
+        "Hysteresis",
+        s.gate.hysteresis_db,
+        (-24.0, 0.0),
+        0.0,
+        &db_text(s.gate.hysteresis_db),
+        "How far below the threshold the gate closes again",
+        |s, v| s.gate.hysteresis_db = v,
+    );
+    let rest = row.end(ui);
+    note(ui, rest, "A noise gate before the amp (ReaGate): it keeps a high-gain amp quiet between notes.");
 }
 
 fn eq(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
@@ -524,9 +565,12 @@ fn eq(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
         tone,
         |s, v| s.eq.treble_db = v,
     );
+    row.freq(app, ui, at, "Bass Hz", s.eq.bass_hz, (40.0, 500.0), 120.0, |s, v| s.eq.bass_hz = v);
+    row.freq(app, ui, at, "Mid Hz", s.eq.mid_hz, (200.0, 5000.0), 800.0, |s, v| s.eq.mid_hz = v);
+    row.freq(app, ui, at, "Treble Hz", s.eq.treble_hz, (1000.0, 12000.0), 3200.0, |s, v| s.eq.treble_hz = v);
     row.cut(app, ui, at, "High cut", s.eq.high_cut, HIGH_CUT, true, |s, v| s.eq.high_cut = v);
     let rest = row.end(ui);
-    note(ui, rest, "After the cab (ReaEQ): low and high cut, bass at 120 Hz, mid at 800 Hz and treble from 3.2 kHz.");
+    note(ui, rest, "After the cab (ReaEQ): low and high cut, a bass shelf, a mid peak and a treble shelf.");
 }
 
 fn output(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
@@ -544,8 +588,21 @@ fn note(ui: &mut Ui, rect: Rect, text: &str) {
     child.add(egui::Label::new(egui::RichText::new(text).color(TEXT_DIM)).wrap());
 }
 
+/// The rig's name: the container's, or while a preview plays, one made from the previewed
+/// model's (or IR's) own name rather than its cache file's.
+pub(crate) fn shown_rig_name(app: &ScytheApp, target: &Target, at: RigAt, s: &RigSettings) -> String {
+    let stored = app.project.track(at.track).and_then(|t| t.fx.get(at.index)).and_then(scythe_engine::rig::container_name);
+    let (amp, cab) = (previewed(app, target, false), previewed(app, target, true));
+    if amp.is_none() && cab.is_none() {
+        return stored.unwrap_or_else(|| "Rig".into());
+    }
+    let amp = amp.or_else(|| s.amp.model.as_deref().map(|m| shown_name(app, m)));
+    let cab = cab.or_else(|| s.cab.ir.as_deref().filter(|_| s.cab.enabled).map(|i| shown_name(app, i)));
+    scythe_engine::rig::rig_name(amp.as_deref(), cab.as_deref())
+}
+
 /// The name of what a running preview plays in the amp (or with `ir`, the cab).
-fn previewed(app: &ScytheApp, target: &Target, ir: bool) -> Option<String> {
+pub(crate) fn previewed(app: &ScytheApp, target: &Target, ir: bool) -> Option<String> {
     let p = app.nam.preview.as_ref().filter(|p| p.target == *target && p.ir == ir && !p.comparing)?;
     Some(p.model().name.clone()).filter(|n| !n.is_empty())
 }

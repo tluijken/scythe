@@ -51,11 +51,15 @@ impl Default for RigSettings {
 pub struct GateSettings {
     pub enabled: bool,
     pub threshold_db: f64,
+    pub attack_ms: f64,
+    pub release_ms: f64,
+    /// How far below the threshold the gate closes again, in dB (ReaGate's hysteresis).
+    pub hysteresis_db: f64,
 }
 
 impl Default for GateSettings {
     fn default() -> Self {
-        Self { enabled: false, threshold_db: -50.0 }
+        Self { enabled: false, threshold_db: -50.0, attack_ms: 3.0, release_ms: 100.0, hysteresis_db: 0.0 }
     }
 }
 
@@ -107,11 +111,25 @@ pub struct EqSettings {
     pub bass_db: f64,
     pub mid_db: f64,
     pub treble_db: f64,
+    /// Where the bass shelf, the mid peak and the treble shelf sit, in Hz.
+    pub bass_hz: f64,
+    pub mid_hz: f64,
+    pub treble_hz: f64,
 }
 
 impl Default for EqSettings {
     fn default() -> Self {
-        Self { enabled: true, low_cut: Some(80.0), high_cut: Some(8000.0), bass_db: 0.0, mid_db: 0.0, treble_db: 0.0 }
+        Self {
+            enabled: true,
+            low_cut: Some(80.0),
+            high_cut: Some(8000.0),
+            bass_db: 0.0,
+            mid_db: 0.0,
+            treble_db: 0.0,
+            bass_hz: BASS_HZ,
+            mid_hz: MID_HZ,
+            treble_hz: TREBLE_HZ,
+        }
     }
 }
 
@@ -324,6 +342,10 @@ pub fn read(slot: &FxSlot) -> Option<RigSettings> {
         if let Some(mut gate) = stock_chunk(g).and_then(|c| Gate::from_reagate(&c, 48000)) {
             use crate::fx::Effect as _;
             s.gate.threshold_db = gate.param(0).map_or(s.gate.threshold_db, |(v, _)| v);
+            let mut get = |id: u32, default: f64| gate.param(id).map_or(default, |(v, _)| round(v));
+            s.gate.attack_ms = get(1, s.gate.attack_ms);
+            s.gate.release_ms = get(2, s.gate.release_ms);
+            s.gate.hysteresis_db = get(12, s.gate.hysteresis_db);
         }
     } else {
         s.gate.enabled = false;
@@ -360,6 +382,14 @@ pub fn read(slot: &FxSlot) -> Option<RigSettings> {
                     .find(|b| matches!(b.kind, BandKind::Peak | BandKind::PeakWide) && b.enabled)
                     .map_or(0.0, |b| round(db(b.gain)));
                 s.eq.treble_db = tone(BandKind::HighShelf);
+                let at = |k: BandKind, default: f64| band(k).map_or(default, |b| b.freq.round());
+                s.eq.bass_hz = at(BandKind::LowShelf, BASS_HZ);
+                s.eq.mid_hz = eq
+                    .bands
+                    .iter()
+                    .find(|b| matches!(b.kind, BandKind::Peak | BandKind::PeakWide))
+                    .map_or(MID_HZ, |b| b.freq.round());
+                s.eq.treble_hz = at(BandKind::HighShelf, TREBLE_HZ);
             }
         }
         None => s.eq = EqSettings { enabled: false, low_cut: None, high_cut: None, ..EqSettings::default() },
@@ -378,13 +408,16 @@ fn round(v: f64) -> f64 {
     (v * 1000.0).round() / 1000.0
 }
 
-fn gate_chunk(base: Option<Vec<u8>>, threshold_db: f64) -> Vec<u8> {
+fn gate_chunk(base: Option<Vec<u8>>, g: &GateSettings) -> Vec<u8> {
     use crate::fx::Effect as _;
     let base = base.unwrap_or_else(|| Builtin::Gate.default_state());
     match Gate::from_reagate(&base, 48000) {
-        Some(mut g) => {
-            g.set_param(0, threshold_db);
-            g.save_state().unwrap_or(base)
+        Some(mut gate) => {
+            gate.set_param(0, g.threshold_db);
+            gate.set_param(1, g.attack_ms);
+            gate.set_param(2, g.release_ms);
+            gate.set_param(12, g.hysteresis_db);
+            gate.save_state().unwrap_or(base)
         }
         None => base,
     }
@@ -393,22 +426,21 @@ fn gate_chunk(base: Option<Vec<u8>>, threshold_db: f64) -> Vec<u8> {
 fn eq_bands(e: &EqSettings) -> Vec<(BandKind, bool, f64, f64, f64)> {
     vec![
         (BandKind::HighPass, e.low_cut.is_some(), e.low_cut.unwrap_or(80.0), 1.0, CUT_WIDTH),
-        (BandKind::LowShelf, true, BASS_HZ, gain(e.bass_db), 1.0),
-        (BandKind::Peak, true, MID_HZ, gain(e.mid_db), 1.5),
-        (BandKind::HighShelf, true, TREBLE_HZ, gain(e.treble_db), 1.0),
+        (BandKind::LowShelf, true, e.bass_hz, gain(e.bass_db), 1.0),
+        (BandKind::Peak, true, e.mid_hz, gain(e.mid_db), 1.5),
+        (BandKind::HighShelf, true, e.treble_hz, gain(e.treble_db), 1.0),
         (BandKind::LowPass, e.high_cut.is_some(), e.high_cut.unwrap_or(8000.0), 1.0, CUT_WIDTH),
     ]
 }
 
-/// The EQ stage's state: the rig's five bands, keeping the tone bands' frequencies and widths
-/// when the stored EQ has the rig's layout.
+/// The EQ stage's state: the rig's five bands, keeping the tone bands' widths when the stored
+/// EQ has the rig's layout.
 fn eq_stage_chunk(base: Option<Vec<u8>>, e: &EqSettings) -> Vec<u8> {
     let mut bands = eq_bands(e);
     if let Some(old) = base.as_deref().and_then(|c| ReaEqCompat::from_chunk(c, 48000))
         && old.bands.iter().map(|b| b.kind).eq(EQ_BANDS)
     {
         for (new, old) in bands.iter_mut().zip(&old.bands).skip(1).take(3) {
-            new.2 = old.freq;
             new.4 = old.bandwidth;
         }
     }
@@ -445,7 +477,7 @@ pub fn apply(slot: &mut FxSlot, s: &RigSettings) {
     let mut children = slot.container_children();
     let Some(mut l) = layout(&children) else { return };
     // The gate, before the amp.
-    let gate = gate_chunk(l.gate.and_then(|i| stock_chunk(&children[i])), s.gate.threshold_db);
+    let gate = gate_chunk(l.gate.and_then(|i| stock_chunk(&children[i])), &s.gate);
     if l.gate.is_none() {
         children.insert(l.amp, stock_slot(Builtin::Gate, &gate));
         l = layout(&children).unwrap_or(l);
@@ -669,7 +701,7 @@ mod tests {
 
     fn settings(ir: &Path) -> RigSettings {
         RigSettings {
-            gate: GateSettings { enabled: true, threshold_db: -42.0 },
+            gate: GateSettings { enabled: true, threshold_db: -42.0, ..GateSettings::default() },
             amp: AmpSettings {
                 enabled: true,
                 model: Some("/models/5150 III.nam".into()),
@@ -726,6 +758,23 @@ mod tests {
         one.cab.ir2 = None;
         apply(&mut slot, &one);
         assert_eq!(slot.container_children().len(), 5);
+    }
+
+    #[test]
+    fn gate_timing_and_tone_frequencies_live_in_reagate_and_reaeq() {
+        let mut s = RigSettings::default();
+        s.gate = GateSettings { enabled: true, threshold_db: -40.0, attack_ms: 20.0, release_ms: 300.0, hysteresis_db: -6.0 };
+        s.eq.mid_hz = 1200.0;
+        s.eq.bass_hz = 90.0;
+        s.eq.treble_hz = 4000.0;
+        let rig = new_rig(&s);
+        let back = read(&rig).unwrap();
+        assert_eq!(
+            (back.gate.attack_ms, back.gate.release_ms, back.gate.hysteresis_db),
+            (20.0, 300.0, -6.0),
+            "ReaGate holds the timing"
+        );
+        assert_eq!((back.eq.bass_hz, back.eq.mid_hz, back.eq.treble_hz), (90.0, 1200.0, 4000.0));
     }
 
     #[test]
