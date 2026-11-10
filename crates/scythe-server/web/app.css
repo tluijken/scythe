@@ -211,7 +211,10 @@ select { appearance: none; background-image: linear-gradient(45deg, transparent 
 .clock { display: flex; align-items: baseline; gap: 10px; min-width: 196px; }
 .clock .bars { font: 500 20px var(--mono); min-width: 92px; }
 .clock .time { font: 500 12px var(--mono); color: var(--text-dim); }
-.topbar-right { display: flex; align-items: center; gap: 4px; flex: 1 1 0; justify-content: flex-end; min-width: 0; }
+.topbar-right { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; justify-content: flex-end; min-width: 0; }
+.topbar-right > * { flex: none; }
+/* The health pill gives way first when the bar runs out of room. */
+.topbar-right .health-pill { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .rail { grid-area: rail; background: var(--panel); border-radius: var(--radius); padding: 8px 6px; display: flex; flex-direction: column; gap: 4px; align-self: start; align-items: center; }
 .rail-btn { width: 44px; height: 44px; border-radius: 12px; color: var(--text-dim); }
 .rail-btn.active { color: var(--accent); }
