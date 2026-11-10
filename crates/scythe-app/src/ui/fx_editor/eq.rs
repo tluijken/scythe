@@ -132,7 +132,7 @@ fn hit(at: &[Pos2], p: Pos2) -> Option<usize> {
 }
 
 fn graph_input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[Band], at: &[Pos2], sr: f64) {
-    let resp = ui.interact(plot.rect, Id::unique(("fx-eq-graph", cx.ed.track, cx.ed.index)), Sense::click_and_drag());
+    let resp = ui.interact(plot.rect, Id::unique(("fx-eq-graph", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     let top = plot.x.hi;
     if resp.drag_started() || resp.clicked() || resp.secondary_clicked() {
@@ -275,7 +275,7 @@ fn band_menu(cx: &mut Ctx, ui: &mut Ui, k: usize, b: &Band) {
         remove_band(cx, k);
         ui.close();
     }
-    if cx.ed.track.is_some() {
+    if cx.ed.track_fx().is_some() {
         ui.menu_button("Modulate/Learn…", |ui| {
             let [_, freq, gain, width] = ids(k);
             for (id, label) in [(freq, "Frequency"), (gain, "Gain"), (width, "Width")] {
@@ -305,7 +305,7 @@ fn strip_row(cx: &mut Ctx, ui: &mut Ui, strip: Rect, bands: &[Band]) {
         }
         let selected = cx.ed.sel == Some(k);
         let color = if b.enabled { band_color(k) } else { theme::SWITCH_OFF };
-        let resp = ui.interact(r, Id::unique(("fx-eq-chip", cx.ed.track, cx.ed.index, k)), Sense::click());
+        let resp = ui.interact(r, Id::unique(("fx-eq-chip", &cx.ed.owner, &cx.ed.path, k)), Sense::click());
         ui.painter().rect_filled(r, CornerRadius::same(13), if selected { color } else { RAISED });
         ui.painter().rect_stroke(r, CornerRadius::same(13), Stroke::new(1.5, color), egui::StrokeKind::Inside);
         ui.painter().text(

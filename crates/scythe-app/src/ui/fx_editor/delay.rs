@@ -138,7 +138,7 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
             &(k + 1).to_string(),
         );
     }
-    let resp = ui.interact(graph, Id::unique(("fx-delay-line", cx.ed.track, cx.ed.index)), Sense::click_and_drag());
+    let resp = ui.interact(graph, Id::unique(("fx-delay-line", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     let near = |p: Pos2| {
         at.iter()
             .enumerate()
@@ -221,7 +221,7 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
                 cx.ed.sel = None;
                 ui.close();
             }
-            if k == 0 && cx.ed.track.is_some() {
+            if k == 0 && cx.ed.track_fx().is_some() {
                 ui.menu_button("Modulate/Learn…", |ui| {
                     for (id, label) in [(2, "Time"), (3, "Length"), (4, "Feedback")] {
                         if ui.button(label).clicked() {
@@ -346,7 +346,7 @@ fn tap_list(cx: &mut Ctx, ui: &mut Ui, rect: Rect, taps: &[Tap], bpm: f64) {
     let mut child = ui.new_child(
         egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(inner.left(), head.bottom() + 4.0), inner.max)),
     );
-    egui::ScrollArea::vertical().id_salt(("fx-delay-taps", cx.ed.track, cx.ed.index)).show(&mut child, |ui| {
+    egui::ScrollArea::vertical().id_salt(("fx-delay-taps", &cx.ed.owner, &cx.ed.path)).show(&mut child, |ui| {
         for (k, tap) in taps.iter().enumerate() {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
             let selected = cx.ed.sel == Some(k);
@@ -359,7 +359,7 @@ fn tap_list(cx: &mut Ctx, ui: &mut Ui, rect: Rect, taps: &[Tap], bpm: f64) {
                 );
             }
             let chip = Rect::from_min_size(row.min + vec2(2.0, 2.0), vec2(22.0, 22.0));
-            let resp = ui.interact(chip, Id::unique(("fx-delay-chip", cx.ed.track, cx.ed.index, k)), Sense::click());
+            let resp = ui.interact(chip, Id::unique(("fx-delay-chip", &cx.ed.owner, &cx.ed.path, k)), Sense::click());
             ui.painter().circle_filled(
                 chip.center(),
                 11.0,

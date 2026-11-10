@@ -77,7 +77,7 @@ fn curve_handles(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, threshold: f64, out_at_
     let thr = plot.point(threshold, threshold);
     let ratio = plot.point(0.0, out_at_zero.max(LO_DB));
     let resp =
-        ui.interact(plot.rect, Id::unique(("fx-dyn-curve", cx.ed.track, cx.ed.index, thr_id)), Sense::click_and_drag());
+        ui.interact(plot.rect, Id::unique(("fx-dyn-curve", &cx.ed.owner, &cx.ed.path, thr_id)), Sense::click_and_drag());
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     if resp.drag_started() {
         let origin = widgets::drag_origin(ui, &resp);
@@ -334,7 +334,7 @@ pub fn gate(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         theme::regular(10.0),
         TEXT_MID,
     );
-    let resp = ui.interact(graph, Id::unique(("fx-gate-graph", cx.ed.track, cx.ed.index)), Sense::click_and_drag());
+    let resp = ui.interact(graph, Id::unique(("fx-gate-graph", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     if resp.drag_started() {
         let origin = widgets::drag_origin(ui, &resp);
         cx.ed.dragging = origin.and_then(|p| {
@@ -414,7 +414,7 @@ pub fn limit(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     for (bar, id) in [(in_bar, 0u32), (out_bar, 1u32)] {
         let resp = ui.interact(
             bar.expand2(vec2(4.0, 0.0)),
-            Id::unique(("fx-limit-line", cx.ed.track, cx.ed.index, id)),
+            Id::unique(("fx-limit-line", &cx.ed.owner, &cx.ed.path, id)),
             Sense::click_and_drag(),
         );
         if resp.dragged()
@@ -509,7 +509,7 @@ pub fn xcomp(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     for (b, view) in bands.iter().enumerate() {
         let col =
             Rect::from_min_size(pos2(inner.left() + b as f32 * w + 2.0, inner.top()), vec2(w - 4.0, inner.height()));
-        let resp = ui.interact(col, Id::unique(("fx-xcomp-gr", cx.ed.track, cx.ed.index, b)), Sense::click());
+        let resp = ui.interact(col, Id::unique(("fx-xcomp-gr", &cx.ed.owner, &cx.ed.path, b)), Sense::click());
         if resp.clicked() {
             cx.ed.band = b;
         }
@@ -604,7 +604,7 @@ fn crossovers(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[BandView]) {
             TEXT_MID,
         );
     }
-    let resp = ui.interact(plot.rect, Id::unique(("fx-xcomp-x", cx.ed.track, cx.ed.index)), Sense::click_and_drag());
+    let resp = ui.interact(plot.rect, Id::unique(("fx-xcomp-x", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     let near = |p: Pos2| {
         xs.iter()
             .enumerate()

@@ -90,7 +90,7 @@ fn set_points(cx: &mut Ctx, points: Vec<(f32, f32)>, once: bool) {
 }
 
 fn input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, points: &[(f32, f32)], at: &[Pos2], top: f64) {
-    let resp = ui.interact(plot.rect, Id::unique(("fx-fir-graph", cx.ed.track, cx.ed.index)), Sense::click_and_drag());
+    let resp = ui.interact(plot.rect, Id::unique(("fx-fir-graph", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     let near = |p: Pos2| {
         at.iter()
             .enumerate()

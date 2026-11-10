@@ -18,7 +18,7 @@ use std::time::Instant;
 use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use scythe_core::{FxSlot, TrackId};
 use scythe_engine::clap_host::ParamInfo;
-use scythe_engine::fx::{FxInstance, FxStatus};
+use scythe_engine::fx::{FxInstance, FxOwner, FxStatus};
 use scythe_engine::probe::{self, Side, Spectrum, Watch};
 
 use crate::app::ScytheApp;
@@ -100,30 +100,103 @@ pub fn stock_name(slot: &FxSlot) -> Option<&'static str> {
     scythe_engine::stock::find(&display).map(|p| p.name)
 }
 
+/// The effects of `owner`'s chain: a track's own, the master's, a track's record input chain,
+/// a take's or the monitoring chain.
+pub(crate) fn chain_slots(app: &ScytheApp, owner: &FxOwner) -> Vec<FxSlot> {
+    match owner {
+        FxOwner::Track(t) => app.project.track(*t).map(|t| t.fx.clone()).unwrap_or_default(),
+        FxOwner::Input(t) => app.project.track(*t).map(|t| t.input_fx()).unwrap_or_default(),
+        FxOwner::Master => app.project.master.fx.clone(),
+        FxOwner::Monitor => app.monitor_fx(),
+        FxOwner::Take(item, k) => {
+            app.project.find_item(*item).and_then(|(_, it)| it.takes.get(*k)).map(|t| t.fx()).unwrap_or_default()
+        }
+    }
+}
+
+/// The slot at `path`: an index, then indices into containers.
+pub(crate) fn slot_at(slots: &[FxSlot], path: &[usize]) -> Option<FxSlot> {
+    let (first, rest) = path.split_first()?;
+    let slot = slots.get(*first)?.clone();
+    if rest.is_empty() { Some(slot) } else { slot_at(&slot.container_children(), rest) }
+}
+
+fn slot_at_mut(slots: &mut [FxSlot], path: &[usize], f: &dyn Fn(&mut FxSlot)) -> bool {
+    let Some((first, rest)) = path.split_first() else { return false };
+    let Some(slot) = slots.get_mut(*first) else { return false };
+    if rest.is_empty() {
+        f(slot);
+        return true;
+    }
+    let mut children = slot.container_children();
+    let done = slot_at_mut(&mut children, rest, f);
+    slot.set_container_children(&children);
+    done
+}
+
+/// Changes the slot at `path` of `owner`'s chain as one undo step.
+pub(crate) fn edit_slot(app: &mut ScytheApp, owner: &FxOwner, path: &[usize], label: &str, f: &dyn Fn(&mut FxSlot)) {
+    let mut chain = chain_slots(app, owner);
+    if !slot_at_mut(&mut chain, path, f) {
+        return;
+    }
+    match owner.clone() {
+        FxOwner::Track(t) => app.edit(label, |p| {
+            if let Some(t) = p.track_mut(t) {
+                t.fx = chain;
+            }
+        }),
+        FxOwner::Master => app.edit(label, |p| p.master.fx = chain),
+        FxOwner::Input(t) => app.edit(label, |p| {
+            if let Some(t) = p.track_mut(t) {
+                t.set_input_fx(&chain);
+            }
+        }),
+        FxOwner::Take(item, k) => app.edit(label, |p| {
+            if let Some(tk) = p.tracks.iter_mut().find_map(|t| t.item_mut(item)).and_then(|i| i.takes.get_mut(k)) {
+                tk.set_fx(&chain);
+            }
+        }),
+        FxOwner::Monitor => app.set_monitor_fx(chain),
+    }
+}
+
 /// The editor kind of effect `index` on `track` (`None` for the master), when it is a stock
 /// effect running as Scythe's emulation.
 pub fn kind(app: &ScytheApp, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Kind> {
+    kind_at(app, &FxOwner::of(track), slot, &[index])
+}
+
+/// The editor kind of the effect at `path` in `owner`'s chain.
+pub fn kind_at(app: &ScytheApp, owner: &FxOwner, slot: &FxSlot, path: &[usize]) -> Option<Kind> {
     let kind = Kind::of_stock(stock_name(slot)?)?;
-    matches!(app.engine.fx().status(track, slot, index), Some(FxStatus::Native(_))).then_some(kind)
+    let status = app.engine.fx().status_at(owner, &chain_slots(app, owner), path).cloned();
+    matches!(status, Some(FxStatus::Native(_))).then_some(kind)
 }
 
 pub fn is_open(app: &ScytheApp, track: Option<TrackId>, index: usize) -> bool {
-    app.view.fx_editors.iter().any(|e| e.track == track && e.index == index)
+    is_open_at(app, &FxOwner::of(track), &[index])
+}
+
+pub fn is_open_at(app: &ScytheApp, owner: &FxOwner, path: &[usize]) -> bool {
+    app.view.fx_editors.iter().any(|e| e.owner == *owner && e.path == path)
 }
 
 /// Opens the editor of effect `index` on `track`, or closes it when open.
 pub fn toggle(app: &mut ScytheApp, track: Option<TrackId>, index: usize) {
-    if is_open(app, track, index) {
-        app.view.fx_editors.retain(|e| !(e.track == track && e.index == index));
+    toggle_at(app, &FxOwner::of(track), &[index]);
+}
+
+/// Opens the editor of the effect at `path` in `owner`'s chain (an input, take or monitoring
+/// chain, or inside a container), or closes it when open.
+pub fn toggle_at(app: &mut ScytheApp, owner: &FxOwner, path: &[usize]) {
+    if is_open_at(app, owner, path) {
+        app.view.fx_editors.retain(|e| !(e.owner == *owner && e.path == path));
         return;
     }
-    let slot = match track {
-        Some(t) => app.project.track(t).and_then(|t| t.fx.get(index)).cloned(),
-        None => app.project.master.fx.get(index).cloned(),
-    };
-    let Some(slot) = slot else { return };
-    if let Some(kind) = kind(app, track, &slot, index) {
-        app.view.fx_editors.push(FxEditor::new(track, index, &slot, kind));
+    let Some(slot) = slot_at(&chain_slots(app, owner), path) else { return };
+    if let Some(kind) = kind_at(app, owner, &slot, path) {
+        app.view.fx_editors.push(FxEditor::new(owner.clone(), path.to_vec(), &slot, kind));
     }
 }
 
@@ -147,8 +220,9 @@ enum Typing {
 
 /// One open editor window.
 pub struct FxEditor {
-    pub track: Option<TrackId>,
-    pub index: usize,
+    /// The chain the effect is in and where: an index, then indices into containers.
+    pub owner: FxOwner,
+    pub path: Vec<usize>,
     /// The slot's raw name when opened: the window closes when another effect takes the slot.
     name: String,
     kind: Kind,
@@ -182,19 +256,28 @@ pub struct FxEditor {
 
 impl std::fmt::Debug for FxEditor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FxEditor").field("track", &self.track).field("index", &self.index).finish()
+        f.debug_struct("FxEditor").field("owner", &self.owner).field("path", &self.path).finish()
     }
 }
 
 impl FxEditor {
-    fn new(track: Option<TrackId>, index: usize, slot: &FxSlot, kind: Kind) -> Self {
+    /// The track and slot when the effect is a track's own top-level one, which modulation and
+    /// learn address.
+    pub fn track_fx(&self) -> Option<(TrackId, usize)> {
+        match (&self.owner, self.path.as_slice()) {
+            (FxOwner::Track(t), [i]) => Some((*t, *i)),
+            _ => None,
+        }
+    }
+
+    fn new(owner: FxOwner, path: Vec<usize>, slot: &FxSlot, kind: Kind) -> Self {
         let mut post = Spectrum::new(4096);
         post.fall = 36.0;
         let mut pre = Spectrum::new(4096);
         pre.fall = 36.0;
         Self {
-            track,
-            index,
+            owner,
+            path,
             name: slot.name.clone(),
             kind,
             tab: Tab::Editor,
@@ -329,16 +412,32 @@ impl Ctx<'_> {
 
     /// Opens the modulation and learn window on a parameter.
     pub fn modulate(&mut self, id: u32) {
-        let Some(track) = self.ed.track else { return };
+        let Some((track, index)) = self.ed.track_fx() else { return };
         let Some(position) = self.params.iter().position(|p| p.id == id) else { return };
         let param = crate::ui::modulation::reaper_index(&self.slot, id, position);
-        self.app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track, self.ed.index, param));
+        self.app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track, index, param));
     }
 
     fn controlled(&self, id: u32) -> bool {
         let Some(position) = self.params.iter().position(|p| p.id == id) else { return false };
         crate::ui::modulation::has_controls(&self.slot, crate::ui::modulation::reaper_index(&self.slot, id, position))
     }
+}
+
+/// Whose effect a window shows, for its title.
+fn owner_name(app: &ScytheApp, owner: &FxOwner, nested: bool) -> String {
+    let track = |t: &TrackId| app.project.track(*t).map_or_else(|| "Track".to_owned(), |t| t.name.clone());
+    let name = match owner {
+        FxOwner::Track(t) => track(t),
+        FxOwner::Master => "Master".to_owned(),
+        FxOwner::Input(t) => format!("{} input FX", track(t)),
+        FxOwner::Monitor => "Monitoring FX".to_owned(),
+        FxOwner::Take(item, k) => {
+            let take = app.project.find_item(*item).and_then(|(_, i)| i.takes.get(*k)).map(|t| t.name.clone());
+            format!("take FX of {}", take.filter(|n| !n.is_empty()).unwrap_or_else(|| "item".to_owned()))
+        }
+    };
+    if nested { format!("{name} · in container") } else { name }
 }
 
 fn read_params(inst: &FxInstance) -> (Vec<ParamInfo>, HashMap<u32, (f64, String)>) {
@@ -362,17 +461,14 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
 }
 
 fn window(app: &mut ScytheApp, ui: &mut Ui, ed: &mut FxEditor) -> bool {
-    let slot = match ed.track {
-        Some(t) => app.project.track(t).and_then(|t| t.fx.get(ed.index)).cloned(),
-        None => app.project.master.fx.get(ed.index).cloned(),
-    };
-    let Some(slot) = slot.filter(|s| s.name == ed.name) else { return false };
-    let Some(inst) = app.engine.fx().instance(ed.track, &slot, ed.index) else { return false };
+    let slots = chain_slots(app, &ed.owner);
+    let Some(slot) = slot_at(&slots, &ed.path).filter(|s| s.name == ed.name) else { return false };
+    let Some(inst) = app.engine.fx().instance_at(&ed.owner, &slots, &ed.path) else { return false };
     let now = Instant::now();
     let dt = now.duration_since(ed.last).as_secs_f32().clamp(0.0, 0.25);
     ed.last = now;
     ed.measure(&inst, dt);
-    let owner = ed.track.and_then(|t| app.project.track(t)).map_or_else(|| "Master".to_owned(), |t| t.name.clone());
+    let owner = owner_name(app, &ed.owner, ed.path.len() > 1);
     let (params, values) = read_params(&inst);
     let mut open = true;
     let ctx = ui.ctx().clone();
@@ -381,7 +477,7 @@ fn window(app: &mut ScytheApp, ui: &mut Ui, ed: &mut FxEditor) -> bool {
         format!("{} · {}", ed.kind.title(), owner),
         WindowKind::Panel,
     )
-    .id(Id::unique(("fx-editor", ed.track, ed.index)))
+    .id(Id::unique(("fx-editor", &ed.owner, &ed.path)))
     .default_size(ed.kind.default_size())
     .min_size(vec2(380.0, 280.0))
     .escape_closes(ed.typing.is_none())
@@ -429,16 +525,8 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
     let enabled = cx.slot.enabled;
     let sw = Rect::from_min_size(pos2(bar.right() - 40.0, bar.top() + 2.0), vec2(36.0, 22.0));
     if widgets::switch(ui, sw, enabled, ACCENT).on_hover_text("Bypass").clicked() {
-        let (track, index) = (cx.ed.track, cx.ed.index);
-        cx.app.edit("Toggle FX bypass", |p| {
-            let chain = match track {
-                Some(t) => p.track_mut(t).map(|t| &mut t.fx),
-                None => Some(&mut p.master.fx),
-            };
-            if let Some(s) = chain.and_then(|c| c.get_mut(index)) {
-                s.enabled = !s.enabled;
-            }
-        });
+        let (owner, path) = (cx.ed.owner.clone(), cx.ed.path.clone());
+        edit_slot(cx.app, &owner, &path, "Toggle FX bypass", &|s| s.enabled = !s.enabled);
     }
     let label = if enabled { "on" } else { "bypassed" };
     painter_text(ui, pos2(sw.left() - 8.0, sw.center().y), Align2::RIGHT_CENTER, label, theme::regular(11.0), TEXT_DIM);
@@ -499,7 +587,7 @@ fn painter_text(ui: &Ui, pos: Pos2, align: Align2, text: impl ToString, font: eg
 /// The parameter rows, as in the inspector, in a scrolling list.
 fn parameters(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    egui::ScrollArea::vertical().id_salt(("fx-editor-params", cx.ed.track, cx.ed.index)).show(&mut child, |ui| {
+    egui::ScrollArea::vertical().id_salt(("fx-editor-params", &cx.ed.owner, &cx.ed.path)).show(&mut child, |ui| {
         let ids: Vec<u32> = cx.params.iter().map(|p| p.id).collect();
         for id in ids {
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
@@ -514,7 +602,7 @@ fn parameters(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
 
 fn param_row(cx: &mut Ctx, ui: &mut Ui, r: Rect, id: u32) {
     let Some(info) = cx.info(id).cloned() else { return };
-    let resp = ui.interact(r, Id::unique(("fx-ed-row", cx.ed.track, cx.ed.index, id)), Sense::click_and_drag());
+    let resp = ui.interact(r, Id::unique(("fx-ed-row", &cx.ed.owner, &cx.ed.path, id)), Sense::click_and_drag());
     let focused = cx.ed.focus == Some(id);
     let painter = ui.painter();
     painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() || resp.dragged() { RAISED_HI } else { RAISED });
@@ -531,7 +619,7 @@ fn param_row(cx: &mut Ctx, ui: &mut Ui, r: Rect, id: u32) {
         ui.painter().text(value_rect.right_center(), Align2::RIGHT_CENTER, cx.text(id), theme::mono(11.0), TEXT_DIM);
     }
     let mod_rect = Rect::from_center_size(r.right_center() - vec2(16.0, 0.0), vec2(20.0, 18.0));
-    if cx.ed.track.is_some() {
+    if cx.ed.track_fx().is_some() {
         let controlled = cx.controlled(id);
         if widgets::text_pill(
             ui,
@@ -623,7 +711,7 @@ pub(crate) fn param_menu(cx: &mut Ctx, ui: &mut Ui, id: u32) {
         }
         ui.close();
     }
-    if cx.ed.track.is_some() && ui.button("Modulate/Learn…").clicked() {
+    if cx.ed.track_fx().is_some() && ui.button("Modulate/Learn…").clicked() {
         cx.modulate(id);
         ui.close();
     }
@@ -660,7 +748,7 @@ pub(crate) fn typing_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32) -> bool
 /// A rotary control for parameter `id`.
 pub(crate) fn knob(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label: &str) {
     let Some(info) = cx.info(id).cloned() else { return };
-    let resp = ui.interact(rect, Id::unique(("fx-ed-knob", cx.ed.track, cx.ed.index, id)), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::unique(("fx-ed-knob", &cx.ed.owner, &cx.ed.path, id)), Sense::click_and_drag());
     let painter = ui.painter();
     let size = rect.width().min(rect.height() - 30.0).clamp(16.0, 60.0);
     let dial = Rect::from_center_size(pos2(rect.center().x, rect.top() + size / 2.0 + 2.0), vec2(size, size));
@@ -741,7 +829,7 @@ pub(crate) fn switch_param(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label
     }
     let on = cx.value(id) >= 0.5;
     let sw = Rect::from_min_size(pos2(rect.left(), rect.center().y - 10.0), vec2(34.0, 20.0));
-    let resp = ui.interact(rect, Id::unique(("fx-ed-toggle", cx.ed.track, cx.ed.index, id)), Sense::click());
+    let resp = ui.interact(rect, Id::unique(("fx-ed-toggle", &cx.ed.owner, &cx.ed.path, id)), Sense::click());
     let painter = ui.painter();
     painter.rect_filled(sw, CornerRadius::same(255), if on { ACCENT } else { theme::SWITCH_OFF });
     let knob_x = if on { sw.right() - 10.0 } else { sw.left() + 10.0 };
@@ -758,7 +846,7 @@ pub(crate) fn value_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label: &
     if cx.info(id).is_none() {
         return;
     }
-    let resp = ui.interact(rect, Id::unique(("fx-ed-box", cx.ed.track, cx.ed.index, id)), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::unique(("fx-ed-box", &cx.ed.owner, &cx.ed.path, id)), Sense::click_and_drag());
     let painter = ui.painter();
     let hot = resp.hovered() || resp.dragged();
     painter.rect_filled(rect, CornerRadius::same(8), if hot { RAISED_HI } else { BG });
@@ -1015,7 +1103,7 @@ pub(crate) struct FieldChange {
 /// type. The caller applies the value within a gesture and ends it when `done`.
 pub(crate) fn field_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, f: &Field, label: &str) -> FieldChange {
     let info = ParamInfo { id: 0, name: label.into(), min: f.min, max: f.max, default: f.min, log: f.log };
-    let resp = ui.interact(rect, Id::unique(("fx-ed-field", cx.ed.track, cx.ed.index, f.key)), Sense::click_and_drag());
+    let resp = ui.interact(rect, Id::unique(("fx-ed-field", &cx.ed.owner, &cx.ed.path, f.key)), Sense::click_and_drag());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(8), if resp.hovered() || resp.dragged() { RAISED_HI } else { BG });
     if !label.is_empty() {

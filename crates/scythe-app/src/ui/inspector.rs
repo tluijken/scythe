@@ -848,7 +848,8 @@ fn container_rows(
         painter.rect_filled(r, CornerRadius::same(10), RAISED);
         let (short, _) = split_plugin_name(&child.name);
         let text = format!("{short}{}", chain_marks(child));
-        let text = widgets::truncate(ui, &text, &theme::regular(12.0), r.width() - 70.0);
+        let edit = crate::ui::fx_editor::kind_at(app, &FxOwner::Track(track_id), child, &[i, k]).is_some();
+        let text = widgets::truncate(ui, &text, &theme::regular(12.0), r.width() - if edit { 124.0 } else { 70.0 });
         painter.text(
             r.left_center() + vec2(12.0, 0.0),
             Align2::LEFT_CENTER,
@@ -893,6 +894,7 @@ fn container_rows(
                 ui.close();
             }
         });
+        editor_pill(app, ui, r, &FxOwner::Track(track_id), &[i, k], edit);
         let sw = Rect::from_min_size(pos2(r.right() - 44.0, r.center().y - 9.0), vec2(30.0, 18.0));
         if switch(ui, sw, child.enabled, ACCENT).on_hover_text("Bypass").clicked() {
             edit_children(app, "Toggle FX bypass", &|c| c[k].enabled = !c[k].enabled);
@@ -914,6 +916,23 @@ fn container_rows(
         y += 26.0;
     }
     y - top + 4.0
+}
+
+/// An "Edit" pill on a short effect row (left of its bypass switch) for a stock effect with a
+/// graphical editor (`shown`). Drawn after the row takes its clicks, so the pill gets its own.
+fn editor_pill(app: &mut ScytheApp, ui: &mut Ui, row: Rect, owner: &FxOwner, path: &[usize], shown: bool) {
+    if !shown {
+        return;
+    }
+    let open = crate::ui::fx_editor::is_open_at(app, owner, path);
+    let pill = Rect::from_min_size(pos2(row.right() - 96.0, row.center().y - 9.0), vec2(44.0, 18.0));
+    let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
+    if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
+        .on_hover_text(if open { "Close the editor" } else { "Open the graphical editor" })
+        .clicked()
+    {
+        crate::ui::fx_editor::toggle_at(app, owner, path);
+    }
 }
 
 /// The record input chain of the track, or the monitoring chain, as a short list under the
@@ -945,7 +964,12 @@ fn side_chain_rows(
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 30.0));
         painter.rect_filled(r, CornerRadius::same(10), RAISED);
         let (short, _) = split_plugin_name(&slot.name);
-        let text = widgets::truncate(ui, &short, &theme::regular(12.0), r.width() - 70.0);
+        let owner = match which {
+            FxTarget::Input => FxOwner::Input(track_id),
+            _ => FxOwner::Monitor,
+        };
+        let edit = crate::ui::fx_editor::kind_at(app, &owner, slot, &[k]).is_some();
+        let text = widgets::truncate(ui, &short, &theme::regular(12.0), r.width() - if edit { 124.0 } else { 70.0 });
         painter.text(
             r.left_center() + vec2(12.0, 0.0),
             Align2::LEFT_CENTER,
@@ -962,6 +986,7 @@ fn side_chain_rows(
                 ui.close();
             }
         });
+        editor_pill(app, ui, r, &owner, &[k], edit);
         let sw = Rect::from_min_size(pos2(r.right() - 44.0, r.center().y - 9.0), vec2(30.0, 18.0));
         if switch(ui, sw, slot.enabled, ACCENT).on_hover_text("Bypass").clicked() {
             let mut chain = slots.clone();
@@ -969,10 +994,6 @@ fn side_chain_rows(
             set(app, chain);
         }
         *y += 34.0;
-        let owner = match which {
-            FxTarget::Input => FxOwner::Input(track_id),
-            _ => FxOwner::Monitor,
-        };
         if row.clicked() {
             toggle_params(app, owner.clone(), vec![k]);
         }
@@ -1074,25 +1095,7 @@ fn params_if_expanded(
     if open { fx_params(app, ui, painter, inner, y, owner, path) } else { 0.0 }
 }
 
-/// The effects of `owner`'s chain: a track's own or record input chain, or the monitoring chain.
-fn chain_slots(app: &ScytheApp, owner: &FxOwner) -> Vec<FxSlot> {
-    match owner {
-        FxOwner::Track(t) => app.project.track(*t).map(|t| t.fx.clone()).unwrap_or_default(),
-        FxOwner::Input(t) => app.project.track(*t).map(|t| t.input_fx()).unwrap_or_default(),
-        FxOwner::Master => app.project.master.fx.clone(),
-        FxOwner::Monitor => app.monitor_fx(),
-        FxOwner::Take(item, k) => {
-            app.project.find_item(*item).and_then(|(_, it)| it.takes.get(*k)).map(|t| t.fx()).unwrap_or_default()
-        }
-    }
-}
-
-/// The slot at `path`: an index, then indices into containers.
-fn slot_at(slots: &[FxSlot], path: &[usize]) -> Option<FxSlot> {
-    let (first, rest) = path.split_first()?;
-    let slot = slots.get(*first)?.clone();
-    if rest.is_empty() { Some(slot) } else { slot_at(&slot.container_children(), rest) }
-}
+use crate::ui::fx_editor::{chain_slots, slot_at};
 
 /// Parameters of the running effect at `path` in `owner`'s chain as draggable rows; returns the
 /// height used.
@@ -1531,11 +1534,16 @@ const ITEM_H: f32 = 16.0 + 30.0 + 10.0 * (ITEM_ROW + 6.0) + 10.0;
 pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let item = app.sel.item.filter(|id| app.project.find_item(*id).is_some());
     let mut top = rect.top();
+    let take_fx = item
+        .and_then(|id| app.project.find_item(id))
+        .and_then(|(_, i)| i.take())
+        .map_or(0, |t| t.fx().len());
+    let item_h = ITEM_H + take_fx as f32 * (ITEM_ROW + 6.0);
     if let Some(id) = item
-        && rect.height() > ITEM_H + 200.0
+        && rect.height() > item_h + 200.0
     {
-        item_card(app, ui, Rect::from_min_size(rect.min, vec2(rect.width(), ITEM_H)), id);
-        top += ITEM_H + 10.0;
+        item_card(app, ui, Rect::from_min_size(rect.min, vec2(rect.width(), item_h)), id);
+        top += item_h + 10.0;
     }
     track_card(app, ui, Rect::from_min_max(pos2(rect.left(), top), rect.max));
 }
@@ -1776,6 +1784,24 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
                     }
                 }
             });
+        }
+    }
+
+    // The active take's own effects, which play before the track's.
+    let owner = FxOwner::Take(id, item.active_take);
+    for (k, slot) in item.take().map(|t| t.fx()).unwrap_or_default().iter().enumerate() {
+        let r = row();
+        painter.rect_filled(r, CornerRadius::same(12), RAISED);
+        let edit = crate::ui::fx_editor::kind_at(app, &owner, slot, &[k]).is_some();
+        let (short, _) = split_plugin_name(&slot.name);
+        let text = format!("Take FX · {short}");
+        let text = widgets::truncate(ui, &text, &theme::regular(13.0), r.width() - if edit { 130.0 } else { 76.0 });
+        let color = if slot.enabled { TEXT } else { TEXT_DIM };
+        painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, text, theme::regular(13.0), color);
+        editor_pill(app, ui, r, &owner, &[k], edit);
+        let sw = Rect::from_min_size(pos2(r.right() - 44.0, r.center().y - 9.0), vec2(30.0, 18.0));
+        if switch(ui, sw, slot.enabled, ACCENT).on_hover_text("Bypass").clicked() {
+            crate::ui::fx_editor::edit_slot(app, &owner, &[k], "Toggle FX bypass", &|s| s.enabled = !s.enabled);
         }
     }
 }
