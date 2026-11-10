@@ -26,6 +26,16 @@ pub struct Preferences {
     /// `autoxfade`: editing and recording flags; Scythe reads the recording ones
     /// (`AUTOXFADE_*`) and keeps the others. `None` until set: REAPER's default.
     pub autoxfade: Option<u32>,
+    /// `midicctouchtimeout`: touch-replace recording stops replacing a controller this many
+    /// milliseconds after its last message. `None` until set: REAPER 7.73's 1000.
+    pub midi_cc_touch_timeout: Option<u32>,
+}
+
+impl Preferences {
+    /// The touch-replace controller timeout in seconds.
+    pub fn cc_touch_timeout(&self) -> f64 {
+        self.midi_cc_touch_timeout.unwrap_or(1000) as f64 / 1000.0
+    }
 }
 
 /// `autoxfade` bit: recording on a fixed-lane track puts each pass in a new lane.
@@ -92,6 +102,7 @@ impl Default for Preferences {
             project_tabs: Vec::new(),
             last_project: None,
             autoxfade: None,
+            midi_cc_touch_timeout: None,
         }
     }
 }
@@ -140,6 +151,9 @@ impl Preferences {
                     prefs.metronome_default_output = value.parse().unwrap_or(prefs.metronome_default_output)
                 }
                 "autoxfade" => prefs.autoxfade = value.parse::<i64>().ok().map(|v| v as u32),
+                "midicctouchtimeout" => {
+                    prefs.midi_cc_touch_timeout = value.parse::<i64>().ok().map(|v| v.max(0) as u32)
+                }
                 "csurf_cnt" => surface_count = value.parse().unwrap_or(0),
                 "projecttabs" => tab_count = value.parse().unwrap_or(0),
                 "lastproject" => prefs.last_project = Some(value.to_owned()).filter(|v| !v.is_empty()),
@@ -185,6 +199,9 @@ impl Preferences {
         ];
         if let Some(v) = self.autoxfade {
             values.push(("autoxfade".to_owned(), v.to_string()));
+        }
+        if let Some(v) = self.midi_cc_touch_timeout {
+            values.push(("midicctouchtimeout".to_owned(), v.to_string()));
         }
         let has_surfaces = !self.surfaces.is_empty() || text.lines().any(|l| l.trim_start().starts_with("csurf_cnt="));
         if has_surfaces {

@@ -1490,6 +1490,31 @@ fn recording_the_output_adds_a_take() {
 }
 
 #[test]
+fn recording_the_midi_output_adds_an_item() {
+    let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    let mut s = Session::new(Engine::start_null(pool, 48_000, None));
+    let id = add_track(&mut s, "Keys");
+    ok(&mut s, json!({"cmd": "track.record_mode", "track": id, "mode": "midi_output"}));
+    ok(&mut s, json!({"cmd": "track.arm", "track": id, "armed": true}));
+    let tl = s.project.tempo.timeline();
+    let pass = scythe_core::recording::RecordPass { start: 0.0, looped: None, punch: None };
+    let notes = [(1.05, [0x90, 60, 100], 3), (1.15, [0x80, 60, 0], 3)];
+    let item = scythe_core::recording::place_midi_recording(&notes, pass, 4.0, &tl).unwrap();
+    s.edit("item", |p| p.track_mut(scythe_core::TrackId(id)).unwrap().items.push(item));
+    s.set_cursor(1.0);
+    s.toggle_record();
+    std::thread::sleep(Duration::from_millis(400));
+    s.toggle_record();
+    let t = s.project.track(scythe_core::TrackId(id)).unwrap();
+    assert_eq!(t.items.len(), 2, "the played item and the recorded one");
+    let rec = t.items.iter().find(|i| (i.position - 1.0).abs() < 1e-6).expect("an item from 1 s");
+    let scythe_core::Source::Raw(c) = &rec.take().unwrap().source else { panic!("a MIDI source") };
+    let src = scythe_core::midi::MidiSource::parse(c).unwrap();
+    let keys: Vec<u8> = src.notes().iter().map(|n| n.key).collect();
+    assert_eq!(keys, [60], "the note the track put out");
+}
+
+#[test]
 fn envelopes_take_points_shapes_and_automation_items() {
     let mut s = session();
     let t = add_track(&mut s, "Synth");

@@ -736,9 +736,18 @@ pub fn record_file_name(track_number: usize, track_name: &str, unix_secs: u64) -
 /// Puts a MIDI recording made by [`place_midi_recording`] on `track` as its record mode says.
 /// The overdub modes record into the MIDI item under the recording's start: overdub adds the
 /// new events, replace first clears the recorded range, latch-replace clears from the first
-/// event played to the end, touch-replace from the first to the last. Without such an item
-/// (or for other modes) the recording becomes an item of its own. Returns the item.
-pub fn merge_midi_recording(track: &mut Track, item: Item, mode: RecordMode, timeline: &Timeline) -> ItemId {
+/// event played to the end, touch-replace notes from the first note played to the last and
+/// each controller (with pitch bend and pressure) only while it is played: from its first
+/// message until `cc_timeout` seconds pass without one (REAPER's `midicctouchtimeout`).
+/// Without such an item (or for other modes) the recording becomes an item of its own.
+/// Returns the item.
+pub fn merge_midi_recording(
+    track: &mut Track,
+    item: Item,
+    mode: RecordMode,
+    timeline: &Timeline,
+    cc_timeout: f64,
+) -> ItemId {
     let new_id = item.id;
     if !mode.is_midi_overdub() {
         track.items.push(item);
@@ -776,14 +785,45 @@ pub fn merge_midi_recording(track: &mut Track, item: Item, mode: RecordMode, tim
         .filter(|e| !(e.tick == recorded.length_ticks && e.bytes[0] & 0xf0 == 0xb0))
         .map(|e| MidiEvent { tick: to_tick(e.tick), ..e.clone() })
         .collect();
-    let (first, last) = (played.first().map(|e| e.tick), played.last().map(|e| e.tick));
+    let first = played.first().map(|e| e.tick);
     let (start, end) = (to_tick(0), to_tick(recorded.length_ticks));
+    let is_note = |e: &MidiEvent| matches!(e.bytes[0] & 0xf0, 0x80 | 0x90);
+    let touch = mode == RecordMode::MidiTouchReplace;
     let range = match mode {
         RecordMode::MidiReplace => Some((start, end)),
         RecordMode::MidiLatchReplace => first.map(|f| (f, end)),
-        RecordMode::MidiTouchReplace => first.zip(last),
+        RecordMode::MidiTouchReplace => {
+            let mut notes = played.iter().filter(|e| is_note(e)).map(|e| e.tick);
+            notes.next().map(|f| (f, notes.next_back().unwrap_or(f)))
+        }
         _ => None,
     };
+    if touch {
+        // Each controller lane (status, channel and controller number) is replaced while it is
+        // played: from a message until the timeout passes without another.
+        let lane = |e: &MidiEvent| {
+            let status = e.bytes[0] & 0xf0;
+            (e.bytes[0], if status == 0xb0 { e.bytes[1] } else { 0 })
+        };
+        let timeout_end = |tick: u64| {
+            let qn = qn0 + tick as f64 / ppq;
+            let t = timeline.time_at_qn(qn) + cc_timeout;
+            ((timeline.qn_at(t) - qn0) * ppq).round().max(0.0) as u64
+        };
+        let mut windows: Vec<((u8, u8), u64, u64)> = Vec::new();
+        for e in played.iter().filter(|e| matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0)) {
+            let key = lane(e);
+            match windows.iter_mut().rev().find(|w| w.0 == key) {
+                Some(w) if e.tick <= w.2 => w.2 = timeout_end(e.tick),
+                _ => windows.push((key, e.tick, timeout_end(e.tick))),
+            }
+        }
+        src.events.retain(|e| {
+            e.tick == src.length_ticks
+                || !matches!(e.bytes[0] & 0xf0, 0xa0..=0xe0)
+                || !windows.iter().any(|w| w.0 == lane(e) && (w.1..w.2).contains(&e.tick))
+        });
+    }
     if let Some((from, to)) = range {
         let mut cleared: Vec<(u8, u8)> = Vec::new();
         src.events.retain(|e| {
@@ -801,7 +841,8 @@ pub fn merge_midi_recording(track: &mut Track, item: Item, mode: RecordMode, tim
             if inside && status == 0x90 {
                 cleared.push(key);
             }
-            !(inside && status != 0xf0)
+            let kept_lane = touch && !matches!(status, 0x80 | 0x90);
+            !(inside && status != 0xf0 && !kept_lane)
         });
     }
     let end_tick = src.length_ticks.max(end);
@@ -995,7 +1036,7 @@ mod tests {
             let mut t = Track::new("m");
             t.items.push(place_midi_recording(&old, pass(0.0), 4.0, &tl).unwrap());
             let new = place_midi_recording(&played, pass(2.0), 3.0, &tl).unwrap();
-            let id = merge_midi_recording(&mut t, new, mode, &tl);
+            let id = merge_midi_recording(&mut t, new, mode, &tl, 1.0);
             let Source::Raw(c) = &t.item(id).unwrap().take().unwrap().source else { panic!() };
             let mut keys: Vec<(f64, u8)> =
                 MidiSource::parse(c).unwrap().notes().iter().map(|n| (n.start_qn, n.key)).collect();
@@ -1009,6 +1050,39 @@ mod tests {
         // Touch-replace only while playing: the note after it stays.
         assert_eq!(keys(RecordMode::MidiTouchReplace), (1, vec![(1.0, 60), (4.5, 67), (5.0, 64)]));
         assert_eq!(keys(RecordMode::Input).0, 2);
+    }
+
+    #[test]
+    fn touch_replace_holds_a_controller_until_its_timeout() {
+        let tempo = crate::TempoMap::default();
+        let tl = tempo.timeline();
+        let pass = |start: f64| RecordPass { start, looped: None, punch: None };
+        let old = [
+            (0.5, [0x90, 60, 100], 3),
+            (0.75, [0x80, 60, 0], 3),
+            (1.0, [0xb0, 1, 10], 3),
+            (2.2, [0xb0, 7, 90], 3),
+            (2.5, [0xb0, 1, 20], 3),
+            (3.5, [0xb0, 1, 30], 3),
+        ];
+        let played = [(2.0, [0xb0, 1, 64], 3), (2.3, [0xb0, 1, 70], 3)];
+        let mut t = Track::new("m");
+        t.items.push(place_midi_recording(&old, pass(0.0), 4.0, &tl).unwrap());
+        let new = place_midi_recording(&played, pass(2.0), 3.0, &tl).unwrap();
+        let id = merge_midi_recording(&mut t, new, RecordMode::MidiTouchReplace, &tl, 1.0);
+        let Source::Raw(c) = &t.item(id).unwrap().take().unwrap().source else { panic!() };
+        let src = MidiSource::parse(c).unwrap();
+        let ppq = src.ticks_per_qn as f64;
+        let ccs: Vec<(f64, u8, u8)> = src
+            .events
+            .iter()
+            .filter(|e| e.bytes[0] == 0xb0 && e.tick != src.length_ticks)
+            .map(|e| (e.tick as f64 / ppq / 2.0, e.bytes[1], e.bytes[2]))
+            .collect();
+        // CC1 is replaced from 2.0 s until a second after its last message (3.3 s): its 2.5 s
+        // value goes, the 3.5 s one stays, and CC7 and the note are left alone.
+        assert_eq!(ccs, [(1.0, 1, 10), (2.0, 1, 64), (2.2, 7, 90), (2.3, 1, 70), (3.5, 1, 30)]);
+        assert_eq!(src.notes().len(), 1);
     }
 
     #[test]

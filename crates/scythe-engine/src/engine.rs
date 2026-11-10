@@ -1350,6 +1350,29 @@ impl Engine {
         Ok(rec)
     }
 
+    /// Starts gathering the MIDI the tracks' effects put out (effective with the next
+    /// [`Engine::sync`]), for "Output (MIDI)" recording.
+    pub fn start_midi_output_recording(&mut self, tracks: &[scythe_core::TrackId]) {
+        for &id in tracks {
+            let tap = Arc::new(crate::render::MidiRecordTap::new(Vec::with_capacity(1 << 16)));
+            self.meters.set_midi_record_tap(id, Some(tap));
+        }
+    }
+
+    /// What a track put out since [`Engine::start_midi_output_recording`]; with `finish` the
+    /// gathering ends (effective with the next [`Engine::sync`]).
+    pub fn take_midi_output(&mut self, id: scythe_core::TrackId, finish: bool) -> Vec<(i64, [u8; 3])> {
+        let events = self
+            .meters
+            .midi_record_tap(id)
+            .and_then(|t| t.lock().ok().map(|mut e| std::mem::take(&mut *e)))
+            .unwrap_or_default();
+        if finish {
+            self.meters.set_midi_record_tap(id, None);
+        }
+        events
+    }
+
     /// Takes the taps out (effective with the next [`Engine::sync`]) and closes the files.
     pub fn finish_output_recording(
         &mut self,

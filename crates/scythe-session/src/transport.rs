@@ -23,6 +23,8 @@ pub struct ActiveRecording {
     pub(crate) audio_tracks: Vec<TrackId>,
     /// Tracks recording MIDI, with the channel they listen to (`None` for all).
     pub(crate) midi_tracks: Vec<(TrackId, RecInput)>,
+    /// Tracks recording the MIDI their effects put out ("Output (MIDI)").
+    pub(crate) midi_output_tracks: Vec<TrackId>,
     /// MIDI received so far, with the project frame it arrived at.
     pub(crate) midi: Vec<(i64, LiveMidi)>,
     /// Seconds recorded before the playhead reached the start: count-in and pre-roll.
@@ -87,9 +89,9 @@ impl Session {
                     && t.rec_mode != RecordMode::InputForced(InputFormat::Midi)
             })
             .collect();
-        if armed.iter().any(|t| t.rec_mode == RecordMode::MidiOutput) {
-            self.notify("Recording a track's MIDI output is not supported yet");
-        }
+        let midi_output: Vec<TrackId> =
+            armed.iter().filter(|t| t.rec_mode == RecordMode::MidiOutput).map(|t| t.id).collect();
+        self.engine.start_midi_output_recording(&midi_output);
         let dir = self.record_dir();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let number = |t: &Track| self.project.tracks.iter().position(|x| x.id == t.id).map_or(0, |i| i + 1);
@@ -208,6 +210,7 @@ impl Session {
                 .iter()
                 .filter_map(|t| Some((t.id, RecInput::from_rec_input(t.rec_input)?)))
                 .collect(),
+            midi_output_tracks: midi_output,
             midi: Vec::new(),
             lead_in,
             preroll_from,
@@ -284,6 +287,24 @@ impl Session {
                 midi_items.push((track, item));
             }
         }
+        for &track in &rec.midi_output_tracks {
+            let events: Vec<(f64, [u8; 3], u8)> = self
+                .engine
+                .take_midi_output(track, true)
+                .into_iter()
+                .map(|(frame, b)| (frame as f64 / sr, b, scythe_engine::midi_io::message_len(b[0]) as u8))
+                .collect();
+            let mut pass = rec.pass;
+            if let Some(ranges) = punch_of(track) {
+                match ranges.first() {
+                    Some(r) => pass.punch = Some(*r),
+                    None => continue,
+                }
+            }
+            if let Some(item) = place_midi_recording(&events, pass, stop, &timeline) {
+                midi_items.push((track, item));
+            }
+        }
         let mut files: Vec<(TrackId, PathBuf, f64, f64)> = Vec::new();
         let mut note = String::new();
         let mut failed = false;
@@ -348,6 +369,7 @@ impl Session {
         let midi_count = midi_items.len();
         if count > 0 {
             let modes: Vec<(TrackId, RecordMode)> = self.project.tracks.iter().map(|t| (t.id, t.rec_mode)).collect();
+            let cc_timeout = self.prefs.cc_touch_timeout();
             let mut first: Option<(TrackId, ItemId)> = None;
             self.edit("Record", |p| {
                 for (track, into, segments, passes, path, len) in placed {
@@ -365,7 +387,7 @@ impl Session {
                 for (track, item) in midi_items {
                     let mode = modes.iter().find(|m| m.0 == track).map_or(RecordMode::Input, |m| m.1);
                     let Some(t) = p.track_mut(track) else { continue };
-                    let id = merge_midi_recording(t, item, mode, &timeline);
+                    let id = merge_midi_recording(t, item, mode, &timeline, cc_timeout);
                     first.get_or_insert((track, id));
                 }
             });

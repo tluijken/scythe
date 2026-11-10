@@ -342,6 +342,7 @@ pub struct RenderTrack {
     pub mute_items_recording: bool,
     /// Output recording of this track, while one runs.
     pub record_tap: Option<Arc<crate::record::OutputTap>>,
+    pub midi_record: Option<Arc<MidiRecordTap>>,
     /// Live MIDI for an armed, monitored track with a MIDI input: the device and channel it
     /// listens to.
     pub midi_input: Option<RecInput>,
@@ -673,10 +674,15 @@ impl RenderScratch {
 }
 
 /// Meters live as long as the track does across graph rebuilds, so the UI can keep its handle.
+/// The MIDI a track's effects put out while it records "Output (MIDI)": messages with the
+/// project frame they left at.
+pub type MidiRecordTap = std::sync::Mutex<Vec<(i64, [u8; 3])>>;
+
 #[derive(Debug, Default)]
 pub struct MeterRegistry {
     tracks: HashMap<TrackId, Arc<Meter>>,
     record_taps: HashMap<TrackId, Arc<crate::record::OutputTap>>,
+    midi_record_taps: HashMap<TrackId, Arc<MidiRecordTap>>,
     pub master: Arc<Meter>,
     pub loudness: Option<Arc<Loudness>>,
 }
@@ -689,6 +695,17 @@ impl MeterRegistry {
     /// The output recording tap of track `id`, while it records its output.
     pub fn record_tap(&self, id: TrackId) -> Option<Arc<crate::record::OutputTap>> {
         self.record_taps.get(&id).cloned()
+    }
+
+    pub fn midi_record_tap(&self, id: TrackId) -> Option<Arc<MidiRecordTap>> {
+        self.midi_record_taps.get(&id).cloned()
+    }
+
+    pub fn set_midi_record_tap(&mut self, id: TrackId, tap: Option<Arc<MidiRecordTap>>) {
+        match tap {
+            Some(t) => self.midi_record_taps.insert(id, t),
+            None => self.midi_record_taps.remove(&id),
+        };
     }
 
     pub fn set_record_tap(&mut self, id: TrackId, tap: Option<Arc<crate::record::OutputTap>>) {
@@ -884,6 +901,7 @@ impl RenderGraph {
                     || chain.reads_midi()
                     || t.midi_out.is_some()
                     || !midi_sends.is_empty()
+                    || meters.midi_record_tap(t.id).is_some()
                 {
                     let (midi, audio): (Vec<_>, Vec<_>) =
                         items.into_iter().partition(|i| matches!(i.audio, ItemAudio::Midi(_)) && i.take_fx.is_none());
@@ -979,6 +997,7 @@ impl RenderGraph {
                         && !t.monitor_items
                         && !matches!(t.rec_mode, RecordMode::Disabled | RecordMode::MidiOutput),
                     record_tap: meters.record_tap(t.id),
+                    midi_record: meters.midi_record_tap(t.id),
                     live_buf: Arc::new(std::sync::Mutex::new(Vec::with_capacity(512))),
                     midi_out: t.midi_out,
                     read_ahead: 0,
@@ -1389,7 +1408,8 @@ impl RenderGraph {
             (Some(_), None) => &[],
         };
         let live_channel = track.midi_input.and_then(|i| i.channel);
-        let routes_midi = track.audible && (track.midi_inbox.is_some() || !track.midi_sends.is_empty());
+        let records_midi = track.midi_record.is_some() && input.recording && input.play_items;
+        let routes_midi = track.audible && (track.midi_inbox.is_some() || !track.midi_sends.is_empty() || records_midi);
         if !routes_midi && let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
             self.send_midi(track, out, clock, start, n as i64, input, live);
         }
@@ -1568,6 +1588,12 @@ impl RenderGraph {
             self.route_midi(track, held, entering);
             if let (Some(out), Some(clock)) = (track.midi_out, input.midi_out) {
                 self.send_block_midi(held, out, clock, start);
+            }
+            if records_midi
+                && let Some(tap) = &track.midi_record
+                && let Ok(mut events) = tap.try_lock()
+            {
+                events.extend(held.short.iter().map(|&(at, bytes)| (start + at as i64, bytes)));
             }
         }
         drop(midi_bufs);
@@ -2178,7 +2204,8 @@ fn midi_notes(
         .into_iter()
         .map(|n| SynthNote {
             start: (n.start * sr).round() as i64,
-            end: (n.end * sr).round() as i64,
+            // A note still held where the item ends is let go on its last frame (REAPER 7.73).
+            end: ((n.end * sr).round() as i64).min(cutoff - 1).max((n.start * sr).round() as i64),
             cutoff,
             channel: n.channel,
             key: n.key,
