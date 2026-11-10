@@ -363,14 +363,16 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         if let Some((_, measured)) = &latency {
             tip = format!("{tip}\n{measured}");
         }
-        let resp = ui.allocate_rect(status_rect, Sense::click());
+        // Shown or not by the width of the load and xrun text: an id of its own keeps it from
+        // shifting the ids of the widgets after it when it comes and goes.
+        let resp = ui.interact(status_rect, ui.scope_id().with("audio-status"), Sense::click());
         resp.widget_info(|| widgets::button_info(ui, "Audio device settings"));
         if resp.on_hover_text(format!("{tip}\nClick for the audio device settings")).clicked() {
             audio_device::toggle(app);
         }
     }
     if search.left() >= group.right() + GAP - 0.5 {
-        let resp = ui.allocate_rect(search, Sense::click());
+        let resp = ui.interact(search, ui.scope_id().with("action-search"), Sense::click());
         painter.rect_filled(search, CornerRadius::same(255), if resp.hovered() { RAISED } else { PANEL });
         paint_icon(
             ui,
