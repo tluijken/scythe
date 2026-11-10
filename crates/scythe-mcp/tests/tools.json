@@ -13146,7 +13146,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Runs ReaScript code (REAPER's `reaper.*` API, the subset Scythe implements) and answers\nwith what it printed. Its changes to the project are one undo step. It can change\nanything in the project, so it needs the admin token; it runs in the desktop app only.\n\nControl API command `script.run`.",
+    "description": "Runs ReaScript code (REAPER's `reaper.*` API, the subset Scythe implements) and answers\nwith what it printed. Its changes to the project are one undo step; as in REAPER, a script\nthat stops on an error keeps what it changed before it. It can change anything in the\nproject, so it needs the admin token; it runs in the desktop app only.\n\nControl API command `script.run`.",
     "inputSchema": {
       "properties": {
         "code": {

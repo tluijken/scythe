@@ -753,7 +753,7 @@ peak-to-loudness ratio is more than 3 dB above the reference's, and `notes`.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
-| `script.run` | `code`, `language?` (`lua`, `eel`) | `{"console", "changed", "undo"}`: runs ReaScript text over the project (the `reaper.*` functions Scythe implements); its changes are one undo step named by `Undo_EndBlock`. Admin only. Only the desktop app runs scripts (`failed` from the headless server); message boxes answer OK, user inputs are cancelled, and a script that defers is stopped after its first pass |
+| `script.run` | `code`, `language?` (`lua`, `eel`) | `{"console", "changed", "undo"}`: runs ReaScript text over the project (the `reaper.*` functions Scythe implements); its changes are one undo step named by `Undo_EndBlock`; a runtime error answers `failed` but keeps what the script changed before it, as REAPER does. Admin only. Only the desktop app runs scripts (`failed` from the headless server); message boxes answer OK, user inputs are cancelled, and a script that defers is stopped after its first pass |
 
 ### Setlists
 

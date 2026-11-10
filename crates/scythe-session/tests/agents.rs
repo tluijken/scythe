@@ -281,6 +281,7 @@ fn scripts_need_a_runner_and_are_one_undo_step() {
             console: "hello\n".into(),
             undo: Some("Script edit".into()),
             cursor: Some(4.0),
+            error: (code == "-- fails").then(|| "control.lua:2: boom".into()),
         })
     }));
     let ran = ok(&mut s, json!({"cmd": "script.run", "code": "-- anything", "language": "lua"}));
@@ -289,4 +290,9 @@ fn scripts_need_a_runner_and_are_one_undo_step() {
     assert_eq!(s.project.tracks[0].name, "From script");
     assert_eq!(s.history.undo_label(), Some("Script edit"));
     assert_eq!(s.project.cursor, 4.0);
+    let failed = execute_json(&mut s, json!({"cmd": "script.run", "code": "-- fails"})).unwrap_err();
+    assert!(failed.message.contains("boom"), "{failed:?}");
+    assert_eq!(s.project.tracks.len(), 2, "what it changed before the error stays, as in REAPER");
+    s.undo();
+    assert_eq!(s.project.tracks.len(), 1, "and is one undo step");
 }

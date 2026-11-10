@@ -1282,10 +1282,7 @@ impl ScytheApp {
                     None => self.notify(format!("Ran {name}")),
                 }
             }
-            Err(e) => {
-                self.script_console = Some(e);
-                self.notify(format!("{name} failed"));
-            }
+            Err(e) => self.script_failed(&name, e),
         }
     }
 
@@ -1305,8 +1302,7 @@ impl ScytheApp {
             }
             Err(e) => {
                 self.script_gfx.open = false;
-                self.script_console = Some(e);
-                self.notify(format!("{name} failed"));
+                self.script_failed(&name, e);
             }
         }
     }
@@ -1330,11 +1326,15 @@ impl ScytheApp {
                 self.apply_script(&name, out);
                 self.notify(format!("{name} ended"));
             }
-            Err(e) => {
-                self.script_console = Some(e);
-                self.notify(format!("{name} failed"));
-            }
+            Err(e) => self.script_failed(&name, e),
         }
+    }
+
+    /// Keeps what a failed script changed before its error, as REAPER does, and shows the error.
+    fn script_failed(&mut self, name: &str, e: crate::script::ScriptError) {
+        self.apply_script(name, *e.outcome);
+        self.script_console = Some(e.message);
+        self.notify(format!("{name} failed"));
     }
 
     fn show_script_gfx(&mut self, script: &mut crate::script::RunningScript) {

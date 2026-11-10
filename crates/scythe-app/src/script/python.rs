@@ -299,7 +299,7 @@ mod tests {
     use super::super::*;
 
     /// Runs a Python script, or `None` when there is no Python to run it with.
-    fn run_py(src: &str, name: &str) -> Option<Result<(ScriptOutcome, Option<RunningScript>), String>> {
+    fn run_py(src: &str, name: &str) -> Option<Result<(ScriptOutcome, Option<RunningScript>), ScriptError>> {
         match run(src, name, &project(), ScriptContext::default()) {
             Err(e) if e.contains("was not found on the PATH") => {
                 eprintln!("skipped: {e}");
@@ -343,7 +343,7 @@ RPR_Undo_EndBlock("Tidy up", -1)
     }
 
     #[test]
-    fn errors_name_the_line_and_change_nothing() {
+    fn errors_name_the_line() {
         let script = "from reaper_python import *\nimport sys\nRPR_ShowConsoleMsg('a')\nprint('to stdout')\nsys.stderr.write('warned\\n')\nnot_a_function()";
         let Some(result) = run_py(script, "x.py") else {
             return;
@@ -360,6 +360,17 @@ RPR_Undo_EndBlock("Tidy up", -1)
         let (out, _) = run_py(quiet, "y.py").unwrap().unwrap();
         assert!(out.project.is_none());
         assert!(out.console.is_empty(), "print and stderr stay out of the console: {:?}", out.console);
+    }
+
+    #[test]
+    fn a_failed_script_keeps_what_it_changed_before_the_error() {
+        let script = "from reaper_python import *\nRPR_InsertTrackAtIndex(0, True)\nraise RuntimeError('boom')";
+        let Some(result) = run_py(script, "x.py") else {
+            return;
+        };
+        let err = result.unwrap_err();
+        assert!(err.ends_with("RuntimeError: boom"), "{err}");
+        assert_eq!(err.outcome.project.unwrap().tracks.len(), 3);
     }
 
     #[test]

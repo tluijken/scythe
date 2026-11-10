@@ -29,18 +29,22 @@ pub struct ScriptRun {
     pub undo: Option<String>,
     /// Where it left the edit cursor, when it moved it.
     pub cursor: Option<f64>,
+    /// The error it stopped on; what it changed before it stays, as in REAPER.
+    pub error: Option<String>,
 }
 
-/// Runs `code` in `language` over the session's project; `Err` carries the interpreter's
-/// message. A script that keeps running (`defer`) is stopped after its first pass.
+/// Runs `code` in `language` over the session's project; `Err` is a script that could not
+/// start (no interpreter); a runtime error is `ScriptRun::error`. A script that keeps
+/// running (`defer`) is stopped after its first pass.
 pub type ScriptRunner = Box<dyn Fn(&Session, Language, &str) -> Result<ScriptRun, String> + Send>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum ScriptCommand {
     /// Runs ReaScript code (REAPER's `reaper.*` API, the subset Scythe implements) and answers
-    /// with what it printed. Its changes to the project are one undo step. It can change
-    /// anything in the project, so it needs the admin token; it runs in the desktop app only.
+    /// with what it printed. Its changes to the project are one undo step; as in REAPER, a script
+    /// that stops on an error keeps what it changed before it. It can change anything in the
+    /// project, so it needs the admin token; it runs in the desktop app only.
     #[serde(rename = "script.run")]
     Run {
         /// The script's text.
@@ -71,6 +75,9 @@ pub fn execute(session: &mut Session, command: ScriptCommand) -> Result<Value, A
         if !session.is_playing() {
             session.engine.seek(session.project.cursor);
         }
+    }
+    if let Some(e) = run.error {
+        return Err(ApiError::failed(e));
     }
     Ok(value!({"console": run.console, "changed": changed, "undo": run.undo}))
 }

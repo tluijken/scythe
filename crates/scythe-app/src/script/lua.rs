@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_name_the_line_and_change_nothing() {
+    fn errors_name_the_line() {
         let err = run("reaper.ShowConsoleMsg('a')\nnot_a_function()", "x.lua", &project(), ScriptContext::default())
             .unwrap_err();
         assert!(err.starts_with('a'), "the console comes first: {err}");

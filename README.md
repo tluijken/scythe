@@ -510,7 +510,8 @@ Working:
   and a `setlist` event; see `docs/control-api.md`).
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`
   file against the project as one undo step (named by `Undo_EndBlock`), with `ShowConsoleMsg`
-  output in a console window. 310 `reaper.*` functions:
+  output in a console window. A script that stops on an error keeps what it changed before it,
+  as one undo step, as in REAPER. 310 `reaper.*` functions:
   - tracks: `CountTracks`, `GetTrack`, `GetMasterTrack`, `InsertTrackAtIndex`, `DeleteTrack`,
     `GetTrackName`, `GetSetMediaTrackInfo_String` (`P_NAME`, `GUID`, `P_EXT:`),
     `Get/SetMediaTrackInfo_Value` (volume, pan, mute, solo and its modes, solo defeat, polarity,

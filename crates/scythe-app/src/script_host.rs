@@ -101,16 +101,25 @@ pub fn control_runner() -> scythe_session::api::script::ScriptRunner {
             Language::Lua => "control.lua",
             Language::Eel => "control.eel",
         };
-        let (mut out, running) = crate::script::run(code, name, &session.project, ctx.clone())?;
+        let (mut out, running, mut error) = match crate::script::run(code, name, &session.project, ctx.clone()) {
+            Ok((out, running)) => (out, running, None),
+            Err(e) => (*e.outcome, None, Some(e.message)),
+        };
         if let Some(script) = running {
             let base = out.project.clone().unwrap_or_else(|| session.project.clone());
-            let last = script.stop(&base, ctx)?;
+            let last = match script.stop(&base, ctx) {
+                Ok(last) => last,
+                Err(e) => {
+                    error = Some(e.message);
+                    *e.outcome
+                }
+            };
             out.console.push_str(&last.console);
             out.project = last.project.or(out.project);
             out.undo = last.undo.or(out.undo);
             out.cursor = last.cursor.or(out.cursor);
         }
-        Ok(ScriptRun { project: out.project, console: out.console, undo: out.undo, cursor: out.cursor })
+        Ok(ScriptRun { project: out.project, console: out.console, undo: out.undo, cursor: out.cursor, error })
     })
 }
 

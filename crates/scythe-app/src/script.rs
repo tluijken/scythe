@@ -126,6 +126,42 @@ pub struct ScriptOutcome {
     pub dirty: bool,
 }
 
+/// A script that stopped on an error. Like REAPER, what it changed before the error stays:
+/// `outcome` carries it, to apply as any other run's.
+#[derive(Debug)]
+pub struct ScriptError {
+    /// What it printed, then the interpreter's message with the line.
+    pub message: String,
+    pub outcome: Box<ScriptOutcome>,
+}
+
+impl ScriptError {
+    fn new(error: String, mut outcome: ScriptOutcome) -> Self {
+        let message = format!("{}{error}", std::mem::take(&mut outcome.console));
+        ScriptError { message, outcome: Box::new(outcome) }
+    }
+}
+
+impl std::ops::Deref for ScriptError {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for ScriptError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<ScriptError> for String {
+    fn from(e: ScriptError) -> String {
+        e.message
+    }
+}
+
 /// A script's graphics window and what it drew last.
 #[derive(Debug, Clone)]
 pub struct GfxWindow {
@@ -239,13 +275,13 @@ impl ScriptGfx {
 
 /// Runs `source` and returns what it did, and the script itself when it deferred work to
 /// later frames. The language follows `name`'s extension (`.eel`, `.py`, else Lua). Errors
-/// carry the interpreter's message, with the line.
+/// carry the interpreter's message, with the line, and what the script did before it.
 pub fn run(
     source: &str,
     name: &str,
     project: &Project,
     ctx: ScriptContext,
-) -> Result<(ScriptOutcome, Option<RunningScript>), String> {
+) -> Result<(ScriptOutcome, Option<RunningScript>), ScriptError> {
     let state: Shared = Rc::new(RefCell::new(State::new(project, ctx)));
     let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let engine: Result<Box<dyn Engine>, String> = match ext.as_str() {
@@ -255,7 +291,7 @@ pub fn run(
     };
     let engine = match engine {
         Ok(e) => e,
-        Err(e) => return Err(format!("{}{e}", std::mem::take(&mut state.borrow_mut().out.console))),
+        Err(e) => return Err(ScriptError::new(e, take_outcome(&state))),
     };
     let mut script = RunningScript { engine, state };
     if script.is_running() {
@@ -284,14 +320,14 @@ impl RunningScript {
     }
 
     /// Runs the code deferred in the last frame over `project`.
-    pub fn tick(&mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
+    pub fn tick(&mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, ScriptError> {
         self.state.borrow_mut().reset(project, ctx);
         let result = self.engine.run_deferred();
         self.result(result)
     }
 
     /// Ends the script, running what it registered with `atexit`.
-    pub fn stop(mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, String> {
+    pub fn stop(mut self, project: &Project, ctx: ScriptContext) -> Result<ScriptOutcome, ScriptError> {
         self.finish(Some((project, ctx)))
     }
 
@@ -300,7 +336,7 @@ impl RunningScript {
         self.engine.gfx_window()
     }
 
-    fn finish(&mut self, fresh: Option<(&Project, ScriptContext)>) -> Result<ScriptOutcome, String> {
+    fn finish(&mut self, fresh: Option<(&Project, ScriptContext)>) -> Result<ScriptOutcome, ScriptError> {
         if let Some((project, ctx)) = fresh {
             self.state.borrow_mut().reset(project, ctx);
         }
@@ -308,25 +344,29 @@ impl RunningScript {
         self.result(result)
     }
 
-    fn result(&mut self, result: Result<(), String>) -> Result<ScriptOutcome, String> {
+    fn result(&mut self, result: Result<(), String>) -> Result<ScriptOutcome, ScriptError> {
         match result {
             Ok(()) => Ok(self.outcome()),
-            Err(e) => Err(format!("{}{e}", self.outcome().console)),
+            Err(e) => Err(ScriptError::new(e, self.outcome())),
         }
     }
 
     /// What the script did since the last outcome was taken.
     fn outcome(&mut self) -> ScriptOutcome {
-        let mut s = self.state.borrow_mut();
-        let mut out = std::mem::take(&mut s.out);
-        if std::mem::take(&mut s.changed) {
-            out.project = Some(s.project.clone());
-        }
-        if std::mem::take(&mut s.sel_changed) {
-            out.selection = Some((s.sel_tracks.clone(), s.sel_items.clone()));
-        }
-        out
+        take_outcome(&self.state)
     }
+}
+
+fn take_outcome(state: &Shared) -> ScriptOutcome {
+    let mut s = state.borrow_mut();
+    let mut out = std::mem::take(&mut s.out);
+    if std::mem::take(&mut s.changed) {
+        out.project = Some(s.project.clone());
+    }
+    if std::mem::take(&mut s.sel_changed) {
+        out.selection = Some((s.sel_tracks.clone(), s.sel_items.clone()));
+    }
+    out
 }
 
 // ---- the API -------------------------------------------------------------------------------
@@ -1071,5 +1111,25 @@ mod tests {
         let id = p.tracks[2].id;
         let mut s = state(p);
         assert_eq!(api(&mut s, "GetTrackName", &[Val::Track(id)]), (Val::Bool(true), vec![Val::Str("Track 3".into())]));
+    }
+
+    #[test]
+    fn a_failed_script_keeps_what_it_changed_before_the_error_as_reaper_does() {
+        let lua = "reaper.ShowConsoleMsg('a')\nreaper.InsertTrackAtIndex(0, true)\nerror('boom')\nreaper.InsertTrackAtIndex(0, true)";
+        let err = run(lua, "x.lua", &project(), ScriptContext::default()).unwrap_err();
+        assert!(err.starts_with('a') && err.contains("boom"), "{err}");
+        assert!(err.outcome.console.is_empty(), "the console is in the message");
+        assert_eq!(err.outcome.project.unwrap().tracks.len(), 3);
+
+        let eel = "InsertTrackAtIndex(0, 1);\natexit(\"bad(\");";
+        let err = run(eel, "x.eel", &project(), ScriptContext::default()).unwrap_err();
+        assert!(err.contains("x.eel"), "{err}");
+        assert_eq!(err.outcome.project.unwrap().tracks.len(), 3);
+
+        let deferred = "function later() reaper.InsertTrackAtIndex(0, true) error('late') end\nreaper.defer(later)";
+        let (_, running) = run(deferred, "d.lua", &project(), ScriptContext::default()).unwrap();
+        let err = running.unwrap().tick(&project(), ScriptContext::default()).unwrap_err();
+        assert!(err.contains("late"), "{err}");
+        assert_eq!(err.outcome.project.unwrap().tracks.len(), 3);
     }
 }

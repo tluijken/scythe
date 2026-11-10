@@ -496,9 +496,9 @@ mod tests {
     }
 
     #[test]
-    fn errors_name_the_line_and_change_nothing() {
+    fn errors_name_the_line() {
         let err = run("x = 1;\nnot_a_function();", "x.eel", &project(), ScriptContext::default()).unwrap_err();
-        assert_eq!(err, "x.eel:2: unknown function not_a_function()");
+        assert_eq!(err.message, "x.eel:2: unknown function not_a_function()");
         let err = run("x = 1;\ny = (2;\nz = 3;", "p.eel", &project(), ScriptContext::default()).unwrap_err();
         assert!(err.starts_with("p.eel:"), "{err}");
         let (out, _) = run("n = CountTracks(0);", "y.eel", &project(), ScriptContext::default()).unwrap();
