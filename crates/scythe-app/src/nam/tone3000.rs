@@ -282,9 +282,21 @@ fn error_text(body: &[u8]) -> String {
     }
 }
 
+/// TONE3000 sends `null` for empty lists and unset fields, which `#[serde(default)]` alone
+/// only covers when the key is missing.
+fn nullable<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct User {
+    #[serde(default, deserialize_with = "nullable")]
     pub id: i64,
+    #[serde(default, deserialize_with = "nullable")]
     pub username: String,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -303,15 +315,17 @@ impl User {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Named {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub id: i64,
+    #[serde(default, deserialize_with = "nullable")]
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Tone {
+    #[serde(default, deserialize_with = "nullable")]
     pub id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub title: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -323,11 +337,11 @@ pub struct Tone {
     pub license: Option<String>,
     #[serde(default)]
     pub user: Option<User>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub makes: Vec<Named>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub tags: Vec<Named>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub sizes: Vec<String>,
     #[serde(default)]
     pub models_count: Option<i64>,
@@ -355,13 +369,15 @@ impl Tone {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Model {
+    #[serde(default, deserialize_with = "nullable")]
     pub id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub tone_id: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub name: String,
     #[serde(default)]
     pub size: Option<String>,
+    #[serde(default, deserialize_with = "nullable")]
     pub model_url: String,
     /// `1`, `2` or `custom`; absent for impulse responses.
     #[serde(default)]
@@ -382,13 +398,15 @@ impl Model {
 
 /// One page of a list. Trending and latest send only `data`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Page<T> {
+    #[serde(default, deserialize_with = "nullable")]
     pub data: Vec<T>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub page: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total_pages: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "nullable")]
     pub total: u64,
 }
 
@@ -989,6 +1007,20 @@ mod tests {
         assert!(stored.expires_at.unwrap() > unix_now() + 3000);
         assert!(Client::new(http, &config(), Some(store)).signed_in());
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn null_fields_read_as_empty() {
+        let latest = r#"{"data":[{"id":9,"title":null,"makes":null,"tags":null,"sizes":null,
+            "user":{"id":3,"username":null,"display_name":null},"models_count":null}],
+            "page":null,"total_pages":null,"total":null}"#;
+        let http = Recorded::with([(200, latest), (200, r#"{"id":5,"username":"me","display_name":null}"#)]);
+        let client = signed_in(http, None);
+        let page = client.tones(ToneList::Latest, 1).unwrap();
+        assert_eq!(page.data[0].id, 9);
+        assert!(page.data[0].makes.is_empty() && page.data[0].tags.is_empty() && page.data[0].sizes.is_empty());
+        assert_eq!(page.data[0].author(), Some(""));
+        assert_eq!(client.user().unwrap().shown_name(), "me");
     }
 
     #[test]
