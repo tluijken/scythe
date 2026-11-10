@@ -114,11 +114,12 @@ export function countInLabel(transport) {
 export function healthLine(h) {
   if (!h) return null;
   const rate = h.sample_rate % 1000 === 0 ? `${h.sample_rate / 1000}k` : `${(h.sample_rate / 1000).toFixed(1)}k`;
-  const parts = [rate, h.block_size ?? "auto", `CPU ${Math.round(h.cpu)}%`];
+  const block = h.latency ? `${h.block_size ?? "auto"} ${h.latency}` : h.block_size ?? "auto";
+  const parts = [rate, block, `CPU ${Math.round(h.cpu)}%`];
   if (h.xruns > 0) parts.push(`${h.xruns} xruns`);
   if (h.status !== "running") parts.push("no audio device");
   const warn = h.status !== "running" || h.cpu_peak >= 80;
-  return { text: parts.join(" · "), warn, title: h.reason || `${h.device}, output latency ${h.output_latency_ms} ms, peak CPU ${h.cpu_peak}%` };
+  return { text: parts.join(" · "), warn, title: h.reason || `${h.device}, measured output latency ${h.output_latency_ms} ms, peak CPU ${h.cpu_peak}%` };
 }
 
 // Elapsed and remaining seconds of `song` at transport `position`, for a clock that runs

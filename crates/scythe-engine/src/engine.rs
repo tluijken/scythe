@@ -483,8 +483,7 @@ impl Processor {
         }
         let Some((rx, channels)) = &mut self.input else { return false };
         let ch = (*channels).max(1);
-        let queued = rx.slots() / ch;
-        let excess = queued.saturating_sub(frames * 3);
+        let excess = input_excess(rx.slots() / ch, frames);
         for _ in 0..excess * ch {
             let _ = rx.pop();
         }
@@ -660,6 +659,13 @@ impl Processor {
     }
 }
 
+/// Input frames to drop before reading `frames`, of `queued`: the capture and playback streams
+/// run on their own clocks, so a block of slack keeps the input from running dry while anything
+/// beyond it (the monitoring latency creeping up) is dropped.
+fn input_excess(queued: usize, frames: usize) -> usize {
+    queued.saturating_sub(frames * 2)
+}
+
 /// Writes the master's channels to the device's in order; outputs past the master's last
 /// channel stay silent.
 fn interleave<T: SizedSample + FromSample<f32>>(
@@ -828,8 +834,15 @@ pub struct Health {
     pub sample_rate: u32,
     /// Frames per callback: what was asked for, else what the device delivers.
     pub block_size: Option<u32>,
-    /// Seconds from rendering a block until it is heard, as the device reports it.
+    /// Seconds from rendering a block until it is heard, as the device reports it (measured:
+    /// the driver's delay, a USB interface's transfer queue included).
     pub output_latency: f64,
+    /// Seconds from the converter to the callback, as the input reports it (measured), while
+    /// the input is open.
+    pub input_latency: Option<f64>,
+    /// The latency REAPER shows for the block size and periods, input and output seconds: one
+    /// block in, the periods but one out.
+    pub block_latency: Option<(f64, f64)>,
     /// DSP time over buffer time in the last callback; above 1 the output drops out.
     pub load: f32,
     /// Highest `load` since [`Engine::take_load_peak`] last ran.
@@ -986,6 +999,14 @@ impl Engine {
         self.info.fallback_reason = Some(reason.to_owned());
     }
 
+    /// Plays on silently for `reason` and looks for the device again every few seconds, as for
+    /// one that went away.
+    pub fn retry_later(&mut self, reason: &str) {
+        self.release_device();
+        self.info.fallback_reason = Some(reason.to_owned());
+        self.retry_at = Some(Instant::now() + RETRY_INTERVAL);
+    }
+
     /// Opens the devices this engine was asked for again, after [`Engine::release_device`].
     pub fn reopen_device(&mut self) -> Result<(), String> {
         if self.devices.is_dummy() {
@@ -1116,6 +1137,8 @@ impl Engine {
             sample_rate: self.info.sample_rate,
             block_size: self.info.block_size.or((delivered > 0).then_some(delivered)),
             output_latency: t.output_latency(),
+            input_latency: self.capture.as_ref().map(crate::capture::Capture::latency),
+            block_latency: self.block_latency(),
             load: t.load(),
             load_peak: f32::from_bits(t.load_peak.load(Ordering::Relaxed)),
             xruns: t.xruns.load(Ordering::Relaxed),
@@ -1125,6 +1148,17 @@ impl Engine {
             reconnects: self.reconnects,
             realtime: crate::realtime::status(),
         }
+    }
+
+    /// REAPER's latency figure for the open device (see [`Health::block_latency`]).
+    fn block_latency(&self) -> Option<(f64, f64)> {
+        let Output::Device(out) = &self.output else { return None };
+        let block = match out.config.buffer_size {
+            cpal::BufferSize::Fixed(n) => n,
+            cpal::BufferSize::Default => self.transport.block_frames.load(Ordering::Relaxed),
+        };
+        (block > 0)
+            .then(|| crate::devices::block_latency(block, crate::devices::BACKEND_PERIODS, self.info.sample_rate))
     }
 
     /// The highest load since the last call, starting a new window.
@@ -1625,13 +1659,18 @@ fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, S
     if let Some(rate) = request.sample_rate.filter(|_| !server) {
         config.sample_rate = rate;
     }
-    if let Some(frames) = request.buffer_size.filter(|_| !server) {
+    // A sound server left to choose buffers for hundreds of milliseconds.
+    let pulse = crate::devices::host_name(request).eq_ignore_ascii_case("PulseAudio");
+    let frames = request.buffer_size.or(pulse.then_some(crate::devices::DEFAULT_BLOCK_SIZE));
+    if let Some(frames) = frames.filter(|_| !server) {
         config.buffer_size = cpal::BufferSize::Fixed(frames);
     }
     let offered: Vec<(SampleFormat, u32, u32)> = device
         .supported_output_configs()
         .map(|c| c.map(|c| (c.sample_format(), c.min_sample_rate(), c.max_sample_rate())).collect())
         .unwrap_or_default();
+    let ranges: Vec<(u32, u32)> = offered.iter().map(|&(_, lo, hi)| (lo, hi)).collect();
+    config.sample_rate = crate::devices::nearest_rate(&ranges, config.sample_rate);
     let format =
         crate::devices::format_for(request.bits, &offered, config.sample_rate).unwrap_or(supported.sample_format());
     let supported = supported_channels(&device, format, config.sample_rate);

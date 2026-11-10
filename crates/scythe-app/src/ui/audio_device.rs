@@ -8,7 +8,8 @@ use scythe_core::prefs::{
     AudioSystem, CHANMAP_SECTION, CLOSE_INACTIVE, CLOSE_INACTIVE_ARMED, ChannelAliases, JACK_NO_CONNECT, JACK_NO_START,
 };
 use scythe_engine::DeviceRequest;
-use scythe_engine::devices::{COMMON_BLOCK_SIZES, COMMON_RATES, Capabilities, DeviceEntry};
+use scythe_engine::Health;
+use scythe_engine::devices::{BACKEND_PERIODS, COMMON_BLOCK_SIZES, COMMON_RATES, Capabilities, DeviceEntry};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW};
@@ -20,8 +21,6 @@ const LABEL_W: f32 = 150.0;
 const ROW_H: f32 = 34.0;
 /// REAPER's ALSA "RT priority" choices; 0 is "non-RT".
 const RT_PRIORITIES: [u32; 11] = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99];
-/// The periods cpal opens an ALSA device with, whatever is asked.
-const BACKEND_PERIODS: u32 = 2;
 
 /// The window's state while it is open: what the host offers and the choice not yet applied.
 #[derive(Debug, Clone, Default)]
@@ -108,6 +107,45 @@ impl Draft {
     }
 }
 
+impl Draft {
+    /// Takes the newly chosen device's own values where the draft asks for what it cannot do:
+    /// its channel counts, its rate (the nearest one) and its bit depth.
+    pub fn adopt(&mut self, outputs: Option<&Capabilities>, inputs: Option<&Capabilities>) {
+        self.input_channels = default_count(inputs, 2);
+        self.output_channels = default_count(outputs, 2);
+        let Some(out) = outputs else { return };
+        if !out.sample_rates.is_empty() && !out.sample_rates.contains(&self.sample_rate) {
+            let ranges: Vec<(u32, u32)> = out.sample_rates.iter().map(|&r| (r, r)).collect();
+            self.sample_rate = scythe_engine::devices::nearest_rate(&ranges, self.sample_rate);
+        }
+        let bits = u16::try_from(self.bits).unwrap_or(0);
+        if let Some(&most) = out.bits.last().filter(|_| !out.bits.contains(&bits)) {
+            self.bits = most.into();
+        }
+    }
+}
+
+/// REAPER's latency figure for the open device (`~2.9/2.9ms`, from the block size and periods),
+/// and the delays the device measures, for a tooltip.
+pub fn latency_lines(health: &Health) -> Option<(String, String)> {
+    let figure = scythe_engine::devices::latency_text(health.block_latency?);
+    let mut measured = format!("Measured by the device: output {:.1} ms", health.output_latency * 1000.0);
+    if let Some(input) = health.input_latency {
+        measured.push_str(&format!(", input {:.1} ms", input * 1000.0));
+    }
+    Some((figure, measured))
+}
+
+/// Says the system default device plays (no device chosen), so the interface still has to be
+/// picked: `System default (PipeWire)`.
+pub fn default_note(app: &ScytheApp) -> Option<String> {
+    if !app.plays_system_default() {
+        return None;
+    }
+    let label = scythe_engine::devices::default_label(scythe_engine::devices::sound_server());
+    Some(format!("{label} is playing: choose your audio interface on the ALSA system for the lowest latency"))
+}
+
 impl AudioDeviceWindow {
     pub fn open(app: &ScytheApp) -> Self {
         let mut w = Self { draft: Draft::current(app), ..Default::default() };
@@ -167,8 +205,11 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     }
 }
 
-/// REAPER's "Error opening devices" window: the device did not open at start.
+/// REAPER's "Error opening devices" window: the device did not open at start, or stayed busy.
 fn error_window(app: &mut ScytheApp, ui: &mut Ui) {
+    if let Some(e) = app.take_device_error() {
+        app.view.audio_error = Some(e);
+    }
     let Some(reason) = app.view.audio_error.clone() else { return };
     let mut open = true;
     let (mut retry, mut settings, mut close) = (false, false, false);
@@ -191,11 +232,9 @@ fn error_window(app: &mut ScytheApp, ui: &mut Ui) {
         app.view.audio_error = None;
     }
     if retry {
-        match app.engine.reopen_device() {
-            Ok(()) => {
-                app.view.audio_error = None;
-                app.sync();
-            }
+        let request = app.engine.devices().clone();
+        match app.change_audio_device(request, false) {
+            Ok(()) => app.view.audio_error = None,
             Err(e) => app.view.audio_error = Some(e),
         }
     }
@@ -338,7 +377,10 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
         value_row(ui, "Blocksize", &sizes, &mut state.draft.block_size, |b| format!("{b} frames"));
     }
     if alsa {
-        value_row(ui, "Bit depth", &[16, 24, 32], &mut state.draft.bits, |b| format!("{b} bit"));
+        let offered: Vec<u32> =
+            state.outputs.as_ref().map_or(Vec::new(), |c| c.bits.iter().map(|&b| b.into()).collect());
+        let bits = if offered.is_empty() { vec![16, 24, 32] } else { offered };
+        value_row(ui, "Bit depth", &bits, &mut state.draft.bits, |b| format!("{b} bit"));
     }
     if alsa {
         let r = row(ui, "Periods");
@@ -396,18 +438,16 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
         != (&state.draft.system, &state.draft.output, &state.draft.input);
     if changed_device {
         state.query();
-        state.draft.input_channels = default_count(state.inputs.as_ref(), 2);
-        state.draft.output_channels = default_count(state.outputs.as_ref(), 2);
+        state.draft.adopt(state.outputs.as_ref(), state.inputs.as_ref());
     }
 
     ui.add_space(4.0);
     let info = app.engine.info().clone();
     let health = app.engine.health();
     let block = health.block_size.map_or("device default".to_owned(), |b| format!("{b} frames"));
-    let latency = if health.output_latency > 0.0 {
-        format!(" · {:.1} ms", health.output_latency * 1000.0)
-    } else {
-        String::new()
+    let (latency, measured) = match latency_lines(&health) {
+        Some((figure, measured)) => (format!(" · {figure}"), measured),
+        None => (String::new(), String::new()),
     };
     let now = format!(
         "Playing: {} · {} Hz · {block}{latency} · {} in / {} out",
@@ -416,7 +456,13 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
         app.input_names().len(),
         app.output_names().len()
     );
-    ui.label(RichText::new(now).color(if health.silent { YELLOW } else { TEXT }));
+    let resp = ui.label(RichText::new(now).color(if health.silent { YELLOW } else { TEXT }));
+    if !measured.is_empty() {
+        resp.on_hover_text(format!("Latency from the block size and periods, as REAPER shows it.\n{measured}"));
+    }
+    if let Some(note) = default_note(app) {
+        ui.label(RichText::new(note).color(YELLOW).font(theme::regular(11.0)));
+    }
     ui.add_space(4.0);
     if let Some(reason) = &health.reason {
         ui.label(RichText::new(reason).color(YELLOW).font(theme::regular(11.0)));
@@ -469,9 +515,11 @@ pub fn apply(app: &mut ScytheApp, state: &mut AudioDeviceWindow) {
         Ok(()) => {
             state.error = None;
             state.map = None;
-            let info = app.engine.info();
-            let msg = format!("Audio: {} at {} Hz", info.name, info.sample_rate);
-            app.notify(msg);
+            if !app.waiting_for_device() {
+                let info = app.engine.info();
+                let msg = format!("Audio: {} at {} Hz", info.name, info.sample_rate);
+                app.notify(msg);
+            }
         }
         Err(e) => state.error = Some(e),
     }
@@ -504,16 +552,17 @@ fn device_choice(
     input: bool,
     chosen: &mut Option<String>,
 ) {
+    let default = scythe_engine::devices::default_label(scythe_engine::devices::sound_server());
     let offered: Vec<&DeviceEntry> = devices
         .iter()
         .filter(|d| d.host.eq_ignore_ascii_case(host) && if input { d.input } else { d.output })
         .collect();
     let label = |d: &DeviceEntry| if d.id == d.name { d.id.clone() } else { format!("{} ; {}", d.id, d.name) };
     let shown = match chosen {
-        None => "Default".to_owned(),
+        None => default.clone(),
         Some(c) => offered.iter().find(|d| d.id == *c || d.name == *c).map_or(c.clone(), |d| label(d)),
     };
-    let mut items = vec![("Default".to_owned(), chosen.is_none())];
+    let mut items = vec![(default.clone(), chosen.is_none())];
     items.extend(offered.iter().map(|d| (label(d), chosen.as_deref() == Some(d.id.as_str()))));
     match choice(ui, rect, name, &shown, &items) {
         Some(0) => *chosen = None,

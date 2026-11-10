@@ -1,0 +1,4 @@
+ 0 [sofhdadsp      ]: sof-hda-dsp - sof-hda-dsp
+                      LENOVO-21HK000BMH-ThinkPadP16sGen2
+ 1 [QUADCAPTURE    ]: USB-Audio - QUAD-CAPTURE
+                      Roland QUAD-CAPTURE at usb-0000:00:14.0-1, high speed

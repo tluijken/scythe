@@ -1,0 +1,35 @@
+Roland QUAD-CAPTURE at usb-0000:00:14.0-1, high speed : USB Audio
+
+Playback:
+  Status: Running
+    Interface = 0
+    Altset = 1
+    Packet Size = 112
+    Momentary freq = 44100 Hz (0x5.8333)
+  Interface 0
+    Altset 1
+    Format: S32_LE
+    Channels: 4
+    Endpoint: 0x05 (5 OUT) (ASYNC)
+    Rates: 44100
+    Data packet interval: 125 us
+    Bits: 0
+    Sync Endpoint: 0x85 (5 IN)
+    Sync EP Interface: 1
+    Sync EP Altset: 1
+    Implicit Feedback Mode: Yes
+
+Capture:
+  Status: Stop
+  Interface 1
+    Altset 1
+    Format: S32_LE
+    Channels: 6
+    Endpoint: 0x85 (5 IN) (ASYNC)
+    Rates: 44100
+    Data packet interval: 125 us
+    Bits: 0
+    Sync Endpoint: 0x05 (5 OUT)
+    Sync EP Interface: 0
+    Sync EP Altset: 1
+    Implicit Feedback Mode: Yes

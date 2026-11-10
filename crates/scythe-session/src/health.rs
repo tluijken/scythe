@@ -14,6 +14,7 @@ impl Session {
     /// Follows the engine's device watch: tells the user when the device is lost (the session
     /// plays on silently) and reopens the inputs when it is back.
     pub(crate) fn watch_device(&mut self) {
+        self.retry_busy_device();
         match self.engine.maintain() {
             Some(DeviceEvent::Lost(reason)) => {
                 self.notify(format!("Audio device lost: {reason}. Playing on silently until it is back"));

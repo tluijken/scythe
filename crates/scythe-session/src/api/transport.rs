@@ -239,8 +239,11 @@ pub struct HealthInfo {
     pub block_size: Option<u32>,
     /// `block_size` in milliseconds.
     pub buffer_ms: Option<f64>,
-    /// From rendering a block to hearing it, as the device reports it.
+    /// From rendering a block to hearing it, as the device measures it.
     pub output_latency_ms: f64,
+    /// REAPER's latency readout for the block size and periods, input/output (`~2.9/2.9ms`).
+    #[serde(default)]
+    pub latency: Option<String>,
     /// DSP time over buffer time in the last callback, in percent; at 100 the audio drops out.
     pub cpu: f64,
     /// The highest `cpu` of the last few seconds.
@@ -283,6 +286,7 @@ pub fn health(session: &Session) -> HealthInfo {
         block_size: h.block_size,
         buffer_ms: h.block_size.map(|b| (b as f64 * 1000.0 / h.sample_rate as f64 * 100.0).round() / 100.0),
         output_latency_ms: (h.output_latency * 100_000.0).round() / 100.0,
+        latency: h.block_latency.map(scythe_engine::devices::latency_text),
         cpu: percent(h.load),
         cpu_peak: percent(h.load_peak),
         xruns: h.xruns,

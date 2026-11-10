@@ -163,6 +163,13 @@ pub struct Session {
     cpu_awake: Option<std::fs::File>,
     /// The device was closed while stopped ("Close audio device when stopped").
     audio_closed: bool,
+    /// A device switch waiting for its busy device: the devices to go back to when the wait
+    /// ends without it, and whether to save the new choice once it opens.
+    switching: Option<audio::Switch>,
+    /// Why a device could not be opened, for the error window; taken by the window.
+    device_error: Option<String>,
+    /// Opens the devices a request names beside the current engine (a seam for tests).
+    opener: audio::Opener,
 }
 
 impl Session {
@@ -231,9 +238,17 @@ impl Session {
             memory_locked: false,
             cpu_awake: None,
             audio_closed: false,
+            switching: None,
+            device_error: None,
+            opener: audio::open_engine,
         };
-        if let Some(reason) = session.engine.info().fallback_reason.clone() {
-            session.notify(format!("Audio device unavailable, running silent: {reason}"));
+        match session.engine.info().fallback_reason.clone() {
+            Some(reason) if scythe_engine::devices::is_busy(&reason) => {
+                let request = session.engine.devices().clone();
+                session.wait_for_device(request, None, false);
+            }
+            Some(reason) => session.notify(format!("Audio device unavailable, running silent: {reason}")),
+            None => {}
         }
         session.after_load();
         session

@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod animation;
+pub mod asound;
 pub mod bounce;
 pub mod builtin;
 pub mod capture;

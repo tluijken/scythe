@@ -14,9 +14,15 @@ use crate::Session;
 #[serde(tag = "cmd")]
 pub enum AudioCommand {
     /// The audio systems (hosts) and the devices each offers, to choose from in
-    /// `audio.set_device`.
+    /// `audio.set_device`: as REAPER's device page lists them, one entry per sound card on ALSA
+    /// (`hw:QUADCAPTURE`) and none on PulseAudio (it plays on the server's default device).
     #[serde(rename = "audio.devices")]
-    Devices,
+    Devices {
+        /// Every device name the systems know instead: each ALSA PCM (`plughw:…`, `front:…`,
+        /// `surround51:…`) and the PulseAudio sinks and sources.
+        #[serde(default)]
+        all: bool,
+    },
     /// The device playing now: system, devices, rate, block size, latency and the names of its
     /// input and output channels; also what the preferences ask for.
     #[serde(rename = "audio.device")]
@@ -30,8 +36,8 @@ pub enum AudioCommand {
         /// `audio.devices` lists them.
         #[serde(default)]
         system: Option<String>,
-        /// The output device: its id from `audio.devices` (`hw:CARD=USB,DEV=0`) or name; empty
-        /// for the system default.
+        /// The output device: its id from `audio.devices` (`hw:QUADCAPTURE`, or any ALSA name
+        /// such as `hw:1,0`) or name; empty for the system default.
         #[serde(default)]
         output: Option<String>,
         /// The input device, like `output`.
@@ -132,11 +138,20 @@ pub struct DeviceState {
     pub sample_rate: u32,
     /// Frames per block, when known.
     pub block_size: Option<u32>,
-    /// Seconds from rendering a block until it is heard.
+    /// Seconds from rendering a block until it is heard, as the device measures it (a USB
+    /// interface's transfer queue included).
     pub output_latency: f64,
+    /// Seconds from the converter to the audio thread, as the input measures it, while it is open.
+    pub input_latency: Option<f64>,
+    /// REAPER's latency readout for the block size and periods (`~2.9/2.9ms`, input/output).
+    pub latency: Option<String>,
     /// No device is playing (silent clock), and why.
     pub silent: bool,
     pub reason: Option<String>,
+    /// A busy device (held by PipeWire) is being waited for.
+    pub waiting: bool,
+    /// No device is chosen: the system default plays (`System default (PipeWire)`).
+    pub system_default: Option<String>,
     /// The input channels by the names tracks show (aliases included).
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
@@ -144,8 +159,8 @@ pub struct DeviceState {
     pub requested: Requested,
 }
 
-pub fn devices() -> Vec<HostEntry> {
-    let all = scythe_engine::devices::list();
+pub fn devices(every: bool) -> Vec<HostEntry> {
+    let all = if every { scythe_engine::devices::list_all() } else { scythe_engine::devices::list() };
     scythe_engine::devices::hosts()
         .into_iter()
         .map(|system| HostEntry {
@@ -171,8 +186,14 @@ pub fn state(session: &Session) -> DeviceState {
         sample_rate: info.sample_rate,
         block_size: health.block_size,
         output_latency: health.output_latency,
+        input_latency: health.input_latency,
+        latency: health.block_latency.map(scythe_engine::devices::latency_text),
         silent: health.silent,
         reason: health.reason,
+        waiting: session.waiting_for_device(),
+        system_default: session
+            .plays_system_default()
+            .then(|| scythe_engine::devices::default_label(scythe_engine::devices::sound_server())),
         inputs: session.input_names(),
         outputs: session.output_names(),
         requested: Requested {
@@ -189,7 +210,7 @@ pub fn state(session: &Session) -> DeviceState {
 
 pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, ApiError> {
     match command {
-        AudioCommand::Devices => Ok(json(devices())),
+        AudioCommand::Devices { all } => Ok(json(devices(all))),
         AudioCommand::Device => Ok(json(state(session))),
         AudioCommand::SetDevice {
             system,

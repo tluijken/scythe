@@ -322,8 +322,13 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         format!("{:.1}k", info.sample_rate as f32 / 1000.0)
     };
     let block = info.block_size.map_or("auto".to_owned(), |b| b.to_string());
-    let xruns = app.engine.health().xruns;
-    let status = match xruns {
+    let health = app.engine.health();
+    let latency = audio_device::latency_lines(&health);
+    let block = match &latency {
+        Some((figure, _)) => format!("{block} {figure}"),
+        None => block,
+    };
+    let status = match health.xruns {
         0 => format!("{rate} · {block} · CPU {:.0}%", load * 100.0),
         n => format!("{rate} · {block} · CPU {:.0}% · {n} xruns", load * 100.0),
     };
@@ -346,10 +351,16 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             theme::mono(11.0),
             TEXT_DIM,
         );
-        let tip = match &info.fallback_reason {
+        let mut tip = match &info.fallback_reason {
             Some(r) => format!("{}\n{r}", info.name),
             None => info.name.clone(),
         };
+        if let Some(note) = audio_device::default_note(app) {
+            tip = format!("{tip}\n{note}");
+        }
+        if let Some((_, measured)) = &latency {
+            tip = format!("{tip}\n{measured}");
+        }
         let resp = ui.allocate_rect(status_rect, Sense::click());
         resp.widget_info(|| widgets::button_info(ui, "Audio device settings"));
         if resp.on_hover_text(format!("{tip}\nClick for the audio device settings")).clicked() {

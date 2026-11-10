@@ -3,6 +3,7 @@
 //! channels with the aliases REAPER lets you give them.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use scythe_core::ini::Ini;
 use scythe_core::prefs::{
@@ -12,6 +13,31 @@ use scythe_core::prefs::{
 use scythe_engine::{DeviceRequest, Engine, MediaPool};
 
 use crate::Session;
+
+/// How long a busy device is waited for: PipeWire lets go of an interface when its node
+/// suspends, five seconds after its last stream stops (`session.suspend-timeout-seconds`).
+pub const BUSY_WAIT: Duration = Duration::from_secs(7);
+/// How often a busy device is tried again while it is waited for.
+const BUSY_RETRY: Duration = Duration::from_millis(250);
+
+/// Opens the devices a request names, for a session whose engine is the first argument.
+pub(crate) type Opener = fn(&Engine, &DeviceRequest) -> Result<Engine, String>;
+
+pub(crate) fn open_engine(current: &Engine, request: &DeviceRequest) -> Result<Engine, String> {
+    Engine::open(current.pool().clone(), request)
+}
+
+/// A device switch waiting for its busy device.
+#[derive(Debug, Clone)]
+pub(crate) struct Switch {
+    request: DeviceRequest,
+    /// What to go back to when the wait ends without the device; none at start.
+    previous: Option<DeviceRequest>,
+    /// Save the choice once it opens.
+    save: bool,
+    until: Instant,
+    next: Instant,
+}
 
 /// The devices `prefs` choose (no choice is the system default).
 pub fn request_from_prefs(prefs: &AudioDevicePrefs) -> DeviceRequest {
@@ -71,7 +97,8 @@ pub fn prefs_from_request(request: &DeviceRequest, keep: &AudioDevicePrefs) -> A
 /// than playing on another device; the engine looks for it again every few seconds.
 pub fn start_engine(pool: Arc<MediaPool>, request: &DeviceRequest) -> (Engine, Option<String>) {
     let engine = Engine::start_with(pool, request);
-    let error = engine.info().fallback_reason.clone();
+    // A busy device is waited for by the session; the window shows only if the wait fails.
+    let error = engine.info().fallback_reason.clone().filter(|e| !scythe_engine::devices::is_busy(e));
     (engine, error)
 }
 
@@ -93,11 +120,16 @@ impl Session {
         self.stop();
         self.engine.store_plugin_states(&mut self.project);
         let rate = self.engine.sample_rate();
-        let pool = self.engine.pool().clone();
         // Many devices allow one stream at a time, so the old one closes before the new opens.
         self.engine.release_device();
-        let engine = match Engine::open(pool.clone(), &request) {
+        let earlier = self.switching.take().and_then(|s| s.previous);
+        let engine = match (self.opener)(&self.engine, &request) {
             Ok(engine) => engine,
+            Err(e) if scythe_engine::devices::is_busy(&e) => {
+                let previous = earlier.unwrap_or_else(|| self.engine.devices().clone());
+                self.wait_for_device(request, Some(previous), save);
+                return Ok(());
+            }
             Err(e) => {
                 if let Err(again) = self.engine.reopen_device() {
                     self.notify(format!("The previous audio device did not come back: {again}"));
@@ -105,8 +137,77 @@ impl Session {
                 return Err(e);
             }
         };
+        self.install_engine(engine, rate, &request, save);
+        Ok(())
+    }
+
+    /// Waits for the busy device `request` names: it is tried again every quarter second for
+    /// [`BUSY_WAIT`] while the session runs silent, then the session goes back to `previous`
+    /// (none at start: it stays silent) and the error window says who holds the device.
+    pub(crate) fn wait_for_device(&mut self, request: DeviceRequest, previous: Option<DeviceRequest>, save: bool) {
+        let message = scythe_engine::devices::waiting_message(&request);
+        self.engine.close_device(&message);
+        self.notify(message);
+        let now = Instant::now();
+        self.switching = Some(Switch { request, previous, save, until: now + BUSY_WAIT, next: now + BUSY_RETRY });
+    }
+
+    /// Whether the system default device plays (through the sound server) because no device
+    /// is chosen: no ALSA device, or the PulseAudio system, whose streams go to the default.
+    pub fn plays_system_default(&self) -> bool {
+        let r = self.engine.devices();
+        let host = &self.engine.info().host;
+        let alsa_default = r.host.as_deref().is_none_or(|h| h.eq_ignore_ascii_case("ALSA")) && r.output.is_none();
+        !host.is_empty() && (host.eq_ignore_ascii_case("PulseAudio") || alsa_default)
+    }
+
+    /// Whether a busy device is being waited for.
+    pub fn waiting_for_device(&self) -> bool {
+        self.switching.is_some()
+    }
+
+    /// Why a device could not be opened since the last call, for the error window.
+    pub fn take_device_error(&mut self) -> Option<String> {
+        self.device_error.take()
+    }
+
+    /// Tries the busy device again when it is time (see [`Session::wait_for_device`]).
+    pub(crate) fn retry_busy_device(&mut self) {
+        let now = Instant::now();
+        let Some(switch) = self.switching.take_if(|s| now >= s.next) else { return };
+        let rate = self.engine.sample_rate();
+        match (self.opener)(&self.engine, &switch.request) {
+            Ok(engine) => {
+                self.install_engine(engine, rate, &switch.request, switch.save);
+                let info = self.engine.info();
+                let msg = format!("Audio: {} at {} Hz", info.name, info.sample_rate);
+                self.notify(msg);
+            }
+            Err(e) if scythe_engine::devices::is_busy(&e) && now < switch.until => {
+                self.switching = Some(Switch { next: now + BUSY_RETRY, ..switch });
+            }
+            Err(e) => {
+                let busy = scythe_engine::devices::is_busy(&e);
+                let reason = if busy { scythe_engine::devices::busy_message(&switch.request) } else { e };
+                self.device_error = Some(reason.clone());
+                match switch.previous {
+                    Some(previous) => {
+                        if let Err(again) = self.change_audio_device(previous, false) {
+                            self.notify(format!("The previous audio device did not come back: {again}"));
+                        }
+                    }
+                    None => self.engine.retry_later(&reason),
+                }
+                self.notify(reason);
+            }
+        }
+    }
+
+    /// Plays on `engine`, newly opened for `request`, in place of the current one (which played
+    /// at `rate`), saving the choice with `save`.
+    fn install_engine(&mut self, engine: Engine, rate: u32, request: &DeviceRequest, save: bool) {
         if engine.sample_rate() != rate {
-            pool.clear();
+            self.engine.pool().clear();
         }
         let mut engine = engine;
         engine.set_default_click_output(self.prefs.metronome_default_output);
@@ -121,10 +222,9 @@ impl Session {
         self.engine.seek(self.project.cursor);
         self.sync();
         if save {
-            let audio = prefs_from_request(&request, &self.prefs.audio);
+            let audio = prefs_from_request(request, &self.prefs.audio);
             self.change_preferences(|p| p.audio = audio);
         }
-        Ok(())
     }
 
     /// Applies the device page's process settings: the audio thread's real-time priority (ALSA's
@@ -305,5 +405,97 @@ impl Session {
         if let Err(e) = written {
             self.notify(format!("Cannot save preferences to {}: {e}", path.display()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    static SERIAL: Mutex<()> = Mutex::new(());
+    /// Opens of the busy device to fail before it opens.
+    static BUSY_FOR: AtomicUsize = AtomicUsize::new(0);
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    /// Opens attempted while the previous device still played.
+    static WHILE_PLAYING: AtomicUsize = AtomicUsize::new(0);
+
+    /// The Dummy system stands for a hardware device PipeWire holds: busy for the first
+    /// `BUSY_FOR` opens.
+    fn held_by_pipewire(current: &Engine, request: &DeviceRequest) -> Result<Engine, String> {
+        if !current.health().silent {
+            WHILE_PLAYING.fetch_add(1, Ordering::SeqCst);
+        }
+        if request.is_dummy() && CALLS.fetch_add(1, Ordering::SeqCst) < BUSY_FOR.load(Ordering::SeqCst) {
+            return Err("hw:CARD=1,DEV=0: The requested device is temporarily busy.".into());
+        }
+        open_engine(current, request)
+    }
+
+    fn alsa_null() -> DeviceRequest {
+        DeviceRequest { host: Some("ALSA".into()), output: Some("null".into()), no_input: true, ..Default::default() }
+    }
+
+    fn busy_device() -> DeviceRequest {
+        DeviceRequest { host: Some("Dummy".into()), output: Some("hw:CARD=1,DEV=0".into()), ..Default::default() }
+    }
+
+    /// A session playing on ALSA's null device (which never touches hardware), when this
+    /// machine has ALSA.
+    fn playing_session(busy_for: usize) -> Option<Session> {
+        let pool = Arc::new(MediaPool::default());
+        let engine = Engine::open(pool, &alsa_null()).ok()?;
+        BUSY_FOR.store(busy_for, Ordering::SeqCst);
+        CALLS.store(0, Ordering::SeqCst);
+        WHILE_PLAYING.store(0, Ordering::SeqCst);
+        let mut session = Session::new(engine);
+        session.opener = held_by_pipewire;
+        Some(session)
+    }
+
+    fn retry_now(session: &mut Session) {
+        if let Some(s) = session.switching.as_mut() {
+            s.next = Instant::now();
+        }
+        session.retry_busy_device();
+    }
+
+    #[test]
+    fn a_busy_device_is_opened_once_the_old_stream_has_let_go_of_it() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut session) = playing_session(3) else { return };
+        assert!(!session.engine.health().silent);
+        assert_eq!(session.change_audio_device(busy_device(), false), Ok(()));
+        assert_eq!(WHILE_PLAYING.load(Ordering::SeqCst), 0, "the old device closes before the new one opens");
+        assert!(session.waiting_for_device());
+        assert!(session.engine.health().reason.is_some_and(|r| r.starts_with("Waiting for")));
+        for _ in 0..5 {
+            retry_now(&mut session);
+        }
+        assert!(!session.waiting_for_device());
+        assert_eq!(session.engine.info().host, scythe_engine::devices::DUMMY_HOST);
+        assert_eq!(CALLS.load(Ordering::SeqCst), 4);
+        assert_eq!(session.take_device_error(), None);
+    }
+
+    #[test]
+    fn a_device_busy_for_the_whole_wait_gives_the_previous_one_back_and_says_why() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut session) = playing_session(usize::MAX) else { return };
+        assert_eq!(session.change_audio_device(busy_device(), false), Ok(()));
+        retry_now(&mut session);
+        assert!(session.waiting_for_device());
+        if let Some(s) = session.switching.as_mut() {
+            s.until = Instant::now();
+        }
+        retry_now(&mut session);
+        assert!(!session.waiting_for_device());
+        assert_eq!(session.engine.info().host, "ALSA");
+        assert!(!session.engine.health().silent);
+        let error = session.take_device_error().unwrap_or_default();
+        assert!(error.starts_with("hw:CARD=1,DEV=0 is busy"), "{error}");
+        assert!(error.contains("Apply again"));
     }
 }

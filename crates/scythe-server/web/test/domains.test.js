@@ -70,6 +70,9 @@ test("a running count-in and the health line read for the stage", () => {
   const ok = healthLine({ device: "USB", sample_rate: 48000, block_size: 128, cpu: 12.4, cpu_peak: 30, xruns: 0, status: "running",
     reason: null, output_latency_ms: 5.3 });
   equal([ok.text, ok.warn], ["48k · 128 · CPU 12%", false]);
+  const quad = healthLine({ device: "QUAD", sample_rate: 44100, block_size: 128, cpu: 3, cpu_peak: 5, xruns: 0, status: "running",
+    reason: null, output_latency_ms: 13.7, latency: "~2.9/2.9ms" });
+  equal(quad.text, "44.1k · 128 ~2.9/2.9ms · CPU 3%");
   const lost = healthLine({ device: "No audio device", sample_rate: 44100, block_size: 512, cpu: 0, cpu_peak: 0, xruns: 3,
     status: "silent", reason: "USB was disconnected", output_latency_ms: 0 });
   equal([lost.text, lost.warn, lost.title], ["44.1k · 512 · CPU 0% · 3 xruns · no audio device", true, "USB was disconnected"]);

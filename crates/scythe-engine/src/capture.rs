@@ -103,6 +103,11 @@ impl Capture {
         })
     }
 
+    /// Seconds from the converter to the last callback, as the device reports it.
+    pub fn latency(&self) -> f64 {
+        f64::from_bits(self.latency.load(Ordering::Relaxed))
+    }
+
     /// Whether a recording takes the input now.
     pub fn recording(&self) -> bool {
         self.record.lock().map(|s| s.is_some()).unwrap_or(false)

@@ -14748,9 +14748,15 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "The audio systems (hosts) and the devices each offers, to choose from in\n`audio.set_device`.\n\nControl API command `audio.devices`.",
+    "description": "The audio systems (hosts) and the devices each offers, to choose from in\n`audio.set_device`: as REAPER's device page lists them, one entry per sound card on ALSA\n(`hw:QUADCAPTURE`) and none on PulseAudio (it plays on the server's default device).\n\nControl API command `audio.devices`.",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "all": {
+          "default": false,
+          "description": "Every device name the systems know instead: each ALSA PCM (`plughw:…`, `front:…`,\n`surround51:…`) and the PulseAudio sinks and sources.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "name": "audio_devices",
@@ -14823,7 +14829,7 @@
         },
         "output": {
           "default": null,
-          "description": "The output device: its id from `audio.devices` (`hw:CARD=USB,DEV=0`) or name; empty\nfor the system default.",
+          "description": "The output device: its id from `audio.devices` (`hw:QUADCAPTURE`, or any ALSA name\nsuch as `hw:1,0`) or name; empty for the system default.",
           "type": [
             "string",
             "null"

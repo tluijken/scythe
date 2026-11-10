@@ -63,7 +63,7 @@ fn report(result: Result<(), String>) -> i32 {
 
 pub fn run(options: Options) -> Result<(), String> {
     if options.list_devices {
-        crate::config::print_devices();
+        crate::config::print_devices(options.list_all);
         return Ok(());
     }
     install_signal_handlers();

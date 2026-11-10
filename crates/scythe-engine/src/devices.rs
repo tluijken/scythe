@@ -71,12 +71,86 @@ pub struct Capabilities {
     pub buffer_sizes: Option<(u32, u32)>,
     /// The channel count opened when none is asked for.
     pub default_channels: u16,
+    /// Integer bit depths it offers (REAPER's ALSA "Bit depth"), ascending; empty when it only
+    /// takes floating point.
+    pub bits: Vec<u16>,
 }
 
 /// Rates REAPER's device page offers.
 pub const COMMON_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
 /// Block sizes REAPER's device page offers.
 pub const COMMON_BLOCK_SIZES: [u32; 8] = [16, 32, 64, 128, 256, 512, 1024, 2048];
+/// REAPER's block size on a fresh configuration.
+pub const DEFAULT_BLOCK_SIZE: u32 = 512;
+/// The periods the audio backend opens a device with whatever is asked: an ALSA ring of two
+/// blocks, a PulseAudio target length of two.
+pub const BACKEND_PERIODS: u32 = 2;
+
+/// The input and output latency REAPER shows for `block` frames in `periods` periods at `rate`,
+/// in seconds: one block in, every period but the one being filled out.
+pub fn block_latency(block: u32, periods: u32, rate: u32) -> (f64, f64) {
+    let rate = f64::from(rate.max(1));
+    (f64::from(block) / rate, f64::from(block * periods.saturating_sub(1).max(1)) / rate)
+}
+
+/// REAPER's latency readout, `~2.9/2.9ms`: milliseconds cut (not rounded) to a tenth below ten,
+/// to whole ones from ten up.
+pub fn latency_text((input, output): (f64, f64)) -> String {
+    let ms = |s: f64| {
+        let ms = s * 1000.0;
+        if ms < 10.0 { format!("{:.1}", (ms * 10.0 + 1e-9).floor() / 10.0) } else { format!("{}", (ms + 1e-9).floor()) }
+    };
+    format!("~{}/{}ms", ms(input), ms(output))
+}
+
+/// Whether an open failed because something else holds the device (`EBUSY`).
+pub fn is_busy(error: &str) -> bool {
+    error.contains("temporarily busy") || error.contains("resource busy")
+}
+
+/// The device a request opens, as a person would name it: the chosen output, else the input.
+fn wanted_device(request: &DeviceRequest) -> String {
+    request.output.clone().or_else(|| request.input.clone()).unwrap_or_else(|| "the audio device".into())
+}
+
+/// What the device page shows while a busy device is waited for.
+pub fn waiting_message(request: &DeviceRequest) -> String {
+    let device = wanted_device(request);
+    let asound = std::path::Path::new(crate::asound::PROC_ASOUND);
+    let holder = crate::asound::holder(&device, false, asound, std::path::Path::new("/proc"));
+    match holder.filter(|h| h.program.starts_with("pipewire") || h.program == "wireplumber") {
+        Some(_) => format!("Waiting for PipeWire to release {device}…"),
+        None => format!("Waiting for {device} to be released…"),
+    }
+}
+
+/// Why the device a request opens stayed busy, and what to do about it.
+pub fn busy_message(request: &DeviceRequest) -> String {
+    let device = wanted_device(request);
+    let input = request.output.is_none() && request.input.is_some();
+    crate::asound::busy_message(&device, input)
+}
+
+/// The sound server the system default device plays through, when one runs: what "Default"
+/// means on ALSA and PulseAudio.
+pub fn sound_server() -> Option<&'static str> {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from)?;
+    if runtime.join("pipewire-0").exists() {
+        Some("PipeWire")
+    } else if runtime.join("pulse/native").exists() {
+        Some("PulseAudio")
+    } else {
+        None
+    }
+}
+
+/// How the device pages name the system default device: `System default (PipeWire)`.
+pub fn default_label(server: Option<&str>) -> String {
+    match server {
+        Some(s) => format!("System default ({s})"),
+        None => "System default".to_owned(),
+    }
+}
 
 pub fn host(request: &DeviceRequest) -> Result<cpal::Host, String> {
     let Some(name) = request.host.as_deref() else { return Ok(cpal::default_host()) };
@@ -114,7 +188,8 @@ pub fn device_id(device: &cpal::Device) -> String {
 fn pick(devices: impl Iterator<Item = cpal::Device>, wanted: &str) -> Option<cpal::Device> {
     let named: Vec<(String, String, cpal::Device)> = devices.map(|d| (device_id(&d), device_name(&d), d)).collect();
     let lower = wanted.to_lowercase();
-    let by_id = named.iter().position(|(id, _, _)| id == wanted);
+    let hardware = resolve(wanted);
+    let by_id = named.iter().position(|(id, _, _)| id == wanted || *id == hardware);
     let exact = || named.iter().position(|(_, n, _)| n == wanted);
     let partial = || named.iter().position(|(_, n, _)| n.to_lowercase().contains(&lower));
     by_id.or_else(exact).or_else(partial).map(|i| named[i].2.clone())
@@ -149,8 +224,53 @@ pub fn input_device(request: &DeviceRequest) -> Result<cpal::Device, String> {
     }
 }
 
-/// Every device of every available host.
+/// The devices to choose from, as REAPER's device page offers them: on ALSA one entry per sound
+/// card (`hw:QUADCAPTURE`, named `USB-Audio - QUAD-CAPTURE`) in both lists, not every PCM name
+/// ALSA knows; nothing on PulseAudio, whose page plays on the server's default device; JACK's
+/// and the other hosts' own devices. [`list_all`] has the rest.
 pub fn list() -> Vec<DeviceEntry> {
+    offered(list_all(), &crate::asound::system_cards())
+}
+
+/// What [`list`] makes of every device the hosts enumerate (`all`) and the sound cards.
+fn offered(all: Vec<DeviceEntry>, cards: &[crate::asound::Card]) -> Vec<DeviceEntry> {
+    let mut out = curated(all, cards);
+    if cards.is_empty() {
+        return out;
+    }
+    let at = out.iter().position(|e| e.host.eq_ignore_ascii_case("ALSA")).unwrap_or(out.len());
+    let alsa = cards.iter().map(|c| DeviceEntry {
+        host: "ALSA".into(),
+        id: c.device(),
+        name: c.name.clone(),
+        input: true,
+        output: true,
+    });
+    out.splice(at..at, alsa);
+    out
+}
+
+/// `all` without what [`list`] leaves out: ALSA's PCM names when the cards are known (`cards`),
+/// and the PulseAudio sinks and sources.
+fn curated(all: Vec<DeviceEntry>, cards: &[crate::asound::Card]) -> Vec<DeviceEntry> {
+    all.into_iter()
+        .filter(|e| !e.host.eq_ignore_ascii_case("PulseAudio"))
+        .filter(|e| !(e.host.eq_ignore_ascii_case("ALSA") && !cards.is_empty()))
+        .collect()
+}
+
+/// The device a name means on ALSA: a card name REAPER keeps (`hw:QUADCAPTURE`) or a numbered
+/// one (`hw:1,0`) as the id cpal gives that hardware (`hw:CARD=1,DEV=0`); other names as they are.
+fn resolve(wanted: &str) -> String {
+    let cards = crate::asound::parse_cards(
+        &std::fs::read_to_string(std::path::Path::new(crate::asound::PROC_ASOUND).join("cards")).unwrap_or_default(),
+    );
+    crate::asound::hardware_id(wanted, &cards).unwrap_or_else(|| wanted.to_owned())
+}
+
+/// Every device of every available host, each PCM name ALSA knows included (`--list-devices
+/// --all`).
+pub fn list_all() -> Vec<DeviceEntry> {
     let mut out: Vec<DeviceEntry> = Vec::new();
     for id in cpal::available_hosts() {
         let Ok(host) = cpal::host_from_id(id) else { continue };
@@ -174,6 +294,18 @@ pub fn list() -> Vec<DeviceEntry> {
 
 /// What the output (or, with `input`, the input) device `request` names can be opened with.
 pub fn capabilities(request: &DeviceRequest, input: bool) -> Result<Capabilities, String> {
+    device_capabilities(request, input).or_else(|e| {
+        let name = if input { request.input.as_deref() } else { request.output.as_deref() };
+        let asound = std::path::Path::new(crate::asound::PROC_ASOUND);
+        name.filter(|_| is_alsa(request)).and_then(|n| crate::asound::proc_capabilities(n, input, asound)).ok_or(e)
+    })
+}
+
+fn is_alsa(request: &DeviceRequest) -> bool {
+    host_name(request).eq_ignore_ascii_case("ALSA")
+}
+
+fn device_capabilities(request: &DeviceRequest, input: bool) -> Result<Capabilities, String> {
     let device = if input { input_device(request)? } else { output_device(request)? };
     let (default, ranges) = if input {
         let d = device.default_input_config().map_err(|e| e.to_string())?;
@@ -182,6 +314,9 @@ pub fn capabilities(request: &DeviceRequest, input: bool) -> Result<Capabilities
         let d = device.default_output_config().map_err(|e| e.to_string())?;
         (d, device.supported_output_configs().map_err(|e| e.to_string())?.collect::<Vec<_>>())
     };
+    let mut bits: Vec<u16> = ranges.iter().filter_map(|r| integer_bits(r.sample_format())).collect();
+    bits.sort_unstable();
+    bits.dedup();
     let ranges: Vec<_> = ranges.into_iter().filter(|r| r.sample_format() == default.sample_format()).collect();
     let mut channels: Vec<u16> = ranges.iter().map(|r| r.channels()).collect();
     channels.sort_unstable();
@@ -194,7 +329,17 @@ pub fn capabilities(request: &DeviceRequest, input: bool) -> Result<Capabilities
         cpal::SupportedBufferSize::Range { min, max } => Some((*min, *max)),
         cpal::SupportedBufferSize::Unknown => None,
     });
-    Ok(Capabilities { channels, sample_rates, buffer_sizes, default_channels: default.channels() })
+    let default_channels = stream_channels(&channels, default.channels(), None);
+    Ok(Capabilities { channels, sample_rates, buffer_sizes, default_channels, bits })
+}
+
+fn integer_bits(format: SampleFormat) -> Option<u16> {
+    match format {
+        SampleFormat::I16 => Some(16),
+        SampleFormat::I24 => Some(24),
+        SampleFormat::I32 => Some(32),
+        _ => None,
+    }
 }
 
 /// How many channels to open: what was asked for (the fewest the device offers that are at
@@ -204,8 +349,29 @@ pub fn stream_channels(supported: &[u16], default: u16, wanted: Option<u16>) -> 
     let most = supported.iter().copied().max();
     match wanted {
         Some(n) => supported.iter().copied().filter(|&c| c >= n).min().or(most).unwrap_or(n),
-        None => most.filter(|&m| m < CHANNEL_CAP).unwrap_or(default),
+        None => most.filter(|&m| m < CHANNEL_CAP && !takes_any_count(supported)).unwrap_or(default),
     }
+}
+
+/// Whether a device takes every channel count from one up: a sound server's stream (PulseAudio
+/// offers 1 to 31) or an ALSA plugin, not hardware with a fixed set, so it opens at its own
+/// count (the sink's two) rather than its most.
+fn takes_any_count(supported: &[u16]) -> bool {
+    supported.len() >= 8 && supported.first() == Some(&1) && supported.windows(2).all(|w| w[1] == w[0] + 1)
+}
+
+/// The rate to open at: `wanted` when the device runs at it, else the nearest it does, as
+/// REAPER's ALSA device takes the nearest rate the hardware offers. `ranges` are the lowest and
+/// highest rate of each configuration.
+pub fn nearest_rate(ranges: &[(u32, u32)], wanted: u32) -> u32 {
+    if ranges.is_empty() || ranges.iter().any(|(lo, hi)| (*lo..=*hi).contains(&wanted)) {
+        return wanted;
+    }
+    ranges
+        .iter()
+        .map(|&(lo, hi)| if wanted < lo { lo } else { hi })
+        .min_by_key(|r| r.abs_diff(wanted))
+        .unwrap_or(wanted)
 }
 
 /// The configuration to open `device`'s input with at `rate`: the format `request.bits` asks
@@ -240,6 +406,11 @@ pub fn input_config(
     let mut config = default.config();
     config.sample_rate = rate;
     config.channels = stream_channels(&supported, config.channels, wanted);
+    // The input runs at the output's block size: the device default can be many times larger,
+    // and every frame it holds is monitoring latency.
+    if let Some(frames) = request.buffer_size.filter(|_| !host_name(request).eq_ignore_ascii_case("JACK")) {
+        config.buffer_size = cpal::BufferSize::Fixed(frames);
+    }
     Ok((config, format))
 }
 
@@ -394,5 +565,78 @@ mod tests {
         assert!(input_device(&r).is_err());
         assert_eq!(host_name(&r), DUMMY_HOST);
         assert_eq!(hosts().last().map(String::as_str), Some(DUMMY_HOST));
+    }
+
+    /// `--list-devices` lines (`host dir id ; name`) back into entries.
+    fn entries(text: &str) -> Vec<DeviceEntry> {
+        text.lines()
+            .filter_map(|line| {
+                let mut parts = line.splitn(3, char::is_whitespace).filter(|p| !p.is_empty());
+                let host = parts.next()?.to_owned();
+                let rest = line[host.len()..].trim_start();
+                let (dir, rest) = rest.split_once(' ')?;
+                let (id, name) = rest.trim_start().split_once(" ; ")?;
+                Some(DeviceEntry {
+                    host,
+                    id: id.to_owned(),
+                    name: name.to_owned(),
+                    input: dir.starts_with("in"),
+                    output: dir.ends_with("out"),
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_users_machine_offers_one_entry_per_card_as_reaper_does() {
+        let all = entries(include_str!("asound_fixtures/user_list_devices.txt"));
+        assert_eq!(all.len(), 41);
+        let cards = crate::asound::offered_cards(
+            &crate::asound::parse_cards(include_str!("asound_fixtures/cards.txt")),
+            &crate::asound::parse_pcms(include_str!("asound_fixtures/pcm.txt")),
+        );
+        let shown: Vec<String> =
+            offered(all.clone(), &cards).iter().map(|d| format!("{} {} ; {}", d.host, d.id, d.name)).collect();
+        assert_eq!(
+            shown,
+            ["ALSA hw:sofhdadsp ; sof-hda-dsp - sof-hda-dsp", "ALSA hw:QUADCAPTURE ; USB-Audio - QUAD-CAPTURE"]
+        );
+        assert_eq!(offered(all, &[]).len(), 25, "without /proc/asound every ALSA name stays");
+    }
+
+    #[test]
+    fn a_sound_server_opens_at_its_own_channel_count() {
+        let pulse: Vec<u16> = (1..=31).collect();
+        assert_eq!(stream_channels(&pulse, 2, None), 2);
+        assert_eq!(stream_channels(&pulse, 2, Some(4)), 4);
+        assert_eq!(stream_channels(&[4], 4, Some(2)), 4, "a 4-channel interface opens whole, as REAPER does");
+        assert_eq!(stream_channels(&[1, 2], 2, None), 2);
+    }
+
+    #[test]
+    fn an_unsupported_rate_takes_the_nearest_the_device_runs_at() {
+        assert_eq!(nearest_rate(&[(44_100, 44_100)], 48_000), 44_100);
+        assert_eq!(nearest_rate(&[(44_100, 48_000)], 48_000), 48_000);
+        assert_eq!(nearest_rate(&[(44_100, 44_100), (96_000, 96_000)], 88_200), 96_000);
+        assert_eq!(nearest_rate(&[], 48_000), 48_000);
+    }
+
+    #[test]
+    fn latency_reads_as_reaper_shows_it() {
+        // REAPER 7.73 on ALSA: 128 frames in 2 periods at 48 kHz shows ~2.6/2.6ms, 512 in 4
+        // ~10/32ms, 128 in 2 at 44.1 kHz ~2.9/2.9ms, 64 in 3 at 96 kHz ~0.6/1.3ms.
+        assert_eq!(latency_text(block_latency(128, 2, 48_000)), "~2.6/2.6ms");
+        assert_eq!(latency_text(block_latency(512, 4, 48_000)), "~10/32ms");
+        assert_eq!(latency_text(block_latency(128, 2, 44_100)), "~2.9/2.9ms");
+        assert_eq!(latency_text(block_latency(64, 3, 96_000)), "~0.6/1.3ms");
+        assert_eq!(latency_text(block_latency(256, 3, 48_000)), "~5.3/10ms");
+    }
+
+    #[test]
+    fn busy_errors_are_recognised() {
+        assert!(is_busy("The requested device is temporarily busy. Another application or stream may be using it."));
+        assert!(is_busy("ALSA function 'snd_pcm_open' failed with error 'EBUSY: Device or resource busy'"));
+        assert!(!is_busy("no output device named hw:X"));
+        assert_eq!(default_label(Some("PipeWire")), "System default (PipeWire)");
     }
 }

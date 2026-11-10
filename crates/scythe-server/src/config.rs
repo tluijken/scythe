@@ -68,6 +68,8 @@ pub struct Options {
     pub devices: DeviceRequest,
     pub null_audio: bool,
     pub list_devices: bool,
+    /// `--list-devices` prints every device name, not only those the device page offers.
+    pub list_all: bool,
     /// Write a systemd user unit running with these options instead of running.
     pub install_service: bool,
     /// Ask the running session how it is doing instead of running.
@@ -104,7 +106,8 @@ usage: scythe-server [project.RPP] [options]
   --input-channels N     input channels to open, likewise
   --null-audio           open no audio device at all
   --no-input             never open an audio or MIDI input
-  --list-devices         print the audio devices and exit
+  --list-devices         print the audio devices as the device page offers them, and exit
+  --all                  with --list-devices: every device name the audio systems know
   --install-service      write a systemd user unit that runs with these options, and exit
   --status               show how the running session is doing (device, xruns, clients)
 ";
@@ -155,17 +158,29 @@ pub fn audio_flags(args: &[String]) -> Result<AudioConfig, String> {
     })
 }
 
-/// Prints every audio device of every host, as `--list-devices` does.
-pub fn print_devices() {
-    for d in scythe_engine::devices::list() {
-        let dir = match (d.input, d.output) {
-            (true, true) => "in/out",
-            (true, false) => "in",
-            _ => "out",
-        };
-        let id = if d.id == d.name { String::new() } else { format!("  [{}]", d.id) };
-        println!("{:<10} {:<7} {}{id}", d.host, dir, d.name);
+/// Prints the audio devices as `--list-devices` does: those the device page offers (one per
+/// sound card on ALSA, as REAPER lists them), or with `all` every device name the hosts know.
+pub fn print_devices(all: bool) {
+    let devices = if all { scythe_engine::devices::list_all() } else { scythe_engine::devices::list() };
+    for line in device_lines(&devices) {
+        println!("{line}");
     }
+}
+
+fn device_lines(devices: &[scythe_engine::devices::DeviceEntry]) -> Vec<String> {
+    devices
+        .iter()
+        .map(|d| {
+            let dir = match (d.input, d.output) {
+                (true, true) => "in/out",
+                (true, false) => "in",
+                _ => "out",
+            };
+            let name = d.name.lines().next().unwrap_or_default();
+            let name = if d.id == name { d.id.clone() } else { format!("{} ; {name}", d.id) };
+            format!("{:<10} {:<7} {name}", d.host, dir)
+        })
+        .collect()
 }
 
 /// Combines the settings file with `args` (the arguments after the program name, `--headless`
@@ -197,7 +212,7 @@ pub fn options(args: &[String]) -> Result<Options, String> {
     };
     for (name, _) in &flags {
         let known = VALUED.contains(&name.as_str())
-            || ["--null-audio", "--no-input", "--list-devices", "--headless", "--install-service", "--status"]
+            || ["--null-audio", "--no-input", "--list-devices", "--all", "--headless", "--install-service", "--status"]
                 .contains(&name.as_str());
         if !known {
             return Err(format!("unknown option {name}"));
@@ -243,6 +258,7 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         devices,
         null_audio: flag("--null-audio").is_some() || audio.null,
         list_devices: flag("--list-devices").is_some(),
+        list_all: flag("--all").is_some(),
         install_service: flag("--install-service").is_some(),
         status: flag("--status").is_some(),
     })

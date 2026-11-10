@@ -171,7 +171,7 @@ fn main() -> eframe::Result {
         }
     };
     if args.iter().any(|a| a == "--list-devices") {
-        scythe_server::config::print_devices();
+        scythe_server::config::print_devices(args.iter().any(|a| a == "--all"));
         return Ok(());
     }
     let audio = match scythe_server::config::audio_flags(&args) {
