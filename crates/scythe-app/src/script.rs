@@ -79,6 +79,9 @@ pub struct ScriptContext {
     /// The mouse and keys over the script's graphics window, and whether the user closed it.
     pub gfx: Input,
     pub gfx_closed: bool,
+    /// The effects whose own window (graphical editor, plugin editor or view) is open, by
+    /// track (the master's id for the master) and slot.
+    pub open_fx: Vec<(TrackId, usize)>,
     /// The actions the script can look up and run.
     pub actions: Rc<ActionTable>,
 }
@@ -121,6 +124,9 @@ pub struct ScriptOutcome {
     pub script_actions: Vec<(bool, u32, String)>,
     /// `SetMouseModifier` calls: context, modifiers, action (`None` for the default).
     pub mouse_modifiers: Vec<(String, u8, Option<String>)>,
+    /// `TrackFX_Show` and `TrackFX_SetOpen` calls: track, slot and REAPER's show flag (0 hides
+    /// the chain, 1 shows it with the effect picked, 2 closes the floating window, 3 opens it).
+    pub fx_windows: Vec<(TrackId, usize, i64)>,
     /// An effect parameter was set.
     pub fx_touched: bool,
     pub dirty: bool,
@@ -754,6 +760,10 @@ static API: &[Sig] = sigs! {
 
     // Effects.
     "TrackFX_GetCount" Int [T];
+    "TrackFX_Show" Void [T, Z, Z];
+    "TrackFX_SetOpen" Void [T, Z, B];
+    "TrackFX_GetOpen" Bool [T, Z];
+    "TrackFX_GetFloatingWindow" Ptr [T, Z];
     "TrackFX_GetFXName" Bool [T, Z, SO, SZ];
     "TrackFX_GetEnabled" Bool [T, Z];
     "TrackFX_SetEnabled" Void [T, Z, B];

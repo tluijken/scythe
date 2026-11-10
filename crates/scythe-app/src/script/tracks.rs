@@ -554,6 +554,25 @@ fn fx(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
     let slot_index = |s: &mut State, i: i64| track(&mut s.project, t).and_then(|tr| index(tr.fx.len(), i));
     Some(match name {
         "TrackFX_GetCount" => ret(Val::Int(track(&mut s.project, t).map_or(0, |t| t.fx.len() as i64))),
+        "TrackFX_Show" | "TrackFX_SetOpen" => {
+            let (Some(id), Some(i)) = (t, slot_index(s, a.int(1))) else { return Some(ret(Val::Nil)) };
+            let flag = if name == "TrackFX_SetOpen" { if a.bool(2) { 3 } else { 2 } } else { a.int(2) };
+            s.ctx.open_fx.retain(|o| *o != (id, i) || flag == 0 || flag == 1);
+            if flag == 3 {
+                s.ctx.open_fx.push((id, i));
+            }
+            s.out.fx_windows.push((id, i, flag));
+            ret(Val::Nil)
+        }
+        "TrackFX_GetOpen" => {
+            let open = t.zip(slot_index(s, a.int(1))).is_some_and(|(id, i)| s.ctx.open_fx.contains(&(id, i)));
+            ret(Val::Bool(open))
+        }
+        "TrackFX_GetFloatingWindow" => {
+            // The window's handle only says whether it is open: no script can draw into it.
+            let open = t.zip(slot_index(s, a.int(1))).and_then(|(id, i)| s.ctx.open_fx.iter().position(|o| *o == (id, i)));
+            ret(open.map_or(Val::Nil, |k| Val::Int(0x5c7e_0000 + k as i64)))
+        }
         "TrackFX_GetFXName" => {
             let name = slot_index(s, a.int(1)).map(|i| track(&mut s.project, t).unwrap().fx[i].name.clone());
             (Val::Bool(name.is_some()), vec![Val::Str(name.unwrap_or_default())])
@@ -1352,6 +1371,24 @@ mod tests {
         fn is_instrument(&self) -> bool {
             false
         }
+    }
+
+    #[test]
+    fn fx_windows_open_and_close_as_trackfx_show_says() {
+        let mut p = project();
+        p.tracks[0].fx.push(scythe_core::FxSlot { name: "VST: ReaEQ (Cockos)".into(), enabled: true, raw: Vec::new() });
+        let id = p.tracks[0].id;
+        let mut s = super::super::State::new(&p, super::super::ScriptContext::default());
+        let (tr, fx) = (Val::Track(id), Val::Int(0));
+        assert_eq!(api(&mut s, "TrackFX_GetOpen", &[tr.clone(), fx.clone()]).0, Val::Bool(false));
+        assert_eq!(api(&mut s, "TrackFX_GetFloatingWindow", &[tr.clone(), fx.clone()]).0, Val::Nil);
+        api(&mut s, "TrackFX_Show", &[tr.clone(), fx.clone(), Val::Int(3)]);
+        assert_eq!(api(&mut s, "TrackFX_GetOpen", &[tr.clone(), fx.clone()]).0, Val::Bool(true));
+        assert_ne!(api(&mut s, "TrackFX_GetFloatingWindow", &[tr.clone(), fx.clone()]).0, Val::Nil);
+        api(&mut s, "TrackFX_SetOpen", &[tr.clone(), fx.clone(), Val::Bool(false)]);
+        assert_eq!(api(&mut s, "TrackFX_GetOpen", &[tr.clone(), fx.clone()]).0, Val::Bool(false));
+        api(&mut s, "TrackFX_Show", &[tr.clone(), Val::Int(5), Val::Int(3)]);
+        assert_eq!(s.out.fx_windows, [(id, 0, 3), (id, 0, 2)], "no slot 5");
     }
 
     #[test]

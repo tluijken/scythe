@@ -1410,11 +1410,15 @@ impl ScytheApp {
             gfx: self.script_gfx.pointer.take_input(),
             gfx_closed: closed,
             actions: std::rc::Rc::new(self.action_table()),
+            open_fx: self.open_fx_windows(),
         }
     }
 
     fn apply_script(&mut self, name: &str, mut out: crate::script::ScriptOutcome) {
         self.apply_script_actions(&mut out);
+        for (track, index, flag) in std::mem::take(&mut out.fx_windows) {
+            self.show_fx(track, index, flag);
+        }
         if let Some(project) = out.project {
             let label = out.undo.unwrap_or_else(|| format!("Run {name}"));
             self.edit(&label, |p| *p = project);
@@ -1589,5 +1593,66 @@ pub(crate) fn resource_dialog(sub: &str) -> rfd::FileDialog {
     match dir {
         Some(d) => rfd::FileDialog::new().set_directory(d),
         None => rfd::FileDialog::new(),
+    }
+}
+
+impl ScytheApp {
+    /// The effects whose own window is open (a stock effect's graphical editor, a plugin's
+    /// editor or view, the NAM or rig window), by track (the master's id for the master).
+    fn open_fx_windows(&self) -> Vec<(TrackId, usize)> {
+        let mut out = Vec::new();
+        for t in std::iter::once(&self.project.master).chain(&self.project.tracks) {
+            let owner = (t.id != self.project.master.id).then_some(t.id);
+            for i in 0..t.fx.len() {
+                if self.fx_window_open(owner, i) {
+                    out.push((t.id, i));
+                }
+            }
+        }
+        out
+    }
+
+    fn fx_window_open(&self, track: Option<TrackId>, index: usize) -> bool {
+        self.editor_open(track, index)
+            || crate::ui::fx_editor::is_open(self, track, index)
+            || track.is_some_and(|t| self.nam.panel.is_some() && self.nam.panel == self.nam_target(t, index))
+    }
+
+    /// REAPER's `TrackFX_Show`: 0 hides the chain, 1 shows the track's chain with the effect
+    /// picked (its parameters in the inspector), 2 closes the effect's own window, 3 opens it.
+    pub fn show_fx(&mut self, track: TrackId, index: usize, flag: i64) {
+        let owner = (track != self.project.master.id).then_some(track);
+        match flag {
+            0 => {
+                if self.view.expanded_fx.as_ref().is_some_and(|(o, _)| *o == scythe_engine::fx::FxOwner::of(owner)) {
+                    self.view.expanded_fx = None;
+                }
+            }
+            1 => {
+                if let Some(t) = owner {
+                    self.set_track_selection(vec![t], Some(t));
+                }
+                self.view.expanded_fx = Some((scythe_engine::fx::FxOwner::of(owner), vec![index]));
+            }
+            2 | 3 => {
+                let open = flag == 3;
+                if self.fx_window_open(owner, index) == open {
+                    return;
+                }
+                let slot = match owner {
+                    Some(t) => self.project.track(t).and_then(|t| t.fx.get(index)).cloned(),
+                    None => self.project.master.fx.get(index).cloned(),
+                };
+                let Some(slot) = slot else { return };
+                if crate::ui::fx_editor::kind(self, owner, &slot, index).is_some() {
+                    crate::ui::fx_editor::toggle(self, owner, index);
+                } else if let (Some(t), true) = (owner, self.nam_target(track, index).is_some()) {
+                    self.toggle_nam_panel(t, index);
+                } else {
+                    self.toggle_editor(owner, index);
+                }
+            }
+            _ => {}
+        }
     }
 }
