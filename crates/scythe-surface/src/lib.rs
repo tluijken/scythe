@@ -1,10 +1,11 @@
 //! Control surfaces: OSC devices driven by REAPER's `.ReaperOSC` pattern files, Mackie
-//! Control (with extenders) and HUI over MIDI, configured as REAPER keeps them in reaper.ini
+//! Control (with extenders), HUI and the PreSonus FaderPorts over MIDI, configured as REAPER keeps them in reaper.ini
 //! (`csurf_<i>` lines in the preferences). A [`SurfaceHost`] runs them on the session's
 //! thread: each update it applies what the devices sent through the control API and sends
 //! the devices what changed.
 
 pub use scythe_session::actions;
+pub mod faderport;
 pub mod hui;
 pub mod mcu;
 pub mod midi;
@@ -68,6 +69,7 @@ enum Running {
     Osc(Box<osc::OscSurface>),
     Mcu(Box<mcu::McuSurface>),
     Hui(Box<hui::HuiSurface>),
+    FaderPort(Box<faderport::FaderPortSurface>),
 }
 
 struct Slot {
@@ -114,6 +116,12 @@ impl SurfaceHost {
                     s.input(session, &mut self.bank);
                     if feed {
                         s.feedback(view.get_or_insert_with(|| view::View::read(session)), self.bank);
+                    }
+                }
+                Some(Running::FaderPort(s)) => {
+                    s.input(session);
+                    if feed {
+                        s.feedback(view.get_or_insert_with(|| view::View::read(session)));
                     }
                 }
                 None => {}
@@ -174,9 +182,6 @@ impl SurfaceHost {
                 line: s.config.line(),
                 running: s.running.is_some(),
                 error: s.error.clone().or_else(|| match &s.config {
-                    Surface::Midi(m) if matches!(m.kind, MidiKind::FaderPort | MidiKind::FaderPort2) => {
-                        Some("PreSonus FaderPort surfaces are kept in the settings but not driven yet".into())
-                    }
                     Surface::Other { kind, .. } => Some(format!("{kind} surfaces are not supported")),
                     _ => None,
                 }),
@@ -195,7 +200,9 @@ fn open(config: &Surface, wake: Waker) -> Result<Option<Running>, String> {
         Surface::Midi(m) => match m.kind {
             MidiKind::Mcu | MidiKind::McuExtender => Some(Running::Mcu(Box::new(mcu::McuSurface::open(m, wake)?))),
             MidiKind::Hui => Some(Running::Hui(Box::new(hui::HuiSurface::open(m, wake)?))),
-            MidiKind::FaderPort | MidiKind::FaderPort2 => None,
+            MidiKind::FaderPort | MidiKind::FaderPort2 => {
+                Some(Running::FaderPort(Box::new(faderport::FaderPortSurface::open(m, wake)?)))
+            }
         },
         Surface::Other { .. } => None,
     })
