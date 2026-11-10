@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use scythe_core::TrackId;
 use scythe_engine::nam::NamModel;
+use scythe_engine::rig::{RigSettings, Stage as RigStage};
 
 use library::{Entry, Filter, Library};
 use preview::{Ending, Preview, Stage};
@@ -151,6 +152,8 @@ pub enum Purpose {
     /// The slot's model from before a preview (as the slot names it), back for good or to
     /// compare.
     Restore(String),
+    /// The amp model of rig settings to switch to (a snapshot or preset), under this undo label.
+    Rig(Box<RigSettings>, String),
 }
 
 enum Event {
@@ -202,6 +205,11 @@ pub enum Outcome {
         purpose: Purpose,
         model: Box<NamModel>,
     },
+    /// An impulse response to play in the rig's cab while previewing (`None`: none).
+    PreviewIr {
+        target: Target,
+        path: Option<PathBuf>,
+    },
     /// A downloaded file to load into the slot (a model, or an impulse response).
     Open {
         target: Target,
@@ -245,6 +253,10 @@ pub struct NamHub {
     pub fetching: HashSet<i64>,
     /// A tone stepped to while previewing; its first model plays once its models are listed.
     preview_next_tone: Option<i64>,
+    /// The rig stage the panel shows.
+    pub section: RigStage,
+    /// Work done without waiting, handed out with the next poll.
+    pending: Vec<Outcome>,
 }
 
 impl NamHub {
@@ -275,6 +287,8 @@ impl NamHub {
             preview_dir: preview::default_cache_dir(),
             fetching: HashSet::new(),
             preview_next_tone: None,
+            section: RigStage::Amp,
+            pending: Vec::new(),
         }
     }
 
@@ -476,18 +490,24 @@ impl NamHub {
 
     /// Reads the preview's model, fetching it into the cache first when it is not there yet.
     fn fetch_preview(&mut self) {
-        let Some((target, model)) =
-            self.preview.as_ref().filter(|p| !p.comparing).map(|p| (p.target.clone(), p.model().clone()))
+        let Some((target, model, ir)) =
+            self.preview.as_ref().filter(|p| !p.comparing).map(|p| (p.target.clone(), p.model().clone(), p.ir))
         else {
             return;
         };
         let local = self.library.downloaded(model.id).map(|e| e.path.clone()).filter(|f| f.exists());
-        let cached = preview::cache_file(&self.preview_dir, &model);
+        let cached = preview::cache_file(&self.preview_dir, &model, ir);
         let file = local.or_else(|| cached.exists().then_some(cached));
         if let Some(p) = &mut self.preview {
             p.stage = if file.is_some() { Stage::Loading } else { Stage::Fetching };
         }
         match file {
+            Some(path) if ir => {
+                if let Some(p) = &mut self.preview {
+                    p.stage = Stage::Playing;
+                }
+                self.pending.push(Outcome::PreviewIr { target, path: Some(path) });
+            }
             Some(path) => self.read_model(target, path, None, Purpose::Preview(model.id)),
             None => {
                 if self.fetching.insert(model.id) {
@@ -511,6 +531,10 @@ impl NamHub {
         if p.toggle_compare() {
             let target = p.target.clone();
             let previous = p.previous.clone().unwrap_or_default();
+            if p.ir {
+                self.pending.push(Outcome::PreviewIr { target, path: Some(resolve(&previous)) });
+                return;
+            }
             self.read_model(target, resolve(&previous), None, Purpose::Restore(previous));
         } else {
             self.fetch_preview();
@@ -530,7 +554,7 @@ impl NamHub {
         if let Some(e) = self.library.downloaded(model.id).filter(|e| e.path.exists()) {
             return Ok(e.path.clone());
         }
-        let cached = preview::cache_file(&self.preview_dir, model);
+        let cached = preview::cache_file(&self.preview_dir, model, tone.is_ir());
         let bytes = std::fs::read(&cached).map_err(|e| format!("the previewed file is gone: {e}"))?;
         let entry = self.library.store_download(tone, model, &bytes).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(cached);
@@ -540,7 +564,7 @@ impl NamHub {
 
     /// Handles finished background work.
     pub fn poll(&mut self) -> Vec<Outcome> {
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.pending);
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 Event::Scanned(entries) => {
@@ -570,6 +594,9 @@ impl NamHub {
                             if preview.is_some_and(|p| !p.comparing) {
                                 continue;
                             }
+                            out.push(Outcome::Load { target, path, levels, purpose, model: Box::new(model) });
+                        }
+                        (Purpose::Rig(..), Ok(model)) => {
                             out.push(Outcome::Load { target, path, levels, purpose, model: Box::new(model) });
                         }
                         (Purpose::Load, Ok(model)) => {
@@ -653,10 +680,13 @@ impl NamHub {
                 }
                 Event::PreviewFetched { target, model, result } => {
                     self.fetching.remove(&model.id);
-                    let file = preview::cache_file(&self.preview_dir, &model);
+                    let ir = self.preview.as_ref().is_some_and(|p| p.ir);
+                    let file = preview::cache_file(&self.preview_dir, &model, ir);
                     let stored = result.map_err(|e| e.to_string()).and_then(|bytes| {
-                        if bytes.starts_with(b"RIFF") {
-                            return Err("this is an impulse response, use Get and load".into());
+                        match (ir, bytes.starts_with(b"RIFF")) {
+                            (false, true) => return Err("this is an impulse response, use Get and load".into()),
+                            (true, false) => return Err("TONE3000 sent something other than a WAV file".into()),
+                            _ => {}
                         }
                         std::fs::create_dir_all(&self.preview_dir).map_err(|e| e.to_string())?;
                         std::fs::write(&file, bytes).map_err(|e| e.to_string())?;

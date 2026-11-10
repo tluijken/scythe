@@ -29,6 +29,10 @@ pub struct Preview {
     pub comparing: bool,
     /// The preview has changed the slot, in an undo step later changes fold into.
     pub recorded: bool,
+    /// The tone holds impulse responses, which play in the rig's cab.
+    pub ir: bool,
+    /// Whether the rig's cab played before the preview, put back when comparing.
+    pub cab_before: Option<bool>,
 }
 
 /// What ending a preview leaves to do.
@@ -50,13 +54,26 @@ impl Preview {
         model_id: i64,
     ) -> Option<Self> {
         let at = models.iter().position(|m| m.id == model_id)?;
-        Some(Self { target, previous, tone, models, at, stage: Stage::Fetching, comparing: false, recorded: false })
+        let ir = tone.is_ir();
+        Some(Self {
+            target,
+            previous,
+            tone,
+            models,
+            at,
+            stage: Stage::Fetching,
+            comparing: false,
+            recorded: false,
+            ir,
+            cab_before: None,
+        })
     }
 
     /// Moves on to another model, of this tone or another, keeping what the slot played
     /// before the preview began.
     pub fn switch(&mut self, tone: Tone, models: Vec<Model>, model_id: i64) -> bool {
         let Some(at) = models.iter().position(|m| m.id == model_id) else { return false };
+        self.ir = tone.is_ir();
         self.tone = tone;
         self.models = models;
         self.at = at;
@@ -112,7 +129,7 @@ pub fn first_model<'a>(models: &'a [Model], size: Option<&str>) -> Option<&'a Mo
 }
 
 /// Where a previewed model is cached until it is kept or the cache is trimmed.
-pub fn cache_file(dir: &Path, model: &Model) -> PathBuf {
+pub fn cache_file(dir: &Path, model: &Model, ir: bool) -> PathBuf {
     let name: String = model
         .name
         .chars()
@@ -120,7 +137,8 @@ pub fn cache_file(dir: &Path, model: &Model) -> PathBuf {
         .take(60)
         .collect();
     let name = name.trim();
-    dir.join(if name.is_empty() { format!("{}.nam", model.id) } else { format!("{} {name}.nam", model.id) })
+    let ext = if ir { "wav" } else { "nam" };
+    dir.join(if name.is_empty() { format!("{}.{ext}", model.id) } else { format!("{} {name}.{ext}", model.id) })
 }
 
 /// `$XDG_CACHE_HOME/scythe/nam-preview`.
@@ -209,10 +227,10 @@ mod tests {
         assert_eq!(first_model(&models, Some("feather")).unwrap().id, 2);
         assert_eq!(first_model(&models[..1], None).unwrap().id, 1);
         assert!(first_model(&[], None).is_none());
-        assert_eq!(cache_file(Path::new("/c"), &models[0]), PathBuf::from("/c/1 m1.nam"));
+        assert_eq!(cache_file(Path::new("/c"), &models[0], false), PathBuf::from("/c/1 m1.nam"));
         let odd = Model { id: 5, name: "a/b: c".into(), ..Model::default() };
-        assert_eq!(cache_file(Path::new("/c"), &odd), PathBuf::from("/c/5 a_b_ c.nam"));
-        assert_eq!(cache_file(Path::new("/c"), &Model { id: 6, ..Model::default() }), PathBuf::from("/c/6.nam"));
+        assert_eq!(cache_file(Path::new("/c"), &odd, false), PathBuf::from("/c/5 a_b_ c.nam"));
+        assert_eq!(cache_file(Path::new("/c"), &Model { id: 6, ..Model::default() }, true), PathBuf::from("/c/6.wav"));
 
         let dir = std::env::temp_dir().join(format!("scythe-preview-trim-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

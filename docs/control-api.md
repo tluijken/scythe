@@ -345,6 +345,41 @@ itself).
 Plugin parameters live in the running plugin, as with the inspector's sliders: they mark the
 project unsaved and are stored on save, but are not undo steps.
 
+### Guitar rigs
+
+A rig is one FX container named "Rig: <amp> + <cab>" holding a ReaGate, the Neural Amp Modeler
+slot, the cab (a fully wet ReaVerb with the impulse response, and a parallel second ReaVerb when
+two responses blend), a ReaEQ with low cut, bass, mid, treble and high cut, and a ReaEQ whose
+only band is off for the output level. REAPER opens it as the container it is. `track` names
+the track, `index?` the rig's position in its chain (the track's first rig when left out). Every
+answer but `rig.presets` and `rig.delete_preset` is the rig: `{"track", "track_name", "index",
+"name", "settings", "snapshots", "preset"}`, `settings` being
+`{"gate": {"enabled", "threshold_db"}, "amp": {"enabled", "model", "input_db", "output_db"},
+"cab": {"enabled", "ir", "ir2", "blend", "level_db", "auto"}, "eq": {"enabled", "low_cut",
+"high_cut", "bass_db", "mid_db", "treble_db"}, "output_db"}` (a cut of `null` is off).
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `rig.list` | | `{"rigs", "presets"}` |
+| `rig.get` | `track`, `index?` | the rig |
+| `rig.create` | `track`, `preset?` | a new rig at the end of the chain |
+| `rig.convert` | `track`, `index` (a NAM slot) | the NAM slot with a ReaGate right before it and the ReaVerb(s) and ReaEQ right after it as a rig; stages it lacks are added switched off, so it sounds the same |
+| `rig.set_amp` | `track`, `index?`, `model?`, `gear?` (when the file does not say), `input_db?`, `output_db?` | the rig; a capture with a cabinet (`amp_cab`, `full_rig`, TONE3000's `amp-cab`) switches the cab off, an amp-only one on, while `cab.auto` is set |
+| `rig.set_cab` | `track`, `index?`, `ir?`, `ir2?` (`""` removes it), `blend?` (0-1), `level_db?`, `enabled?` (by hand, which clears `auto`), `auto?` | the rig |
+| `rig.stage` | `track`, `index?`, `stage` (`gate`, `amp`, `cab`, `eq`), `enabled` | the rig |
+| `rig.set` | `track`, `index?`, `settings` (merged into the settings above) | the rig |
+| `rig.snapshot` | `track?`, `index?` (the selected track's rig when left out), `snapshot` (`A`-`D`), `store?` | the rig, switched to (or stored as) the snapshot |
+| `rig.presets` | | the preset names (`$XDG_DATA_HOME/scythe/rigs/*.json`) |
+| `rig.save_preset` | `track`, `index?`, `name` | `{"saved", "presets"}` |
+| `rig.load_preset` | `track?`, `index?`, `name` (or `next`, `previous`) | the rig (a new one when the track has none) |
+| `rig.delete_preset` | `name` | the preset names |
+
+Switching is click-free: a new model warms up beside the old one and the two crossfade, a new
+impulse response crossfades over 20 ms, and gate, EQ and level changes reach the running
+effects without restarting them. The actions `_SCYTHE_RIG_SNAPSHOT_A` … `_D`,
+`_SCYTHE_RIG_PRESET_NEXT` and `_SCYTHE_RIG_PRESET_PREVIOUS` do the same for the selected track's
+rig from a footswitch, a learned MIDI control, a surface or `action.run`.
+
 ### Items
 
 Items are named by their `id` from a snapshot or `item.list`.

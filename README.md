@@ -747,7 +747,22 @@ Working:
   0600 file) needs a publishable key you register yourself; see [docs/tone3000.md](docs/tone3000.md).
   The model path stays in the LV2 plugin's own state, so REAPER keeps opening the slot; snapshots
   go into the track's `<EXT` extension state, which REAPER keeps. `.nam` files dropped on a track
-  load into its NAM slot (or a new one). The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit, ReaDelay, ReaFIR,
+  load into its NAM slot (or a new one). **Guitar rigs** put the whole tone in one slot: a REAPER
+  FX container named "Rig: <amp> + <cab>" holding a gate (ReaGate), the NAM amp, the cab (ReaVerb
+  with the impulse response, and a second one in parallel to blend), an EQ (ReaEQ: low cut, bass,
+  mid, treble, high cut) and the output level, so REAPER opens and plays it unchanged. The effects
+  list shows it as one slot whose **Edit** opens the rig window: the signal chain from left to
+  right with a switch per stage, the picked stage's knobs under it, the model browser for the
+  amp and the impulse response browser for the cab (library IRs and TONE3000 IR tones, with the
+  same Preview, A/B, Keep and Revert as models). Captures that include a cabinet (TONE3000's
+  amp-cab and full-rig tones, or the `.nam` file's `gear_type`) switch the cab off and amp-only
+  ones switch it on, which the cab shows; switching it by hand overrides that. Snapshots A-D
+  (Alt+1…4, and `_SCYTHE_RIG_SNAPSHOT_A`…`D` for footswitches and MIDI learn) and named presets
+  (`~/.local/share/scythe/rigs`, loadable on any track, `_SCYTHE_RIG_PRESET_NEXT`/`PREVIOUS`) hold
+  the whole rig; the control API and MCP have `rig.*`. **Make rig** turns a NAM slot and the
+  ReaVerb after it into a rig; a bare NAM slot works as before. Switching is click-free: models
+  crossfade, impulse responses crossfade over 20 ms, and gate, EQ and level changes reach the
+  running effects in place. The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit, ReaDelay, ReaFIR,
   ReaVerbate, ReaVerb, ReaSynth, ReaInsert, ReaControlMIDI) get **Edit** too, opening a graphical
   editor in a resizable window, drawn from the emulation's own math: ReaEQ's response per band
   and in all with draggable handles (drag for frequency and gain, scroll or Shift-drag for the
@@ -918,6 +933,7 @@ compare with scythe's output sample by sample:
 | Take FX: gain, DC added after item and take volume and fades, latency compensated, tails past the item end, a running counter showing when they start, 4 take channels, parallel inside, reversed sections | 9 of 14 exact; the other 5 differ only in the item's last sample, which REAPER drops in its take-FX path for some item positions |
 | Freeze (action 41223 on a JSFX chain) | the render bit-identical to REAPER's, same file name, length (one second of tail) and `<FREEZE` layout |
 | ReaDelay: time, musical length (eighth notes at the project tempo), feedback, pan, wet/dry, low- and high-pass (biquads with a Q of 1, fitted to its impulse responses) | exact (7 cases) |
+| Guitar rig (`rig_probe`): a rig container (gate, NAM slot without a model, two impulse responses blended, EQ with cuts and tone, output level), the same effects in series, a NAM + ReaVerb chain and that chain converted to a rig, a rig with gate and cab off; a Lua probe lists what REAPER loads | REAPER loads the container under its name with its six effects (the second IR parallel), renders it bit-identical to the series chain and the converted chain to the original; Scythe within 1e-5 of REAPER on all 5 |
 | Built-in effects written by scythe rendered by REAPER (`builtin_ref`): EQ, delay and convolution, then gate, compressor, multiband compressor and limiter with parameters edited through Scythe | the whole chain within 7e-5 (-95 dB); REAPER reads the stored states as its own ReaEQ/ReaGate/ReaComp/ReaDelay/ReaVerb/ReaXcomp/ReaLimit |
 | Dynamics (`stock_ref`, 109 cases on tones, noise, drums, DC steps, level ramps, impulses and bursts, one parameter at a time, set by REAPER through `TrackFX_SetParam` or a state chunk): ReaComp (every parameter: ratio, attack, release, RMS, knee and legacy knee, pre-comp, detector filters and inputs, filter preview, auto make-up, auto release, classic attack, wet/dry), ReaGate (every parameter but noise, which is random: filters, RMS, hysteresis, hold, pre-open, invert modes, wet/dry, sidechain), ReaLimit (threshold, ceiling, release, isolated peaks, bursts, limiting on a limited level), ReaXcomp (crossovers, every band parameter, feedback detector, bands off, output gain); plus ReaGate's MIDI out turned into audio by a JSFX | ReaComp and ReaGate within 1.2e-7 (49 and 22 cases), ReaXcomp within 1.3e-4 (22), ReaLimit within 2.7e-4 (15 of 16; its "inf" release within 1.8e-2), MIDI notes at the same frames |
 | ReaVerbate (`stock_ref`, 28 cases on the program material and an impulse: room size, dampening, width, pre-delay, low/high-pass, wet/dry, all at once) | within 1.2e-7 (28/28) |
@@ -1151,6 +1167,11 @@ compares the two files.
   not available to compare with. Freeze renders only the track's own items (not what other
   tracks send it or folder children), in stereo; REAPER's mono and multichannel freezes and
   "freeze to the last FX" are not there, and a freeze needs the project saved first.
+- Guitar rigs: switching a stage on or off is instant rather than crossfaded; the impulse
+  response's length and trim are not offered (ReaVerb's trim is not modelled); the gate's
+  attack, release and hysteresis and the EQ bands' frequencies are set in ReaGate's and ReaEQ's
+  own editors. REAPER here has no NAM LV2 plugin, so the rig renders compare with the NAM slot
+  empty (REAPER passes a missing plugin through).
 - NAM models at another rate than the project
   are converted with the 192-point sinc; the plugin's own converter is not matched (no reference). Hosted plugins are tested with the workspace's own test plugins.
 - Multichannel: master channels go to the audio device's outputs in order, as many as the

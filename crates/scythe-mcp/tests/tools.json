@@ -13677,6 +13677,583 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "The rigs in the project (track, position, name, settings) and the saved presets.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.list`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "rig_list",
+    "title": "Rig list"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One rig's settings and which of its snapshots A-D are stored.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.get`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "description": "The rig's position in the track's effect chain; the track's first rig when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "rig_get",
+    "title": "Rig get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a rig at the end of the track's chain, from a preset or with default settings.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.create`.",
+    "inputSchema": {
+      "properties": {
+        "preset": {
+          "default": null,
+          "description": "A preset's name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "rig_create",
+    "title": "Rig create"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Turns the Neural Amp Modeler slot at `index` into a rig, together with a ReaGate right\nbefore it and the ReaVerb (impulse response) and ReaEQ right after it. The stages it\nlacks are added switched off, so the sound stays the same.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.convert`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position of the NAM slot in the track's chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "rig_convert",
+    "title": "Rig convert"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Loads an amp model (a `.nam` file) and sets the amp's levels. A capture that includes a\ncabinet (gear type amp-cab or full rig) switches the cab stage off, an amp-only one\nswitches it on, unless the cab was switched by hand.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.set_amp`.",
+    "inputSchema": {
+      "properties": {
+        "gear": {
+          "default": null,
+          "description": "The capture's gear type when the file does not say (amp, amp-cab, full-rig, pedal).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input_db": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "model": {
+          "default": null,
+          "description": "Path of the `.nam` file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "output_db": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "rig_set_amp",
+    "title": "Rig set amp"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the cabinet: its impulse response (a WAV file), a second one blended in, the blend,\nthe level, whether it plays and whether it follows the amp model's gear type.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.set_cab`.",
+    "inputSchema": {
+      "properties": {
+        "auto": {
+          "default": null,
+          "description": "The cab follows the amp model: off for captures with a cabinet, on for amp-only ones.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "blend": {
+          "default": null,
+          "description": "The second response's share, 0-1.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": null,
+          "description": "Switches the cab stage on or off by hand (which stops it following the amp).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ir": {
+          "default": null,
+          "description": "Path of the impulse response.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ir2": {
+          "default": null,
+          "description": "Path of a second impulse response; an empty string removes it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "level_db": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "rig_set_cab",
+    "title": "Rig set cab"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Switches a stage on or off: gate, amp, cab or eq.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.stage`.",
+    "inputSchema": {
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "description": "gate, amp, cab or eq.",
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "stage",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "name": "rig_stage",
+    "title": "Rig stage"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes any settings at once: `settings` is merged into the rig's settings as `rig.get`\nshows them (gate, amp, cab, eq, output_db).\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.set`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "settings": true,
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "name": "rig_set",
+    "title": "Rig set"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Switches the rig to snapshot A-D (amp, impulse responses, gate, EQ and levels), or with\n`store` keeps the rig's current settings there. Without `track`, the selected track's\nrig.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.snapshot`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "snapshot": {
+          "description": "A, B, C or D.",
+          "type": "string"
+        },
+        "store": {
+          "default": false,
+          "type": "boolean"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "snapshot"
+      ],
+      "type": "object"
+    },
+    "name": "rig_snapshot",
+    "title": "Rig snapshot"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The saved rig presets.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.presets`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "rig_presets",
+    "title": "Rig presets"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Saves the rig's settings as a preset, replacing one of the same name.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.save_preset`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "rig_save_preset",
+    "title": "Rig save preset"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Loads a preset into the rig (a new rig when the track has none). Without `track`, the\nselected track's rig. `name` may also be `next` or `previous` to step through the\npresets in name order.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.load_preset`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "rig_load_preset",
+    "title": "Rig load preset"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Deletes a saved preset.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.delete_preset`.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "rig_delete_preset",
+    "title": "Rig delete preset"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

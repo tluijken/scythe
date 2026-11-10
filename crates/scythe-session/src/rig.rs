@@ -393,8 +393,10 @@ mod tests {
     fn presets_save_list_load_and_delete() {
         let dir = std::env::temp_dir().join(format!("scythe-rig-presets-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let mut s = RigSettings::default();
-        s.cab = CabSettings { ir: Some("/irs/v30.wav".into()), level_db: -4.0, ..CabSettings::default() };
+        let s = RigSettings {
+            cab: CabSettings { ir: Some("/irs/v30.wav".into()), level_db: -4.0, ..CabSettings::default() },
+            ..RigSettings::default()
+        };
         save_preset(&dir, "Lead / Solo", &s).unwrap();
         save_preset(&dir, "clean", &RigSettings::default()).unwrap();
         let names: Vec<String> = list_presets(&dir).into_iter().map(|p| p.name).collect();

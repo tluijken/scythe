@@ -17,6 +17,7 @@ pub mod monitor;
 pub mod nam;
 pub mod recording;
 pub mod regions;
+pub mod rig;
 mod setlist;
 mod stretch_markers;
 pub mod surfaces;

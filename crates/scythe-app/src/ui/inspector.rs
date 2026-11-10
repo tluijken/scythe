@@ -282,12 +282,18 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         let num = Rect::from_center_size(r.left_center() + vec2(25.0, 0.0), vec2(26.0, 26.0));
         painter.rect_filled(num, CornerRadius::same(8), BG);
         painter.text(num.center(), Align2::CENTER_CENTER, (i + 1).to_string(), theme::mono(11.0), TEXT_DIM);
+        let rig = scythe_engine::rig::is_rig(fx).then(|| scythe_engine::rig::read(fx)).flatten();
         let (short, kind) = split_plugin_name(&fx.name);
+        let short = match &rig {
+            Some(_) => scythe_engine::rig::container_name(fx).unwrap_or_else(|| "Rig".into()),
+            None => short.to_string(),
+        };
         let nam = scythe_engine::fx::nam_settings(fx);
         let hosted = matches!(app.engine.fx().status(Some(track_id), fx, i), Some(FxStatus::Hosted(_)))
             || app.has_gfx(Some(track_id), i);
         let stock = crate::ui::fx_editor::kind(app, Some(track_id), fx, i).is_some();
-        let text_w = if nam.is_some() || hosted || stock { r.width() - 162.0 } else { r.width() - 110.0 };
+        let text_w =
+            if nam.is_some() || rig.is_some() || hosted || stock { r.width() - 162.0 } else { r.width() - 110.0 };
         let name = widgets::truncate(ui, &short, &theme::semibold(13.0), text_w);
         painter.text(
             pos2(num.right() + 12.0, r.center().y - 8.0),
@@ -304,6 +310,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             )
         });
         let (head, rest) = match app.engine.fx().status(Some(track_id), fx, i) {
+            _ if rig.is_some() => ("guitar rig".to_owned(), rig_summary(rig.as_ref().unwrap())),
             _ if fx.is_container() => {
                 let n = fx.container_children().len();
                 ("container".to_owned(), format!("{n} FX"))
@@ -328,12 +335,16 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
-        if nam.is_some() {
+        if nam.is_some() || rig.is_some() {
             let open = app.nam.panel.is_some() && app.nam.panel == app.nam_target(track_id, i);
             let pill = Rect::from_min_size(pos2(sw.left() - 52.0, r.center().y - 11.0), vec2(44.0, 22.0));
             let (bg, fg) = if open { (ACCENT, BG) } else { (BG, TEXT_DIM) };
             if text_pill(ui, pill, "Edit", theme::regular(11.0), bg, fg)
-                .on_hover_text("Models, levels, snapshots and the model browser")
+                .on_hover_text(if rig.is_some() {
+                    "The rig: gate, amp, cab, EQ and output, its snapshots, presets and browsers"
+                } else {
+                    "Models, levels, snapshots and the model browser"
+                })
                 .clicked()
             {
                 app.toggle_nam_panel(track_id, i);
@@ -360,6 +371,14 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             }
         }
         row.context_menu(|ui| {
+            if nam.is_some()
+                && ui.button("Make guitar rig").on_hover_text("Gate, amp, cab, EQ and output in one slot").clicked()
+            {
+                if let Some(t) = app.nam_target(track_id, i) {
+                    app.nam_make_rig(&t);
+                }
+                ui.close();
+            }
             if hosted && ui.button("Open editor").clicked() {
                 app.toggle_editor(Some(track_id), i);
                 ui.close();
@@ -444,10 +463,14 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             });
         }
         if row.clicked() {
-            toggle_params(app, FxOwner::Track(track_id), vec![i]);
+            if rig.is_some() {
+                app.toggle_nam_panel(track_id, i);
+            } else {
+                toggle_params(app, FxOwner::Track(track_id), vec![i]);
+            }
         }
         *y += ROW_H + 6.0;
-        if fx.is_container() {
+        if fx.is_container() && rig.is_none() {
             *y += container_rows(app, ui, painter, inner, *y, track_id, i);
         }
         *y += params_if_expanded(app, ui, painter, inner, *y, &FxOwner::Track(track_id), &[i]);
@@ -516,6 +539,35 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             app.view.plugin_browser = false;
         }
         *y += 36.0;
+        if app.view.fx_target == FxTarget::Track {
+            let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
+            let resp = ui.allocate_rect(r, Sense::click());
+            painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
+            painter.text(
+                r.left_center() + vec2(12.0, 0.0),
+                Align2::LEFT_CENTER,
+                "Guitar rig",
+                theme::regular(12.0),
+                TEXT,
+            );
+            painter.text(
+                r.right_center() - vec2(12.0, 0.0),
+                Align2::RIGHT_CENTER,
+                "gate · NAM amp · cab IR · EQ",
+                theme::regular(11.0),
+                TEXT_DIM,
+            );
+            if resp
+                .on_hover_text(
+                    "A whole guitar tone in one slot: gate, amp model, cabinet impulse response, EQ and level",
+                )
+                .clicked()
+            {
+                app.add_guitar_rig(track_id);
+                app.view.plugin_browser = false;
+            }
+            *y += 36.0;
+        }
         for builtin in scythe_engine::builtin::Builtin::ALL {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
@@ -1715,6 +1767,23 @@ fn item_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: scythe_core::Item
             });
         }
     }
+}
+
+/// A rig's stages in one line: the amp's model and the cab, and what is switched off.
+fn rig_summary(s: &scythe_engine::rig::RigSettings) -> String {
+    let stem = |p: &str| {
+        std::path::Path::new(p).file_stem().map_or_else(|| p.to_owned(), |s| s.to_string_lossy().into_owned())
+    };
+    let mut parts = vec![s.amp.model.as_deref().map_or_else(|| "no model".to_owned(), stem)];
+    match (&s.cab.ir, s.cab.enabled) {
+        (Some(ir), true) => parts.push(format!("cab {}", stem(ir))),
+        (_, false) => parts.push("cab off".into()),
+        (None, true) => parts.push("no IR".into()),
+    }
+    for (on, name) in [(s.gate.enabled, "gate"), (s.eq.enabled, "EQ")] {
+        parts.push(format!("{name} {}", if on { "on" } else { "off" }));
+    }
+    parts.join(" · ")
 }
 
 #[cfg(test)]

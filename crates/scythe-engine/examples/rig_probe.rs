@@ -141,4 +141,28 @@ fn main() {
     bypassed.gate.enabled = false;
     project(&dir, "bypassed", &source, vec![rig::new_rig(&bypassed)]);
     println!("wrote rig, series, old, converted and bypassed projects to {}", dir.display());
+
+    // With a model and an impulse response: a project to try the rig window on, a rig on one
+    // track and an older NAM + ReaVerb chain on another.
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    if let [amp, ir, old_amp, ..] = &args[..] {
+        let demo = RigSettings {
+            amp: AmpSettings { model: Some(amp.clone()), input_db: 2.0, output_db: -3.0, ..Default::default() },
+            cab: CabSettings { ir: Some(ir.clone()), ..CabSettings::default() },
+            gate: GateSettings { enabled: true, threshold_db: -56.0 },
+            ..RigSettings::default()
+        };
+        let mut p = Project::default();
+        let t = p.add_track("Guitar");
+        let track = p.track_mut(t).unwrap();
+        track.items.push(Item::new(0.0, 2.0, Take::from_file(source.clone())));
+        track.fx = vec![Builtin::Compressor.slot(), rig::new_rig(&demo)];
+        let t = p.add_track("Old chain");
+        p.track_mut(t).unwrap().fx = vec![
+            nam_slot(Some(Path::new(old_amp))),
+            Builtin::Reverb.slot_with(&reverb_state(Some(Path::new(ir)), 1.0, 0.0)),
+        ];
+        std::fs::write(dir.join("demo.RPP"), scythe_core::rpp::project_to_rpp(&p)).unwrap();
+        println!("wrote demo.RPP");
+    }
 }

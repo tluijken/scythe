@@ -72,6 +72,7 @@ from the API. `crates/scythe-mcp/tests/tools.json` is a snapshot of the whole li
 | Tracks | `track_list`, `track_get`, `track_add`, `track_delete`, `track_rename`, `track_move`, `track_volume`, `track_pan`, `track_mute`, `track_solo`, `track_arm`, `track_monitor`, `track_input`, `track_color`, `track_folder` |
 | Sends | `send_list`, `send_add`, `send_remove`, `send_volume`, `send_pan`, `send_mute`, `send_mode`; hardware outputs `send_hw_list`, `send_hw_add`, `send_hw_remove`, `send_hw_set` |
 | Effects | `fx_list`, `fx_catalog` (with `query` to search), `fx_add`, `fx_remove`, `fx_bypass`, `fx_params`, `fx_param` |
+| Guitar rigs | `rig_list`, `rig_get`, `rig_create`, `rig_convert`, `rig_set_amp`, `rig_set_cab`, `rig_stage`, `rig_set`, `rig_snapshot`, `rig_presets`, `rig_save_preset`, `rig_load_preset`, `rig_delete_preset` |
 | Items | `item_list`, `item_move`, `item_split`, `item_delete`, `item_volume`, `item_mute` |
 | Markers | `marker_list`, `marker_add`, `marker_edit`, `marker_delete`, `marker_goto` |
 | Monitor mixes | `mix_list`, `mix_get`, `mix_create`, `mix_copy`, `mix_rename`, `mix_delete`, `mix_level`, `mix_pan`, `mix_mute`, `mix_own`, `mix_more_me`, `mix_volume`, `mix_output`, `mix_limiter`, `mix_add_source`, `mix_remove_source`, `mix_cue_bus` |

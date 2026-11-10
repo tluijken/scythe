@@ -8,7 +8,7 @@ use egui::{Align2, Color32, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, p
 use scythe_engine::fx::nam_settings;
 
 use crate::app::ScytheApp;
-use crate::nam::library::{Entry, Kind, Place};
+use crate::nam::library::{Entry, Filter, Kind, Place};
 use crate::nam::preview::Stage;
 use crate::nam::snapshots::SNAPSHOTS;
 use crate::nam::tone3000::{Model, Prompt, Tone, ToneList, open_browser};
@@ -30,12 +30,12 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         app.nam.panel_rect = None;
         return;
     };
-    if app.nam_index(&target).is_none() {
+    if app.nam_path(&target).is_none() {
         app.nam.panel = None;
         app.nam.panel_rect = None;
         return;
     }
-    if app.nam.preview.as_ref().is_some_and(|p| app.nam_index(&p.target).is_none()) {
+    if app.nam.preview.as_ref().is_some_and(|p| app.nam_path(&p.target).is_none()) {
         app.nam.preview = None;
     }
     let ctx = ui.ctx().clone();
@@ -43,12 +43,13 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let track = app.project.track(target.track).map(|t| t.name.clone()).unwrap_or_default();
     let mut open = true;
     let frame = egui::Frame::window(ui.style()).fill(theme::PANEL).corner_radius(CornerRadius::same(18));
-    let shown = egui::Window::new(format!("Neural Amp Modeler · {track}"))
+    let title = if app.nam_rig(&target).is_some() { "Guitar rig" } else { "Neural Amp Modeler" };
+    let shown = egui::Window::new(format!("{title} · {track}"))
         .id(Id::unique("nam-panel"))
-        .default_pos(ui.max_rect().center() - vec2(420.0, 340.0))
+        .default_pos(ui.max_rect().center() - vec2(440.0, 380.0))
         .open(&mut open)
         .frame(frame)
-        .default_size(vec2(840.0, 680.0))
+        .default_size(vec2(880.0, 760.0))
         .min_width(420.0)
         .min_height(460.0)
         .resizable(true)
@@ -114,30 +115,45 @@ fn take_dropped_files(app: &mut ScytheApp, ctx: &egui::Context, target: &Target)
 }
 
 fn body(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
+    if let Some(at) = app.nam_rig(target) {
+        crate::ui::rig::body(app, ui, target, at);
+        return;
+    }
     header(app, ui, target);
     ui.add_space(6.0);
-    controls(app, ui, target);
+    controls(app, ui, target, true);
     if app.nam.preview.as_ref().is_some_and(|p| p.target == *target) {
         ui.add_space(6.0);
         preview_bar(app, ui);
     }
     ui.add_space(8.0);
+    browser(app, ui, target, None);
+}
+
+/// The tabs and the two-pane browser; `kind` keeps the library to models or impulse
+/// responses (and TONE3000 to IR tones for these) in a rig's amp and cab sections.
+pub(crate) fn browser(app: &mut ScytheApp, ui: &mut Ui, target: &Target, kind: Option<Kind>) {
     tabs(app, ui);
     ui.add_space(6.0);
     let tab = app.nam.tab;
     let list = |app: &mut ScytheApp, ui: &mut Ui| match tab {
-        BrowserTab::Library => library_list(app, ui, target, false),
-        BrowserTab::Recent => library_list(app, ui, target, true),
-        BrowserTab::Tone3000 => tone3000_list(app, ui),
+        BrowserTab::Library => library_list(app, ui, target, false, kind),
+        BrowserTab::Recent => library_list(app, ui, target, true, kind),
+        BrowserTab::Tone3000 => tone3000_list(app, ui, kind),
     };
     let detail = |app: &mut ScytheApp, ui: &mut Ui| match tab {
-        BrowserTab::Library | BrowserTab::Recent => entry_detail(app, ui, target),
+        BrowserTab::Library | BrowserTab::Recent => entry_detail(app, ui, target, kind),
         BrowserTab::Tone3000 => tone_detail(app, ui, target),
     };
     if tab == BrowserTab::Tone3000 && !tone3000_ready(app, ui) {
         return;
     }
-    split(ui, tab, list, detail, app);
+    let salt = match kind {
+        Some(Kind::Ir) => "ir",
+        Some(Kind::Model) => "model",
+        None => "all",
+    };
+    split(ui, tab, salt, list, detail, app);
 }
 
 /// The list and the details side by side, with a handle between them, or stacked when the
@@ -145,12 +161,13 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
 fn split(
     ui: &mut Ui,
     tab: BrowserTab,
+    kind: &str,
     list: impl FnOnce(&mut ScytheApp, &mut Ui),
     detail: impl FnOnce(&mut ScytheApp, &mut Ui),
     app: &mut ScytheApp,
 ) {
     let size = ui.available_size();
-    let salt = if tab == BrowserTab::Tone3000 { "t3k" } else { "lib" };
+    let salt = (if tab == BrowserTab::Tone3000 { "t3k" } else { "lib" }, kind);
     if size.x < STACK_BELOW {
         egui::Panel::top(("nam-list-top", salt))
             .resizable(true)
@@ -174,14 +191,18 @@ fn split(
 }
 
 /// What the slot plays, and what to do when the file is not in the library.
-fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
+pub(crate) fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 58.0), Sense::hover());
     let painter = ui.painter().clone();
     painter.rect_filled(rect, CornerRadius::same(14), RAISED);
     let path = app.nam_model_path(target);
     let entry = path.as_ref().and_then(|p| app.nam.library.entry(p)).cloned();
-    let previewing =
-        app.nam.preview.as_ref().filter(|p| p.target == *target && !p.comparing).map(|p| p.model().name.clone());
+    let previewing = app
+        .nam
+        .preview
+        .as_ref()
+        .filter(|p| p.target == *target && !p.comparing && !p.ir)
+        .map(|p| p.model().name.clone());
     let loading = app.nam.loading.get(target).cloned();
     let file_name = |p: &Path| p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
     let name = match (&previewing, &entry, &path) {
@@ -190,10 +211,9 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
         (_, None, Some(p)) => p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
         _ => "No model loaded".to_owned(),
     };
-    let status =
-        app.engine.fx().status(Some(target.track), app.nam_slot(target).unwrap(), app.nam_index(target).unwrap());
+    let status = app.nam_status(target);
     let in_library = entry.is_some();
-    let summary = match (&loading, status, &entry) {
+    let summary = match (&loading, status.as_ref(), &entry) {
         (Some(p), _, _) => format!("Loading {}…", file_name(p)),
         (_, Some(scythe_engine::fx::FxStatus::Unavailable(why)), _) => format!("Not running: {why}"),
         _ if previewing.is_some() => "Previewing from TONE3000, not in the library yet".to_owned(),
@@ -207,6 +227,19 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
     };
     let left = rect.left() + 14.0;
     let mut right = rect.right() - 10.0;
+    if app.nam_rig(target).is_none() {
+        let make = Rect::from_min_max(pos2(right - 104.0, rect.center().y - 12.0), pos2(right, rect.center().y + 12.0));
+        if text_pill(ui, make, "Make rig", theme::semibold(12.0), ACCENT, BG)
+            .on_hover_text(
+                "Turn this slot (and the ReaVerb after it) into a guitar rig: gate, amp, cab, EQ and output in one \
+                 slot, with snapshots and presets of the whole rig. REAPER opens it as an FX container.",
+            )
+            .clicked()
+        {
+            app.nam_make_rig(target);
+        }
+        right = make.left() - 8.0;
+    }
     if let Some(e) = &entry {
         let star = Rect::from_center_size(pos2(right - 12.0, rect.center().y), vec2(24.0, 24.0));
         let resp = ui.interact(star, Id::unique(("nam-fav", &e.path)), Sense::click()).on_hover_text("Favourite");
@@ -257,19 +290,19 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
 
 /// Puts the layout cursor below `rect` again: the buttons inside it are placed by rect, and
 /// allocating those moves the cursor back up to their bottom, under the next block.
-fn end_block(ui: &mut Ui, rect: Rect) {
+pub(crate) fn end_block(ui: &mut Ui, rect: Rect) {
     ui.advance_cursor_after_rect(rect);
 }
 
-fn trim(v: f64) -> String {
+pub(crate) fn trim(v: f64) -> String {
     // Adding zero turns a rounded -0.0 into 0.0.
     let s = format!("{:.1}", (v * 10.0).round() / 10.0 + 0.0);
     s.trim_end_matches(".0").to_owned()
 }
 
-fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
+pub(crate) fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target, snapshots: bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 66.0), Sense::hover());
-    let Some(settings) = app.nam_slot(target).and_then(nam_settings) else { return };
+    let Some(settings) = app.nam_slot(target).as_ref().and_then(nam_settings) else { return };
     let mut x = rect.left();
     for (k, label) in ["Input", "Output"].into_iter().enumerate() {
         let value = if k == 0 { settings.input_db } else { settings.output_db };
@@ -288,7 +321,7 @@ fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
     }
     x += 10.0;
     let cy = rect.top() + 26.0;
-    let previewing = app.nam.preview.as_ref().is_some_and(|p| p.target == *target);
+    let previewing = app.nam.preview.as_ref().is_some_and(|p| p.target == *target && !p.ir);
     let (prev_tip, next_tip) = if previewing {
         ("Previous model of the previewed tone (Left)", "Next model of the previewed tone (Right)")
     } else {
@@ -319,6 +352,10 @@ fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
         if let Some(path) = dialog.pick_file() {
             app.nam_open(target, path);
         }
+    }
+    if !snapshots {
+        end_block(ui, rect);
+        return;
     }
     // Snapshots, right-aligned.
     let extras = app.nam_snapshots(target);
@@ -378,7 +415,7 @@ fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
 }
 
 /// Shown while a TONE3000 model is previewed: what plays, stepping, A/B, Keep and Revert.
-fn preview_bar(app: &mut ScytheApp, ui: &mut Ui) {
+pub(crate) fn preview_bar(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(p) = app.nam.preview.clone() else { return };
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
     let painter = ui.painter().clone();
@@ -396,10 +433,15 @@ fn preview_bar(app: &mut ScytheApp, ui: &mut Ui) {
         right = r.left() - 6.0;
         text_pill(ui, r, text, theme::semibold(12.0), bg, fg).on_hover_text(tip).clicked()
     };
-    if pill(ui, 64.0, "Keep", ACCENT, BG, "Keep this model: it moves into the library and stays loaded (Enter)") {
+    let keep_tip = if p.ir {
+        "Keep this impulse response: it moves into the library and stays in the cab (Enter)"
+    } else {
+        "Keep this model: it moves into the library and stays loaded (Enter)"
+    };
+    if pill(ui, 64.0, "Keep", ACCENT, BG, keep_tip) {
         app.nam_end_preview(true);
     }
-    if pill(ui, 64.0, "Revert", RAISED_HI, TEXT, "Back to the model from before the preview (Escape)") {
+    if pill(ui, 64.0, "Revert", RAISED_HI, TEXT, "Back to what played before the preview (Escape)") {
         app.nam_end_preview(false);
     }
     if p.previous.is_some() {
@@ -420,14 +462,15 @@ fn preview_bar(app: &mut ScytheApp, ui: &mut Ui) {
     let left = rect.left() + 14.0;
     let (at, of) = p.position();
     let state = match &p.stage {
-        _ if p.comparing => "playing the model from before".to_owned(),
+        _ if p.comparing => "playing what played before".to_owned(),
         Stage::Fetching => "fetching…".to_owned(),
         Stage::Loading => "loading…".to_owned(),
         Stage::Playing => format!("{at} of {of}"),
         Stage::Failed(e) => format!("failed: {e}"),
     };
     let model = if p.model().name.is_empty() { format!("model {}", p.model().id) } else { p.model().name.clone() };
-    let title = widgets::truncate(ui, &format!("Previewing {model}"), &theme::semibold(13.0), text_right - left);
+    let what = if p.ir { "Previewing cab" } else { "Previewing" };
+    let title = widgets::truncate(ui, &format!("{what} {model}"), &theme::semibold(13.0), text_right - left);
     painter.text(pos2(left, cy - 8.0), Align2::LEFT_CENTER, title, theme::semibold(13.0), TEXT);
     let sub = format!("{} · {state} · ←→ models, ↑↓ tones", p.tone.title);
     let color = if matches!(p.stage, Stage::Failed(_)) { theme::PINK } else { TEXT_MID };
@@ -479,13 +522,15 @@ fn dim(text: impl Into<String>) -> egui::RichText {
 
 // ---- library ---------------------------------------------------------------------------
 
-fn library_list(app: &mut ScytheApp, ui: &mut Ui, target: &Target, recent: bool) {
+fn library_list(app: &mut ScytheApp, ui: &mut Ui, target: &Target, recent: bool, kind: Option<Kind>) {
     let entries: Vec<Entry> = if recent {
-        app.nam.library.recent().iter().filter_map(|p| app.nam.library.entry(p).cloned()).collect()
+        let recent = app.nam.library.recent().iter().filter_map(|p| app.nam.library.entry(p).cloned());
+        recent.filter(|e| kind.is_none_or(|k| e.kind == k)).collect()
     } else {
-        library_filters(app, ui);
+        library_filters(app, ui, kind.is_none());
         ui.add_space(4.0);
-        app.nam.library.search(&app.nam.filter).into_iter().cloned().collect()
+        let filter = Filter { kind: kind.or(app.nam.filter.kind), ..app.nam.filter.clone() };
+        app.nam.library.search(&filter).into_iter().cloned().collect()
     };
     if entries.is_empty() {
         let text = if recent {
@@ -498,29 +543,36 @@ fn library_list(app: &mut ScytheApp, ui: &mut Ui, target: &Target, recent: bool)
         ui.add(egui::Label::new(dim(text)).wrap());
         return;
     }
-    let current = app.nam_model_path(target);
+    let current = match kind {
+        Some(Kind::Ir) => app
+            .nam_rig(target)
+            .and_then(|at| app.rig_settings(at))
+            .and_then(|s| s.cab.ir)
+            .map(|ir| app.nam_resolve(&ir)),
+        _ => app.nam_model_path(target),
+    };
     let loading = app.nam.loading.get(target).cloned();
-    egui::ScrollArea::vertical().id_salt(("nam-lib", recent)).auto_shrink([false, false]).show_rows(
-        ui,
-        ROW,
-        entries.len(),
-        |ui, range| {
+    egui::ScrollArea::vertical()
+        .id_salt(("nam-lib", recent, kind == Some(Kind::Ir)))
+        .auto_shrink([false, false])
+        .show_rows(ui, ROW, entries.len(), |ui, range| {
             for e in &entries[range] {
                 let is_current = current.as_deref() == Some(e.path.as_path());
                 entry_row(app, ui, target, e, is_current, loading.as_ref() == Some(&e.path));
             }
-        },
-    );
+        });
 }
 
-fn library_filters(app: &mut ScytheApp, ui: &mut Ui) {
+fn library_filters(app: &mut ScytheApp, ui: &mut Ui, pick_kind: bool) {
     ui.add(
         egui::TextEdit::singleline(&mut app.nam.filter.text)
             .hint_text("Search name, gear, author, folder, tag")
             .desired_width(f32::INFINITY),
     );
     ui.horizontal_wrapped(|ui| {
-        for (label, kind) in [("All", None), ("Models", Some(Kind::Model)), ("IRs", Some(Kind::Ir))] {
+        let kinds: &[(&str, Option<Kind>)] =
+            if pick_kind { &[("All", None), ("Models", Some(Kind::Model)), ("IRs", Some(Kind::Ir))] } else { &[] };
+        for &(label, kind) in kinds {
             if ui.selectable_label(app.nam.filter.kind == kind, label).clicked() {
                 app.nam.filter.kind = kind;
             }
@@ -650,6 +702,13 @@ fn entry_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, e: &Entry, curre
             app.nam_open(target, path.clone());
             ui.close();
         }
+        if e.kind == Kind::Ir
+            && let Some(at) = app.nam_rig(target)
+            && ui.button("Load as second IR").on_hover_text("Blend it with the first in the cab").clicked()
+        {
+            app.rig_set_ir(at, &path, true);
+            ui.close();
+        }
         if ui.button(if e.favourite { "Remove from favourites" } else { "Add to favourites" }).clicked() {
             app.nam.library.set_favourite(&path, !e.favourite);
             app.nam.library_dirty = true;
@@ -665,8 +724,18 @@ fn entry_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, e: &Entry, curre
 }
 
 /// The picked library file, or the slot's model: what is known about it, tags and actions.
-fn entry_detail(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
-    let path = app.nam.selected.clone().or_else(|| app.nam_model_path(target));
+fn entry_detail(app: &mut ScytheApp, ui: &mut Ui, target: &Target, kind: Option<Kind>) {
+    let selected =
+        app.nam.selected.clone().filter(|p| kind.is_none_or(|k| app.nam.library.entry(p).is_some_and(|e| e.kind == k)));
+    let current = match kind {
+        Some(Kind::Ir) => app
+            .nam_rig(target)
+            .and_then(|at| app.rig_settings(at))
+            .and_then(|s| s.cab.ir)
+            .map(|ir| app.nam_resolve(&ir)),
+        _ => app.nam_model_path(target),
+    };
+    let path = selected.or(current);
     let Some(e) = path.as_ref().and_then(|p| app.nam.library.entry(p)).cloned() else {
         ui.add(
             egui::Label::new(dim(
@@ -814,7 +883,7 @@ fn tone3000_ready(app: &mut ScytheApp, ui: &mut Ui) -> bool {
     true
 }
 
-fn tone3000_list(app: &mut ScytheApp, ui: &mut Ui) {
+fn tone3000_list(app: &mut ScytheApp, ui: &mut Ui, kind: Option<Kind>) {
     ui.horizontal(|ui| {
         let edit = ui.add(
             egui::TextEdit::singleline(&mut app.nam.remote.search)
@@ -849,28 +918,31 @@ fn tone3000_list(app: &mut ScytheApp, ui: &mut Ui) {
             }
         }
     });
+    let models_only = kind != Some(Kind::Ir);
     ui.horizontal_wrapped(|ui| {
         let remote = &mut app.nam.remote;
-        egui::ComboBox::from_id_salt("t3k-gear")
-            .width(78.0)
-            .selected_text(remote.gear.map_or("Any gear", Gear::label))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut remote.gear, None, "Any gear");
-                for g in Gear::ALL {
-                    ui.selectable_value(&mut remote.gear, Some(g), g.label());
-                }
-            });
-        egui::ComboBox::from_id_salt("t3k-size")
-            .width(78.0)
-            .selected_text(remote.size.unwrap_or("Any size"))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut remote.size, None, "Any size");
-                for s in SIZES {
-                    ui.selectable_value(&mut remote.size, Some(s), s);
-                }
-            })
-            .response
-            .on_hover_text("Model size: standard sounds closest, nano needs the least CPU");
+        if models_only {
+            egui::ComboBox::from_id_salt("t3k-gear")
+                .width(78.0)
+                .selected_text(remote.gear.map_or("Any gear", Gear::label))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut remote.gear, None, "Any gear");
+                    for g in Gear::ALL {
+                        ui.selectable_value(&mut remote.gear, Some(g), g.label());
+                    }
+                });
+            egui::ComboBox::from_id_salt("t3k-size")
+                .width(78.0)
+                .selected_text(remote.size.unwrap_or("Any size"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut remote.size, None, "Any size");
+                    for s in SIZES {
+                        ui.selectable_value(&mut remote.size, Some(s), s);
+                    }
+                })
+                .response
+                .on_hover_text("Model size: standard sounds closest, nano needs the least CPU");
+        }
         egui::ComboBox::from_id_salt("t3k-sort").width(110.0).selected_text(remote.sort.label()).show_ui(ui, |ui| {
             for s in ToneSort::ALL {
                 ui.selectable_value(&mut remote.sort, s, s.label());
@@ -885,7 +957,18 @@ fn tone3000_list(app: &mut ScytheApp, ui: &mut Ui) {
         return;
     }
     let (page, pages) = (app.nam.remote.page, app.nam.remote.total_pages);
-    let tones: Vec<Tone> = app.nam.remote.shown().into_iter().cloned().collect();
+    let tones: Vec<Tone> = app
+        .nam
+        .remote
+        .shown()
+        .into_iter()
+        .filter(|t| match kind {
+            Some(Kind::Ir) => t.is_ir(),
+            Some(Kind::Model) => !t.is_ir(),
+            None => true,
+        })
+        .cloned()
+        .collect();
     let bottom = 26.0;
     if tones.is_empty() && app.nam.remote.error.is_none() {
         let text = if app.nam.remote.tones.is_empty() { "No tones here." } else { "No tones pass the filters." };
@@ -1148,7 +1231,7 @@ fn model_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, tone: &Tone, mod
             None => app.nam.download(tone, model, Some(target.clone())),
         }
     }
-    if !tone.is_ir() {
+    if !tone.is_ir() || app.nam_rig(target).is_some() {
         let (label, bg, fg) = match &preview {
             Some(Stage::Playing) => ("Playing", ACCENT, BG),
             Some(Stage::Fetching) => ("Fetching…", theme::with_alpha(ACCENT, 90), TEXT),
@@ -1168,8 +1251,15 @@ fn model_row(app: &mut ScytheApp, ui: &mut Ui, target: &Target, tone: &Tone, mod
     let name = widgets::truncate(ui, &name, &theme::semibold(12.0), width);
     painter.text(pos2(left, cy - 7.0), Align2::LEFT_CENTER, name, theme::semibold(12.0), TEXT);
     let mut facts: Vec<String> = Vec::new();
-    facts.extend(model.size.clone());
-    facts.extend(model.architecture().map(|a| if a == "custom" { a } else { format!("architecture {a}") }));
+    if !tone.is_ir() {
+        facts.extend(model.size.clone());
+    }
+    facts.extend(
+        model
+            .architecture()
+            .filter(|_| !tone.is_ir())
+            .map(|a| if a == "custom" { a } else { format!("architecture {a}") }),
+    );
     if local.is_some() {
         facts.push("in library".into());
     }
