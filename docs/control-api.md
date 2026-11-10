@@ -630,8 +630,9 @@ lane events.
 | `midi.quantize` | `item`, `grid?` (the take's), `swing?` (-1 to 1), `strength?` (%), `what?` (`position`, `position_and_end`, `end`, `length`), `window_min?`, `window_max?` (% of the grid) | the notes |
 | `midi.humanize` | `item`, `timing?` (% of the grid), `velocity?` (%), `grid?`, `seed?` | the notes |
 | `midi.transpose` | `item`, `semitones`, `scale?`, `root?` (scale steps when a scale is given) | the notes |
-| `midi.edit` | `item`, `op` (`legato`, `split_grid`, `split`, `join`, `length`, `lengthen`, `move`, `velocity`, `channel`, `mute`, `unmute`, `toggle_mute`, `duplicate`, `force_key`, `select_all`, `select_none`), `value?`, `relative?`, `grid?`, `scale?` | the notes |
-| `midi.action` | `item`, `command` (a REAPER MIDI editor command id, such as 40469), `scale?`, `root?` | the notes |
+| `midi.edit` | `item`, `op` (`legato`, `legato_relative`, `split_grid`, `split`, `join`, `length`, `lengthen`, `move`, `velocity`, `channel`, `mute`, `unmute`, `toggle_mute`, `duplicate`, `force_key`, `select_all`, `select_none`), `value?`, `relative?`, `grid?`, `scale?` | the notes |
+| `midi.action` | `item`, `command` (a REAPER MIDI editor command id, such as 40469), `scale?`, `root?` (the project's key when left out) | the notes |
+| `midi.key` | `root?` (0-11), `scale?` | the project's key signature, `{"root", "scale", "pattern"}`; set when given (REAPER's `<KEYSIG`) |
 | `midi.actions`, `midi.scales` | (`files?` for scales: `.reascale` paths) | the actions with REAPER's names; the scales |
 | `midi.cc.list` | `item`, `lane?` (`cc0`-`cc127`, `cc14:0`-`cc14:31`, `pitch`, `program`, `pressure`, `poly`) | `[{"index", "lane", "at", "value", "channel", "key"?, "shape", "tension"?, "selected", "muted"}]` |
 | `midi.cc.set` | `item`, `lane`, `points`: `[{"at", "value", "channel"?, "key"?, "shape"?, "tension"?}]`, `from?`, `to?` | the lane |

@@ -1,5 +1,12 @@
 //! Scales for key snap, in REAPER's `.reascale` form: twelve characters from the root up, where
 //! any character but `0` marks a key of the scale.
+//!
+//! The MIDI editor's key snap root and scale are the project's key signature, which REAPER
+//! 7.73 saves (as an undo step, "Change key signature") in a `<KEYSIG` block of the project:
+//! `0 root -1 0xMASK`, bit `n` of the mask set for the key `n` semitones above the root (D
+//! natural minor: `0 2 -1 0x5AD`). A project without the block is in C major.
+
+use crate::rpp::{Chunk, Node, tokenize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scale {
@@ -93,6 +100,67 @@ impl KeySnap {
         }
         k as u8
     }
+
+    /// The scale as `KEYSIG` stores it: bit `n` for the key `n` semitones above the root.
+    pub fn mask(&self) -> u16 {
+        (0..12u8).filter(|&n| self.scale.has(n)).fold(0, |m, n| m | 1 << n)
+    }
+
+    /// The key snap of a `KEYSIG` root and mask: a built-in scale with those keys, else a
+    /// custom one.
+    pub fn from_mask(root: u8, mask: u16) -> Self {
+        let mut degree = 0;
+        let pattern: String = (0..12)
+            .map(|n| {
+                if mask & 1 << n == 0 {
+                    return '0';
+                }
+                degree += 1;
+                char::from_digit(degree, 16).map_or('1', |c| c.to_ascii_uppercase())
+            })
+            .collect();
+        let known = builtin().into_iter().find(|s| (0..12).all(|n| s.has(n) == (mask & 1 << n != 0)));
+        Self { root: root % 12, scale: known.unwrap_or_else(|| Scale::new("Custom", &pattern)) }
+    }
+
+    /// C major, which a project without a key signature is in.
+    pub fn c_major() -> Self {
+        Self { root: 0, scale: builtin()[0].clone() }
+    }
+
+    /// The project's key signature, from the `<KEYSIG` among its other lines.
+    pub fn read_project(extra: &[Node]) -> Option<Self> {
+        let chunk = extra.iter().find_map(|n| match n {
+            Node::Chunk(c) if c.name() == "KEYSIG" => Some(c),
+            _ => None,
+        })?;
+        let line = chunk.children.iter().find_map(|n| match n {
+            Node::Line(l) => Some(tokenize(l)),
+            Node::Chunk(_) => None,
+        })?;
+        let root = line.get(1)?.parse::<i64>().ok()?.rem_euclid(12) as u8;
+        let mask = line.get(3)?;
+        let mask = u16::from_str_radix(mask.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()?;
+        Some(Self::from_mask(root, mask & 0xfff))
+    }
+
+    /// Stores the key signature in the project's `<KEYSIG`, keeping a later line's key changes.
+    pub fn write_project(&self, extra: &mut Vec<Node>) {
+        let line = format!("0 {} -1 0x{:X}", self.root, self.mask());
+        if let Some(c) = extra.iter_mut().find_map(|n| match n {
+            Node::Chunk(c) if c.name() == "KEYSIG" => Some(c),
+            _ => None,
+        }) {
+            match c.children.iter_mut().find(|n| matches!(n, Node::Line(_))) {
+                Some(first) => *first = Node::Line(line),
+                None => c.children.insert(0, Node::Line(line)),
+            }
+            return;
+        }
+        let mut c = Chunk::new("KEYSIG", &[]);
+        c.children.push(Node::Line(line));
+        extra.push(Node::Chunk(c));
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +172,23 @@ mod tests {
         let text = "# comment\n-1\n0 \"Whole Tone\"        102030506070\n\n2 \"Modes\"\n0 \"Dorian\"\t          102304050670\n-2\n1 \"Tritone\"           100000500000\n";
         let s = parse_reascale(text);
         assert_eq!(s.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["Whole Tone", "Dorian"]);
+    }
+
+    #[test]
+    fn the_key_signature_is_reapers_keysig_block() {
+        let saved = crate::rpp::parse("<REAPER_PROJECT\n  <KEYSIG\n    0 2 -1 0x5AD\n  >\n>\n").unwrap();
+        let k = KeySnap::read_project(&saved.children).unwrap();
+        assert_eq!((k.root, k.scale.name.as_str(), k.mask()), (2, "Minor", 0x5AD), "D natural minor, as REAPER saved it");
+        assert_eq!(KeySnap::c_major().mask(), 0xAB5);
+        let mut extra = Vec::new();
+        assert!(KeySnap::read_project(&extra).is_none());
+        KeySnap::from_mask(9, 0x5AD).write_project(&mut extra);
+        KeySnap::from_mask(7, 0xAB5).write_project(&mut extra);
+        assert_eq!(extra.len(), 1);
+        let k = KeySnap::read_project(&extra).unwrap();
+        assert_eq!((k.root, k.scale.name.as_str()), (7, "Major"));
+        let odd = KeySnap::from_mask(0, 0b1001_0001);
+        assert_eq!((odd.scale.name.as_str(), odd.scale.pattern.as_str()), ("Custom", "100020030000"));
     }
 
     #[test]

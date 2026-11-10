@@ -7712,6 +7712,11 @@
               "type": "string"
             },
             {
+              "const": "legato_relative",
+              "description": "Legato keeping the notes' relative spacing (REAPER's 40766): starts move back by a\ngrowing share of the gap before them; the first start and the last end stay.",
+              "type": "string"
+            },
+            {
               "const": "split_grid",
               "description": "Splits notes at every grid line.",
               "type": "string"
@@ -7822,7 +7827,7 @@
         },
         "scale": {
           "default": null,
-          "description": "Key snap's scale for the actions that follow the key.",
+          "description": "Key snap's scale for the actions that follow the key; the project's key (`midi.key`)\nwhen left out.",
           "type": [
             "string",
             "null"
@@ -7852,6 +7857,41 @@
     },
     "name": "midi_actions",
     "title": "Midi actions"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The project's key signature, which key snap and the MIDI editor's \"force notes into\nkey\" use (REAPER keeps it in the project's `<KEYSIG`): returns it, and sets it when a\nroot or scale is given.\n\nControl API command `midi.key`.",
+    "inputSchema": {
+      "properties": {
+        "root": {
+          "default": null,
+          "description": "The root, 0 (C) to 11 (B).",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scale": {
+          "default": null,
+          "description": "A scale from `midi.scales`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "midi_key",
+    "title": "Midi key"
   },
   {
     "annotations": {

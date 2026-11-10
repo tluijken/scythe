@@ -38,6 +38,7 @@ pub const ACTIONS: &[(u32, &str)] = &[
     (40641, "Split notes on grid"),
     (40405, "Set note ends to start of next note (legato)"),
     (40765, "Edit: Make notes legato, preserving note start times"),
+    (40766, "Edit: Make notes legato, preserving relative note spacing"),
     (40469, "Quantize notes position to grid"),
     (40728, "Quantize events to grid"),
     (40729, "Quantize notes position and end to grid"),
@@ -171,6 +172,10 @@ pub fn run(id: u32, src: &MidiSource, view: &EditorView, ctx: &Context) -> Optio
         }
         40405 | 40765 => {
             edit::legato(&mut notes);
+            true
+        }
+        40766 => {
+            edit::legato_relative(&mut notes);
             true
         }
         40469 | 40728 | 40729 => {

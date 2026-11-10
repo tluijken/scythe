@@ -59,9 +59,8 @@ pub struct EditorState {
     pub tool: Tool,
     /// The shape the line tool joins its two events with.
     pub shape: ShapeKind,
-    /// Key snap root (0 is C) and scale (an index into the scales).
-    pub key_root: u8,
-    pub scale: usize,
+    /// The project's key signature (its root and scale), read each frame.
+    pub key: KeySnap,
     /// Step input: notes played go in at `step_at` (ticks), which then moves on by the grid.
     pub step: bool,
     pub step_at: u64,
@@ -88,8 +87,7 @@ impl Default for EditorState {
             scroll_qn: 0.0,
             tool: Tool::Draw,
             shape: ShapeKind::Linear,
-            key_root: 0,
-            scale: 0,
+            key: KeySnap::c_major(),
             step: false,
             step_at: 0,
             q_strength: 100.0,
@@ -106,8 +104,7 @@ impl Default for EditorState {
 
 impl EditorState {
     pub fn key_snap(&self) -> KeySnap {
-        let scales = scale::builtin();
-        KeySnap { root: self.key_root % 12, scale: scales[self.scale.min(scales.len() - 1)].clone() }
+        self.key.clone()
     }
 }
 
@@ -121,6 +118,25 @@ pub(crate) struct Take {
     pub names: NoteNames,
     /// Where the source starts, in project quarter notes.
     pub origin_qn: f64,
+    /// The take's play rate: a source quarter note lasts `1 / rate` project quarter notes.
+    pub rate: f64,
+    /// Where each pass of the source starts, in its ticks: one, or one per loop of a looped
+    /// item.
+    pub passes: Vec<f64>,
+    /// The item's end, in the source's ticks.
+    pub end_tick: f64,
+}
+
+impl Take {
+    /// The project quarter note of a tick of the source.
+    pub fn qn(&self, tick: f64) -> f64 {
+        self.origin_qn + tick / self.src.ticks_per_qn as f64 / self.rate
+    }
+
+    /// The source tick at a project quarter note.
+    pub fn tick(&self, qn: f64) -> f64 {
+        (qn - self.origin_qn) * self.rate * self.src.ticks_per_qn as f64
+    }
 }
 
 pub(crate) fn load(app: &ScytheApp, id: ItemId) -> Option<Take> {
@@ -128,6 +144,12 @@ pub(crate) fn load(app: &ScytheApp, id: ItemId) -> Option<Take> {
     let src = MidiSource::parse(chunk)?;
     let (track, item) = app.project.find_item(id)?;
     let names = app.project.track(track).map(|t| t.note_names()).unwrap_or_default();
+    let rate = item.take().map(|t| t.playrate).filter(|r| *r > 0.0).unwrap_or(1.0);
+    let origin_qn = origin_qn(app, id);
+    let tl = app.project.tempo.timeline();
+    let end_tick = (tl.qn_at(item.end()) - origin_qn) * rate * src.ticks_per_qn as f64;
+    let len = src.length_ticks as f64;
+    let passes = if item.looped && len > 0.0 { pass_offsets(len, end_tick) } else { vec![0.0] };
     Some(Take {
         id,
         name: item.name().to_owned(),
@@ -135,16 +157,27 @@ pub(crate) fn load(app: &ScytheApp, id: ItemId) -> Option<Take> {
         notes: src.edit_notes(),
         src,
         names,
-        origin_qn: origin_qn(app, id),
+        origin_qn,
+        rate,
+        passes,
+        end_tick,
     })
 }
 
-/// Where an item's source starts, in project quarter notes.
+/// Where each pass of a looped source of `len` ticks starts, up to `end`.
+pub(crate) fn pass_offsets(len: f64, end: f64) -> Vec<f64> {
+    let n = ((end / len).ceil().max(1.0) as usize).min(4096);
+    (0..n).map(|k| k as f64 * len).collect()
+}
+
+/// Where an item's source starts, in project quarter notes: the take offset counts in source
+/// time, so the play rate shortens it.
 pub(crate) fn origin_qn(app: &ScytheApp, id: ItemId) -> f64 {
     let Some((_, item)) = app.project.find_item(id) else { return 0.0 };
     let tl = app.project.tempo.timeline();
-    let offset = item.take().map_or(0.0, |t| t.source_offset * tl.bpm_at(item.position) / 60.0);
-    tl.qn_at(item.position) - offset
+    let (offset, rate) = item.take().map_or((0.0, 1.0), |t| (t.source_offset, t.playrate));
+    let rate = if rate > 0.0 { rate } else { 1.0 };
+    tl.qn_at(item.position) - offset * tl.bpm_at(item.position) / 60.0 / rate
 }
 
 /// Replaces the take's notes, as one undo step (or a step of the running gesture).
@@ -182,6 +215,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, id: ItemId) {
         return;
     };
     let mut state = app.view.midi_state.clone();
+    state.key = KeySnap::read_project(&app.project.extra).unwrap_or_else(KeySnap::c_major);
     state.others.retain(|o| *o != id && is_midi(app, *o));
     for o in app.selected_items() {
         if o != id && is_midi(app, o) && !state.others.contains(&o) {
@@ -376,13 +410,24 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
             label = Some("Transpose notes");
         }
     }
-    if wrapping_pill(ui, &mut x, &mut row, 64.0, "Legato", false)
-        .on_hover_text("End each note where the next begins")
-        .clicked()
-    {
+    let lg = wrapping_pill(ui, &mut x, &mut row, 64.0, "Legato", false)
+        .on_hover_text("End each note where the next begins; right-click to keep the notes' relative spacing");
+    if lg.clicked() {
         edit::legato(&mut notes);
         label = Some("Legato");
     }
+    egui::Popup::context_menu(&lg).show(|ui| {
+        if ui.button("Legato, preserving note start times").clicked() {
+            edit::legato(&mut notes);
+            label = Some("Legato");
+            ui.close();
+        }
+        if ui.button("Legato, preserving relative note spacing").clicked() {
+            edit::legato_relative(&mut notes);
+            label = Some("Legato");
+            ui.close();
+        }
+    });
     if wrapping_pill(ui, &mut x, &mut row, 50.0, "Split", false).on_hover_text("Split notes on the grid").clicked() {
         edit::split_on_grid(&mut notes, ppq, grid);
         label = Some("Split notes");
@@ -408,20 +453,22 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
     {
         view.key_snap = !view.key_snap;
     }
-    let scales = scale::builtin();
-    let root = wrapping_pill(ui, &mut x, &mut row, 34.0, ROOTS[state.key_root as usize % 12], view.key_snap);
+    let mut key = state.key.clone();
+    let root = wrapping_pill(ui, &mut x, &mut row, 34.0, ROOTS[key.root as usize % 12], view.key_snap)
+        .on_hover_text("The project's key: its root");
     egui::Popup::menu(&root).show(|ui| {
         for (i, r) in ROOTS.iter().enumerate() {
-            if ui.selectable_label(state.key_root as usize == i, *r).clicked() {
-                state.key_root = i as u8;
+            if ui.selectable_label(key.root as usize == i, *r).clicked() {
+                key.root = i as u8;
             }
         }
     });
-    let sc = wrapping_pill(ui, &mut x, &mut row, 110.0, &scales[state.scale.min(scales.len() - 1)].name, view.key_snap);
+    let sc = wrapping_pill(ui, &mut x, &mut row, 110.0, &key.scale.name, view.key_snap)
+        .on_hover_text("The project's key: its scale, saved with the project as REAPER saves it");
     egui::Popup::menu(&sc).show(|ui| {
-        for (i, s) in scales.iter().enumerate() {
-            if ui.selectable_label(state.scale == i, &s.name).clicked() {
-                state.scale = i;
+        for s in scale::builtin() {
+            if ui.selectable_label(key.scale.pattern == s.pattern, &s.name).clicked() {
+                key.scale = s;
             }
         }
         if ui.button("Force notes into key").clicked() {
@@ -429,6 +476,11 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
             label = Some("Force notes into key");
         }
     });
+    if key != state.key {
+        let k = key.clone();
+        app.edit("Change key signature", move |p| k.write_project(&mut p.extra));
+        state.key = key;
+    }
 
     // Channels: new events go to one, the filter shows some.
     let ch_label = if view.channel_filter == 0 {
@@ -665,4 +717,16 @@ pub(crate) fn lane_menu(ui: &mut Ui, current: LaneKind) -> Option<LaneKind> {
         }
     });
     picked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pass_offsets;
+
+    #[test]
+    fn a_looped_item_shows_every_pass() {
+        assert_eq!(pass_offsets(960.0, 3840.0), [0.0, 960.0, 1920.0, 2880.0]);
+        assert_eq!(pass_offsets(960.0, 1000.0), [0.0, 960.0], "a part of the next pass");
+        assert_eq!(pass_offsets(960.0, 500.0), [0.0]);
+    }
 }

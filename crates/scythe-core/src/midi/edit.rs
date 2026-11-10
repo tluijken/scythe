@@ -360,6 +360,37 @@ pub fn legato(notes: &mut [EditNote]) {
     }
 }
 
+/// REAPER's "Make notes legato, preserving relative note spacing" (40766): the first target
+/// note keeps its start and the last its end; of the `n` starts, the `i`th (from 0) moves back
+/// by `i / n` of the gap before it, and every other note then ends where the next begins.
+/// Measured in REAPER 7.73 on all, every other and three middle notes of seven.
+pub fn legato_relative(notes: &mut [EditNote]) {
+    let mut t = targets(notes);
+    t.sort_by_key(|&i| notes[i].start);
+    let mut starts: Vec<u64> = t.iter().map(|&i| notes[i].start).collect();
+    starts.dedup();
+    let n = starts.len();
+    if n < 2 {
+        return;
+    }
+    let end_before = |s: u64| t.iter().filter(|&&i| notes[i].start < s).map(|&i| notes[i].end).max();
+    let moved: Vec<u64> = starts
+        .iter()
+        .enumerate()
+        .map(|(k, &s)| {
+            let gap = end_before(s).map_or(0.0, |e| s as f64 - e as f64);
+            (s as f64 - gap * k as f64 / n as f64).round().max(0.0) as u64
+        })
+        .collect();
+    for &i in &t {
+        let k = starts.iter().position(|&s| s == notes[i].start).unwrap_or(0);
+        notes[i].start = moved[k];
+        if let Some(&next) = moved.get(k + 1) {
+            notes[i].end = next.max(moved[k] + 1);
+        }
+    }
+}
+
 /// Splits the target notes at every grid line inside them.
 pub fn split_on_grid(notes: &mut Vec<EditNote>, ppq: u32, grid: Grid) {
     let t = targets(notes);
@@ -557,6 +588,42 @@ mod tests {
         let mut n = notes(&[(500, 600, 60), (560, 660, 60), (620, 720, 60), (700, 800, 60), (1500, 1600, 60)]);
         quantize(&mut n, 960, &Quantize::to_grid(Grid { qn: 0.5, swing: 0.8 }));
         assert_eq!(n.iter().map(|n| n.start).collect::<Vec<_>>(), [672, 1632], "notes landing together merge");
+    }
+
+    #[test]
+    fn legato_keeping_relative_spacing_matches_reaper() {
+        let mut n = probe();
+        legato_relative(&mut n);
+        assert_eq!(
+            spans(&n),
+            [
+                (10, 474, 61),
+                (474, 947, 62),
+                (947, 1538, 63),
+                (1538, 2187, 64),
+                (2187, 2782, 61),
+                (2782, 3250, 66),
+                (3250, 3400, 66)
+            ],
+            "40766 on all"
+        );
+        let mut n = probe();
+        for (i, x) in n.iter_mut().enumerate() {
+            x.selected = (1..=3).contains(&i);
+        }
+        legato_relative(&mut n);
+        assert_eq!(
+            spans(&n)[..5],
+            [(10, 317, 61), (500, 938, 62), (938, 1447, 63), (1447, 2028, 64), (2400, 2735, 61)],
+            "40766 on three middle notes"
+        );
+        let mut n = probe();
+        for (i, x) in n.iter_mut().enumerate() {
+            x.selected = i % 2 == 0;
+        }
+        legato_relative(&mut n);
+        let picked: Vec<_> = spans(&n).into_iter().step_by(2).take(3).collect();
+        assert_eq!(picked, [(10, 829, 61), (829, 1861, 63), (1861, 2876, 61)], "40766 on every other note");
     }
 
     #[test]

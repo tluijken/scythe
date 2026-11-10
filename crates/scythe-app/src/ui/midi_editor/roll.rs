@@ -1,15 +1,27 @@
 //! The piano roll and the named-notes (drum map) view: notes on rows of keys over the grid.
 //!
-//! Click on the grid adds a note, drag on empty grid selects with a rectangle; a note is
-//! selected by a click (Shift adds to the selection), dragged to move the selection, dragged
-//! by its right edge to resize, right-clicked to delete and double-clicked for its properties.
-//! Notes of other items show behind; clicking one makes its item the edited one.
+//! Click on the grid adds a note, drag on empty grid draws one; a note is selected by a click
+//! (Shift adds to the selection), dragged to move the selection, dragged by its right edge to
+//! resize, right-clicked to delete and double-clicked for its properties. Right-drag selects
+//! with a rectangle. The modifiers of a left drag are REAPER 7.73's defaults (its
+//! `MM_CTX_MIDI_NOTE` and `MM_CTX_MIDI_PIANOROLL` contexts, tried in its editor):
+//!
+//! - on a note: Shift moves ignoring snap, Ctrl copies, Ctrl+Shift moves on one axis only,
+//!   Alt edits the velocity (a step per pixel), Ctrl+Shift+Alt moves vertically ignoring the
+//!   scale, Shift+Alt and Ctrl+Alt move;
+//! - on empty grid: Shift draws ignoring snap, Ctrl copies the selected notes by the drag,
+//!   Alt erases the notes it passes, Ctrl+Alt paints a straight line of notes and Shift+Alt
+//!   one ignoring snap.
+//!
+//! A looped item's later passes show dimmed after the first, and edit the same notes. Notes of
+//! other items show behind at their play rate and loops; clicking one makes its item the
+//! edited one.
 
 use egui::{Align2, Color32, CornerRadius, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 use scythe_core::midi::edit::{EditNote, Grid};
 use scythe_core::midi::view::EditorMode;
 
-use super::{EditorState, Take, apply_notes, origin_qn};
+use super::{EditorState, Take, apply_notes};
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, BG, LANE, RAISED, RAISED_HI, TEXT, TEXT_DIM, with_alpha};
 use crate::ui::window::{WindowKind, scythe_window};
@@ -53,15 +65,50 @@ pub(crate) fn key_name(key: u8) -> String {
     format!("{}{}", NAMES[key as usize % 12], key as i32 / 12 - 1)
 }
 
+/// How a note drag moves the notes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MoveKind {
+    /// Time and key, snapped (REAPER's "Move note").
+    Free,
+    IgnoreSnap,
+    /// Only time or only key, whichever the pointer has moved further along.
+    OneAxis,
+    /// Only the key, ignoring key snap.
+    VerticalIgnoringScale,
+}
+
 #[derive(Clone, Copy)]
 enum Drag {
     Move {
-        grab_tick: f64,
-        grab_key: i32,
+        /// The row and point where the drag started.
+        from_key: i32,
+        from: Pos2,
         anchor: usize,
+        kind: MoveKind,
+        /// The moved notes are copies; the originals stay.
+        copy: bool,
     },
     Resize {
         anchor: usize,
+        /// The loop pass the grabbed note was drawn in.
+        off: f64,
+    },
+    /// Alt-drag on a note: its velocity (the selection's, when it is selected) follows the
+    /// pointer up and down.
+    Velocity {
+        from_y: f32,
+        anchor: usize,
+    },
+    /// Alt-drag on empty grid: notes the pointer passes are erased.
+    Erase,
+    /// Ctrl+Alt (Shift+Alt ignoring snap) drag on empty grid: a line of grid-long notes from
+    /// the start to the pointer.
+    Paint {
+        start: f64,
+        key: i32,
+        snap: bool,
+        /// The loop pass the drag started in.
+        off: f64,
     },
     /// Right-drag marquee (REAPER's "MIDI editor" right drag): Shift adds to the selection,
     /// Ctrl toggles it.
@@ -74,12 +121,28 @@ enum Drag {
     /// change pitch".
     Draw {
         start: u64,
+        off: f64,
     },
 }
 
 /// The end of a note drawn from `start`: the snapped pointer, but at least one grid step on.
 fn drawn_end(start: u64, step: u64, at: f64) -> u64 {
     (at.round().max(0.0) as u64).max(start + step.max(1))
+}
+
+/// The notes of a painted line from `start` on `key` to `end` on `to_key`: one per `step`, the
+/// keys following the line. Snapped lines start on the grid, so their notes stay on it.
+fn painted_line(start: f64, key: i32, end: f64, to_key: i32, step: u64, snapped: bool) -> Vec<(u64, i32)> {
+    let step = step.max(1) as f64;
+    let first = if snapped { start.round() } else { start };
+    let n = ((end - first) / step).floor().max(0.0) as usize + 1;
+    (0..n.min(4096))
+        .map(|k| {
+            let at = first + k as f64 * step;
+            let f = if end > first { (at - first) / (end - first) } else { 0.0 };
+            (at.round().max(0.0) as u64, (key as f64 + (to_key - key) as f64 * f).round() as i32)
+        })
+        .collect()
 }
 
 /// Which rows show and where: the piano roll shows every key from `top`, named notes one row
@@ -148,8 +211,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         Rows { keys: None, top, rect: roll }
     };
 
-    let end_tick = notes.iter().map(|n| n.end).max().unwrap_or(0).max(take.src.length_ticks);
-    let length_qn = (end_tick as f64 / ppq as f64).max(4.0);
+    let end_tick = notes.iter().map(|n| n.end).max().unwrap_or(0).max(take.src.length_ticks) as f64;
+    let end_tick = if take.passes.len() > 1 { end_tick.max(take.end_tick) } else { end_tick };
+    let length_qn = (end_tick / ppq as f64).max(4.0);
     let fit = roll.width() / length_qn as f32;
     let px_per_qn = state.zoom.unwrap_or(fit).max(2.0);
     let max_scroll = (length_qn - roll.width() as f64 / px_per_qn as f64).max(0.0);
@@ -196,17 +260,23 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         clip.vline(axis.x(state.step_at as f64), roll.y_range(), Stroke::new(2.0, theme::GREEN));
     }
 
-    // Other items, behind; a click on one of their notes edits that item.
+    // Other items, behind, where they play: at their take's play rate and in every pass of a
+    // looped item. A click on one of their notes edits that item.
     let mut switch_to = None;
     let clicked_at = ui.input(|i| if i.pointer.primary_clicked() { i.pointer.interact_pos() } else { None });
+    let tl = app.project.tempo.timeline();
     for &other in &state.others {
         let Some(src) = app.project.midi_source(other) else { continue };
-        let shift = (origin_qn(app, other) - take.origin_qn) * ppq as f64;
-        let scale = ppq as f64 / src.ticks_per_qn as f64;
-        for n in src.edit_notes().iter().filter(|n| !n.muted) {
-            let (s, e) = (n.start as f64 * scale + shift, n.end as f64 * scale + shift);
+        let Some((_, item)) = app.project.find_item(other) else { continue };
+        let Some(model) = item.take() else { continue };
+        for n in src.place(item, model, &tl) {
+            let s = take.tick(tl.qn_at(n.start));
+            let e = take.tick(tl.qn_at(n.end));
             let Some(y) = rows.y(n.key) else { continue };
             let r = Rect::from_min_max(pos2(axis.x(s), y + 2.0), pos2(axis.x(e).max(axis.x(s) + 3.0), y + ROW_H - 2.0));
+            if !r.intersects(roll) {
+                continue;
+            }
             clip.rect_filled(r, CornerRadius::same(2), with_alpha(TEXT_DIM, 60));
             if clicked_at.is_some_and(|p| r.contains(p) && roll.contains(p)) {
                 switch_to = Some(other);
@@ -216,50 +286,82 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
 
     let resp = ui.interact(roll, Id::unique(("midi-roll", take.id)), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Piano roll"));
-    let rect_of = |n: &EditNote| {
-        let x0 = axis.x(n.start as f64);
-        rows.y(n.key).map(|y| Rect::from_min_max(pos2(x0, y), pos2(axis.x(n.end as f64).max(x0 + 3.0), y + ROW_H)))
+    let rect_at = |n: &EditNote, off: f64| {
+        let x0 = axis.x(n.start as f64 + off);
+        rows.y(n.key)
+            .map(|y| Rect::from_min_max(pos2(x0, y), pos2(axis.x(n.end as f64 + off).max(x0 + 3.0), y + ROW_H)))
     };
+    // The note under `p` in any pass: its index, whether on its right edge, and the pass.
     let hit = |notes: &[EditNote], p: Pos2| {
-        notes.iter().enumerate().rev().filter(|(_, n)| shown(take, n.channel)).find_map(|(i, n)| {
-            let r = rect_of(n)?;
-            r.contains(p).then_some((i, p.x > r.right() - EDGE))
+        take.passes.iter().find_map(|&off| {
+            notes.iter().enumerate().rev().filter(|(_, n)| shown(take, n.channel)).find_map(|(i, n)| {
+                let r = rect_at(n, off)?;
+                r.contains(p).then_some((i, p.x > r.right() - EDGE, off))
+            })
         })
     };
-    let (shift_held, ctrl_held) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+    let mods = ui.input(|i| i.modifiers);
+    let (shift_held, ctrl_held, alt_held) = (mods.shift, mods.command, mods.alt);
     let secondary = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
     let step = (grid.qn * ppq as f64).round().max(1.0) as u64;
     let snap_key = |key: i32| {
         let k = key.clamp(0, 127) as u8;
         if take.view.key_snap { snap.nearest(k) } else { k }
     };
+    let in_source = |tick: f64| match take.passes.get(1) {
+        Some(&len) => tick.rem_euclid(len),
+        None => tick,
+    };
     let drag_id = Id::unique(("midi-drag", take.id));
     if resp.drag_started()
         && let Some(p) = crate::ui::widgets::drag_origin(ui, &resp)
     {
+        let from_key = |fallback: u8| rows.key_at(p.y).map_or(fallback as i32, |k| k as i32);
         let drag = match hit(&notes, p) {
             _ if secondary => Drag::Select { from: p, add: shift_held, toggle: ctrl_held },
-            Some((i, edge)) => {
+            Some((i, _, _)) if alt_held && !ctrl_held && !shift_held => {
+                Drag::Velocity { from_y: p.y, anchor: i }
+            }
+            Some((i, edge, off)) => {
                 if !notes[i].selected {
                     if !shift_held {
                         notes.iter_mut().for_each(|n| n.selected = false);
                     }
                     notes[i].selected = true;
                 }
-                if edge {
-                    Drag::Resize { anchor: i }
+                let (kind, copy) = match (ctrl_held, shift_held, alt_held) {
+                    (false, true, false) => (MoveKind::IgnoreSnap, false),
+                    (true, false, false) => (MoveKind::Free, true),
+                    (true, true, false) => (MoveKind::OneAxis, false),
+                    (true, true, true) => (MoveKind::VerticalIgnoringScale, false),
+                    _ => (MoveKind::Free, false),
+                };
+                if edge && !ctrl_held && !alt_held {
+                    Drag::Resize { anchor: i, off }
                 } else {
-                    let key = rows.key_at(p.y).map_or(notes[i].key as i32, |k| k as i32);
-                    Drag::Move {
-                        grab_tick: axis.tick(p.x) - notes[i].start as f64,
-                        grab_key: key - notes[i].key as i32,
-                        anchor: i,
-                    }
+                    Drag::Move { from_key: from_key(notes[i].key), from: p, anchor: i, kind, copy }
                 }
+            }
+            None if ctrl_held && !alt_held && !shift_held => match notes.iter().position(|n| n.selected) {
+                Some(anchor) => Drag::Move {
+                    from_key: from_key(notes[anchor].key),
+                    from: p,
+                    anchor,
+                    kind: MoveKind::Free,
+                    copy: true,
+                },
+                None => Drag::Select { from: p, add: false, toggle: false },
+            },
+            None if alt_held && !ctrl_held && !shift_held => Drag::Erase,
+            None if alt_held && (ctrl_held ^ shift_held) => {
+                let at = in_source(axis.tick(p.x));
+                let start = if shift_held { at.round() } else { axis.floor(&grid, at) as f64 };
+                Drag::Paint { start, key: from_key(60), snap: !shift_held, off: axis.tick(p.x) - at }
             }
             None => match rows.key_at(p.y) {
                 Some(key) => {
-                    let start = axis.floor(&grid, axis.tick(p.x));
+                    let at = in_source(axis.tick(p.x));
+                    let start = if shift_held && !ctrl_held { at.round() as u64 } else { axis.floor(&grid, at) };
                     notes.iter_mut().for_each(|n| n.selected = false);
                     let before = notes.clone();
                     let mut n = EditNote::new(start, start + step, take.view.channel, snap_key(key as i32), 100);
@@ -267,8 +369,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
                     notes.push(n);
                     notes.sort_by_key(|n| (n.start, n.key, n.channel));
                     apply_notes(app, take.id, &notes, "Insert note", true);
-                    ui.data_mut(|d| d.insert_temp(drag_id, (Drag::Draw { start }, before)));
-                    Drag::Draw { start }
+                    let draw = Drag::Draw { start, off: axis.tick(p.x) - at };
+                    ui.data_mut(|d| d.insert_temp(drag_id, (draw, before)));
+                    draw
                 }
                 None => Drag::Select { from: p, add: shift_held, toggle: ctrl_held },
             },
@@ -282,25 +385,50 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         && let (Some(p), Some((drag, before))) = (resp.interact_pointer_pos(), drag.clone())
     {
         match drag {
-            Drag::Move { grab_tick, grab_key, anchor } => {
+            Drag::Move { from_key, from, anchor, kind, copy } => {
                 let a = &before[anchor];
-                let target = grid.nearest(ppq, axis.tick(p.x) - grab_tick).max(0.0).round() as i64;
-                let dt = target - a.start as i64;
-                let key = rows.key_at(p.y).map_or(a.key as i32, |k| k as i32) - grab_key;
-                let dk = snap_key(key) as i32 - a.key as i32;
+                let moved = axis.tick(p.x) - axis.tick(from.x);
+                let target = match kind {
+                    MoveKind::IgnoreSnap => (a.start as f64 + moved).max(0.0).round() as i64,
+                    _ => grid.nearest(ppq, a.start as f64 + moved).max(0.0).round() as i64,
+                };
+                let key = rows.key_at(p.y).map_or(from_key, |k| k as i32);
+                let raw_dk = key - from_key;
+                let mut dt = target - a.start as i64;
+                let mut dk = match kind {
+                    MoveKind::VerticalIgnoringScale => raw_dk,
+                    _ => snap_key(a.key as i32 + raw_dk) as i32 - a.key as i32,
+                };
+                match kind {
+                    MoveKind::OneAxis if (p.x - from.x).abs() >= (p.y - from.y).abs() => dk = 0,
+                    MoveKind::OneAxis | MoveKind::VerticalIgnoringScale => dt = 0,
+                    _ => {}
+                }
                 notes = before.clone();
-                for n in notes.iter_mut().filter(|n| n.selected) {
+                let shift = |n: &mut EditNote| {
                     let len = n.length();
                     n.start = (n.start as i64 + dt).max(0) as u64;
                     n.end = n.start + len;
                     n.key = (n.key as i32 + dk).clamp(0, 127) as u8;
+                };
+                if copy {
+                    if dt != 0 || dk != 0 {
+                        let mut copies: Vec<EditNote> = notes.iter().filter(|n| n.selected).cloned().collect();
+                        copies.iter_mut().for_each(shift);
+                        notes.iter_mut().for_each(|n| n.selected = false);
+                        notes.extend(copies);
+                        notes.sort_by_key(|n| (n.start, n.key, n.channel));
+                    }
+                    apply_notes(app, take.id, &notes, "Copy notes", true);
+                } else {
+                    notes.iter_mut().filter(|n| n.selected).for_each(shift);
+                    apply_notes(app, take.id, &notes, "Move notes", true);
                 }
-                apply_notes(app, take.id, &notes, "Move notes", true);
             }
-            Drag::Resize { anchor } => {
+            Drag::Resize { anchor, off } => {
                 let a = &before[anchor];
                 let g = (grid.qn * ppq as f64).round().max(1.0) as i64;
-                let end = (grid.nearest(ppq, axis.tick(p.x)).round() as i64).max(a.start as i64 + g);
+                let end = (grid.nearest(ppq, axis.tick(p.x) - off).round() as i64).max(a.start as i64 + g);
                 let de = end - a.end as i64;
                 notes = before.clone();
                 for n in notes.iter_mut().filter(|n| n.selected) {
@@ -308,8 +436,39 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
                 }
                 apply_notes(app, take.id, &notes, "Resize notes", true);
             }
-            Drag::Draw { start } => {
-                let at = if shift_held { axis.tick(p.x) } else { grid.nearest(ppq, axis.tick(p.x)) };
+            Drag::Velocity { from_y, anchor } => {
+                let dv = (from_y - p.y).round() as i32;
+                notes = before.clone();
+                let all = before[anchor].selected;
+                for (i, n) in notes.iter_mut().enumerate() {
+                    if (all && n.selected) || i == anchor {
+                        n.velocity = (n.velocity as i32 + dv).clamp(1, 127) as u8;
+                    }
+                }
+                apply_notes(app, take.id, &notes, "Edit note velocity", true);
+            }
+            Drag::Erase => {
+                if let Some((i, _, _)) = hit(&notes, p) {
+                    notes.remove(i);
+                    apply_notes(app, take.id, &notes, "Erase notes", true);
+                }
+            }
+            Drag::Paint { start, key, snap: snapped, off } => {
+                let now = (axis.tick(p.x) - off).max(start);
+                let to_key = rows.key_at(p.y).map_or(key, |k| k as i32);
+                notes = before.clone();
+                notes.iter_mut().for_each(|n| n.selected = false);
+                for (s, k) in painted_line(start, key, now, to_key, step, snapped) {
+                    let mut n = EditNote::new(s, s + step, take.view.channel, snap_key(k), 100);
+                    n.selected = true;
+                    notes.push(n);
+                }
+                notes.sort_by_key(|n| (n.start, n.key, n.channel));
+                apply_notes(app, take.id, &notes, "Insert notes", true);
+            }
+            Drag::Draw { start, off } => {
+                let at = (axis.tick(p.x) - off).max(start as f64);
+                let at = if shift_held { at } else { grid.nearest(ppq, at) };
                 let end = drawn_end(start, if shift_held { 1 } else { step }, at);
                 let key = rows.key_at(p.y).map_or(60, |k| snap_key(k as i32));
                 notes = before.clone();
@@ -330,7 +489,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         if let (Some((Drag::Select { from, add, toggle }, _)), Some(p)) = (drag, resp.interact_pointer_pos()) {
             let r = Rect::from_two_pos(from, p);
             for n in notes.iter_mut() {
-                let inside = shown(take, n.channel) && rect_of(n).is_some_and(|nr| nr.intersects(r));
+                let inside = shown(take, n.channel)
+                    && take.passes.iter().any(|&off| rect_at(n, off).is_some_and(|nr| nr.intersects(r)));
                 n.selected = match (inside, toggle, add) {
                     (true, true, _) => !n.selected,
                     (true, false, _) => true,
@@ -347,7 +507,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         && let Some(p) = resp.interact_pointer_pos()
     {
         match hit(&notes, p) {
-            Some((i, _)) => {
+            Some((i, _, _)) => {
                 let on = !(shift_held && notes[i].selected);
                 if !shift_held {
                     notes.iter_mut().for_each(|n| n.selected = false);
@@ -357,7 +517,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
             }
             None => {
                 if let Some(key) = rows.key_at(p.y) {
-                    let start = axis.floor(&grid, axis.tick(p.x));
+                    let start = axis.floor(&grid, in_source(axis.tick(p.x)));
                     let len = (grid.qn * ppq as f64).round().max(1.0) as u64;
                     notes.iter_mut().for_each(|n| n.selected = false);
                     let mut n = EditNote::new(start, start + len, take.view.channel, snap_key(key as i32), 100);
@@ -371,7 +531,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
     }
     if resp.secondary_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Some((i, _)) = hit(&notes, p)
+        && let Some((i, _, _)) = hit(&notes, p)
     {
         if notes[i].selected {
             notes.retain(|n| !n.selected);
@@ -383,12 +543,12 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
     let props_id = Id::unique(("midi-props", take.id));
     if resp.double_clicked()
         && let Some(p) = resp.interact_pointer_pos()
-        && let Some((i, _)) = hit(&notes, p)
+        && let Some((i, _, _)) = hit(&notes, p)
     {
         ui.data_mut(|d| d.insert_temp(props_id, i));
     }
     if let Some(p) = resp.hover_pos()
-        && let Some((_, edge)) = hit(&notes, p)
+        && let Some((_, edge, _)) = hit(&notes, p)
     {
         ui.ctx().set_cursor_icon(if edge { egui::CursorIcon::ResizeHorizontal } else { egui::CursorIcon::Grab });
     }
@@ -397,14 +557,27 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
         apply_notes(app, take.id, &notes, "Delete notes", false);
     }
 
-    for n in &notes {
-        let Some(r) = rect_of(n) else { continue };
-        let r = r.shrink2(vec2(0.0, 1.0));
-        let shade = 0.45 + 0.55 * n.velocity as f32 / 127.0;
-        let base = if n.muted { TEXT_DIM.gamma_multiply(0.5) } else { ACCENT.gamma_multiply(shade) };
-        clip.rect_filled(r, CornerRadius::same(2), if shown(take, n.channel) { base } else { with_alpha(base, 50) });
-        let border = if n.selected { Stroke::new(1.5, TEXT) } else { Stroke::new(1.0, with_alpha(Color32::BLACK, 90)) };
-        clip.rect_stroke(r, CornerRadius::same(2), border, StrokeKind::Inside);
+    for (k, &off) in take.passes.iter().enumerate() {
+        if k > 0 {
+            clip.vline(axis.x(off), roll.y_range(), Stroke::new(1.5, with_alpha(TEXT, 70)));
+        }
+        let x_range = (axis.x(off), axis.x(take.passes.get(k + 1).copied().unwrap_or(f64::MAX).min(end_tick)));
+        if x_range.1 < roll.left() || x_range.0 > roll.right() {
+            continue;
+        }
+        let pass = clip.with_clip_rect(Rect::from_x_y_ranges(x_range.0..=x_range.1, roll.y_range()).intersect(roll));
+        for n in &notes {
+            let Some(r) = rect_at(n, off) else { continue };
+            let r = r.shrink2(vec2(0.0, 1.0));
+            let shade = 0.45 + 0.55 * n.velocity as f32 / 127.0;
+            let base = if n.muted { TEXT_DIM.gamma_multiply(0.5) } else { ACCENT.gamma_multiply(shade) };
+            let base = if shown(take, n.channel) { base } else { with_alpha(base, 50) };
+            let base = if k > 0 { with_alpha(base, 110) } else { base };
+            pass.rect_filled(r, CornerRadius::same(2), base);
+            let border =
+                if n.selected { Stroke::new(1.5, TEXT) } else { Stroke::new(1.0, with_alpha(Color32::BLACK, 90)) };
+            pass.rect_stroke(r, CornerRadius::same(2), border, StrokeKind::Inside);
+        }
     }
 
     note_properties(app, ui, take, &mut notes, props_id);
@@ -497,12 +670,19 @@ fn note_properties(app: &mut ScytheApp, ui: &mut Ui, take: &Take, notes: &mut [E
 
 #[cfg(test)]
 mod tests {
-    use super::drawn_end;
+    use super::{drawn_end, painted_line};
 
     #[test]
     fn a_drawn_note_follows_the_pointer_and_keeps_one_grid_step() {
         assert_eq!(drawn_end(960, 240, 1920.0), 1920);
         assert_eq!(drawn_end(960, 240, 900.0), 1200, "dragged left of its start");
         assert_eq!(drawn_end(960, 0, 960.0), 961);
+    }
+
+    #[test]
+    fn a_painted_line_steps_down_the_keys_like_reapers() {
+        // REAPER 7.73, Ctrl+Alt+drag on a 1/32 grid from C4 down to A#3.
+        assert_eq!(painted_line(480.0, 60, 840.0, 58, 120, true), [(480, 60), (600, 59), (720, 59), (840, 58)]);
+        assert_eq!(painted_line(480.0, 60, 470.0, 58, 120, true), [(480, 60)]);
     }
 }

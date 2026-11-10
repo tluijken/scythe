@@ -36,9 +36,9 @@ pub fn inline_editor(
     let Some(take) = load(app, id) else { return };
     let tl = app.project.tempo.timeline();
     let ppq = take.src.ticks_per_qn as f64;
-    let tick_x = |tick: f64| x(tl.time_at_qn(take.origin_qn + tick / ppq));
-    let x_tick = |px: f32| ((tl.qn_at(t(px)) - take.origin_qn) * ppq).max(0.0);
-    let passes = loop_passes(app, id, &take);
+    let tick_x = |tick: f64| x(tl.time_at_qn(take.qn(tick)));
+    let x_tick = |px: f32| take.tick(tl.qn_at(t(px))).max(0.0);
+    let passes = take.passes.clone();
     let in_source = |tick: f64| match passes.get(1) {
         Some(&len) => tick.rem_euclid(len),
         None => tick,
@@ -130,32 +130,3 @@ pub fn inline_editor(
     }
 }
 
-/// Where each pass of the take's source starts, in ticks from the source start: one pass, or
-/// one per loop of a looped item up to its end.
-fn loop_passes(app: &ScytheApp, id: ItemId, take: &super::Take) -> Vec<f64> {
-    let Some((_, item)) = app.project.find_item(id) else { return vec![0.0] };
-    let len = take.src.length_ticks as f64;
-    if !item.looped || len <= 0.0 {
-        return vec![0.0];
-    }
-    let tl = app.project.tempo.timeline();
-    let end = (tl.qn_at(item.end()) - take.origin_qn) * take.src.ticks_per_qn as f64;
-    pass_offsets(len, end)
-}
-
-fn pass_offsets(len: f64, end: f64) -> Vec<f64> {
-    let n = ((end / len).ceil().max(1.0) as usize).min(4096);
-    (0..n).map(|k| k as f64 * len).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pass_offsets;
-
-    #[test]
-    fn a_looped_item_shows_every_pass() {
-        assert_eq!(pass_offsets(960.0, 3840.0), [0.0, 960.0, 1920.0, 2880.0]);
-        assert_eq!(pass_offsets(960.0, 1000.0), [0.0, 960.0], "a part of the next pass");
-        assert_eq!(pass_offsets(960.0, 500.0), [0.0]);
-    }
-}

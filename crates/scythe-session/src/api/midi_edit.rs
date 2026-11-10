@@ -169,7 +169,8 @@ pub enum MidiEditCommand {
         /// The item's id.
         item: u64,
         command: u32,
-        /// Key snap's scale for the actions that follow the key.
+        /// Key snap's scale for the actions that follow the key; the project's key (`midi.key`)
+        /// when left out.
         #[serde(default)]
         scale: Option<String>,
         /// Key snap's root, 0 (C) to 11.
@@ -179,6 +180,18 @@ pub enum MidiEditCommand {
     /// The MIDI editor actions `midi.action` runs, with REAPER's names.
     #[serde(rename = "midi.actions")]
     Actions,
+    /// The project's key signature, which key snap and the MIDI editor's "force notes into
+    /// key" use (REAPER keeps it in the project's `<KEYSIG`): returns it, and sets it when a
+    /// root or scale is given.
+    #[serde(rename = "midi.key")]
+    Key {
+        /// The root, 0 (C) to 11 (B).
+        #[serde(default)]
+        root: Option<u8>,
+        /// A scale from `midi.scales`.
+        #[serde(default)]
+        scale: Option<String>,
+    },
     /// The scales key snap and `midi.transpose` know: Scythe's own and those of `.reascale`
     /// files given by path.
     #[serde(rename = "midi.scales")]
@@ -426,6 +439,9 @@ pub enum QuantizeTarget {
 pub enum NoteOp {
     /// Ends each note where the next begins.
     Legato,
+    /// Legato keeping the notes' relative spacing (REAPER's 40766): starts move back by a
+    /// growing share of the gap before them; the first start and the last end stay.
+    LegatoRelative,
     /// Splits notes at every grid line.
     SplitGrid,
     /// Splits notes at `value`.
@@ -896,6 +912,7 @@ pub fn execute(session: &mut Session, command: MidiEditCommand) -> Result<Value,
                 let need = || value.ok_or_else(|| ApiError::invalid("this edit needs a value"));
                 match op {
                     NoteOp::Legato => edit::legato(all),
+                    NoteOp::LegatoRelative => edit::legato_relative(all),
                     NoteOp::SplitGrid => {
                         let g = grid.unwrap_or(view.grid_qn);
                         edit::split_on_grid(all, ppq, Grid { qn: g, swing: view.swing.unwrap_or(0.0) });
@@ -921,9 +938,25 @@ pub fn execute(session: &mut Session, command: MidiEditCommand) -> Result<Value,
                 Ok(())
             })
         }
+        C::Key { root, scale } => {
+            let now = KeySnap::read_project(&session.project.extra).unwrap_or_else(KeySnap::c_major);
+            let mut key = match scale.as_deref() {
+                Some(_) => key_snap(scale.as_deref(), Some(now.root))?.unwrap_or(now.clone()),
+                None => now.clone(),
+            };
+            if let Some(r) = root {
+                key.root = r % 12;
+            }
+            if key != now {
+                let k = key.clone();
+                session.edit("Change key signature", move |p| k.write_project(&mut p.extra));
+            }
+            Ok(serde_json::json!({"root": key.root, "scale": key.scale.name, "pattern": key.scale.pattern}))
+        }
         C::Action { item, command, scale, root } => {
             let (src, view) = source(session, item)?;
-            let ctx = actions::Context { key: key_snap(scale.as_deref(), root)? };
+            let project_key = KeySnap::read_project(&session.project.extra).unwrap_or_else(KeySnap::c_major);
+            let ctx = actions::Context { key: key_snap(scale.as_deref(), root)?.or(Some(project_key)) };
             let (new_src, new_view) = actions::run(command, &src, &view, &ctx)
                 .ok_or_else(|| ApiError::invalid(format!("Scythe has no MIDI editor action {command}")))?;
             let label = actions::name(command).unwrap_or_else(|| "MIDI editor action".into());
