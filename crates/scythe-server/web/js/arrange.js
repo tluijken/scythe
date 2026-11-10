@@ -82,7 +82,7 @@ function TrackHeader({ store, track, selected, onSelect, rowH, small, folders, o
   const fold = ["Folder open: tap to show its tracks small", "Folder tracks small: tap to collapse", "Folder collapsed: tap to open"];
   return html`<div class=${`track-head ${selected ? "selected" : ""} ${small ? "small" : ""}`} style=${{ height: `${rowH}px` }}
       onPointerDown=${(e) => {
-        onSelect();
+        onSelect(e);
         onDrag(e);
       }}>
     ${folders.map((f) => html`<span class="fold-line" style=${{ left: `${7 + f.level * 12}px`, background: f.color || "var(--text-dim)" }}></span>`)}
@@ -324,6 +324,28 @@ export function Arrange({ store, snap, sel, setSel }) {
   const shownTracks = layout.map(({ i }) => tracks[i]);
   const rowsEl = useRef(null);
   const [drag, setDrag] = useState(null);
+  // Tracks selected besides `sel.track` (Ctrl+click adds, Shift+click a range), which a drag
+  // moves along as REAPER does.
+  const [also, setAlso] = useState([]);
+  useEffect(() => setAlso([]), [sel.track]);
+  const picked = (id) => sel.track === id || (sel.track != null && also.includes(id));
+  const pick = (track, e) => {
+    const id = track.id;
+    if ((e.ctrlKey || e.metaKey) && sel.track != null) {
+      if (id === sel.track) return;
+      setAlso(also.includes(id) ? also.filter((t) => t !== id) : [...also, id]);
+      return;
+    }
+    if (e.shiftKey && sel.track != null) {
+      const a = tracks.findIndex((t) => t.id === sel.track);
+      const [lo, hi] = [Math.min(a, track.index), Math.max(a, track.index)];
+      setAlso(tracks.slice(lo, hi + 1).map((t) => t.id).filter((t) => t !== sel.track));
+      return;
+    }
+    if (picked(id)) return;
+    setAlso([]);
+    setSel({ track: id, item: null });
+  };
   // Where a dragged track lands with the pointer `y` from the top of the rows.
   const dropAt = (y, moving) => {
     const last = layout[layout.length - 1];
@@ -341,7 +363,8 @@ export function Arrange({ store, snap, sel, setSel }) {
   const startDrag = (i) => (e) => {
     if (e.button > 0 || e.target.closest("button, input, .editable")) return;
     if (e.pointerType !== "mouse" && !e.target.closest(".grip")) return;
-    const moving = withChildren(tracks, i);
+    const chosen = picked(tracks[i].id) ? tracks.map((t, k) => (picked(t.id) ? k : -1)).filter((k) => k >= 0) : [i];
+    const moving = [...new Set(chosen.flatMap((k) => withChildren(tracks, k)))].sort((a, b) => a - b);
     let drop = null;
     dragPointer(
       e,
@@ -352,7 +375,9 @@ export function Arrange({ store, snap, sel, setSel }) {
       },
       ({ cancelled }) => {
         setDrag(null);
-        if (!cancelled && drop) store.fire(moveCommand(tracks, moving, drop));
+        if (cancelled || !drop) return;
+        const tops = chosen.filter((k) => !chosen.some((p) => p !== k && withChildren(tracks, p).includes(k)));
+        store.fire({ ...moveCommand(tracks, moving, drop), track: tracks[tops[0]].id, also: tops.slice(1).map((k) => tracks[k].id) });
       },
     );
   };
@@ -514,9 +539,9 @@ export function Arrange({ store, snap, sel, setSel }) {
               for (let p = parents[i]; p != null; p = parents[p]) ancestors.push({ level: tracks[p].level, color: tracks[p].color });
               return html`<div class=${`arr-row ${drag?.moving.includes(i) ? "dragged" : ""}`} key=${track.id} style=${{ height: `${h}px` }}>
               <${TrackHeader} store=${store} track=${track} rowH=${h} small=${shows[i] === "small"} folders=${ancestors}
-                selected=${sel.track === track.id} onDrag=${startDrag(i)}
-                onSelect=${() => sel.track !== track.id && setSel({ track: track.id, item: null })} />
-              <div class=${`lane ${sel.track === track.id ? "selected" : ""}`} style=${{ width: `${contentW}px` }} onClick=${laneClick(track)}>
+                selected=${picked(track.id)} onDrag=${startDrag(i)}
+                onSelect=${(e) => pick(track, e)} />
+              <div class=${`lane ${picked(track.id) ? "selected" : ""}`} style=${{ width: `${contentW}px` }} onClick=${laneClick(track)}>
                 ${track.items
                   .filter((it) => it.position <= visible1 + 5 && it.position + it.length >= visible0 - 5)
                   .map(

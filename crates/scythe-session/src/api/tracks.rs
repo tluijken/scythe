@@ -51,6 +51,10 @@ pub enum TrackCommand {
         /// "master" for the top level.
         #[serde(default)]
         parent: Option<TrackRef>,
+        /// More tracks moved along, as REAPER drags every selected track: they keep their
+        /// order and go after `track`.
+        #[serde(default)]
+        also: Vec<TrackRef>,
     },
     /// REAPER's "Move tracks to new folder": a new folder track takes the place of the first
     /// track, and the tracks (folders with their children) become its children. Answers the
@@ -306,8 +310,16 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
             }
             Ok(serde_json::json!({ "levels": session.project.track(id).map_or(0, scythe_core::freeze::levels) }))
         }
-        TrackCommand::Move { track, index, parent } => {
+        TrackCommand::Move { track, index, parent, also } => {
             let id = track.track(&session.project)?;
+            let mut ids = vec![id];
+            for t in &also {
+                let t = t.track(&session.project)?;
+                if !ids.contains(&t) {
+                    ids.push(t);
+                }
+            }
+            let label = if ids.len() > 1 { "Move tracks" } else { "Move track" };
             match parent {
                 Some(parent) => {
                     let parent = match parent.resolve(&session.project)? {
@@ -315,7 +327,7 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
                         Target::Track(p) => Some(p),
                     };
                     let mut fits = None;
-                    session.edit("Move track", |p| fits = p.move_into(&[id], parent, index));
+                    session.edit(label, |p| fits = p.move_into(&ids, parent, index));
                     if fits.is_none() {
                         return Err(ApiError::invalid("a folder cannot move into itself"));
                     }
@@ -325,8 +337,8 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
                     let Some(index) = index.filter(|&i| i < n) else {
                         return Err(ApiError::invalid(format!("index runs from 0 to {}", n - 1)));
                     };
-                    session.edit("Move track", |p| {
-                        p.move_to_index(&[id], index);
+                    session.edit(label, |p| {
+                        p.move_to_index(&ids, index);
                     });
                 }
             }

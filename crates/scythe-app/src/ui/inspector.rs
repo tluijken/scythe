@@ -96,7 +96,13 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ));
     if mon.clicked() {
         let next = MonitorMode::ALL[(MonitorMode::ALL.iter().position(|m| *m == monitor).unwrap_or(0) + 1) % 3];
-        app.edit("Set input monitoring", |p| p.track_mut(track_id).unwrap().set_monitor_mode(next));
+        let peers = app.selection_peers(track_id);
+        app.edit("Set input monitoring", |p| {
+            p.track_mut(track_id).unwrap().set_monitor_mode(next);
+            for &k in &peers {
+                p.tracks[k].set_monitor_mode(next);
+            }
+        });
     }
     mon.context_menu(|ui| crate::ui::recording::track_menu(app, ui, track_id));
     let input_label = widgets::truncate(ui, &input_label, &theme::mono(11.0), input_pill.width() - 10.0);
@@ -111,7 +117,7 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     .on_hover_text(input_hover);
     if resp.clicked() {
         let next = inputs[(inputs.iter().position(|&v| v == track.rec_input).map_or(0, |i| i + 1)) % inputs.len()];
-        app.edit("Set record input", |p| p.track_mut(track_id).unwrap().rec_input = next);
+        set_rec_input(app, track_id, next);
     }
     if resp.secondary_clicked()
         && let Some(i) = midi_input
@@ -122,7 +128,7 @@ fn track_card(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
             Some(c) => Some(c + 1),
         };
         let next = MidiInput { channel, ..i }.rec_input();
-        app.edit("Set record input", |p| p.track_mut(track_id).unwrap().rec_input = next);
+        set_rec_input(app, track_id, next);
     }
     let edit = egui::TextEdit::singleline(&mut name)
         .frame(egui::Frame::NONE)
@@ -1367,7 +1373,16 @@ fn sends_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: R
         if drag.dragged() {
             let db = scythe_core::units::gain_to_db(s.volume).max(-60.0) - drag.drag_delta().y as f64 * 0.25;
             let gain = if db <= -60.0 { 0.0 } else { scythe_core::units::db_to_gain(db.min(12.0)) };
-            app.gesture("Adjust send level", |p| p.track_mut(track_id).unwrap().sends[i].volume = gain);
+            let (dest, before) = (s.dest, s.volume);
+            let peers = app.selection_peers(track_id);
+            app.gesture("Adjust send level", |p| {
+                p.track_mut(track_id).unwrap().sends[i].volume = gain;
+                for &k in &peers {
+                    for send in p.tracks[k].sends.iter_mut().filter(|x| x.dest == dest) {
+                        send.volume = follow_gain(send.volume, before, gain);
+                    }
+                }
+            });
         }
         if drag.drag_stopped() {
             app.end_gesture();
@@ -1857,5 +1872,44 @@ mod tests {
         assert_eq!(slot_at(&chain, &[0]).unwrap().name, first.name);
         assert_eq!(slot_at(&chain, &[1, 1]).unwrap().name, b.name);
         assert!(slot_at(&chain, &[1, 2]).is_none() && slot_at(&chain, &[]).is_none());
+    }
+}
+
+/// Sets the record input of `track` and, as REAPER does with a selection, of the other selected
+/// tracks.
+fn set_rec_input(app: &mut ScytheApp, track: TrackId, input: i64) {
+    let peers = app.selection_peers(track);
+    app.edit("Set record input", |p| {
+        if let Some(t) = p.track_mut(track) {
+            t.rec_input = input;
+        }
+        for &k in &peers {
+            p.tracks[k].rec_input = input;
+        }
+    });
+}
+
+/// A selected track's send level following another's from `before` to `after`: by the same
+/// change in dB, as selection-grouped faders move; silence stays below -150 dB.
+fn follow_gain(level: f64, before: f64, after: f64) -> f64 {
+    use scythe_core::units::{db_to_gain, gain_to_db};
+    if after <= 0.0 {
+        return 0.0;
+    }
+    let delta = gain_to_db(after) - gain_to_db(before.max(1e-8));
+    let db = gain_to_db(level.max(1e-8)) + delta;
+    if db <= -150.0 { 0.0 } else { db_to_gain(db.min(12.0)) }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::follow_gain;
+
+    #[test]
+    fn grouped_send_levels_move_by_the_same_db() {
+        let half = scythe_core::units::db_to_gain(-6.0);
+        let got = follow_gain(half, 1.0, scythe_core::units::db_to_gain(3.0));
+        assert!((scythe_core::units::gain_to_db(got) + 3.0).abs() < 1e-9);
+        assert_eq!(follow_gain(half, 1.0, 0.0), 0.0);
     }
 }

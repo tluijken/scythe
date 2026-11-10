@@ -201,7 +201,7 @@ or `none`, with `reason` saying why.
 | `track.rename` | `track`, `name` | the track |
 | `track.freeze` | `track` | `{"file", "levels"}`: renders the items through the effects (pre-fader, one second of tail) beside the saved project and plays that instead; again stacks a level |
 | `track.unfreeze` | `track` | `{"levels"}`: the last level's effects and items are back |
-| `track.move` | `track`, `index?`, `parent?` | the track, a folder with its children, every folder kept closed: to position `index` in the track list (keeping its depth where the tracks around allow), or with `parent` into that folder (`"master"` for the top level) at `index` among its other children (the end when left out); a plain parent becomes a folder |
+| `track.move` | `track`, `index?`, `parent?`, `also?` (more tracks moved along after it, as a selection drags) | the track, a folder with its children, every folder kept closed: to position `index` in the track list (keeping its depth where the tracks around allow), or with `parent` into that folder (`"master"` for the top level) at `index` among its other children (the end when left out); a plain parent becomes a folder |
 | `track.volume` | `track`, `volume` or `db` | the track; volume groups follow (a dB offset, reversed followers the other way) |
 | `track.pan` | `track`, `pan` | the track; pan groups follow (an offset) |
 | `track.mute` | `track`, `muted?` | the track; mute groups follow |

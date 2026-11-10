@@ -785,6 +785,24 @@
     "description": "Moves the track, a folder with its children, keeping every folder closed: to position\n`index` in the track list, or with `parent` into a folder (the master for the top level).\n\nControl API command `track.move`.",
     "inputSchema": {
       "properties": {
+        "also": {
+          "default": [],
+          "description": "More tracks moved along, as REAPER drags every selected track: they keep their\norder and go after `track`.",
+          "items": {
+            "anyOf": [
+              {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+          },
+          "type": "array"
+        },
         "index": {
           "default": null,
           "description": "Without `parent`: the new position in the track list, counted from 0; the track keeps\nits nesting where the tracks around it allow. With `parent`: the position among the\nfolder's other children, the end when left out.",

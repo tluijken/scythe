@@ -283,6 +283,10 @@ impl Session {
         self.engine.seek(self.project.cursor);
         self.sync();
         self.loads += 1;
+        let saved = self.project.saved_selection();
+        if !saved.is_empty() {
+            self.select_tracks(saved);
+        }
     }
 
     // ---- editing -------------------------------------------------------------------------

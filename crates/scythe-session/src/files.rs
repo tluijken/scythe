@@ -101,6 +101,8 @@ impl Session {
     pub fn save_to(&mut self, path: &Path) -> Result<(), String> {
         self.project.path = Some(path.to_owned());
         self.engine.store_plugin_states(&mut self.project);
+        let selection = self.selection();
+        self.project.store_selection(&selection);
         match save_project(&self.project, path) {
             Ok(()) => {
                 self.dirty = false;

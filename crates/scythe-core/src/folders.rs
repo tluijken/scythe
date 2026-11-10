@@ -264,6 +264,43 @@ impl Project {
     }
 }
 
+/// The track selection as REAPER saves it: `SEL 1` in each selected track.
+impl Project {
+    /// The tracks the file saved as selected.
+    pub fn saved_selection(&self) -> Vec<TrackId> {
+        self.tracks.iter().filter(|t| t.saved_selected()).map(|t| t.id).collect()
+    }
+
+    /// Writes `tracks` as the selection the file keeps.
+    pub fn store_selection(&mut self, tracks: &[TrackId]) {
+        for t in &mut self.tracks {
+            let on = tracks.contains(&t.id);
+            t.set_saved_selected(on);
+        }
+    }
+}
+
+impl Track {
+    fn sel_line(&self) -> Option<usize> {
+        self.extra.iter().position(|n| matches!(n, crate::rpp::Node::Line(l) if crate::rpp::line_key(l) == "SEL"))
+    }
+
+    pub fn saved_selected(&self) -> bool {
+        self.sel_line().is_some_and(|i| match &self.extra[i] {
+            crate::rpp::Node::Line(l) => crate::rpp::tokenize(l).get(1).is_some_and(|v| v != "0"),
+            _ => false,
+        })
+    }
+
+    pub fn set_saved_selected(&mut self, on: bool) {
+        let line = crate::rpp::Node::Line(format!("SEL {}", on as u8));
+        match self.sel_line() {
+            Some(i) => self.extra[i] = line,
+            None => self.extra.push(line),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,5 +536,24 @@ mod tests {
         expect(&p, &[("B", 0), ("C", 1), ("D", -1), ("F", 1), ("A", -1)]);
         assert!(p.move_to_index(&[f], 0));
         expect(&p, &[("F", 1), ("A", -1), ("B", 0), ("C", 1), ("D", -1)]);
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use crate::rpp::{project_from_rpp, project_to_rpp};
+
+    #[test]
+    fn the_selection_is_the_tracks_sel_lines() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\"\n  <TRACK\n    NAME a\n    SEL 0\n  >\n  <TRACK\n    NAME b\n    SEL 1\n  >\n  <TRACK\n    NAME c\n  >\n>\n";
+        let mut p = project_from_rpp(text).unwrap();
+        assert_eq!(p.saved_selection(), [p.tracks[1].id]);
+        let (a, c) = (p.tracks[0].id, p.tracks[2].id);
+        p.store_selection(&[a, c]);
+        let back = project_from_rpp(&project_to_rpp(&p)).unwrap();
+        let names: Vec<&str> =
+            back.tracks.iter().filter(|t| t.saved_selected()).map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["a", "c"]);
+        assert_eq!(project_to_rpp(&back).matches("SEL ").count(), 3);
     }
 }
