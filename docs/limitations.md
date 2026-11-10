@@ -13,6 +13,23 @@ measured.
   as "Custom" unless it is one of Scythe's scales. Modulation and learn
   from an editor work on a track's own top-level effects only. `TrackFX_Show` with flag 1 shows
   the effect's parameters in the inspector, as Scythe has no FX chain window.
+- Scythe EQ: REAPER does not have it, so a project using it plays in REAPER with the slot
+  offline (passing audio unchanged) and REAPER keeps its settings for Scythe. Dynamic bands in
+  the natural and linear phase modes add one correction kernel per band to the static curve,
+  exact when a single dynamic band moves and a first-order approximation when two overlapping
+  ones move at once; in natural phase the band's movement between its gain and its range is a
+  blend of the two curves rather than the analog filter at each gain in between. In those
+  modes mid/side bands act before left/right bands whatever their numbers (in zero latency the
+  bands run in order). Cut, notch, band pass and all pass bands cannot be dynamic. Spectral
+  bands detect on the EQ's output (or the external sidechain), not on its input, and add an
+  STFT's latency in every phase mode. Solo and sidechain audition skip the latency
+  compensation of the FIR modes. The analyzer's "Compare", collisions and EQ Match read
+  another Scythe EQ instance's signal (or a file); a track without one cannot be compared.
+  EQ Match fits bells and shelves only. Changing the phase mode, the linear phase resolution or
+  whether any band is spectral makes a new instance (for latency compensation), which restarts
+  its filters with a click if it plays. The instance list covers top-level slots on tracks and
+  the master (not input, take or monitoring chains or containers). There is no undo history of
+  the analyzer settings (they are stored with the instance but not automatable).
 - Audio device page: ALSA periods (`linux_audio_bufs`) are kept but not applied: the audio
   backend (cpal) always opens an ALSA device with two periods of the block size, and the window
   says so. JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI

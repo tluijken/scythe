@@ -315,6 +315,101 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   the track's MIDI and pass what they send on to the next effect in the chain; they are read from
   `~/.config/REAPER/Effects` and the installed REAPER's `InstallData/Effects` (or
   `$SCYTHE_JSFX_PATH`).
+- **Scythe EQ** (Scythe's own, not in REAPER): a 24-band dynamic equalizer, offered in the FX
+  browser as "Scythe EQ". It targets the feature set of today's commercial dynamic EQs, built
+  from public descriptions and DSP literature in Scythe's own design.
+  - *Bands*: bell, low and high shelf, low and high cut, notch, band pass, tilt shelf (−g/2 below,
+    +g/2 above the frequency), flat tilt (a constant dB-per-octave tilt across 20 Hz–20 kHz,
+    pivoting on the frequency; first-order shelves an octave apart, within 0.5 dB of a straight
+    line) and all pass. Cuts slope 6–96 dB/oct (Butterworth) or brickwall; shelves and band pass
+    take slopes too (shelves as Butterworth shelving filters after Holters and Zölzer). Gain ±30
+    dB, Q 0.025–40; Q above 0.707 gives cuts and shelves a resonance. Gain-Q interaction narrows
+    bells by the square root of their linear gain.
+  - *Zero latency* runs every band as matched biquads: poles mapped from the analog prototype by
+    impulse invariance, the numerator set so the digital magnitude equals the analog one at DC,
+    Nyquist and the section's own frequency (Vicanek's matched second-order filters applied to
+    every section; cuts are matched as the inverse of the boost they mirror, which keeps narrow
+    cuts near Nyquist exact). The response follows the analog prototype instead of cramping
+    towards Nyquist: a 10 kHz bell at 44.1 kHz stays within 0.8 dB of the analog curve to
+    20 kHz, a 1 kHz bell within 0.05 dB, at 96 kHz and up within a few tenths everywhere (the
+    unit tests measure this per shape and rate). Parameter changes glide (15 ms) and the filters
+    are recomputed every 32 frames while they do; switching a band's shape or bypassing it
+    crossfades over 10 ms; filter memories are flushed below 1e-30 so silence never decays into
+    subnormals.
+  - *Natural phase* samples the analog prototypes' magnitude and phase on an 8192-point grid
+    (at 48 kHz; doubled per doubling of the rate) and runs it as an FIR, so the phase follows the
+    analog filter with no cramping, for 1024 frames of latency. *Linear phase* uses the magnitude
+    only, as a symmetric FIR of 2048 to 32768 points (resolution low to maximum: 1024–16384
+    frames of latency at 48 kHz) with an ideal brickwall. Both run as a partitioned overlap-save
+    convolution with a 2×2 kernel matrix for mid/side and single-channel bands, crossfade when
+    the curve changes, and report their latency so the chain compensates for it; changing the
+    phase mode makes a new instance so compensation follows.
+  - *Stereo placement* per band: stereo, left, right, mid or side.
+  - *Dynamic bands* (bells, shelves and tilts): the band moves from its gain towards gain +
+    range while its detector (the band's region filtered out of the band's input, or out of the
+    track's channels 3/4 as an external sidechain) is above the threshold, by half the overshoot
+    with a 6 dB soft knee, never past the range; attack and release per band; auto threshold
+    follows the detector's own average level (1.5 s). In the FIR modes a dynamic band adds a
+    correction kernel scaled by its current amount, so the response stays linear (or natural)
+    phase while it moves. The sidechain can be auditioned.
+  - *Spectral dynamics*: a spectral band works per frequency bin inside its region (an STFT of
+    2048 at 48 kHz, 75 % overlap, after the EQ), so a resonance that pokes out is pulled down
+    while its neighbours keep their level; same threshold, range, attack, release and auto
+    threshold (per bin) as a dynamic band. It adds 2048 frames of latency while any band uses
+    it.
+  - *Character*: clean; subtle, `2·tanh(x/2)` (odd harmonics only, under 0.1 % at −12 dBFS);
+    warm, `(tanh(x + 0.15) − tanh(0.15)) / (1 − tanh²(0.15))`, whose bias adds even harmonics,
+    with a 5 Hz high pass removing its DC. Both have unity small-signal gain.
+  - *Output*: gain, auto gain (pink noise through the curve kept at the same A-weighted level:
+    −10·log10 of the A-weighted mean of |H|² over 20 Hz–20 kHz), gain scale −100 to 200 % of
+    every band's gain and range, output pan (balance) and width.
+  - *Editor* (Edit on the slot): the bands' curves and fills, the summed curve, each dynamic
+    band's range (dashed) and its live movement over a real-time analyzer, a piano strip under
+    the frequency axis (10 Hz–30 kHz) and a readout of frequency, note with cents and level under
+    the pointer. Double-click adds a band (a cut near either end), double-click a handle bypasses
+    it; drag handles (Shift: fine), drag empty space to select several, Ctrl-click to add to the
+    selection; the wheel sets Q; Alt held on a band solos it; right-click for shape, slope,
+    stereo placement, dynamics, bypass, solo and remove; arrows nudge the selection (an octave
+    twelfth or half a dB, Shift: finer) and Delete removes it. Below the graph: the selected
+    band's controls, and the phase mode, resolution, latency, character, Gain-Q, display range,
+    auto gain, gain scale, output, pan and width.
+  - *Analyzer*: pre (outline), post (filled, fading towards the bottom), the sidechain (in its
+    own colour when a band uses it) and another Scythe EQ's signal, on a thread of its own from
+    the effect's probe rings; resolution low to maximum (FFTs of 2048 to 16384 samples, the last
+    zero padded twice), speed very slow to very fast (separate rise time and fall rate), peak
+    hold that falls after 1.5 s, freeze, tilt 0–6 dB/oct (4.5 by default) and a 60, 90 or 120 dB
+    range. Bins are resampled onto a log grid: interpolated where a grid point's fractional-octave
+    window holds less than two bins (a smooth bass, no steps), elsewhere averaged over the window
+    and pulled towards the window's peak by how tonal it is (its spectral flatness), so noise is
+    averaged while a sine keeps its level. The display eases between analyzer updates for a
+    fluid 60 fps. *Spectrum grab*: a peak near the pointer standing 6 dB over its surroundings is
+    highlighted; dragging it makes a bell there with the gain following the pointer.
+  - *Compare and collisions*: "Compare" shows another Scythe EQ's output; where both signals are
+    loud and within 6 dB of each other the frequencies are shaded as collisions.
+  - *EQ Match*: learns this instance's input against another Scythe EQ's signal (both averaged
+    while playing) or against an audio file (measured offline), levels the difference (its mean
+    over 100 Hz–10 kHz removed), smooths it (0.05–2 octaves), scales it by the amount and fits up
+    to 16 bands (shelves where the difference reaches an end of the spectrum, bells elsewhere,
+    gains refined together); Apply adds them to free bands as one undo step.
+  - *Instance list* ("Instances"): every Scythe EQ in the project with its curve; open or bypass
+    each, click a band to bypass it, drag it up and down for its gain.
+  - *Storage*: a CLAP slot, `<CLAP "CLAP: Scythe EQ (Scythe)" scythe.eq "">` with its settings
+    in `<STATE` (magic `SCEQ`, a version, then every value as a double in its own units).
+    REAPER 7.73 opens such a project with "the following effects … are not available"; the slot
+    shows offline, passes audio, and REAPER saves the block byte for byte, envelopes on its
+    parameters too (it adds a label to their `PARMENV` line). Scythe opens that file again with
+    the EQ intact.
+  - *Control API and MCP*: every band and global value is a parameter (`fx.params`, `fx.param`,
+    automation, modulation and MIDI/OSC learn; solo and audition are momentary and not stored);
+    `eq.instances`, `eq.get`, `eq.band` (add, change or remove a band by number with named
+    shapes) and `eq.set` (globals) address it directly. The web UI's inspector lists the bands
+    with shape, placement, frequency, gain and Q.
+  - *CPU* (one instance, 48 kHz, 256-frame blocks, eight bands, release build on the test
+    machine): zero latency 31 µs per block (0.6 % of one core), natural phase 17 µs (0.3 %),
+    linear phase at medium resolution 14 µs (0.3 %); with two dynamic bands and one spectral band
+    65, 77 and 74 µs (1.2–1.4 %). `examples/scythe_eq_bench.rs` measures it. With the editor
+    open the analyzer thread takes about 3.5 % of a core and drawing the editor about 1 ms per
+    frame (`SCYTHE_EQ_PROFILE=1` prints both).
 - **Neural Amp Modeler**: Neural Amp Modeler slots (the LV2 plugin) run their `.nam` WaveNet
   models natively, with the stored input and output levels (all 310 models in
   `~/music/Samples/NAM` load; ~11× realtime per instance), at the model's own sample rate: like

@@ -74,6 +74,28 @@ whole stage setup.
 
 A summary; [docs/features.md](docs/features.md) has the full description of each area.
 
+### Scythe EQ
+
+Scythe's own equalizer, which REAPER does not have: 24 bands of ten shapes (bell, shelves,
+cuts from 6 to 96 dB/oct and brickwall, notch, band pass, tilt shelf, flat tilt, all pass)
+that beyond ReaEQ can be
+
+- **dynamic**, moving towards a range while their region (or a sidechain on channels 3/4)
+  crosses a threshold, or **spectral**, taming only the bins that poke out inside their region;
+- placed on **stereo, left, right, mid or side** each;
+- run at **zero latency** (matched filters that keep the analog shape up to Nyquist), in
+  **natural phase** or in **linear phase**, with the latency compensated;
+- matched to another track's Scythe EQ or a reference file with **EQ Match**, edited across the project in
+  the **instance list**, and checked for **collisions** with the spectrum of another track's Scythe EQ.
+
+The editor draws every band and the summed curve, with each dynamic band moving live, over a
+high-resolution analyzer (pre, post and sidechain; resolution, speed, tilt, range, peak hold,
+freeze) with a piano strip, note readout and spectrum grab: drag a peak to put a band on it.
+Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set its bands with
+`eq.band` over the control API and MCP. [More](docs/features.md#effects-and-plugins).
+
+![Scythe EQ on a vocal: bands, a dynamic band moving, the analyzer and the piano strip](docs/screenshots/scythe-eq.png)
+
 ### Arrange and editing
 
 - Move, trim, split, fade, crossfade, glue, copy and paste items; razor edits, ripple editing
