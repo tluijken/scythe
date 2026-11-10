@@ -39,6 +39,7 @@ fn buttons(app: &mut ScytheApp, ui: &mut Ui, toolbar: &Toolbar, origin: egui::Po
         let tip = app.session.action_name(&b.command).unwrap_or_else(|| b.command.clone());
         let tip = if b.text.is_empty() || b.text == tip { tip } else { format!("{}\n{tip}", b.text) };
         let resp = ui.interact(r, Id::unique((id, i)), Sense::click()).on_hover_text(tip);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, &label));
         let bg = if on {
             RAISED_HI
         } else if resp.hovered() {
@@ -78,8 +79,9 @@ pub fn main_strip(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ui.painter().rect_filled(rect, CornerRadius::same(12), PANEL);
     let toolbar = toolbar_or_default(&app.session, MAIN_TOOLBAR);
     let origin = pos2(rect.left() + 6.0, rect.center().y - BUTTON_H / 2.0);
-    let (clicked, _) = buttons(app, ui, &toolbar, origin, "main-toolbar");
+    // The strip's own response goes first: egui gives a click to the last widget under it.
     let resp = ui.interact(rect, Id::unique("main-toolbar-bg"), Sense::click());
+    let (clicked, _) = buttons(app, ui, &toolbar, origin, "main-toolbar");
     resp.context_menu(|ui| {
         if ui.button("Customize toolbar…").clicked() {
             app.view.toolbar_editor = Some(ToolbarEditor { section: MAIN_TOOLBAR.into(), ..Default::default() });
