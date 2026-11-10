@@ -1970,7 +1970,9 @@ mod tests {
     /// A processor at 8 kHz playing `p`, whose first track holds one item of ones from `item_at`.
     fn ones_project(item_at: f64) -> (Project, MediaPool, std::path::PathBuf) {
         use scythe_core::{Item, Take};
-        let dir = std::env::temp_dir().join(format!("scythe-engine-ci-{}-{item_at}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("scythe-engine-ci-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("ones.wav");
         let spec = hound::WavSpec {
