@@ -77,6 +77,8 @@ pub struct ViewState {
     pub modulation: Option<crate::ui::modulation::ModWindow>,
     /// The graphical editors of stock effects that are open.
     pub fx_editors: Vec<crate::ui::fx_editor::FxEditor>,
+    /// The window listing every Scythe EQ in the project is open.
+    pub eq_instances: bool,
     /// The tempo map shows as a lane among the envelope lanes (REAPER's master tempo envelope).
     pub tempo_lane: bool,
     pub keyboard_open: bool,
@@ -272,6 +274,7 @@ impl ScytheApp {
                 surfaces: None,
                 modulation: None,
                 fx_editors: Vec::new(),
+                eq_instances: false,
                 tempo_lane: false,
                 keyboard_open: false,
                 keyboard: Default::default(),

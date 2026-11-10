@@ -157,6 +157,59 @@ function FxParams({ store, track, index }) {
   </div>`;
 }
 
+const EQ_SHAPES = ["bell", "low_shelf", "high_shelf", "low_cut", "high_cut", "notch", "band_pass", "tilt_shelf", "flat_tilt", "all_pass"];
+const EQ_STEREO = ["stereo", "left", "right", "mid", "side"];
+const label = (s) => s.replace(/_/g, " ");
+const toLog = (hz) => Math.log(hz / 10) / Math.log(3000);
+const fromLog = (t) => 10 * Math.pow(3000, t);
+
+function EqBands({ store, track, index }) {
+  const [eq, setEq] = useState(null);
+  const [error, setError] = useState(null);
+  const at = { track: trackRef(track.id), index };
+  const load = () => store.client.send({ cmd: "eq.get", ...at }).then(setEq, (e) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, [track.id, index]);
+  if (error) return html`<p class="dim small">${error}</p>`;
+  if (!eq) return html`<p class="dim small">Loading bands…</p>`;
+  const change = (band, fields) => {
+    setEq((cur) => ({ ...cur, bands: cur.bands.map((b) => (b.band === band ? { ...b, ...fields } : b)) }));
+    store.run({ cmd: "eq.band", ...at, band, ...fields }, { latest: `eq.band:${track.id}:${index}:${band}:${Object.keys(fields)[0]}` });
+  };
+  const add = () => store.run({ cmd: "eq.band", ...at, freq: 1000 }).then(load, () => {});
+  const remove = (band) => store.run({ cmd: "eq.band", ...at, band, remove: true }).then(load, () => {});
+  return html`<div class="params">
+    ${eq.bands.length === 0 && html`<p class="dim small">No bands.</p>`}
+    ${eq.bands.map(
+      (b) => html`<div class="eq-band" key=${b.band}>
+        <div class="send-row">
+          <span class="mono">${b.band + 1}</span>
+          <select value=${b.shape} onChange=${(e) => change(b.band, { shape: e.target.value })}>
+            ${EQ_SHAPES.map((s) => html`<option value=${s}>${label(s)}</option>`)}
+          </select>
+          <select value=${b.stereo} onChange=${(e) => change(b.band, { stereo: e.target.value })}>
+            ${EQ_STEREO.map((s) => html`<option value=${s}>${s}</option>`)}
+          </select>
+          <${Switch} on=${b.enabled} title=${b.enabled ? "Bypass band" : "Enable band"} onChange=${(on) => change(b.band, { enabled: on })} />
+          <${IconButton} icon="trash" title="Remove band" onClick=${() => remove(b.band)} />
+        </div>
+        <label class="param"><span class="param-name">Freq</span>
+          <input type="range" min="0" max="1" step="0.001" value=${toLog(b.freq)} onInput=${(e) => change(b.band, { freq: fromLog(parseFloat(e.target.value)) })} />
+          <span class="param-text mono">${b.freq >= 1000 ? `${(b.freq / 1000).toFixed(2)} kHz` : `${b.freq.toFixed(0)} Hz`}</span></label>
+        <label class="param"><span class="param-name">Gain</span>
+          <input type="range" min="-30" max="30" step="0.1" value=${b.gain_db} onInput=${(e) => change(b.band, { gain_db: parseFloat(e.target.value) })} onDblClick=${() => change(b.band, { gain_db: 0 })} />
+          <span class="param-text mono">${b.gain_db.toFixed(1)} dB</span></label>
+        <label class="param"><span class="param-name">Q</span>
+          <input type="range" min="0" max="1" step="0.001" value=${Math.log(b.q / 0.025) / Math.log(1600)} onInput=${(e) => change(b.band, { q: 0.025 * Math.pow(1600, parseFloat(e.target.value)) })} />
+          <span class="param-text mono">${b.q.toFixed(2)}</span></label>
+      </div>`,
+    )}
+    <div class="add-row"><button class="btn small" onClick=${add}><${Icon} name="plus" size=${14} />Add band</button></div>
+    <details><summary class="dim small">All parameters</summary><${FxParams} store=${store} track=${track} index=${index} /></details>
+  </div>`;
+}
+
 function FxCatalog({ store, track, onClose }) {
   const [catalog, setCatalog] = useState(null);
   const [query, setQuery] = useState("");
@@ -201,7 +254,9 @@ function FxSection({ store, track }) {
             store.fire({ cmd: "fx.remove", track: trackRef(track.id), index: fx.index });
           }} />
         </div>
-        ${open === fx.index && html`<${FxParams} store=${store} track=${track} index=${fx.index} />`}
+        ${open === fx.index && (fx.name.includes("Scythe EQ")
+          ? html`<${EqBands} store=${store} track=${track} index=${fx.index} />`
+          : html`<${FxParams} store=${store} track=${track} index=${fx.index} />`)}
       </div>`,
     )}
     ${adding && html`<${FxCatalog} store=${store} track=${track} onClose=${() => setAdding(false)} />`}

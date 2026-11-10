@@ -20,6 +20,7 @@ base64.workspace = true
 eframe.workspace = true
 egui.workspace = true
 rfd.workspace = true
+realfft.workspace = true
 mlua.workspace = true
 serde.workspace = true
 serde_json.workspace = true

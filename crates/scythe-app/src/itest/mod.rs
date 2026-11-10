@@ -6,6 +6,7 @@ mod agents;
 mod corpus;
 mod flows;
 mod nam;
+mod scythe_eq;
 mod snapshot;
 mod tone3000_mock;
 

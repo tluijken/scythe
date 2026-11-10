@@ -4,12 +4,15 @@
 //! parameter rows stay one tab away. Every change goes through `Session::fx_gesture`, so a
 //! drag is one undo step.
 
+pub mod analyzer;
 mod delay;
 mod dynamics;
 mod eq;
+pub mod eq_match;
 mod fir;
 mod misc;
 pub mod model;
+pub mod scythe_eq;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +45,7 @@ pub enum Kind {
     Synth,
     Insert,
     ControlMidi,
+    ScytheEq,
 }
 
 impl Kind {
@@ -77,6 +81,7 @@ impl Kind {
             Self::Synth => "ReaSynth",
             Self::Insert => "ReaInsert",
             Self::ControlMidi => "ReaControlMIDI",
+            Self::ScytheEq => "Scythe EQ",
         }
     }
 
@@ -86,6 +91,7 @@ impl Kind {
             Self::Comp | Self::Gate | Self::Delay => vec2(760.0, 480.0),
             Self::Limit | Self::Verbate | Self::Verb | Self::Synth => vec2(680.0, 440.0),
             Self::Insert | Self::ControlMidi => vec2(560.0, 400.0),
+            Self::ScytheEq => vec2(1180.0, 680.0),
         }
     }
 }
@@ -169,7 +175,8 @@ pub fn kind(app: &ScytheApp, track: Option<TrackId>, slot: &FxSlot, index: usize
 
 /// The editor kind of the effect at `path` in `owner`'s chain.
 pub fn kind_at(app: &ScytheApp, owner: &FxOwner, slot: &FxSlot, path: &[usize]) -> Option<Kind> {
-    let kind = Kind::of_stock(stock_name(slot)?)?;
+    let kind =
+        if scythe_engine::scythe_eq::is_slot(slot) { Kind::ScytheEq } else { Kind::of_stock(stock_name(slot)?)? };
     let status = app.engine.fx().status_at(owner, &chain_slots(app, owner), path).cloned();
     matches!(status, Some(FxStatus::Native(_))).then_some(kind)
 }
@@ -252,6 +259,8 @@ pub struct FxEditor {
     dragging: Option<usize>,
     /// The ReaXcomp band shown.
     band: usize,
+    /// Scythe EQ's own view state.
+    pub(crate) eq: Option<Box<scythe_eq::EqView>>,
 }
 
 impl std::fmt::Debug for FxEditor {
@@ -299,6 +308,7 @@ impl FxEditor {
             hovered: false,
             dragging: None,
             band: 0,
+            eq: None,
         }
     }
 
@@ -546,6 +556,7 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
             Kind::Synth => misc::synth(cx, ui, content),
             Kind::Insert => misc::insert(cx, ui, content),
             Kind::ControlMidi => misc::control_midi(cx, ui, content),
+            Kind::ScytheEq => scythe_eq::show(cx, ui, content),
         },
     }
     keys(cx, ui);

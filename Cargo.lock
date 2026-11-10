@@ -3933,6 +3933,7 @@ dependencies = [
  "image",
  "mlua",
  "rayon",
+ "realfft",
  "rfd",
  "scythe-core",
  "scythe-engine",

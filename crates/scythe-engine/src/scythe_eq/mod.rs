@@ -9,6 +9,7 @@
 pub mod dynamics;
 pub mod filters;
 pub mod fir;
+pub mod matching;
 pub mod params;
 pub mod spectral;
 
@@ -98,7 +99,7 @@ pub struct Meters {
     /// The auto gain applied, in dB.
     pub auto_gain_db: AtomicU32,
     /// The external sidechain, mixed to mono, for the analyzer.
-    pub sidechain: crate::probe::FxProbe,
+    pub sidechain: Arc<FxProbe>,
 }
 
 impl Default for Meters {
@@ -109,7 +110,7 @@ impl Default for Meters {
             auto_threshold: zero(),
             detector_db: zero(),
             auto_gain_db: AtomicU32::new(0),
-            sidechain: FxProbe::default(),
+            sidechain: Arc::new(FxProbe::default()),
         }
     }
 }
@@ -296,6 +297,10 @@ impl ScytheEq {
 
     pub fn value(&self, id: u32) -> f64 {
         self.values.get(id as usize).copied().unwrap_or(0.0)
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.fs
     }
 
     pub fn meters(&self) -> Arc<Meters> {
