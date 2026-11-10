@@ -188,6 +188,11 @@ pub fn switches(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     if chip(ui, "X-fade", e.auto_crossfade, "Auto-crossfade items that come to overlap", "xfade").clicked() {
         run(app, 40041);
     }
+    if chip(ui, "Env", e.envelopes_follow_items, "Move envelope points with the items they lie under", "envattach")
+        .clicked()
+    {
+        run(app, 40070);
+    }
     let resp = chip(ui, "Lock", e.lock & LOCK_ENABLED != 0, "Locking (click), lock settings (right-click)", "lock");
     if resp.clicked() {
         run(app, 1135);

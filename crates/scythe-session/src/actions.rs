@@ -254,6 +254,7 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("40629", "Locking: Toggle loop points locking mode", S),
     ("1156", "Options: Toggle item grouping and track media/razor edit grouping", S),
     ("40041", "Options: Auto-crossfade media items when editing", S),
+    ("40070", "Options: Move envelope points with media items", S),
     ("41118", "Options: Enable auto-crossfades", S),
     ("41119", "Options: Disable auto-crossfades", S),
     ("40753", "Snapping: Disable snap", S),

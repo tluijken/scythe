@@ -246,7 +246,7 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         p.extra.push(node.clone());
                     }
                     "METRONOMEOUT" => p.metronome.outputs.push(num(&t, 1, 0.0) as i64),
-                    "RIPPLE" | "GRID" | "LOCK" | "AUTOXFADE" | "GROUPOVERRIDE" => {
+                    "RIPPLE" | "GRID" | "LOCK" | "AUTOXFADE" | "GROUPOVERRIDE" | "ENVATTACH" => {
                         p.editing.read_line(&t);
                         p.extra.push(node.clone());
                     }

@@ -9,7 +9,11 @@
 //!   per-track on its own track, all tracks on every track (cutting other items there).
 //! - Splitting splits group mates too and puts the right halves in a group of their own.
 //! - Locked items (`LOCK 1`, or every item while locking covers full items) are not moved,
-//!   split, deleted or rippled.
+//!   split, deleted or rippled, and ripple stops at the first one: it and everything after it
+//!   stay, envelope points included. A ripple move then moves the items before it one by one.
+//! - With "Move envelope points with media items" (`ENVATTACH`, on by default) a moved item
+//!   takes the stretch of each track envelope under it along (see `move_envelope_range`).
+//! - Removing time on all tracks moves the tempo map too; ripple moves leave it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -114,32 +118,86 @@ impl Project {
                 *s = s.min(it.position);
             }
         }
-        match self.editing.ripple {
-            RippleMode::Off => {}
-            RippleMode::PerTrack => {
-                for (&track, &start) in &starts {
-                    self.shift_track_after(track, start, delta, &moved);
-                }
-            }
+        let follow = self.editing.envelopes_follow_items;
+        // Rippled tracks with where their ripple starts; a locked item at or after that start
+        // holds everything from it on, and then the later items move one by one instead.
+        let rippled: Vec<(TrackId, f64)> = match self.editing.ripple {
+            RippleMode::Off => Vec::new(),
+            RippleMode::PerTrack => starts.iter().map(|(&t, &s)| (t, s)).collect(),
             RippleMode::AllTracks => {
                 let start = starts.values().copied().fold(f64::INFINITY, f64::min);
-                let tracks: Vec<TrackId> = self.tracks.iter().map(|t| t.id).collect();
-                for track in tracks {
-                    self.shift_track_after(track, start, delta, &moved);
-                }
-                self.shift_markers_after(start, delta);
+                self.tracks.iter().map(|t| (t.id, start)).collect()
+            }
+        };
+        let mut stops: BTreeMap<TrackId, f64> =
+            rippled.iter().map(|&(t, from)| (t, self.locked_from(t, from, &moved))).collect();
+        if self.editing.ripple == RippleMode::AllTracks {
+            let stop = stops.values().copied().fold(f64::INFINITY, f64::min);
+            stops.values_mut().for_each(|s| *s = stop);
+        }
+        let mut carried: Vec<(TrackId, ItemId, TimeRange)> = Vec::new();
+        for t in &self.tracks {
+            for it in t.items.iter().filter(|it| moved.contains(&it.id)) {
+                carried.push((t.id, it.id, TimeRange::new(it.position, it.end())));
             }
         }
-        for it in self.tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| moved.contains(&it.id)) {
-            it.position += delta;
+        for &(track, from) in &rippled {
+            let stop = stops[&track];
+            let Some(t) = self.track(track) else { continue };
+            if stop.is_finite() {
+                for it in t.items.iter() {
+                    let free = !moved.contains(&it.id) && !self.position_locked(it);
+                    if free && it.position >= from - EPS && it.position < stop - EPS {
+                        carried.push((track, it.id, TimeRange::new(it.position, it.end())));
+                    }
+                }
+            } else {
+                self.shift_track_after(track, from, delta, &moved, follow);
+            }
+        }
+        if self.editing.ripple == RippleMode::AllTracks && stops.values().all(|s| s.is_infinite()) {
+            self.shift_markers_after(starts.values().copied().fold(f64::INFINITY, f64::min), delta);
+        }
+        let carried_ids: HashSet<ItemId> = carried.iter().map(|c| c.1).collect();
+        for it in self.tracks.iter_mut().flat_map(|t| t.items.iter_mut()).filter(|it| carried_ids.contains(&it.id)) {
+            it.position = (it.position + delta).max(0.0);
+        }
+        if follow {
+            // Each item takes its own stretch of envelope; items move in the order that never
+            // picks up a stretch another one already put down.
+            let rippled_freely: HashSet<TrackId> =
+                rippled.iter().filter(|(t, _)| stops[t].is_infinite()).map(|(t, _)| *t).collect();
+            carried.retain(|(t, _, _)| !rippled_freely.contains(t));
+            carried.sort_by(|a, b| a.2.start.total_cmp(&b.2.start));
+            if delta > 0.0 {
+                carried.reverse();
+            }
+            for (track, _, range) in carried {
+                if let Some(t) = self.track_mut(track) {
+                    for env in t.envelopes.iter_mut() {
+                        move_envelope_range(env, range, delta);
+                    }
+                }
+            }
         }
         self.crossfade_tracks(starts.keys().copied());
         ids
     }
 
-    /// Moves a track's unlocked items (except `except`) and envelope points at or after
-    /// `from` by `delta`.
-    fn shift_track_after(&mut self, track: TrackId, from: f64, delta: f64, except: &HashSet<ItemId>) {
+    /// Where the first locked item at or after `from` on the track starts (not one of
+    /// `except`), or infinity: ripple editing leaves it and everything after it in place.
+    fn locked_from(&self, track: TrackId, from: f64, except: &HashSet<ItemId>) -> f64 {
+        self.track(track)
+            .into_iter()
+            .flat_map(|t| t.items.iter())
+            .filter(|it| !except.contains(&it.id) && self.position_locked(it) && it.position >= from - EPS)
+            .map(|it| it.position)
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Moves a track's items (except `except`) at or after `from` by `delta`, and with
+    /// `envelopes` its envelope points too.
+    fn shift_track_after(&mut self, track: TrackId, from: f64, delta: f64, except: &HashSet<ItemId>, envelopes: bool) {
         let locked: HashSet<ItemId> = self
             .track(track)
             .map(|t| t.items.iter().filter(|it| self.position_locked(it)).map(|it| it.id).collect())
@@ -150,12 +208,12 @@ impl Project {
                 it.position = (it.position + delta).max(0.0);
             }
         }
-        for env in t.envelopes.iter_mut() {
-            if delta > 0.0 {
-                open_envelope(env, from, delta);
-            } else {
-                for p in env.points.iter_mut().filter(|p| p.time >= from - EPS) {
-                    p.time = (p.time + delta).max(0.0);
+        if envelopes {
+            for env in t.envelopes.iter_mut() {
+                if delta > 0.0 {
+                    open_envelope(env, from, delta);
+                } else {
+                    pull_envelope(env, from, -delta);
                 }
             }
         }
@@ -210,7 +268,9 @@ impl Project {
 
     /// Removes the time `range` from one track, or from every track with markers and regions
     /// when `track` is `None`: what lies inside goes, items crossing the edges are cut, and
-    /// later items and envelope points move left. Locked items stay where they are.
+    /// later items and envelope points move left. A locked item holds itself and everything
+    /// after it in place (on every track for all tracks), as REAPER 7.73 does: the envelope
+    /// keeps its old value where the held part starts.
     pub fn remove_time(&mut self, range: TimeRange, track: Option<TrackId>) {
         if range.is_empty() {
             return;
@@ -220,7 +280,14 @@ impl Project {
             Some(t) => vec![t],
             None => self.tracks.iter().map(|t| t.id).collect(),
         };
-        for id in &scope {
+        let none = HashSet::new();
+        let mut stops: Vec<f64> =
+            scope.iter().map(|t| self.locked_from(*t, range.start, &none).max(range.end)).collect();
+        if track.is_none() {
+            let stop = stops.iter().copied().fold(f64::INFINITY, f64::min);
+            stops.iter_mut().for_each(|s| *s = stop);
+        }
+        for (id, &stop) in scope.iter().zip(&stops) {
             let locked: HashSet<ItemId> = self
                 .track(*id)
                 .map(|t| t.items.iter().filter(|it| self.delete_locked(it)).map(|it| it.id).collect())
@@ -244,15 +311,25 @@ impl Project {
             t.items.retain(|it| {
                 locked.contains(&it.id) || it.end() <= range.start + EPS || it.position >= range.end - EPS
             });
-            for it in t.items.iter_mut().filter(|it| !locked.contains(&it.id) && it.position >= range.end - EPS) {
+            for it in t
+                .items
+                .iter_mut()
+                .filter(|it| !locked.contains(&it.id) && it.position >= range.end - EPS && it.position < stop - EPS)
+            {
                 it.position = (it.position - len).max(0.0);
             }
             t.items.sort_by(|a, b| a.position.total_cmp(&b.position));
             for env in t.envelopes.iter_mut() {
-                close_envelope(env, range);
+                close_envelope(env, range, stop);
             }
         }
         if track.is_none() {
+            // Removing time on all tracks takes the tempo map along (REAPER 7.73); moving items
+            // with ripple does not.
+            self.tempo.points.retain(|p| p.time <= range.start + EPS || p.time >= range.end - EPS);
+            for p in self.tempo.points.iter_mut().filter(|p| p.time >= range.end - EPS) {
+                p.time = (p.time - len).max(0.0);
+            }
             self.markers.retain(|m| {
                 let inside = |t: f64| t > range.start + EPS && t < range.end - EPS;
                 match m.region_end {
@@ -292,7 +369,7 @@ impl Project {
             }
         };
         for t in scope {
-            self.shift_track_after(t, at, len, &except);
+            self.shift_track_after(t, at, len, &except, true);
         }
     }
 
@@ -630,20 +707,88 @@ fn open_envelope(env: &mut crate::Envelope, at: f64, len: f64) {
     insert_point(env, at + len, here);
 }
 
-/// Removes `range` from the envelope: points inside go, later ones move left, and edge
-/// points keep the values at both ends of the cut.
-fn close_envelope(env: &mut crate::Envelope, range: TimeRange) {
+/// Removes `range` from the envelope: points inside go, later ones up to `stop` move left,
+/// and edge points keep the values at both ends of the cut and where the points stop moving.
+fn close_envelope(env: &mut crate::Envelope, range: TimeRange, stop: f64) {
     let (Some(start), Some(end)) = (env.value_at(range.start), env.value_at(range.end)) else { return };
-    let had_end = env.points.iter().any(|p| (p.time - range.end).abs() < EPS);
+    let held = stop.is_finite().then(|| env.value_at(stop)).flatten();
+    if !env.points.iter().any(|p| (p.time - range.end).abs() < EPS) {
+        insert_point(env, range.end, end);
+    }
     env.points.retain(|p| p.time < range.start - EPS || p.time >= range.end - EPS);
-    for p in env.points.iter_mut().filter(|p| p.time >= range.end - EPS) {
+    for p in env.points.iter_mut().filter(|p| p.time >= range.end - EPS && p.time < stop - EPS) {
         p.time = (p.time - range.length()).max(0.0);
     }
     let at = env.points.partition_point(|p| p.time < range.start - EPS);
     env.points.insert(at, crate::EnvPoint::new(range.start, start));
-    if !had_end {
-        env.points.insert(at + 1, crate::EnvPoint::new(range.start, end));
+    if let Some(v) = held {
+        insert_point(env, stop, v);
     }
+}
+
+/// Pulls the points at or after `from` left by `len`: those in the `len` before `from` go, a
+/// point there takes the value at `from`, and an edge point just before keeps the old shape
+/// up to it.
+fn pull_envelope(env: &mut crate::Envelope, from: f64, len: f64) {
+    let to = (from - len).max(0.0);
+    let Some(here) = env.value_at(from) else { return };
+    insert_guard_before(env, to - EDGE);
+    env.points.retain(|p| p.time < to - EPS || p.time >= from - EPS);
+    for p in env.points.iter_mut().filter(|p| p.time >= from - EPS) {
+        p.time = (p.time - len).max(0.0);
+    }
+    let at = env.points.partition_point(|p| p.time < to - EPS);
+    env.points.insert(at, crate::EnvPoint::new(to, here));
+}
+
+/// An edge point at `t` keeping the envelope's value there, when some point lies before it
+/// (REAPER adds none where the envelope only holds its first value).
+fn insert_guard_before(env: &mut crate::Envelope, t: f64) {
+    if t >= 0.0
+        && env.points.first().is_some_and(|p| p.time < t - EPS)
+        && let Some(v) = env.value_at(t)
+    {
+        insert_point(env, t, v);
+    }
+}
+
+fn insert_guard_after(env: &mut crate::Envelope, t: f64) {
+    if let Some(v) = env.value_at(t) {
+        insert_point(env, t, v);
+    }
+}
+
+/// Moves the stretch of envelope under an item covering `range` by `delta`, as REAPER 7.73
+/// does with "Move envelope points with media items": the stretch keeps its shape (edge
+/// points carry the values at the item's edges), the envelope joins up across the place it
+/// left, and the stretch replaces what was where it lands, with edge points just outside
+/// both places keeping the shape around them.
+fn move_envelope_range(env: &mut crate::Envelope, range: TimeRange, delta: f64) {
+    let (s, e) = (range.start, range.end);
+    let (Some(vs), Some(ve)) = (env.value_at(s), env.value_at(e)) else { return };
+    let inside = |t: f64, a: f64, b: f64| t >= a - EPS && t <= b + EPS;
+    let mut seg: Vec<crate::EnvPoint> = env.points.iter().filter(|p| inside(p.time, s, e)).cloned().collect();
+    if !seg.first().is_some_and(|p| (p.time - s).abs() < EPS) {
+        seg.insert(0, crate::EnvPoint::new(s, vs));
+    }
+    if !seg.last().is_some_and(|p| (p.time - e).abs() < EPS) {
+        seg.push(crate::EnvPoint::new(e, ve));
+    }
+    insert_guard_before(env, s - EDGE);
+    insert_guard_after(env, e + EDGE);
+    env.points.retain(|p| !inside(p.time, s, e));
+    let (s2, e2) = (s + delta, e + delta);
+    insert_guard_before(env, s2 - EDGE);
+    insert_guard_after(env, e2 + EDGE);
+    env.points.retain(|p| !inside(p.time, s2, e2));
+    let at = env.points.partition_point(|p| p.time < s2);
+    env.points.splice(
+        at..at,
+        seg.into_iter().map(|mut p| {
+            p.time += delta;
+            p
+        }),
+    );
 }
 
 /// Removes the points inside `range` keeping the envelope's shape outside it: the value at
@@ -825,6 +970,228 @@ mod tests {
         p.move_items(&[ids[0][1]], 0.5);
         assert!(close(&positions(&p, 1), &[0.0, 2.5, 4.5]));
         assert_eq!(p.markers[0].position, 4.0);
+    }
+
+    /// One track with a volume envelope through `pts` and items at `items` (`(pos, len)`),
+    /// the `locked` ones locked.
+    fn env_scene(pts: &[(f64, f64)], items: &[(f64, f64)], locked: &[usize]) -> (Project, Vec<ItemId>) {
+        let mut p = Project::default();
+        let t = p.add_track("T");
+        let tr = p.track_mut(t).unwrap();
+        let mut ids = Vec::new();
+        for (k, &(pos, len)) in items.iter().enumerate() {
+            let mut it = item(pos, len, "tone0.wav");
+            it.locked = locked.contains(&k);
+            ids.push(it.id);
+            tr.items.push(it);
+        }
+        let env = tr.envelope_mut(EnvelopeKind::Volume);
+        env.fader_scaled = false;
+        env.points = pts.iter().map(|&(t, v)| EnvPoint::new(t, v)).collect();
+        (p, ids)
+    }
+
+    /// REAPER 7.73's points after the edit (`GetEnvelopePoint`, three decimals for values).
+    fn assert_points(p: &Project, want: &[(f64, f64)]) {
+        let got: Vec<(f64, f64)> = p.tracks[0].envelopes[0].points.iter().map(|p| (p.time, p.value)).collect();
+        let same = got.len() == want.len()
+            && got.iter().zip(want).all(|(a, b)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 6e-4);
+        assert!(same, "got {got:?}\nwant {want:?}");
+    }
+
+    const P1: [(f64, f64); 4] = [(0.0, 1.0), (2.7, 0.3), (3.0, 0.8), (5.0, 0.5)];
+    const P2: [(f64, f64); 4] = [(0.0, 1.0), (2.5, 0.3), (4.5, 0.9), (6.0, 0.5)];
+
+    #[test]
+    fn envelope_points_move_with_items() {
+        let mv = |pts: &[(f64, f64)], items: &[(f64, f64)], d: f64| {
+            let (mut p, ids) = env_scene(pts, items, &[]);
+            p.move_items(&[ids[0]], d);
+            p
+        };
+        assert_points(
+            &mv(&P1, &[(0.0, 1.0)], 0.5),
+            &[(0.5, 1.0), (1.5, 0.741), (1.5005, 0.611), (2.7, 0.3), (3.0, 0.8), (5.0, 0.5)],
+        );
+        assert_points(
+            &mv(&P1, &[(0.0, 1.0)], 3.0),
+            &[(1.0005, 0.741), (2.7, 0.3), (2.9995, 0.799), (3.0, 1.0), (4.0, 0.741), (4.0005, 0.65), (5.0, 0.5)],
+        );
+        assert_points(
+            &mv(&P1, &[(2.0, 1.0)], 0.5),
+            &[
+                (0.0, 1.0),
+                (1.9995, 0.482),
+                (2.4995, 0.641),
+                (2.5, 0.481),
+                (3.2, 0.3),
+                (3.5, 0.8),
+                (3.5005, 0.725),
+                (5.0, 0.5),
+            ],
+        );
+        assert_points(
+            &mv(&P1, &[(2.0, 1.0)], -1.5),
+            &[
+                (0.0, 1.0),
+                (0.4995, 0.871),
+                (0.5, 0.481),
+                (1.2, 0.3),
+                (1.5, 0.8),
+                (1.5005, 0.611),
+                (1.9995, 0.482),
+                (3.0005, 0.8),
+                (5.0, 0.5),
+            ],
+        );
+        assert_points(
+            &mv(&P2, &[(1.0, 3.0)], 0.5),
+            &[
+                (0.0, 1.0),
+                (0.9995, 0.72),
+                (1.4995, 0.725),
+                (1.5, 0.72),
+                (3.0, 0.3),
+                (4.5, 0.75),
+                (4.5005, 0.9),
+                (6.0, 0.5),
+            ],
+        );
+        // Two items, and a group mate on a track without envelopes.
+        let (mut p, ids) = env_scene(&P1, &[(0.0, 1.0), (2.0, 1.0)], &[]);
+        p.move_items(&ids, 0.5);
+        assert_points(
+            &p,
+            &[
+                (0.5, 1.0),
+                (1.5, 0.741),
+                (1.5005, 0.611),
+                (1.9995, 0.482),
+                (2.4995, 0.641),
+                (2.5, 0.481),
+                (3.2, 0.3),
+                (3.5, 0.8),
+                (3.5005, 0.725),
+                (5.0, 0.5),
+            ],
+        );
+        let (mut p, ids) = env_scene(&P1, &[(0.0, 1.0)], &[]);
+        let other = p.add_track("U");
+        let mate = item(0.0, 1.0, "tone0.wav");
+        let mate_id = mate.id;
+        p.track_mut(other).unwrap().items.push(mate);
+        p.group_items(&[ids[0], mate_id]);
+        p.move_items(&[mate_id], 0.5);
+        assert_points(&p, &[(0.5, 1.0), (1.5, 0.741), (1.5005, 0.611), (2.7, 0.3), (3.0, 0.8), (5.0, 0.5)]);
+        // `ENVATTACH 0` leaves them.
+        let (mut p, ids) = env_scene(&P1, &[(2.0, 1.0)], &[]);
+        p.editing.envelopes_follow_items = false;
+        p.move_items(&[ids[0]], 0.5);
+        assert_points(&p, &P1);
+    }
+
+    #[test]
+    fn ripple_stops_at_locked_items() {
+        let three = [(0.0, 1.0), (2.0, 1.0), (4.0, 1.0)];
+        let del = |pts: &[(f64, f64)], items: &[(f64, f64)], locked: &[usize]| {
+            let (mut p, ids) = env_scene(pts, items, locked);
+            p.editing.ripple = RippleMode::PerTrack;
+            p.delete_items(&[ids[1]]);
+            p
+        };
+        assert_points(&del(&P1, &three, &[]), &[(0.0, 1.0), (2.0, 0.481), (2.0, 0.8), (4.0, 0.5)]);
+        assert_points(&del(&P1, &three, &[2]), &[(0.0, 1.0), (2.0, 0.481), (2.0, 0.8), (4.0, 0.65), (5.0, 0.5)]);
+        assert_points(
+            &del(&P2, &three, &[2]),
+            &[(0.0, 1.0), (2.0, 0.44), (2.0, 0.45), (4.0, 0.75), (4.5, 0.9), (6.0, 0.5)],
+        );
+        let p = del(&P2, &[(0.0, 1.0), (2.0, 1.0), (5.0, 0.5)], &[2]);
+        assert_points(&p, &[(0.0, 1.0), (2.0, 0.44), (2.0, 0.45), (3.5, 0.9), (5.0, 0.767), (6.0, 0.5)]);
+        // Nothing after the locked item moves, and items before it do.
+        let p = del(&P2, &[(0.0, 1.0), (2.0, 1.0), (3.5, 0.5), (5.0, 1.0), (7.0, 1.0)], &[3]);
+        assert!(close(&positions(&p, 0), &[0.0, 2.5, 5.0, 7.0]));
+        assert_points(&p, &[(0.0, 1.0), (2.0, 0.44), (2.0, 0.45), (3.5, 0.9), (5.0, 0.767), (6.0, 0.5)]);
+
+        let mv = |pts: &[(f64, f64)], items: &[(f64, f64)], locked: &[usize], d: f64| {
+            let (mut p, ids) = env_scene(pts, items, locked);
+            p.editing.ripple = RippleMode::PerTrack;
+            p.move_items(&[ids[1]], d);
+            p
+        };
+        assert_points(
+            &mv(&P2, &three, &[], 0.5),
+            &[(0.0, 1.0), (1.9995, 0.44), (2.5, 0.44), (3.0, 0.3), (5.0, 0.9), (6.5, 0.5)],
+        );
+        assert_points(
+            &mv(&P2, &three, &[], -0.5),
+            &[(0.0, 1.0), (1.4995, 0.58), (1.5, 0.44), (2.0, 0.3), (4.0, 0.9), (5.5, 0.5)],
+        );
+        // A locked item later on: the items before it move on their own, envelope and all.
+        let p = mv(&P1, &three, &[2], 0.5);
+        assert!(close(&positions(&p, 0), &[0.0, 2.5, 4.0]));
+        assert_points(
+            &p,
+            &[
+                (0.0, 1.0),
+                (1.9995, 0.482),
+                (2.4995, 0.641),
+                (2.5, 0.481),
+                (3.2, 0.3),
+                (3.5, 0.8),
+                (3.5005, 0.725),
+                (5.0, 0.5),
+            ],
+        );
+        let p = mv(&P2, &[(0.0, 1.0), (2.0, 1.0), (3.5, 0.5), (5.0, 1.0)], &[3], 0.5);
+        assert!(close(&positions(&p, 0), &[0.0, 2.5, 4.0, 5.0]));
+        assert_points(
+            &p,
+            &[
+                (0.0, 1.0),
+                (1.9995, 0.44),
+                (2.4995, 0.445),
+                (2.5, 0.44),
+                (3.0, 0.3),
+                (3.5, 0.45),
+                (3.5005, 0.6),
+                (3.9995, 0.75),
+                (4.0, 0.6),
+                (4.5, 0.75),
+                (4.5005, 0.9),
+                (6.0, 0.5),
+            ],
+        );
+        // All tracks: a locked item on another track holds this one too.
+        let (mut p, ids) = env_scene(&P2, &three, &[]);
+        let other = p.add_track("U");
+        let mut held = item(3.0, 1.0, "tone0.wav");
+        held.locked = true;
+        p.track_mut(other).unwrap().items.push(held);
+        p.editing.ripple = RippleMode::AllTracks;
+        p.delete_items(&[ids[1]]);
+        assert!(close(&positions(&p, 0), &[0.0, 4.0]));
+        assert_points(&p, &[(0.0, 1.0), (2.0, 0.44), (3.0, 0.45), (3.0, 0.45), (4.5, 0.9), (6.0, 0.5)]);
+    }
+
+    #[test]
+    fn ripple_all_tracks_delete_moves_the_tempo_map() {
+        let tempo = |p: &Project| p.tempo.points.iter().map(|t| t.time).collect::<Vec<_>>();
+        for (mode, delete, want) in [
+            (RippleMode::AllTracks, true, [0.0, 1.5, 3.5]),
+            (RippleMode::PerTrack, true, [0.0, 1.5, 4.5]),
+            (RippleMode::AllTracks, false, [0.0, 1.5, 4.5]),
+        ] {
+            let (mut p, ids) = env_scene(&P1, &[(0.0, 1.0), (2.0, 1.0), (5.0, 1.0)], &[]);
+            p.tempo.points =
+                [(0.0, 120.0), (1.5, 100.0), (4.5, 90.0)].map(|(t, b)| crate::tempo::TempoPoint::new(t, b)).into();
+            p.editing.ripple = mode;
+            if delete {
+                p.delete_items(&[ids[1]]);
+            } else {
+                p.move_items(&[ids[1]], 0.5);
+            }
+            assert!(close(&tempo(&p), &want), "{mode:?} {delete}");
+        }
     }
 
     #[test]

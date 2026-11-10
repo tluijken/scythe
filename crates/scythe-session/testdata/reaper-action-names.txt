@@ -223,6 +223,7 @@
 40629	Locking: Toggle loop points locking mode
 1156	Options: Toggle item grouping and track media/razor edit grouping
 40041	Options: Auto-crossfade media items when editing
+40070	Options: Move envelope points with media items
 41118	Options: Enable auto-crossfades
 41119	Options: Disable auto-crossfades
 40753	Snapping: Disable snap

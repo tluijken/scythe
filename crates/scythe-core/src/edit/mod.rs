@@ -5,7 +5,7 @@
 //!
 //! Measured in REAPER 7.73 with Lua probes (kept in docs/verification.md): the
 //! RPP lines are `RIPPLE <mode> <all>`, `GRID <flags> 8 <quarter notes> 8 1 0 <kind> <swing>`,
-//! `LOCK <flags>`, `AUTOXFADE <flags>` and `GROUPOVERRIDE <off> 0 0 0`.
+//! `LOCK <flags>`, `AUTOXFADE <flags>`, `GROUPOVERRIDE <off> 0 0 0` and `ENVATTACH <flags>`.
 
 pub mod actions;
 pub mod nudge;
@@ -272,6 +272,10 @@ pub const LOCK_ALL: u32 = 2047;
 
 /// `AUTOXFADE` bit: overlapping items crossfade automatically.
 const AUTOXFADE_ON: i64 = 1;
+/// `ENVATTACH` bit: moving items moves the envelope points under them ("Options: Move
+/// envelope points with media items"). A new REAPER 7.73 project writes `ENVATTACH 3`, and a
+/// file without the line behaves the same.
+const ENVATTACH_ON: i64 = 1;
 
 /// The editing settings a project carries.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -285,6 +289,8 @@ pub struct EditSettings {
     pub auto_crossfade: bool,
     /// Item groups act together (`GROUPOVERRIDE` field 1 clear).
     pub grouping: bool,
+    /// Moving items takes the envelope points under them along (`ENVATTACH` bit 1).
+    pub envelopes_follow_items: bool,
 }
 
 impl Default for EditSettings {
@@ -296,6 +302,7 @@ impl Default for EditSettings {
             lock: LOCK_TIME_SELECTION,
             auto_crossfade: true,
             grouping: true,
+            envelopes_follow_items: true,
         }
     }
 }
@@ -333,6 +340,7 @@ impl EditSettings {
             Some("LOCK") => self.lock = n(1, 1.0) as u32,
             Some("AUTOXFADE") => self.auto_crossfade = n(1, 129.0) as i64 & AUTOXFADE_ON != 0,
             Some("GROUPOVERRIDE") => self.grouping = n(1, 0.0) == 0.0,
+            Some("ENVATTACH") => self.envelopes_follow_items = n(1, 3.0) as i64 & ENVATTACH_ON != 0,
             _ => return false,
         }
         true
@@ -347,6 +355,7 @@ impl EditSettings {
             "LOCK" => &["LOCK", "1"],
             "AUTOXFADE" => &["AUTOXFADE", "129"],
             "GROUPOVERRIDE" => &["GROUPOVERRIDE", "0", "0", "0", "0"],
+            "ENVATTACH" => &["ENVATTACH", "3"],
             _ => return None,
         };
         // Older projects write shorter lines (`RIPPLE 0`); keep them so until a field past
@@ -398,12 +407,16 @@ impl EditSettings {
                 let v = n(&t, 1) & !AUTOXFADE_ON | if self.auto_crossfade { AUTOXFADE_ON } else { 0 };
                 t[1] = v.to_string();
             }
+            "ENVATTACH" => {
+                let v = n(&t, 1) & !ENVATTACH_ON | if self.envelopes_follow_items { ENVATTACH_ON } else { 0 };
+                t[1] = v.to_string();
+            }
             _ => t[1] = (!self.grouping as i64).to_string(),
         }
         Some(t)
     }
 
-    pub const KEYS: [&'static str; 5] = ["RIPPLE", "GRID", "LOCK", "AUTOXFADE", "GROUPOVERRIDE"];
+    pub const KEYS: [&'static str; 6] = ["RIPPLE", "GRID", "LOCK", "AUTOXFADE", "GROUPOVERRIDE", "ENVATTACH"];
 }
 
 #[cfg(test)]
@@ -446,6 +459,9 @@ mod tests {
         let line = |s: &EditSettings, k: &str, old: &str| s.line(k, Some(&toks(old))).unwrap().join(" ");
         assert_eq!(line(&s, "GRID", "GRID 3455 8 0.5 8 1 0 8 0.5"), "GRID 3455 8 0.5 8 1 0 8 0.5");
         assert_eq!(line(&s, "AUTOXFADE", "AUTOXFADE 385"), "AUTOXFADE 384");
+        assert!(s.envelopes_follow_items);
+        assert!(s.read_line(&toks("ENVATTACH 2")) && !s.envelopes_follow_items);
+        assert_eq!(line(&s, "ENVATTACH", "ENVATTACH 3"), "ENVATTACH 2");
         s.grid.kind = GridKind::Measure;
         s.grid.snap = true;
         assert_eq!(line(&s, "GRID", "GRID 3455 8 0.5 8 1 0 8 0.5"), "GRID 3199 8 0.5 8 1 0 64 0.5");

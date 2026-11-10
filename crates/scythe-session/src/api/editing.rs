@@ -171,7 +171,7 @@ pub enum EditingCommand {
         #[serde(default)]
         modes: Option<Vec<String>>,
     },
-    /// Auto-crossfade and item grouping, or switches them.
+    /// Auto-crossfade, item grouping and envelope points following items, or switches them.
     #[serde(rename = "project.editing")]
     Options {
         /// Items that come to overlap crossfade automatically.
@@ -180,6 +180,10 @@ pub enum EditingCommand {
         /// Grouped items move, split and select together.
         #[serde(default)]
         grouping: Option<bool>,
+        /// Moving items takes the track envelope points under them along (REAPER's "Move
+        /// envelope points with media items", on in a new project).
+        #[serde(default)]
+        envelopes_follow_items: Option<bool>,
     },
     /// Locks or unlocks items (toggles each when `locked` is left out). Locked items do not
     /// move, split or delete.
@@ -391,6 +395,7 @@ fn options_state(p: &Project) -> Value {
         "ripple": ripple_name(p.editing.ripple),
         "auto_crossfade": p.editing.auto_crossfade,
         "grouping": p.editing.grouping,
+        "envelopes_follow_items": p.editing.envelopes_follow_items,
     })
 }
 
@@ -526,11 +531,13 @@ pub fn execute(session: &mut Session, command: EditingCommand) -> Result<Value, 
             }
             Ok(lock_state(&session.project))
         }
-        EditingCommand::Options { auto_crossfade, grouping } => {
-            if auto_crossfade.is_some() || grouping.is_some() {
+        EditingCommand::Options { auto_crossfade, grouping, envelopes_follow_items } => {
+            if auto_crossfade.is_some() || grouping.is_some() || envelopes_follow_items.is_some() {
                 session.edit("Editing options", |p| {
                     p.editing.auto_crossfade = auto_crossfade.unwrap_or(p.editing.auto_crossfade);
                     p.editing.grouping = grouping.unwrap_or(p.editing.grouping);
+                    p.editing.envelopes_follow_items =
+                        envelopes_follow_items.unwrap_or(p.editing.envelopes_follow_items);
                 });
             }
             Ok(options_state(&session.project))
