@@ -176,7 +176,18 @@ fn round(v: f64, steps: f64) -> i32 {
     (v.clamp(0.0, 1.0) * steps).round() as i32
 }
 
+impl ControlMidi {
+    /// Which of the twelve semitones above the root are in the scale notes snap to.
+    pub fn scale(&self) -> [bool; 12] {
+        self.settings.scale
+    }
+}
+
 impl Effect for ControlMidi {
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn params(&mut self) -> Vec<ParamInfo> {
         vec![
             param(0, "Bank MSB", 0.0, 127.0, 0.0, false),

@@ -692,7 +692,14 @@ impl FxInstance {
     /// the block passes through untouched. Returns whether it ran.
     pub fn process(&self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) -> bool {
         let Ok(mut fx) = self.effect.try_lock() else { return false };
+        let probing = self.probe.active();
+        if probing {
+            self.probe.tap(Side::Pre, left, right, ctx.sample_rate);
+        }
         fx.process(left, right, ctx);
+        if probing {
+            self.probe.tap(Side::Post, left, right, ctx.sample_rate);
+        }
         true
     }
 }

@@ -133,6 +133,7 @@ fn watched_effects_publish_without_allocating() {
             l.copy_from_slice(&block);
             r.copy_from_slice(&block);
             inst.process_automated(&mut l, &mut r, &ctx, &[], 0.0, None);
+            inst.process(&mut l, &mut r, &ctx);
         }
         COUNTING.with(|c| c.set(false));
         assert_eq!(COUNT.with(Cell::get), 0, "{name} allocated while publishing");
