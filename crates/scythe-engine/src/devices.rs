@@ -30,6 +30,14 @@ pub struct DeviceRequest {
     pub output_channels: Option<u16>,
     /// Input channels to open, chosen like `output_channels`.
     pub input_channels: Option<u16>,
+    /// Bits per sample to ask for (REAPER's ALSA "Bit depth": 16, 24 or 32 bit integer); the
+    /// device's own format when it does not offer it.
+    pub bits: Option<u16>,
+    /// JACK: start the server when it is not running, with this command (empty: as libjack
+    /// starts it, from `~/.jackdrc`).
+    pub jack_start: Option<String>,
+    /// JACK: leave Scythe's ports unconnected instead of connecting them to the system ports.
+    pub jack_no_connect: bool,
     /// Never open an input: no monitoring, no recording.
     pub no_input: bool,
 }
@@ -116,6 +124,7 @@ pub fn output_device(request: &DeviceRequest) -> Result<cpal::Device, String> {
     if request.is_dummy() {
         return Err("the dummy audio system opens no device".into());
     }
+    start_jack(request)?;
     let host = host(request)?;
     match request.output.as_deref() {
         Some(name) => pick(host.output_devices().map_err(|e| e.to_string())?, name)
@@ -131,6 +140,7 @@ pub fn input_device(request: &DeviceRequest) -> Result<cpal::Device, String> {
     if request.is_dummy() {
         return Err("the dummy audio system has no inputs".into());
     }
+    start_jack(request)?;
     let host = host(request)?;
     match request.input.as_deref() {
         Some(name) => pick(host.input_devices().map_err(|e| e.to_string())?, name)
@@ -198,15 +208,21 @@ pub fn stream_channels(supported: &[u16], default: u16, wanted: Option<u16>) -> 
     }
 }
 
-/// The configuration to open `device`'s input with at `rate`: its default format, the channel
-/// count `wanted` picks (see [`stream_channels`]).
+/// The configuration to open `device`'s input with at `rate`: the format `request.bits` asks
+/// for when the input offers it, else its default, and the channel count
+/// `request.input_channels` picks (see [`stream_channels`]).
 pub fn input_config(
     device: &cpal::Device,
-    wanted: Option<u16>,
+    request: &DeviceRequest,
     rate: u32,
 ) -> Result<(StreamConfig, SampleFormat), String> {
+    let wanted = request.input_channels;
     let default = device.default_input_config().map_err(|e| e.to_string())?;
-    let format = default.sample_format();
+    let offered: Vec<(SampleFormat, u32, u32)> = device
+        .supported_input_configs()
+        .map(|c| c.map(|c| (c.sample_format(), c.min_sample_rate(), c.max_sample_rate())).collect())
+        .unwrap_or_default();
+    let format = format_for(request.bits, &offered, rate).unwrap_or(default.sample_format());
     let mut supported: Vec<u16> = device
         .supported_input_configs()
         .map(|configs| {
@@ -226,6 +242,69 @@ pub fn input_config(
     config.channels = stream_channels(&supported, config.channels, wanted);
     Ok((config, format))
 }
+
+/// The integer format for REAPER's bit depth (16, 24, 32) among `offered` (format, lowest and
+/// highest rate), when one runs at `rate`.
+pub fn format_for(bits: Option<u16>, offered: &[(SampleFormat, u32, u32)], rate: u32) -> Option<SampleFormat> {
+    let format = match bits? {
+        16 => SampleFormat::I16,
+        24 => SampleFormat::I24,
+        32 => SampleFormat::I32,
+        _ => return None,
+    };
+    offered.iter().any(|(f, lo, hi)| *f == format && (*lo..=*hi).contains(&rate)).then_some(format)
+}
+
+/// Starts the JACK server as REAPER's "Auto-start jackd" does, when the request is for JACK,
+/// asks for it, and no server runs: with the launch command, else as libjack starts one.
+#[cfg(target_os = "linux")]
+fn start_jack(request: &DeviceRequest) -> Result<(), String> {
+    let Some(command) = request.jack_start.as_deref() else { return Ok(()) };
+    let jack = request.host.as_deref().is_some_and(|h| h.eq_ignore_ascii_case("JACK"));
+    let running = || jack::Client::new("scythe_probe", jack::ClientOptions::NO_START_SERVER).is_ok();
+    if !jack || running() {
+        return Ok(());
+    }
+    if command.trim().is_empty() {
+        return jack::Client::new("scythe_probe", jack::ClientOptions::empty())
+            .map(drop)
+            .map_err(|e| format!("starting the JACK server: {e}"));
+    }
+    std::process::Command::new("sh")
+        .args(["-c", command])
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("{command}: {e}"))?;
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if running() {
+            return Ok(());
+        }
+    }
+    Err(format!("the JACK server did not start with {command}"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_jack(_request: &DeviceRequest) -> Result<(), String> {
+    Ok(())
+}
+
+/// Disconnects every port of JACK clients named `client` (REAPER's auto-connect turned off),
+/// which the audio backend connects to the system ports as it opens them.
+#[cfg(target_os = "linux")]
+pub fn jack_disconnect(client: &str) {
+    let Ok((jack, _)) = jack::Client::new("scythe_patch", jack::ClientOptions::NO_START_SERVER) else { return };
+    for port in jack.ports(Some(&format!("^{client}:")), None, jack::PortFlags::empty()) {
+        let Some(p) = jack.port_by_name(&port) else { continue };
+        for other in p.get_connections() {
+            let _ = jack.disconnect_ports_by_name(&port, &other);
+            let _ = jack.disconnect_ports_by_name(&other, &port);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn jack_disconnect(_client: &str) {}
 
 /// The names REAPER gives a device's channels: `Input 3`, `Output 12`; on JACK the system port
 /// each is connected to comes first, `system:capture_3 (Input 3)`.

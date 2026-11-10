@@ -116,7 +116,36 @@ pub struct AudioDevicePrefs {
     pub block_size: Option<u32>,
     /// `linux_audio_srateor`: "Allow projects to override device sample rate", on by default.
     pub project_rate_override: Option<bool>,
+    /// `linux_audio_bits`: ALSA's bit depth (16, 24, 32).
+    pub bits: Option<u32>,
+    /// `linux_audio_bufs`: ALSA's periods, 2-8 (REAPER's default 3).
+    pub periods: Option<u32>,
+    /// `alsa_rtprio`: the audio thread's real-time priority with ALSA, 0 for none.
+    pub rt_priority: Option<u32>,
+    /// `jack_options`: bit 1 leaves the JACK server alone (no auto-start), bit 2 leaves audio
+    /// ports unconnected, bit 4 MIDI ports. REAPER's default (no key) is 1.
+    pub jack_options: Option<u32>,
+    /// `jack_launchcmd`: the command that starts jackd; empty lets libjack start it.
+    pub jack_launch: Option<String>,
+    /// `linux_disable_pm`: hold `/dev/cpu_dma_latency` at 0 while audio runs.
+    pub disable_power_management: Option<bool>,
+    /// `linux_mlockall`: lock the process memory.
+    pub lock_memory: Option<bool>,
+    /// `audiocloseinactive_linux`: bits of `CLOSE_*`.
+    pub close_inactive: Option<u32>,
+    /// `audioclosestop`: close the device whenever stopped, even while active.
+    pub close_stopped: Option<bool>,
 }
+
+/// `audiocloseinactive_linux` bit: close the device while stopped and Scythe is not the active
+/// application.
+pub const CLOSE_INACTIVE: u32 = 1;
+/// ... also while tracks are record armed.
+pub const CLOSE_INACTIVE_ARMED: u32 = 2;
+/// `jack_options` bit: do not start the JACK server.
+pub const JACK_NO_START: u32 = 1;
+/// `jack_options` bit: do not connect the audio ports to the system ports.
+pub const JACK_NO_CONNECT: u32 = 2;
 
 impl AudioDevicePrefs {
     pub fn project_rate_override(&self) -> bool {
@@ -136,25 +165,47 @@ impl AudioDevicePrefs {
             "linux_audio_srate" => self.sample_rate = number().filter(|r| *r > 0),
             "linux_audio_bsize" => self.block_size = number().filter(|b| *b > 0),
             "linux_audio_srateor" => self.project_rate_override = number().map(|v| v != 0),
+            "linux_audio_bits" => self.bits = number(),
+            "linux_audio_bufs" => self.periods = number(),
+            "alsa_rtprio" => self.rt_priority = number(),
+            "jack_options" => self.jack_options = number(),
+            "jack_launchcmd" => self.jack_launch = Some(value.to_owned()),
+            "linux_disable_pm" => self.disable_power_management = number().map(|v| v != 0),
+            "linux_mlockall" => self.lock_memory = number().map(|v| v != 0),
+            "audiocloseinactive_linux" => self.close_inactive = number(),
+            "audioclosestop" => self.close_stopped = number().map(|v| v != 0),
             _ => return false,
         }
         true
     }
 
     fn values(&self) -> Vec<(String, String)> {
-        let Some(system) = self.system else { return Vec::new() };
-        let mut out = vec![("linux_audio_mode".to_owned(), system.code().to_string())];
-        let device = |d: &Option<String>| d.clone().unwrap_or_default();
-        out.push(("alsa_indev".to_owned(), device(&self.input_device)));
-        out.push(("alsa_outdev".to_owned(), device(&self.output_device)));
+        let mut out = Vec::new();
+        if let Some(system) = self.system {
+            out.push(("linux_audio_mode".to_owned(), system.code().to_string()));
+            let device = |d: &Option<String>| d.clone().unwrap_or_default();
+            out.push(("alsa_indev".to_owned(), device(&self.input_device)));
+            out.push(("alsa_outdev".to_owned(), device(&self.output_device)));
+        }
         let numbers = [
             ("linux_audio_nch_in", self.input_channels),
             ("linux_audio_nch_out", self.output_channels),
             ("linux_audio_srate", self.sample_rate),
             ("linux_audio_bsize", self.block_size),
             ("linux_audio_srateor", self.project_rate_override.map(u32::from)),
+            ("linux_audio_bits", self.bits),
+            ("linux_audio_bufs", self.periods),
+            ("alsa_rtprio", self.rt_priority),
+            ("jack_options", self.jack_options),
+            ("linux_disable_pm", self.disable_power_management.map(u32::from)),
+            ("linux_mlockall", self.lock_memory.map(u32::from)),
+            ("audiocloseinactive_linux", self.close_inactive),
+            ("audioclosestop", self.close_stopped.map(u32::from)),
         ];
         out.extend(numbers.iter().filter_map(|(k, v)| v.map(|v| (k.to_string(), v.to_string()))));
+        if let Some(cmd) = &self.jack_launch {
+            out.push(("jack_launchcmd".to_owned(), cmd.clone()));
+        }
         out
     }
 }
@@ -165,14 +216,19 @@ pub const ALIAS_INPUTS: u32 = 1;
 pub const ALIAS_OUTPUTS: u32 = 2;
 
 /// A device's channel names and mapping, as REAPER keeps them in an `[alias_in_<device>]` or
-/// `[alias_out_<device>]` section of reaper.ini: per channel slot the hardware channel it
-/// plays (`ch<i>`) and its alias (`name<i>`, empty for the hardware name).
+/// `[alias_out_<device>]` section of reaper.ini and in `.ReaperChanMap` files
+/// (`[reaper_chanmap]`): per channel slot the hardware channel it plays (`ch<i>`, -1 for none)
+/// and its alias (`name<i>`, empty for the hardware channel's name). There are `map_size`
+/// slots, as many as tracks see, whatever the device has.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ChannelAliases {
-    pub channels: Vec<(usize, String)>,
+    pub channels: Vec<(i32, String)>,
     /// `map_hwnch`: how many channels the device had when the map was made.
     pub hardware_channels: usize,
 }
+
+/// The section of a `.ReaperChanMap` file.
+pub const CHANMAP_SECTION: &str = "reaper_chanmap";
 
 impl ChannelAliases {
     /// The section name for a device REAPER identifies as `ident` (`ALSA null`, `JackIn`):
@@ -182,17 +238,23 @@ impl ChannelAliases {
         format!("alias_{}_{clean}", if input { "in" } else { "out" })
     }
 
+    /// Each channel plays its own hardware channel, under its own name.
+    pub fn identity(hardware: usize) -> Self {
+        Self { channels: (0..hardware as i32).map(|c| (c, String::new())).collect(), hardware_channels: hardware }
+    }
+
     pub fn read(ini: &crate::ini::Ini, section: &str) -> Option<Self> {
         let s = ini.section(section)?;
-        let number = |k: &str| s.get(k).and_then(|v| v.trim().parse::<usize>().ok());
-        let size = number("map_size").unwrap_or(0).min(1024);
+        let number = |k: &str| s.get(k).and_then(|v| v.trim().parse::<i64>().ok());
+        let size = number("map_size").unwrap_or(0).clamp(0, 1024) as usize;
         let channels = (0..size)
             .map(|i| {
-                let hw = number(&format!("ch{i}")).unwrap_or(i);
+                let hw = number(&format!("ch{i}")).unwrap_or(i as i64).clamp(-1, 1023) as i32;
                 (hw, s.get(&format!("name{i}")).unwrap_or("").to_owned())
             })
             .collect();
-        Some(Self { channels, hardware_channels: number("map_hwnch").unwrap_or(size) })
+        let hardware = number("map_hwnch").map_or(size, |n| n.max(0) as usize);
+        Some(Self { channels, hardware_channels: hardware })
     }
 
     /// Replaces `section` in `ini` with these channels, keys sorted as REAPER sorts them.
@@ -208,20 +270,79 @@ impl ChannelAliases {
         ini.section_mut(section).entries = entries;
     }
 
-    /// The alias of channel `i`, when it has one. Channel `i` plays hardware channel `i`:
-    /// REAPER's remapping (`ch<i>`) is kept in the file but not applied.
+    /// A `.ReaperChanMap` file's text.
+    pub fn to_chanmap(&self) -> String {
+        let mut ini = crate::ini::Ini::default();
+        self.write(&mut ini, CHANMAP_SECTION);
+        ini.write()
+    }
+
+    pub fn from_chanmap(text: &str) -> Option<Self> {
+        Self::read(&crate::ini::Ini::parse(text), CHANMAP_SECTION)
+    }
+
+    /// The alias of channel slot `i`, when it has one.
     pub fn alias(&self, i: usize) -> Option<&str> {
         self.channels.get(i).map(|(_, a)| a.as_str()).filter(|a| !a.is_empty())
     }
 
-    /// Sets channel `i`'s alias (empty clears it), growing the map to `hardware` channels.
+    /// The hardware channel slot `i` plays, `None` when it is not connected.
+    pub fn hardware(&self, i: usize) -> Option<usize> {
+        self.channels.get(i).and_then(|(hw, _)| usize::try_from(*hw).ok())
+    }
+
+    /// Sets slot `i`'s alias (empty clears it), growing the map to `hardware` channels.
     pub fn set_alias(&mut self, i: usize, alias: &str, hardware: usize) {
-        let len = self.channels.len().max(hardware).max(i + 1);
+        self.grow(i + 1, hardware);
+        self.channels[i].1 = alias.trim().to_owned();
+    }
+
+    /// Points slot `i` at hardware channel `hw` (`None`: not connected).
+    pub fn set_hardware(&mut self, i: usize, hw: Option<usize>, hardware: usize) {
+        self.grow(i + 1, hardware);
+        self.channels[i].0 = hw.map_or(-1, |c| c as i32);
+    }
+
+    /// REAPER's Add: one more slot, not connected.
+    pub fn add_slot(&mut self, hardware: usize) {
+        self.grow(0, hardware);
+        self.channels.push((-1, String::new()));
+    }
+
+    /// REAPER's Remove: drops slot `i`.
+    pub fn remove_slot(&mut self, i: usize) {
+        if i < self.channels.len() {
+            self.channels.remove(i);
+        }
+    }
+
+    fn grow(&mut self, len: usize, hardware: usize) {
+        if self.channels.is_empty() {
+            *self = Self::identity(hardware);
+        }
         while self.channels.len() < len {
-            self.channels.push((self.channels.len(), String::new()));
+            self.channels.push((self.channels.len() as i32, String::new()));
         }
         self.hardware_channels = self.hardware_channels.max(hardware);
-        self.channels[i].1 = alias.trim().to_owned();
+    }
+
+    /// The hardware channel of every slot, when that is not simply each its own.
+    pub fn remap(&self, hardware: usize) -> Option<Vec<i32>> {
+        let map: Vec<i32> = self.channels.iter().map(|(hw, _)| *hw).collect();
+        let identity = map.len() == hardware && map.iter().enumerate().all(|(i, hw)| *hw == i as i32);
+        (!identity && !map.is_empty()).then_some(map)
+    }
+
+    /// The names the slots go by: the alias, else the name of the hardware channel played,
+    /// `(not connected)` for none.
+    pub fn names(&self, hardware: &[String]) -> Vec<String> {
+        (0..self.channels.len())
+            .map(|i| match (self.alias(i), self.hardware(i)) {
+                (Some(a), _) => a.to_owned(),
+                (None, Some(hw)) => hardware.get(hw).cloned().unwrap_or_else(|| format!("{}", hw + 1)),
+                (None, None) => "(not connected)".to_owned(),
+            })
+            .collect()
     }
 }
 
@@ -520,9 +641,14 @@ mod tests {
         let text = "[reaper]\nalsa_indev=null\nalsa_outdev=hw:CARD=USB,DEV=0\nalsa_rtprio=0\nlinux_audio_bits=32\n\
                     linux_audio_bsize=512\nlinux_audio_bufs=3\nlinux_audio_mode=1\nlinux_audio_nch_in=18\n\
                     linux_audio_nch_out=20\nlinux_audio_srate=44100\nlinux_audio_srateor=1\nuseinnc=3\n\
-                    allstereopairs=0\n";
+                    allstereopairs=0\njack_options=2\njack_launchcmd=jackd -d dummy\naudiocloseinactive_linux=3\n\
+                    audioclosestop=1\nlinux_disable_pm=1\nlinux_mlockall=0\nalsa_rtprio=40\n";
         let p = Preferences::parse(text);
         let a = &p.audio;
+        assert_eq!((a.bits, a.periods, a.rt_priority), (Some(32), Some(3), Some(40)));
+        assert_eq!((a.jack_options, a.jack_launch.as_deref()), (Some(JACK_NO_CONNECT), Some("jackd -d dummy")));
+        assert_eq!((a.close_inactive, a.close_stopped), (Some(CLOSE_INACTIVE | CLOSE_INACTIVE_ARMED), Some(true)));
+        assert_eq!((a.disable_power_management, a.lock_memory), (Some(true), Some(false)));
         assert_eq!(a.system, Some(AudioSystem::Alsa));
         assert_eq!((a.input_device.as_deref(), a.output_device.as_deref()), (Some("null"), Some("hw:CARD=USB,DEV=0")));
         assert_eq!((a.input_channels, a.output_channels), (Some(18), Some(20)));
@@ -562,9 +688,34 @@ mod tests {
         assert_eq!(ChannelAliases::read(&again, &section), Some(aliases.clone()));
         let mut grown = aliases;
         grown.set_alias(4, " Kick ", 6);
-        assert_eq!(grown.channels.len(), 6);
+        assert_eq!(grown.channels.len(), 5);
         assert_eq!(grown.alias(4), Some("Kick"));
         assert_eq!(ChannelAliases::section("ALSA hw:CARD=USB,DEV=0", false), "alias_out_ALSA_hw_CARD_USB_DEV_0");
+    }
+
+    #[test]
+    fn channel_remapping_reads_as_reaper_shows_it() {
+        // REAPER 7.73 after pointing input 1 at hardware input 3 and adding a slot (Add): 19
+        // inputs, the first named "Input 3", the last "(not connected)".
+        let mut text = String::from("[reaper_chanmap]\nch0=2\n");
+        for i in 1..18 {
+            text.push_str(&format!("ch{i}={i}\n"));
+        }
+        text.push_str("ch18=-1\nmap_hwnch=18\nmap_size=19\nname1=Snare\n");
+        let map = ChannelAliases::from_chanmap(&text).unwrap();
+        let hardware: Vec<String> = (1..=18).map(|i| format!("Input {i}")).collect();
+        let names = map.names(&hardware);
+        assert_eq!(names.len(), 19);
+        assert_eq!((names[0].as_str(), names[1].as_str(), names[2].as_str()), ("Input 3", "Snare", "Input 3"));
+        assert_eq!(names[18], "(not connected)");
+        let remap = map.remap(18).unwrap();
+        assert_eq!((remap[0], remap[1], remap[18]), (2, 1, -1));
+        assert_eq!(ChannelAliases::identity(18).remap(18), None);
+        assert_eq!(ChannelAliases::from_chanmap(&map.to_chanmap()), Some(map.clone()));
+        let mut fewer = map;
+        fewer.remove_slot(18);
+        fewer.add_slot(18);
+        assert_eq!(fewer.channels.len(), 19);
     }
 
     #[test]

@@ -232,6 +232,7 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         output_channels: flags.output_channels.or(audio.output_channels),
         input_channels: flags.input_channels.or(audio.input_channels),
         no_input: flag("--no-input").is_some() || config.no_input,
+        ..Default::default()
     };
     Ok(Options {
         project: positional.pop().map(PathBuf::from).or(config.project),

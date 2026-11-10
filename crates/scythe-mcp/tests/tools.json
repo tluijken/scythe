@@ -14781,6 +14781,17 @@
     "description": "Opens other audio devices without closing the project (the transport stops). Fields\nleft out keep the current choice. When the devices cannot be opened the previous ones\nplay on and the reason comes back as an error.\n\nControl API command `audio.set_device`.",
     "inputSchema": {
       "properties": {
+        "bits": {
+          "default": null,
+          "description": "ALSA and PulseAudio: bits per sample (16, 24 or 32 bit integer); 0 for the device's own.",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "block_size": {
           "default": null,
           "description": "Frames per audio block to request; 0 for the device's own.",
@@ -14860,6 +14871,60 @@
     },
     "name": "audio_set_device",
     "title": "Audio set device"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Sets the channel map of the inputs or outputs (REAPER's channel alias/mapping window):\none entry per channel tracks see, each playing a hardware channel or none, with an\noptional name. Turns aliasing/remapping on for that side; an empty list resets the map.\n\nControl API command `audio.channel_map`.",
+    "inputSchema": {
+      "properties": {
+        "channels": {
+          "items": {
+            "description": "One channel of a channel map.",
+            "properties": {
+              "hardware": {
+                "description": "The hardware channel it plays, from 1; `null` for none (\"not connected\").",
+                "format": "uint",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "name": {
+                "default": null,
+                "description": "Its name; left out or empty for the hardware channel's.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "description": "`input` or `output`.",
+          "enum": [
+            "input",
+            "output"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "channels"
+      ],
+      "type": "object"
+    },
+    "name": "audio_channel_map",
+    "title": "Audio channel map"
   },
   {
     "annotations": {

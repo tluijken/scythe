@@ -36,6 +36,8 @@ impl eframe::App for Shell {
         let ctx = ui.ctx().clone();
         self.app.session.acquire();
         self.app.poll();
+        let active = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        self.app.idle_audio(active);
         if ctx.cumulative_frame_nr() > 0 {
             for script in std::mem::take(&mut self.scripts) {
                 self.app.run_script(&script);

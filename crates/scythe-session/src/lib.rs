@@ -151,8 +151,15 @@ pub struct Session {
     pub event_log: api::feed::EventLog,
     /// Runs ReaScript for `script.run`; the desktop app sets it.
     pub script_runner: Option<api::script::ScriptRunner>,
-    /// Channel aliases of a session without a preferences file, by section.
-    unsaved_aliases: HashMap<String, scythe_core::prefs::ChannelAliases>,
+    /// The channel maps and aliases of the preferences (`[alias_in_*]`, `[alias_out_*]`), by
+    /// section.
+    aliases: HashMap<String, scythe_core::prefs::ChannelAliases>,
+    /// `mlockall` was called (it lasts for the process).
+    memory_locked: bool,
+    /// `/dev/cpu_dma_latency` held at 0 while the device runs.
+    cpu_awake: Option<std::fs::File>,
+    /// The device was closed while stopped ("Close audio device when stopped").
+    audio_closed: bool,
 }
 
 impl Session {
@@ -216,7 +223,10 @@ impl Session {
             active_tab: 0,
             event_log: Default::default(),
             script_runner: None,
-            unsaved_aliases: HashMap::new(),
+            aliases: HashMap::new(),
+            memory_locked: false,
+            cpu_awake: None,
+            audio_closed: false,
         };
         if let Some(reason) = session.engine.info().fallback_reason.clone() {
             session.notify(format!("Audio device unavailable, running silent: {reason}"));
@@ -287,6 +297,7 @@ impl Session {
         self.engine.seek(self.project.cursor);
         self.sync();
         self.loads += 1;
+        self.follow_project_rate();
         let saved = self.project.saved_selection();
         if !saved.is_empty() {
             self.select_tracks(saved);
@@ -483,6 +494,8 @@ impl Session {
         self.load_action_bindings();
         self.load_customizations();
         self.load_theme();
+        self.load_channel_aliases();
+        self.apply_audio_options();
         self.engine.set_default_click_output(self.prefs.metronome_default_output);
         if let Some(file) = self.monitor_fx_file()
             && let Ok(text) = std::fs::read_to_string(&file)
@@ -587,6 +600,9 @@ impl Session {
         f(&mut self.prefs);
         if self.prefs == before {
             return;
+        }
+        if self.prefs.audio != before.audio {
+            self.apply_audio_options();
         }
         if self.prefs.metronome_default_output != before.metronome_default_output {
             self.engine.set_default_click_output(self.prefs.metronome_default_output);

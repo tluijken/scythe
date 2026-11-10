@@ -30,7 +30,7 @@ libc = "0.2"
 x11rb = "0.13"
 realfft = "3.5.1"
 rustfft = "6.4.1"
-cpal = { version = "0.18.2", features = ["jack"] }
+cpal = { version = "0.18.2", features = ["jack", "pulseaudio"] }
 jack = "0.13.5"
 symphonia = { version = "0.6.1", features = ["all"] }
 opus-pure = "0.2.3"

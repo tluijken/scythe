@@ -16,6 +16,38 @@ use std::sync::{Mutex, OnceLock};
 /// the IRQ threads of a real-time kernel.
 const PRIORITY: i32 = 70;
 
+/// The `SCHED_FIFO` priority to ask for (REAPER's "RT priority"); 0 keeps audio threads at
+/// normal priority.
+static WANTED: AtomicI32 = AtomicI32::new(PRIORITY);
+
+/// Sets the priority audio threads ask for from now on: REAPER's ALSA "RT priority" (1-99),
+/// 0 for none ("non-RT"), `None` for Scythe's default.
+pub fn set_priority(priority: Option<u32>) {
+    WANTED.store(priority.map_or(PRIORITY, |p| p.min(99) as i32), Ordering::Relaxed);
+}
+
+/// Locks the process's memory in RAM (REAPER's "Lock process memory with mlockall()"), so
+/// no page the audio touches is swapped out.
+pub fn lock_memory() -> Result<(), String> {
+    // SAFETY: mlockall takes flags only.
+    if unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) } != 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+/// Holds `/dev/cpu_dma_latency` at 0 while kept (REAPER's "Disable power management"): the
+/// CPU stays out of deep idle states that wake up too slowly for small blocks.
+pub fn hold_cpu_awake() -> Result<std::fs::File, String> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/cpu_dma_latency")
+        .map_err(|e| format!("/dev/cpu_dma_latency: {e}"))?;
+    file.write_all(&0i32.to_ne_bytes()).map_err(|e| format!("/dev/cpu_dma_latency: {e}"))?;
+    Ok(file)
+}
+
 /// How the thread rendering audio is scheduled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Realtime {
@@ -61,6 +93,9 @@ pub fn enable() {
 /// Asks for real-time priority for the calling thread. Never blocks or allocates, so the audio
 /// callback can call it.
 pub fn request() {
+    if WANTED.load(Ordering::Relaxed) == 0 {
+        return;
+    }
     if let Some(tx) = PROMOTER.get() {
         let _ = tx.try_send(current_tid());
     }
@@ -191,7 +226,8 @@ fn rtprio_limit() -> libc::rlim_t {
 fn set_fifo(tid: libc::pid_t, limit: libc::rlim_t) -> Result<(), String> {
     // SAFETY: geteuid has no preconditions.
     let root = unsafe { libc::geteuid() } == 0;
-    let priority = if root { PRIORITY } else { PRIORITY.min(limit.min(99) as i32) };
+    let wanted = WANTED.load(Ordering::Relaxed);
+    let priority = if root { wanted } else { wanted.min(limit.min(99) as i32) };
     if priority <= 0 {
         return Err("rtprio limit is 0".into());
     }

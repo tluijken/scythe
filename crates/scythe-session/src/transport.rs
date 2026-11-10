@@ -120,7 +120,8 @@ impl Session {
         let session = if targets.is_empty() {
             None
         } else {
-            match Recording::start_on(self.engine.devices(), targets, self.engine.sample_rate()) {
+            let tap = self.engine.record_input().map_err(scythe_engine::record::RecordError::Device);
+            match tap.and_then(|tap| Recording::start(tap, targets)) {
                 Ok(s) => Some(s),
                 Err(e) => {
                     self.notify(format!("Cannot record: {e}"));

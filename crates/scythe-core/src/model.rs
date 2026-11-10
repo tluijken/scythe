@@ -1120,6 +1120,9 @@ pub struct Project {
     pub path: Option<PathBuf>,
     pub tempo: TempoMap,
     pub sample_rate: Option<u32>,
+    /// `SAMPLERATE` field 2: the project asks the device to run at its rate (Project settings'
+    /// "Project sample rate" checkbox).
+    pub force_sample_rate: bool,
     /// Default pan law for tracks that do not set their own (`PANLAW`, `PANLAWFLAGS`).
     pub pan_law: PanLaw,
     /// Default pan mode of tracks that do not pick one (`PANMODE`).
@@ -1160,6 +1163,7 @@ impl Default for Project {
             path: None,
             tempo: TempoMap::default(),
             sample_rate: None,
+            force_sample_rate: false,
             pan_law: PanLaw::default(),
             pan_mode: PanMode::default(),
             group_names: BTreeMap::new(),

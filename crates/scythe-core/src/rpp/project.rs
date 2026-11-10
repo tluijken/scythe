@@ -194,7 +194,10 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
                         selection = (start < end).then_some(TimeRange { start, end });
                     }
                     "CURSOR" => p.cursor = num(&t, 1, 0.0),
-                    "SAMPLERATE" => p.sample_rate = Some(num(&t, 1, 44100.0) as u32),
+                    "SAMPLERATE" => {
+                        p.sample_rate = Some(num(&t, 1, 44100.0) as u32);
+                        p.force_sample_rate = num(&t, 2, 0.0) != 0.0;
+                    }
                     "MASTER_VOLUME" => {
                         p.master.volume = num(&t, 1, 1.0);
                         p.master.pan = num(&t, 2, 0.0);
@@ -1067,7 +1070,12 @@ pub fn project_to_rpp(p: &Project) -> String {
     });
     root.line(line_from(l, "CURSOR", &["CURSOR"], &[(1, fmt_num(p.cursor))]));
     if let Some(sr) = p.sample_rate {
-        root.line(line_from(l, "SAMPLERATE", &["SAMPLERATE", "0", "0", "0"], &[(1, sr.to_string())]));
+        let same = l.get("SAMPLERATE").is_some_and(|t| (num(t, 2, 0.0) != 0.0) == p.force_sample_rate);
+        let mut fields = vec![(1, sr.to_string())];
+        if !same {
+            fields.push((2, bit(p.force_sample_rate)));
+        }
+        root.line(line_from(l, "SAMPLERATE", &["SAMPLERATE", "0", "0", "0"], &fields));
     }
     let m = &p.master;
     root.line(line_from(

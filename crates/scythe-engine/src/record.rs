@@ -4,8 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample};
 use scythe_core::TrackId;
 use scythe_core::recording::RecordTap;
 
@@ -55,7 +53,8 @@ pub enum RecordError {
 /// A running recording. Input samples travel from the device callback through a lock-free ring
 /// buffer to a writer thread, so the callback never touches the disk.
 pub struct Recording {
-    _stream: cpal::Stream,
+    /// Where the capture stream feeds this recording; emptied when it ends.
+    slot: crate::capture::RecordSlot,
     stop: Arc<AtomicBool>,
     writer: Option<JoinHandle<Result<Vec<RecordedTake>, RecordError>>>,
     /// Peak per target since the last `take_levels`, as f32 bits.
@@ -68,49 +67,32 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Opens the default input and starts writing one WAV file per target. `preferred_rate` is
-    /// used when the device supports it, so recordings need no resampling.
-    pub fn start(targets: Vec<RecordTarget>, preferred_rate: u32) -> Result<Self, RecordError> {
-        Self::start_on(&crate::DeviceRequest::default(), targets, preferred_rate)
-    }
-
-    /// Like [`Recording::start`], from the input `devices` names.
-    pub fn start_on(
-        devices: &crate::DeviceRequest,
-        targets: Vec<RecordTarget>,
-        preferred_rate: u32,
-    ) -> Result<Self, RecordError> {
-        let device = crate::devices::input_device(devices).map_err(RecordError::Device)?;
-        let name = device.description().map(|d| d.name().to_owned()).unwrap_or_else(|_| "input".into());
-        let (config, format) = match crate::devices::input_config(&device, devices.input_channels, preferred_rate) {
-            Ok(found) => found,
-            Err(_) => {
-                let default = device.default_input_config().map_err(|e| RecordError::Device(e.to_string()))?;
-                (default.config(), default.sample_format())
-            }
-        };
-        let in_channels = config.channels as usize;
-        let sample_rate = config.sample_rate;
-
-        let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(sample_rate as usize * in_channels * 4);
+    /// Starts writing one WAV file per target from `tap`, the engine's capture stream (see
+    /// [`crate::Engine::record_input`]).
+    pub fn start(tap: crate::capture::InputTap, targets: Vec<RecordTarget>) -> Result<Self, RecordError> {
+        let crate::capture::InputTap {
+            mut consumer,
+            channels: in_channels,
+            sample_rate,
+            device,
+            overruns,
+            latency,
+            slot,
+        } = tap;
         let stop = Arc::new(AtomicBool::new(false));
         let levels: Arc<Vec<AtomicU32>> = Arc::new(targets.iter().map(|_| AtomicU32::new(0)).collect());
-        let overruns = Arc::new(AtomicU64::new(0));
-        let input_latency = Arc::new(AtomicU64::new(0));
+        let input_latency = latency;
+        let in_channels = in_channels.max(1);
 
-        let mut writers = Vec::new();
-        for t in &targets {
-            if let Some(dir) = t.path.parent() {
-                std::fs::create_dir_all(dir)?;
+        let mut writers = match open_writers(&targets, sample_rate) {
+            Ok(w) => w,
+            Err(e) => {
+                if let Ok(mut s) = slot.lock() {
+                    *s = None;
+                }
+                return Err(e);
             }
-            let spec = hound::WavSpec {
-                channels: t.channels.len() as u16,
-                sample_rate,
-                bits_per_sample: 24,
-                sample_format: hound::SampleFormat::Int,
-            };
-            writers.push(hound::WavWriter::create(&t.path, spec)?);
-        }
+        };
 
         let stop_w = stop.clone();
         let levels_w = levels.clone();
@@ -150,31 +132,7 @@ impl Recording {
             Ok(out)
         })?;
 
-        let stream = match format {
-            SampleFormat::F32 => build::<f32>(&device, &config, producer, overruns.clone(), input_latency.clone()),
-            SampleFormat::I16 => build::<i16>(&device, &config, producer, overruns.clone(), input_latency.clone()),
-            SampleFormat::I32 => build::<i32>(&device, &config, producer, overruns.clone(), input_latency.clone()),
-            SampleFormat::U16 => build::<u16>(&device, &config, producer, overruns.clone(), input_latency.clone()),
-            other => Err(RecordError::Device(format!("unsupported sample format {other}"))),
-        };
-        let stream = match stream {
-            Ok(s) => s,
-            Err(e) => {
-                stop.store(true, Ordering::Release);
-                return Err(e);
-            }
-        };
-        stream.play().map_err(|e| RecordError::Device(e.to_string()))?;
-        Ok(Self {
-            _stream: stream,
-            stop,
-            writer: Some(writer),
-            levels,
-            overruns,
-            input_latency,
-            sample_rate,
-            device: name,
-        })
+        Ok(Self { slot, stop, writer: Some(writer), levels, overruns, input_latency, sample_rate, device })
     }
 
     /// Peak level per target since the previous call.
@@ -189,7 +147,9 @@ impl Recording {
 
     /// Stops the input, flushes the files and returns what was recorded.
     pub fn finish(mut self) -> Result<Vec<RecordedTake>, RecordError> {
-        drop(self._stream);
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = None;
+        }
         self.stop.store(true, Ordering::Release);
         let latency = f64::from_bits(self.input_latency.load(Ordering::Relaxed));
         match self.writer.take().map(|w| w.join()) {
@@ -377,34 +337,23 @@ impl OutputRecording {
     }
 }
 
-fn build<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    mut producer: rtrb::Producer<f32>,
-    overruns: Arc<AtomicU64>,
-    input_latency: Arc<AtomicU64>,
-) -> Result<cpal::Stream, RecordError>
-where
-    T: SizedSample,
-    f32: FromSample<T>,
-{
-    device
-        .build_input_stream(
-            *config,
-            move |data: &[T], info: &cpal::InputCallbackInfo| {
-                let t = info.timestamp();
-                let latency = t.callback.duration_since(t.capture);
-                input_latency.store(latency.as_secs_f64().to_bits(), Ordering::Relaxed);
-                for &s in data {
-                    if producer.push(s.to_sample::<f32>()).is_err() {
-                        overruns.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            },
-            |e| eprintln!("input stream error: {e}"),
-            None,
-        )
-        .map_err(|e| RecordError::Device(e.to_string()))
+type WavFile = hound::WavWriter<std::io::BufWriter<std::fs::File>>;
+
+fn open_writers(targets: &[RecordTarget], sample_rate: u32) -> Result<Vec<WavFile>, RecordError> {
+    let mut writers = Vec::new();
+    for t in targets {
+        if let Some(dir) = t.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let spec = hound::WavSpec {
+            channels: t.channels.len() as u16,
+            sample_rate,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        };
+        writers.push(hound::WavWriter::create(&t.path, spec)?);
+    }
+    Ok(writers)
 }
 
 #[cfg(test)]

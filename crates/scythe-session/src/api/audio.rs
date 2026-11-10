@@ -50,9 +50,21 @@ pub enum AudioCommand {
         /// Input channels to open, like `output_channels`.
         #[serde(default)]
         input_channels: Option<u16>,
+        /// ALSA and PulseAudio: bits per sample (16, 24 or 32 bit integer); 0 for the device's own.
+        #[serde(default)]
+        bits: Option<u16>,
         /// Keep the choice for the next start (true when left out).
         #[serde(default)]
         save: Option<bool>,
+    },
+    /// Sets the channel map of the inputs or outputs (REAPER's channel alias/mapping window):
+    /// one entry per channel tracks see, each playing a hardware channel or none, with an
+    /// optional name. Turns aliasing/remapping on for that side; an empty list resets the map.
+    #[serde(rename = "audio.channel_map")]
+    ChannelMap {
+        /// `input` or `output`.
+        kind: ChannelKind,
+        channels: Vec<MapSlot>,
     },
     /// Names a hardware input or output channel (REAPER's channel name aliasing), or clears
     /// its name with an empty `name`. Track inputs, hardware outputs and monitor mixes show it.
@@ -71,6 +83,16 @@ pub enum AudioCommand {
 pub enum ChannelKind {
     Input,
     Output,
+}
+
+/// One channel of a channel map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MapSlot {
+    /// The hardware channel it plays, from 1; `null` for none ("not connected").
+    pub hardware: Option<usize>,
+    /// Its name; left out or empty for the hardware channel's.
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -177,6 +199,7 @@ pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, Ap
             block_size,
             output_channels,
             input_channels,
+            bits,
             save,
         } => {
             let mut r: DeviceRequest = session.engine.devices().clone();
@@ -210,7 +233,32 @@ pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, Ap
             if let Some(v) = input_channels {
                 r.input_channels = Some(v).filter(|v| *v > 0);
             }
+            if let Some(v) = bits {
+                r.bits = Some(v).filter(|v| *v > 0);
+            }
             session.change_audio_device(r, save.unwrap_or(true)).map_err(ApiError::failed)?;
+            Ok(json(state(session)))
+        }
+        AudioCommand::ChannelMap { kind, channels } => {
+            let input = kind == ChannelKind::Input;
+            let hardware = if input { session.engine.info().inputs.len() } else { session.engine.info().outputs.len() };
+            if let Some(bad) = channels.iter().filter_map(|c| c.hardware).find(|h| *h == 0 || *h > hardware) {
+                return Err(ApiError::invalid(format!(
+                    "hardware channel {bad} is not one of the device's 1-{hardware}"
+                )));
+            }
+            let map = if channels.is_empty() {
+                scythe_core::prefs::ChannelAliases::identity(hardware)
+            } else {
+                scythe_core::prefs::ChannelAliases {
+                    channels: channels
+                        .iter()
+                        .map(|c| (c.hardware.map_or(-1, |h| h as i32 - 1), c.name.clone().unwrap_or_default()))
+                        .collect(),
+                    hardware_channels: hardware,
+                }
+            };
+            session.set_channel_map(input, map);
             Ok(json(state(session)))
         }
         AudioCommand::ChannelName { kind, channel, name } => {
@@ -236,7 +284,9 @@ mod tests {
     fn session() -> Session {
         let pool = std::sync::Arc::new(scythe_engine::MediaPool::default());
         let mut s = Session::new(scythe_engine::Engine::start_offline(pool, 48_000));
-        let dir = std::env::temp_dir().join(format!("scythe-audio-api-{}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("scythe-audio-api-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         s.load_preferences(dir.join("preferences.ini"));
         s
@@ -290,5 +340,56 @@ mod tests {
             cmd(&mut s, serde_json::json!({"cmd": "audio.channel_name", "kind": "output", "channel": 21, "name": "x"}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_channel_map_renames_and_reroutes_the_outputs() {
+        let mut s = session();
+        cmd(&mut s, serde_json::json!({"cmd": "audio.set_device", "system": "Dummy", "output_channels": 4})).unwrap();
+        let map = serde_json::json!({"cmd": "audio.channel_map", "kind": "output", "channels": [
+            {"hardware": 3}, {"hardware": 4, "name": "IEM"}, {"hardware": null}
+        ]});
+        cmd(&mut s, map).unwrap();
+        assert_eq!(s.output_names(), ["Output 3", "IEM", "(not connected)"]);
+        let text = std::fs::read_to_string(s.prefs_file.clone().unwrap()).unwrap();
+        assert!(text.contains("ch0=2") && text.contains("ch2=-1") && text.contains("map_size=3"), "{text}");
+        let bad = serde_json::json!({"cmd": "audio.channel_map", "kind": "output", "channels": [{"hardware": 9}]});
+        assert!(cmd(&mut s, bad).is_err());
+        cmd(&mut s, serde_json::json!({"cmd": "audio.channel_map", "kind": "output", "channels": []})).unwrap();
+        assert_eq!(s.output_names().len(), 4);
+    }
+
+    #[test]
+    fn the_device_closes_while_stopped_and_inactive_and_comes_back() {
+        let mut s = session();
+        cmd(&mut s, serde_json::json!({"cmd": "audio.set_device", "system": "Dummy"})).unwrap();
+        s.change_preferences(|p| p.audio.close_inactive = Some(scythe_core::prefs::CLOSE_INACTIVE));
+        s.idle_audio(true);
+        assert_eq!(s.engine.info().fallback_reason, None, "open while active");
+        s.idle_audio(false);
+        assert!(s.engine.info().fallback_reason.is_some(), "closed while stopped and inactive");
+        s.idle_audio(true);
+        assert_eq!(s.engine.info().fallback_reason, None, "open again when active");
+        s.change_preferences(|p| p.audio.close_stopped = Some(true));
+        s.idle_audio(true);
+        assert!(s.engine.info().fallback_reason.is_some(), "closed while stopped, active or not");
+    }
+
+    #[test]
+    fn a_project_that_asks_for_its_rate_reopens_the_device_at_it() {
+        let mut s = session();
+        cmd(&mut s, serde_json::json!({"cmd": "audio.set_device", "system": "Dummy", "sample_rate": 48000})).unwrap();
+        let plain = scythe_core::Project { sample_rate: Some(44_100), ..Default::default() };
+        s.load(plain);
+        assert_eq!(s.engine.sample_rate(), 48_000, "a project that does not ask leaves the device alone");
+        let forced = scythe_core::Project { sample_rate: Some(44_100), force_sample_rate: true, ..Default::default() };
+        s.load(forced);
+        assert_eq!(s.engine.sample_rate(), 44_100);
+        s.load(scythe_core::Project::default());
+        assert_eq!(s.engine.sample_rate(), 44_100, "and the device stays there, as in REAPER");
+        s.change_preferences(|p| p.audio.project_rate_override = Some(false));
+        let forced = scythe_core::Project { sample_rate: Some(96_000), force_sample_rate: true, ..Default::default() };
+        s.load(forced);
+        assert_eq!(s.engine.sample_rate(), 44_100, "unless projects may not override it");
     }
 }

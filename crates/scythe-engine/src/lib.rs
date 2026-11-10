@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod animation;
 pub mod bounce;
 pub mod builtin;
+pub mod capture;
 pub mod chain;
 pub mod clap_host;
 pub mod clap_presets;

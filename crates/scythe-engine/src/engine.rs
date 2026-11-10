@@ -356,6 +356,8 @@ struct Processor {
     hardware: Arc<crate::hardware_io::HardwareIo>,
     /// The media explorer's preview, mixed in after the master.
     preview: Arc<crate::preview::Preview>,
+    /// The device channel each output slot plays to (REAPER's output remapping); -1 for none.
+    out_map: Option<Vec<i32>>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -391,12 +393,14 @@ impl Processor {
             control: feeds.control,
             hardware: Arc::default(),
             preview: Arc::default(),
+            out_map: None,
         }
     }
 
     /// Sizes the buffers for a device with `channels` outputs. Not for the audio thread.
     fn set_outputs(&mut self, channels: usize) {
-        self.extra.resize_with(channels.saturating_sub(2), || vec![0.0; RenderScratch::MAX_BLOCK]);
+        let slots = self.out_map.as_ref().map_or(channels, |m| m.len().max(channels));
+        self.extra.resize_with(slots.saturating_sub(2), || vec![0.0; RenderScratch::MAX_BLOCK]);
     }
 
     /// Collects the MIDI that arrived since the last block. Returns whether there is live MIDI
@@ -648,7 +652,10 @@ impl Processor {
         for chunk in out.chunks_mut(channels * RenderScratch::MAX_BLOCK) {
             let frames = chunk.len() / channels;
             self.process(frames);
-            interleave(chunk, channels, &self.left, &self.right, &self.extra);
+            match &self.out_map {
+                None => interleave(chunk, channels, &self.left, &self.right, &self.extra),
+                Some(map) => interleave_mapped(chunk, channels, map, &self.left, &self.right, &self.extra),
+            }
         }
     }
 }
@@ -674,8 +681,31 @@ fn interleave<T: SizedSample + FromSample<f32>>(
     }
 }
 
+/// Like [`interleave`] through an output map: device channel `d` plays every output slot
+/// mapped to it.
+fn interleave_mapped<T: SizedSample + FromSample<f32>>(
+    out: &mut [T],
+    channels: usize,
+    map: &[i32],
+    left: &[f32],
+    right: &[f32],
+    extra: &[Vec<f32>],
+) {
+    let slot = |s: usize, i: usize| match s {
+        0 => left[i],
+        1 => right[i],
+        _ => extra.get(s - 2).map_or(0.0, |b| b[i]),
+    };
+    for (i, frame) in out.chunks_mut(channels).enumerate() {
+        for (d, s) in frame.iter_mut().enumerate() {
+            let v: f32 = map.iter().enumerate().filter(|(_, hw)| **hw == d as i32).map(|(k, _)| slot(k, i)).sum();
+            *s = T::from_sample(v);
+        }
+    }
+}
+
 enum Output {
-    Device(DeviceOutput),
+    Device(Box<DeviceOutput>),
     /// A thread that renders in real time and throws the audio away.
     Null {
         stop: Arc<AtomicBool>,
@@ -843,8 +873,12 @@ pub struct Engine {
     retired: VecDeque<(Instant, Arc<RenderGraph>)>,
     info: DeviceInfo,
     input_tx: Sender<Option<InputFeed>>,
-    /// Open while a track monitors its input.
-    input_stream: Option<cpal::Stream>,
+    /// The device's capture stream, open while a track monitors its input or a recording runs.
+    capture: Option<crate::capture::Capture>,
+    /// A track monitors its input.
+    monitor_wanted: bool,
+    /// Which hardware channel each input slot carries (REAPER's input remapping).
+    input_map: Option<Vec<i32>>,
     midi_tx: Sender<MidiFeed>,
     midi_inputs: Option<MidiInputs>,
     recorded_midi: rtrb::Consumer<RecordedMidi>,
@@ -941,14 +975,21 @@ impl Engine {
     /// may be the same hardware.
     pub fn release_device(&mut self) {
         self.go_silent();
-        self.input_stream = None;
-        let _ = self.input_tx.send(None);
+        self.close_capture();
         self.retry_at = None;
+    }
+
+    /// Closes the device, saying why, as REAPER's "[audio device closed]"; [`Engine::reopen_device`]
+    /// opens it again.
+    pub fn close_device(&mut self, reason: &str) {
+        self.release_device();
+        self.info.fallback_reason = Some(reason.to_owned());
     }
 
     /// Opens the devices this engine was asked for again, after [`Engine::release_device`].
     pub fn reopen_device(&mut self) -> Result<(), String> {
         if self.devices.is_dummy() {
+            self.info.fallback_reason = None;
             return Ok(());
         }
         let (device, config, format, name) = open_device(&self.devices)?;
@@ -964,7 +1005,7 @@ impl Engine {
         name: String,
     ) -> Result<(), String> {
         config.sample_rate = self.info.sample_rate;
-        self.output = Output::Device(DeviceOutput {
+        self.output = Output::Device(Box::new(DeviceOutput {
             stream: None,
             device: device.clone(),
             config,
@@ -972,7 +1013,7 @@ impl Engine {
             default_channels: config.channels,
             supported: None,
             proc: self.proc.clone(),
-        });
+        }));
         if let Ok(mut proc) = self.proc.lock() {
             proc.set_outputs(config.channels as usize);
         }
@@ -982,14 +1023,16 @@ impl Engine {
                     out.stream = Some(stream);
                     out.match_master(self.device_channels, &self.transport);
                 }
+                if self.devices.jack_no_connect {
+                    crate::devices::jack_disconnect(&format!("cpal_client_{}_out", std::process::id()));
+                }
                 let block_size = match config.buffer_size {
                     cpal::BufferSize::Fixed(n) => Some(n),
                     cpal::BufferSize::Default => None,
                 };
                 let host = crate::devices::host_name(&self.devices);
                 let input = crate::devices::input_device(&self.devices).ok().and_then(|d| {
-                    let (config, _) =
-                        crate::devices::input_config(&d, self.devices.input_channels, self.info.sample_rate).ok()?;
+                    let (config, _) = crate::devices::input_config(&d, &self.devices, self.info.sample_rate).ok()?;
                     Some((crate::devices::device_name(&d), crate::devices::device_id(&d), config.channels as usize))
                 });
                 let inputs = input.as_ref().map_or(0, |i| i.2);
@@ -1045,8 +1088,7 @@ impl Engine {
             let what = if stalled { "stopped responding" } else { "was disconnected" };
             let reason = format!("{} {what}", self.info.name);
             self.go_silent();
-            self.input_stream = None;
-            let _ = self.input_tx.send(None);
+            self.close_capture();
             self.info.fallback_reason = Some(reason.clone());
             self.retry_at = Some(now + RETRY_INTERVAL);
             return Some(DeviceEvent::Lost(reason));
@@ -1061,8 +1103,7 @@ impl Engine {
         self.retry_at = None;
         self.reconnects += 1;
         // The input went with the device; the next sync opens it again.
-        self.input_stream = None;
-        let _ = self.input_tx.send(None);
+        self.close_capture();
         Some(DeviceEvent::Restored(name))
     }
 
@@ -1113,7 +1154,9 @@ impl Engine {
             },
             retired: VecDeque::new(),
             input_tx: senders.input_tx,
-            input_stream: None,
+            capture: None,
+            monitor_wanted: false,
+            input_map: None,
             midi_tx: senders.midi_tx,
             midi_inputs: None,
             recorded_midi: senders.recorded,
@@ -1291,34 +1334,71 @@ impl Engine {
 
     /// Opens or closes the live input for monitoring. Returns the reason when it cannot open.
     pub fn set_monitoring(&mut self, on: bool) -> Result<(), String> {
-        if on == self.input_stream.is_some() {
+        self.monitor_wanted = on;
+        let recording = self.capture.as_ref().is_some_and(crate::capture::Capture::recording);
+        let want = on || recording;
+        if want == self.capture.is_some() {
             return Ok(());
         }
-        if !on {
-            self.input_stream = None;
-            let _ = self.input_tx.send(None);
-            return Ok(());
+        if want {
+            self.open_capture()
+        } else {
+            self.close_capture();
+            Ok(())
         }
-        let device = crate::devices::input_device(&self.devices)?;
-        let (config, _) = crate::devices::input_config(&device, self.devices.input_channels, self.info.sample_rate)?;
-        let channels = config.channels as usize;
-        let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(self.info.sample_rate as usize * channels / 2);
-        let stream = device
-            .build_input_stream(
-                config,
-                move |data: &[f32], _| {
-                    for &s in data {
-                        let _ = tx.push(s);
-                    }
-                },
-                |e| eprintln!("input stream error: {e}"),
-                None,
-            )
-            .map_err(|e| format!("input at {} Hz: {e}", self.info.sample_rate))?;
-        stream.play().map_err(|e| e.to_string())?;
-        let _ = self.input_tx.send(Some((rx, channels)));
-        self.input_stream = Some(stream);
+    }
+
+    fn open_capture(&mut self) -> Result<(), String> {
+        let (capture, rx) =
+            crate::capture::Capture::open(&self.devices, self.info.sample_rate, self.input_map.as_deref())?;
+        let _ = self.input_tx.send(Some((rx, capture.channels)));
+        self.capture = Some(capture);
         Ok(())
+    }
+
+    fn close_capture(&mut self) {
+        self.capture = None;
+        let _ = self.input_tx.send(None);
+    }
+
+    /// Which device channel each output slot plays to (REAPER's output remapping), `None` for
+    /// each its own.
+    pub fn set_output_map(&mut self, map: Option<Vec<i32>>) {
+        let channels = self.output_channels();
+        if let Ok(mut proc) = self.proc.lock()
+            && proc.out_map != map
+        {
+            proc.out_map = map;
+            proc.set_outputs(channels);
+        }
+    }
+
+    /// The input for a recording, from the capture stream monitoring uses (opened for it when
+    /// nothing monitors): one stream, as a device that opens for capture once allows.
+    pub fn record_input(&mut self) -> Result<crate::capture::InputTap, String> {
+        if self.capture.is_none() {
+            self.open_capture()?;
+        }
+        self.capture
+            .as_ref()
+            .and_then(crate::capture::Capture::tap)
+            .ok_or_else(|| "a recording already takes the input".into())
+    }
+
+    /// Which hardware channel each input slot plays (REAPER's input remapping), `None` for
+    /// each its own. Reopens the input when it changes and nothing records.
+    pub fn set_input_map(&mut self, map: Option<Vec<i32>>) {
+        if self.input_map == map {
+            return;
+        }
+        self.input_map = map;
+        let busy = self.capture.as_ref().is_some_and(crate::capture::Capture::recording);
+        if self.capture.is_some() && !busy {
+            self.close_capture();
+            if let Err(e) = self.open_capture() {
+                eprintln!("audio input: {e}");
+            }
+        }
     }
 
     /// Opens every MIDI input for live play and recording, or closes them.
@@ -1486,7 +1566,7 @@ impl Engine {
     /// Feeds `channels` interleaved input channels from `rx` instead of an input device, as
     /// monitored tracks hear it: for tests and generated input.
     pub fn set_input_feed(&mut self, rx: rtrb::Consumer<f32>, channels: usize) {
-        self.input_stream = None;
+        self.capture = None;
         let _ = self.input_tx.send(Some((rx, channels)));
     }
 
@@ -1539,7 +1619,6 @@ fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, S
     let device = crate::devices::output_device(request)?;
     let name = crate::devices::device_name(&device);
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
-    let format = supported.sample_format();
     let mut config: StreamConfig = supported.into();
     // A JACK server runs at its own rate and block size, as REAPER's JACK page has none to ask.
     let server = crate::devices::host_name(request).eq_ignore_ascii_case("JACK");
@@ -1549,6 +1628,12 @@ fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, S
     if let Some(frames) = request.buffer_size.filter(|_| !server) {
         config.buffer_size = cpal::BufferSize::Fixed(frames);
     }
+    let offered: Vec<(SampleFormat, u32, u32)> = device
+        .supported_output_configs()
+        .map(|c| c.map(|c| (c.sample_format(), c.min_sample_rate(), c.max_sample_rate())).collect())
+        .unwrap_or_default();
+    let format =
+        crate::devices::format_for(request.bits, &offered, config.sample_rate).unwrap_or(supported.sample_format());
     let supported = supported_channels(&device, format, config.sample_rate);
     config.channels = crate::devices::stream_channels(&supported, config.channels, request.output_channels);
     Ok((device, config, format, name))
@@ -1588,6 +1673,7 @@ fn open_stream(
     let stream = match format {
         SampleFormat::F32 => build::<f32>(device, config, proc, transport),
         SampleFormat::I16 => build::<i16>(device, config, proc, transport),
+        SampleFormat::I24 => build::<cpal::I24>(device, config, proc, transport),
         SampleFormat::I32 => build::<i32>(device, config, proc, transport),
         SampleFormat::U16 => build::<u16>(device, config, proc, transport),
         SampleFormat::F64 => build::<f64>(device, config, proc, transport),
@@ -1814,6 +1900,16 @@ mod tests {
         assert_eq!(output_channels(&[2], 2, 6), 2);
         assert_eq!(output_channels(&[], 2, 6), 2);
         assert_eq!(output_channels(&[2, 4, 8], 8, 4), 8);
+    }
+
+    #[test]
+    fn an_output_map_sends_each_slot_to_its_device_channel() {
+        let (l, r) = ([0.1f32, 0.1], [0.2f32, 0.2]);
+        let extra = vec![vec![0.3f32, 0.3]];
+        let mut out = [0.0f32; 8];
+        interleave_mapped(&mut out, 4, &[2, 2, -1], &l, &r, &extra);
+        assert_eq!((out[0], out[1], out[3]), (0.0, 0.0, 0.0), "slot 3 plays nowhere");
+        assert!((out[2] - 0.3).abs() < 1e-6, "slots 1 and 2 both play device channel 3: {out:?}");
     }
 
     #[test]
@@ -2150,7 +2246,7 @@ mod tests {
     #[test]
     fn a_twenty_output_device_plays_an_in_ear_mix_on_9_10_and_the_click_on_11() {
         use scythe_core::monitor::{CueBusOptions, MonitorOutput};
-        let (mut p, pool, dir) = ones_project(100.0);
+        let (mut p, pool, dir) = ones_project(101.0);
         p.metronome.set(scythe_core::metronome::ENABLED, true);
         p.metronome.outputs = vec![10 | scythe_core::HwOut::MONO];
         let ids: Vec<_> = p.tracks.iter().map(|t| t.id).collect();

@@ -385,7 +385,7 @@ fn the_audio_device_window_opens_from_the_status_pill_and_the_action() {
     for label in ["Audio system", "Input channels", "Input device", "Output channels", "Output device", "Sample rate"] {
         assert!(t.has(label), "{label} has no name: {:?}", t.labels());
     }
-    for label in ["Blocksize", "Apply", "Refresh", "Input channel name aliasing", "Edit output names"] {
+    for label in ["Blocksize", "Bit depth", "RT priority", "Apply", "Refresh", "Edit output names"] {
         assert!(t.has(label), "{label} has no name: {:?}", t.labels());
     }
     t.h.check_accessibility();
@@ -412,4 +412,38 @@ fn the_audio_device_window_opens_from_the_status_pill_and_the_action() {
     assert_eq!(app.engine.health().block_size, Some(256));
     assert_eq!(t.project().tracks.len(), tracks, "the project stays open");
     assert!(t.has("Playing: Dummy Audio · 44100 Hz · 256 frames · 0 in / 2 out"), "{:?}", t.labels());
+}
+
+#[test]
+fn the_audio_device_window_has_reapers_device_and_audio_page_switches() {
+    let mut t = TestApp::live("audio_device_switches");
+    t.click("Audio device settings");
+    for label in [
+        "Input channel name aliasing/remapping",
+        "Output channel name aliasing/remapping",
+        "Close audio device when stopped and application is inactive",
+        "Allow projects to override device sample rate",
+        "Lock process memory with mlockall() (caution)",
+    ] {
+        assert!(t.has(label), "{label} has no name: {:?}", t.labels());
+    }
+    t.h.get_by_label("Close audio device when stopped and application is inactive").scroll_to_me();
+    t.frames(3);
+    t.click("Close audio device when stopped and application is inactive");
+    assert_eq!(t.app().prefs.audio.close_inactive, Some(scythe_core::prefs::CLOSE_INACTIVE));
+    t.h.get_by_label("Edit output names").scroll_to_me();
+    t.frames(3);
+    t.click("Edit output names");
+    assert!(t.has("Output 1 alias") && t.has("Output 1 hardware channel"), "{:?}", t.labels());
+    t.h.check_accessibility();
+}
+
+#[test]
+fn a_device_that_does_not_open_at_start_shows_reapers_error_window() {
+    let mut t = TestApp::live("audio_error");
+    t.app().view.audio_error = Some("no output device named Scarlett".into());
+    t.frames(3);
+    assert!(t.has("There was an error opening the audio hardware."), "{:?}", t.labels());
+    t.click_role(Role::Button, "Audio device");
+    assert!(t.app().view.audio_error.is_none() && t.app().view.audio_device.is_some());
 }

@@ -1,12 +1,17 @@
-//! Opens the default input for half a second and reports how many frames arrived. The file is
-//! deleted straight away; only the count is printed.
+//! Opens the default input through an engine for half a second and reports how many frames
+//! arrived. The file is deleted straight away; only the count is printed.
+use std::sync::Arc;
+
 use scythe_core::TrackId;
 use scythe_engine::record::{RecordTarget, Recording};
+use scythe_engine::{Engine, MediaPool};
 
 fn main() {
     let path = std::env::temp_dir().join("scythe-record-probe.wav");
     let target = RecordTarget { track: TrackId(1), channels: vec![0], path: path.clone() };
-    match Recording::start(vec![target], 48000) {
+    let mut engine = Engine::start(Arc::new(MediaPool::default()));
+    let started = engine.record_input().and_then(|tap| Recording::start(tap, vec![target]).map_err(|e| e.to_string()));
+    match started {
         Ok(rec) => {
             println!("device: {} @ {} Hz", rec.device, rec.sample_rate);
             std::thread::sleep(std::time::Duration::from_millis(500));

@@ -84,6 +84,9 @@ pub struct ViewState {
     pub midi_devices_open: bool,
     /// The audio device window, while open.
     pub audio_device: Option<crate::ui::audio_device::AudioDeviceWindow>,
+    /// Why the audio device did not open at start, until dismissed (REAPER's "Error opening
+    /// devices" window).
+    pub audio_error: Option<String>,
     /// The region/marker manager window, while open, on this page.
     pub regions: Option<crate::ui::regions::RegionsTab>,
     /// The media explorer window, while open.
@@ -229,9 +232,7 @@ impl ScytheApp {
         session.no_input = request.no_input;
         session.load(Project::default());
         let mut app = Self::with_session(ctx, session);
-        if let Some(n) = notice {
-            app.notify(n);
-        }
+        app.view.audio_error = notice;
         app
     }
 
@@ -274,6 +275,7 @@ impl ScytheApp {
                 keyboard: Default::default(),
                 midi_devices_open: false,
                 audio_device: None,
+                audio_error: None,
                 regions: None,
                 explorer: None,
                 bay: None,
