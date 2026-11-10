@@ -185,6 +185,7 @@ fn ruler_header(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ui.painter().text(rect.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, "Tracks", theme::semibold(15.0), TEXT);
     let btn = Rect::from_min_size(pos2(rect.right() - 8.0 - w, rect.center().y - 11.0), vec2(w, 22.0));
     let resp = ui.allocate_rect(btn, Sense::click()).on_hover_text("Insert new track (Ctrl+T)");
+    resp.widget_info(|| widgets::button_info(ui, label));
     let bg = if resp.hovered() { RAISED_HI } else { RAISED };
     ui.painter().rect_filled(btn, CornerRadius::same(255), bg);
     widgets::paint_icon(
@@ -632,6 +633,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         // Header.
         let head = Rect::from_min_size(row.min, vec2(HEADER_W, row.height()));
         let head_resp = ui.interact(head.intersect(rows), Id::unique(("head", track.id)), Sense::click_and_drag());
+        head_resp.widget_info(|| {
+            egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Track {}", track.name))
+        });
         clip.rect_filled(head, CornerRadius::same(12), if selected { RAISED_HI } else { RAISED });
         if selected && app.selected_tracks().len() > 1 {
             clip.rect_stroke(
@@ -700,6 +704,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
 
             let arm_bg = if track.armed { theme::ARM_BG } else { RAISED_HI };
             let arm = ui.allocate_rect(btn(2.0), Sense::click()).on_hover_text("Arm for recording");
+            arm.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::CheckBox, true, track.armed, "Arm for recording")
+            });
             ui.painter().rect_filled(
                 btn(2.0),
                 CornerRadius::same(255),
@@ -767,6 +774,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
             lane_painter.vline(x, lane.y_range(), Stroke::new(1.0, RAISED));
         }
         let lane_resp = ui.interact(lane.intersect(rows), Id::unique(("lane", track.id)), Sense::click());
+        lane_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Lane {}", track.name)));
         if lane_resp.clicked() {
             let t = lane_resp.interact_pointer_pos().map(|p| axis.t(p.x));
             clicked_track = Some((track.id, t));
@@ -1059,6 +1067,10 @@ fn draw_item(
         return;
     }
     let resp = ui.interact(hit, Id::unique(("item", id)), Sense::click_and_drag());
+    let selected = app.is_selected(id);
+    resp.widget_info(|| {
+        egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("Item {}", item.name()))
+    });
     let ctrl = ui.ctx().input(|i| i.modifiers.command);
     if resp.clicked() && ctrl {
         // Ctrl+click adds the item to the selection, or takes it out again.

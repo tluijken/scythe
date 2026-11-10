@@ -209,6 +209,7 @@ fn song_list(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], drag_
             continue;
         }
         let resp = ui.interact(row.intersect(area), Id::unique("setlist-song").with(i), Sense::click_and_drag());
+        resp.widget_info(|| widgets::button_info(ui, &format!("Song {}", song.name)));
         let live = playing_at.is_some_and(|t| song.contains(t));
         // By position rather than `hovered`, which the row loses while its own buttons are pressed.
         let hovered = ui.rect_contains_pointer(row.intersect(area));
@@ -465,6 +466,10 @@ fn setlist_panel(
         );
         let song = resolved[i].map(|s| &songs[s]);
         let is_current = i == current;
+        resp.widget_info(|| {
+            let name = song.map_or("missing song", |s| s.name.as_str());
+            egui::WidgetInfo::selected(egui::Role::Button, true, is_current, format!("Entry {name}"))
+        });
         let bg = if drag == Some(Drag::Entry(i)) {
             BG
         } else if resp.hovered() {

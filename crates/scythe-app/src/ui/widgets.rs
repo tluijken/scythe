@@ -388,6 +388,7 @@ fn paint_icon_button(
     tip: &str,
 ) -> Response {
     let resp = resp.on_hover_text(tip);
+    resp.widget_info(|| button_info(ui, tip));
     let radius = (rect.height() / 2.0).min(255.0) as u8;
     ui.painter().rect_filled(rect, CornerRadius::same(radius), hover_tint(ui, &resp, bg));
     paint_icon(ui, rect, icon, fg, icon_size);
@@ -396,15 +397,22 @@ fn paint_icon_button(
 
 pub fn rail_button(ui: &mut Ui, rect: Rect, icon: Icon, active: bool, accent: Color32, tip: &str) -> Response {
     let resp = ui.allocate_rect(rect, Sense::click()).on_hover_text(tip);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), active, tip));
     let bg = if active { RAISED_HI } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(rect, CornerRadius::same(12), hover_tint(ui, &resp, bg));
     paint_icon(ui, rect, icon, if active { accent } else { theme::TEXT_DIM }, 20.0);
     resp
 }
 
+/// What AccessKit (and so a screen reader or a UI test) knows of a painted button.
+pub fn button_info(ui: &Ui, label: &str) -> egui::WidgetInfo {
+    egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), label)
+}
+
 /// Small rounded text button (M / S, segmented tabs, "Add track").
 pub fn text_pill(ui: &mut Ui, rect: Rect, text: &str, font: egui::FontId, bg: Color32, fg: Color32) -> Response {
     let resp = ui.allocate_rect(rect, Sense::click());
+    resp.widget_info(|| button_info(ui, text));
     let radius = (rect.height() / 2.0).min(255.0) as u8;
     ui.painter().rect_filled(rect, CornerRadius::same(radius), hover_tint(ui, &resp, bg));
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, font, fg);
@@ -420,6 +428,7 @@ pub fn label_pill(ui: &Ui, rect: Rect, text: &str, bg: Color32, fg: Color32) {
 /// iOS-style switch as in the FX chain rows.
 pub fn switch(ui: &mut Ui, rect: Rect, on: bool, accent: Color32) -> Response {
     let resp = ui.allocate_rect(rect, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, ui.is_enabled(), on, ""));
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(255), if on { accent } else { theme::SWITCH_OFF });
     let knob_x = if on { rect.right() - 11.0 } else { rect.left() + 11.0 };

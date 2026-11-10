@@ -335,6 +335,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         );
         let sw = Rect::from_min_size(pos2(r.right() - 12.0 - 36.0, r.center().y - 11.0), vec2(36.0, 22.0));
         let row = ui.interact(r, Id::unique(("fx-row", track_id, i)), Sense::click());
+        row.widget_info(|| widgets::button_info(ui, &format!("FX {short}")));
         let row = match &rig {
             Some(s) => row.on_hover_text(format!("{short}\n{}\nClick or Edit to open the rig", rig_summary(s))),
             None => row,
@@ -483,6 +484,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
     side_chain_rows(app, ui, painter, inner, y, track_id, FxTarget::Monitor);
     let add = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 40.0));
     let resp = ui.allocate_rect(add, Sense::click());
+    resp.widget_info(|| widgets::button_info(ui, "Add plugin"));
     if resp.hovered() {
         painter.rect_filled(add, CornerRadius::same(12), RAISED);
     }
@@ -523,6 +525,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         *y += 32.0;
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
         let resp = ui.allocate_rect(r, Sense::click());
+        resp.widget_info(|| widgets::button_info(ui, "FX container"));
         painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
         painter.text(
             r.left_center() + vec2(12.0, 0.0),
@@ -546,6 +549,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         if app.view.fx_target == FxTarget::Track {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
+            resp.widget_info(|| widgets::button_info(ui, "Guitar rig"));
             painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
             painter.text(
                 r.left_center() + vec2(12.0, 0.0),
@@ -575,6 +579,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         for builtin in scythe_engine::builtin::Builtin::ALL {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
+            resp.widget_info(|| widgets::button_info(ui, builtin.label()));
             painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
             painter.text(
                 r.left_center() + vec2(12.0, 0.0),
@@ -598,6 +603,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         }
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
         let resp = ui.allocate_rect(r, Sense::click());
+        resp.widget_info(|| widgets::button_info(ui, "Neural Amp Modeler"));
         painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
         painter.text(
             r.left_center() + vec2(12.0, 0.0),
@@ -632,6 +638,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
         for plugin in plugins {
             let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
             let resp = ui.allocate_rect(r, Sense::click());
+            resp.widget_info(|| widgets::button_info(ui, &plugin.label()));
             painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() { RAISED_HI } else { RAISED });
             let label = widgets::truncate(ui, &plugin.label(), &theme::regular(12.0), r.width() - 70.0);
             painter.text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(12.0), TEXT);

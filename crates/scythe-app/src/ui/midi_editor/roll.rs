@@ -215,6 +215,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, take: &Take, state: &m
     }
 
     let resp = ui.interact(roll, Id::unique(("midi-roll", take.id)), Sense::click_and_drag());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Canvas, true, "Piano roll"));
     let rect_of = |n: &EditNote| {
         let x0 = axis.x(n.start as f64);
         rows.y(n.key).map(|y| Rect::from_min_max(pos2(x0, y), pos2(axis.x(n.end as f64).max(x0 + 3.0), y + ROW_H)))
