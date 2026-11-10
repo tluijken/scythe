@@ -27,8 +27,15 @@ libraries:
 ```sh
 devbox run app                     # opens the generated demo song
 devbox run app -- path/to/song.RPP # opens a REAPER project
+devbox run app -- --list-devices   # the audio devices, with their ids
 devbox run test
 ```
+
+The audio interface is chosen in the audio device window (Ctrl+P, or click the
+`48k · 512 · CPU` pill in the top bar): JACK, ALSA or Dummy, the devices, how many inputs and
+outputs to open, rate and block size. It switches without closing the project and opens the
+same device next time; `--output-device`, `--sample-rate` and the other device flags override it
+for one run.
 
 Without a screen, for example as an in-ear-monitor mixer in the rack:
 
@@ -78,6 +85,9 @@ A summary; [docs/features.md](docs/features.md) has the full description of each
 - Sends post-fader, pre-FX or pre-fader, hardware outputs, multichannel tracks up to 32
   channels, sidechains and effect pin maps.
 - Track groups with lead and follow per parameter, and VCA groups.
+- REAPER's audio device page (JACK, ALSA, Dummy) with every input and output of a large
+  interface in the track input, hardware output, monitor mix and click menus, named as REAPER
+  names them or by your own aliases, kept in REAPER's reaper.ini keys.
 
 ### Effects and plugins
 

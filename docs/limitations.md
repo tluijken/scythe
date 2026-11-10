@@ -10,10 +10,26 @@ measured.
 - Stock effect editors: ReaFIR's gate, compressor, subtract and convolve modes have no editor
   (they are not emulated); a ReaXcomp band is added by splitting one at the middle of its range
   (where REAPER puts a new band was not measured); a ReaControlMIDI scale edited by hand is saved
-  as "Custom" unless it is one of Scythe's scales; ReaInsert names device channels "Out n" and
-  "In n" with the device's name (the audio backend gives no channel names). Modulation and learn
+  as "Custom" unless it is one of Scythe's scales. Modulation and learn
   from an editor work on a track's own top-level effects only. `TrackFX_Show` with flag 1 shows
   the effect's parameters in the inspector, as Scythe has no FX chain window.
+- Audio device page: Scythe's preferences are this one page and the channel naming of REAPER's
+  Audio page. Not there: PulseAudio as its own system (Scythe plays through ALSA's `default`
+  device, which PulseAudio or PipeWire provide; a REAPER file with `linux_audio_mode=3` opens
+  that), ALSA's bit depth and periods (`linux_audio_bits`, `linux_audio_bufs`: the backend
+  picks the format and period count; the keys stay in the file), RT priority, JACK's auto-start
+  command, auto-connect switches and MIDI port counts (Scythe always connects to the system
+  ports in order and uses ALSA MIDI), "Disable power management" and `mlockall`, "Allow
+  projects to override device sample rate" (kept, not applied: the device stays at its rate),
+  the "Close audio device when stopped/inactive" options, REAPER's channel remapping (`ch<i>`
+  is kept in the alias sections but channel *i* always plays hardware channel *i*), loading and
+  saving channel maps (`ChanMaps`), and "Virtual loopback audio hardware channels". REAPER
+  greys Dummy Audio's channels at 0 in and 2 out; the control API lets Dummy have more outputs
+  (`audio.set_device` with `output_channels`) for routing a large rig without hardware. A device
+  lost while playing is looked for again every five seconds as before; one missing at start is
+  replaced by the default device (REAPER keeps asking for its own). Recording opens the input a
+  second time beside monitoring, which an ALSA `hw:` device allowing one capture stream may
+  refuse (not tried on hardware): JACK or a `dsnoop` device avoid it.
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns

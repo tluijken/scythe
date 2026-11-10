@@ -601,6 +601,17 @@ A `surface` is one of:
   moves the first strip on by that many tracks (8 for an extender right of an MCU).
 - `{"type": "line", "line": "MCU 0 0 2 3 0"}`: a line copied from REAPER's reaper.ini.
 
+### Audio device
+
+Admin only. As the desktop app's audio device window (REAPER's Preferences > Audio > Device).
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `audio.devices` | | `[{"system", "devices": [{"id", "name", "input", "output"}]}]`: every audio system (`ALSA`, `JACK`, `Dummy`) and its devices |
+| `audio.device` | | `{"system", "output", "output_id", "input", "sample_rate", "block_size", "output_latency", "silent", "reason", "inputs", "outputs", "requested"}`: what plays, the channels by the names tracks show (aliases included) and what was asked for |
+| `audio.set_device` | any of `system`, `output`, `input` (an id from `audio.devices` or a name; empty for the default), `sample_rate`, `block_size` (0 for the device's own), `output_channels`, `input_channels` (0 for all of an interface, else a pair), `save` (default true: kept in the preferences) | the new `audio.device`; the transport stops and the project stays open. When the device cannot be opened the previous one plays on and the error says why |
+| `audio.channel_name` | `kind` (`input`, `output`), `channel` (from 1), `name` (empty clears it) | `audio.device`; the alias is kept as REAPER keeps it and aliasing turns on for that side |
+
 ### MIDI devices and synchronization
 
 Devices keep stable numbers, as REAPER's `reaper-midihw-linux.ini` keeps them beside

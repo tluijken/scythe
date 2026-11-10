@@ -156,7 +156,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   compensation, and follow the track's own output (muting silences them; a track that is only
   heard because it feeds a soloed bus keeps its sends but not its main or hardware outputs, as
   in REAPER). The device opens with as many channels as the outputs reach. Edited in the
-  inspector's Sends tab.
+  inspector's Sends tab, whose output menu lists every output the device opened, by name
+  (see [Audio device](#audio-device)).
 - **Multichannel tracks** (`NCHAN`, up to 32 in the inspector's Sends tab): items with more
   channels play into channels 3 and up, sends take any channel pair (or one channel) to any
   pair of the destination (`AUXRECV` source and destination channels), folders carry every
@@ -951,6 +952,41 @@ the whole job.
   and panel backgrounds, track lanes, text, the envelope colours). WALTER layouts and images
   are not read.
 
+## Audio device
+
+- **Audio device window** (REAPER's Preferences > Audio > Device page): opened with "Options:
+  Preferences..." (40016, Ctrl+P) or "Options: Audio device settings..." from the action
+  palette, the Audio device... button of the settings rail's window, or a click on the
+  rate · block · CPU pill in the top bar, as REAPER opens its device page from the audio status
+  in its menu bar. It offers the audio systems REAPER offers on Linux (JACK, ALSA, Dummy Audio),
+  the input and output channels to open, the ALSA input and output devices (listed as REAPER
+  lists them, `id ; name`), the sample rate and block size (REAPER's values, only those the
+  device supports when it says; JACK runs at the server's, as REAPER's JACK page has neither),
+  and Refresh. Apply stops the transport and opens the new device without closing the project:
+  effects keep their state, media is decoded again at a new rate, plugin editors close. When the
+  device cannot be opened the error shows in the window and the previous device plays on. The
+  window shows what plays: device, rate, block, latency and channel counts.
+- **Saved as REAPER saves it**: the choice goes into the preferences under REAPER 7.73's Linux
+  reaper.ini keys (`linux_audio_mode` 0 JACK, 1 ALSA, 2 Dummy, 3 PulseAudio; `alsa_indev`,
+  `alsa_outdev`, `linux_audio_nch_in`, `linux_audio_nch_out`, `linux_audio_srate`,
+  `linux_audio_bsize`, `linux_audio_srateor`), so REAPER's settings carry over. The next start
+  (desktop and `scythe-server` without device flags or `[audio]`) opens the same device; one
+  that is missing falls back to the default device with a notice. The command-line flags
+  override it for one run. API: `audio.devices`, `audio.device`, `audio.set_device`,
+  `audio.channel_name` (admin only).
+- **Large interfaces**: every channel the device opens is offered. With no count chosen a
+  hardware device with a fixed channel set (an 18-in, 20-out interface's `hw:` device) opens all
+  its channels, a sound server or plugin device (`default`, `plughw`, JACK) a pair; the channel
+  counts open more. Track record inputs ("Input: Mono" and "Input: Stereo" with every channel
+  and pair, as REAPER lists them, the pairs starting on even channels too unless
+  `allstereopairs=0`), track hardware outputs, monitor mixes, the metronome output
+  and ReaInsert list them all; monitoring and recording reach up to 64 inputs.
+- **Channel names**: channels go by REAPER's names (`Input 3`, `Output 12`; on JACK the system
+  port they connect to, `system:capture_3 (Input 3)`), or by aliases from the window's Channel
+  naming list (REAPER's channel name aliasing), kept per device as REAPER keeps them
+  (`[alias_in_<device>]` and `[alias_out_<device>]` sections with `name<i>`, `ch<i>`,
+  `map_size` and `map_hwnch`; `useinnc` bit 1 for inputs, bit 2 for outputs).
+
 ## Command line
 
 ```sh
@@ -962,7 +998,10 @@ devbox run test
 Flags: `--demo` (open the demo song), `--play` (start playback on launch), `--render-project`,
 `--render-queue [dir]` (render every project in REAPER's render queue, `QueuedRenders`),
 `--no-input` (never
-open the audio input for monitoring), `--null-audio` (open no audio device and play on a
+open the audio input for monitoring), `--audio-host`, `--output-device`, `--input-device`,
+`--sample-rate`, `--buffer-size`, `--output-channels`, `--input-channels` (as `scythe-server`
+takes them, overriding the saved audio device for this run), `--list-devices` (print every
+audio device with its id and exit), `--null-audio` (open no audio device and play on a
 silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
 made), `--view=START-END`
 (open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).

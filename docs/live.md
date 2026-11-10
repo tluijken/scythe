@@ -19,8 +19,17 @@ output = "Scarlett 18i20"
 input = "Scarlett 18i20"
 sample_rate = 48000
 buffer_size = 128
-output_channels = 18
+output_channels = 20
+input_channels = 18
 ```
+
+`scythe-server --list-devices` prints every device with the id to put in `output` and `input`
+(`hw:CARD=USB,DEV=0`); a name or part of one works too. Without an `[audio]` section or device
+flags the server opens what the desktop app's audio device window last saved (Ctrl+P, or click
+the rate pill in the top bar), so the rig can be set up on a screen first; `audio.set_device`
+over the control API switches it while the session runs. Each channel then shows by its name
+or its alias (`audio.channel_name`): name the in-ear outputs ("IEM Bass L") once and every
+monitor mix, hardware output and metronome menu says where it goes.
 
 Musicians open `http://rack:8770/monitor` on their phone for their own mix, the drummer
 `http://rack:8770/setlist` on a tablet; the desktop app or the web editor (`/`) does the rest.
