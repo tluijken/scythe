@@ -2035,6 +2035,60 @@ mod tests {
         (p, pool, dir)
     }
 
+    /// How late a monitored input is heard: for each rendered block, the frames between the
+    /// impulse it plays and the same point of the block the capture callback delivered last.
+    /// The callback is `ahead` blocks ahead of the output when rendering starts.
+    fn monitored_input_delays(blocks: usize, ahead: usize) -> Vec<usize> {
+        const BLOCK: usize = 128;
+        let mut p = Project::default();
+        let t = p.add_track("in");
+        let track = p.track_mut(t).unwrap();
+        (track.armed, track.monitor, track.rec_input) = (true, true, 0);
+        let pool = MediaPool::default();
+        let transport = Arc::new(Transport::new(8000));
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let (senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport, feeds);
+        proc.set_outputs(2);
+        let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(BLOCK * 16);
+        senders.input_tx.send(Some((rx, 1))).unwrap();
+        // Block k carries one impulse at its own frame, so where it is heard says which it is.
+        const SPOTS: usize = 14;
+        let spot = |k: usize| 5 + 8 * (k % SPOTS);
+        let mut fed = 0;
+        let mut feed = |tx: &mut rtrb::Producer<f32>| {
+            for i in 0..BLOCK {
+                tx.push(if i == spot(fed) { 1.0 } else { 0.0 }).unwrap();
+            }
+            fed += 1;
+            fed - 1
+        };
+        for _ in 0..ahead {
+            feed(&mut tx);
+        }
+        let mut delays = Vec::new();
+        for _ in 0..blocks {
+            let newest = feed(&mut tx);
+            let mut buf = vec![0.0f32; 2 * BLOCK];
+            proc.write_interleaved(&mut buf, 2);
+            for (i, _) in buf.chunks(2).enumerate().filter(|(_, f)| f[0].abs() > 0.1) {
+                let back = (0..SPOTS).find(|&b| b <= newest && spot(newest - b) == i).expect("an impulse fed");
+                delays.push(back * BLOCK);
+            }
+        }
+        delays
+    }
+
+    #[test]
+    fn a_monitored_input_adds_no_buffering_of_its_own() {
+        // In step with the output, the block the capture callback delivers is the one played.
+        assert_eq!(monitored_input_delays(4, 0), [0, 0, 0, 0]);
+        // A capture stream a block ahead (it runs on its own clock) keeps that block of slack...
+        assert_eq!(monitored_input_delays(4, 1), [128, 128, 128, 128]);
+        // ...and a longer backlog is dropped down to it rather than heard late.
+        assert!(monitored_input_delays(4, 5).iter().all(|&d| d <= 256));
+    }
+
     fn processor(p: &Project, pool: &MediaPool, transport: &Arc<Transport>) -> Processor {
         let graph = RenderGraph::build(p, pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
         let (_senders, feeds) = feeds();
