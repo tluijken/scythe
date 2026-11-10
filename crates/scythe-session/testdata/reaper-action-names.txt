@@ -318,3 +318,5 @@
 41226	Item edit: Nudge/Set...
 40071	Options: Show snap/grid settings
 40277	Options: Show lock settings
+40847	Item: Open item inline editors
+41887	Item: Close item inline editors

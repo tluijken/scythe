@@ -180,6 +180,8 @@ const FIXED: &[(&str, &str, Runs)] = &[
     ("40295", "View: Zoom out project", W),
     ("41325", "View: Increase selected track heights", W),
     ("41326", "View: Decrease selected track heights", W),
+    ("40847", "Item: Open item inline editors", W),
+    ("41887", "Item: Close item inline editors", W),
     ("40326", "View: Show region/marker manager window", W),
     ("50124", "Media explorer: Show/hide media explorer", W),
     ("41157", "View: Show project bay window", W),

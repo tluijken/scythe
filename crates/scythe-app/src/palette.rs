@@ -91,6 +91,8 @@ pub enum Action {
     ZoomToProject,
     TallerTracks,
     ShorterTracks,
+    OpenInlineEditors,
+    CloseInlineEditors,
     ShowPalette,
     RunScript,
     RunLastScript,
@@ -220,6 +222,8 @@ impl Action {
         Action::ZoomToProject,
         Action::TallerTracks,
         Action::ShorterTracks,
+        Action::OpenInlineEditors,
+        Action::CloseInlineEditors,
         Action::ShowPalette,
         Action::RunScript,
         Action::RunLastScript,
@@ -364,6 +368,8 @@ impl Action {
             Action::ZoomToProject => id(40295),
             Action::TallerTracks => id(41325),
             Action::ShorterTracks => id(41326),
+            Action::OpenInlineEditors => id(40847),
+            Action::CloseInlineEditors => id(41887),
             Action::ShowPalette => named("_SCYTHE_SEARCH_ACTIONS"),
             Action::RunScript => id(41060),
             Action::RunLastScript => id(41061),
@@ -472,7 +478,7 @@ impl Action {
             Action::SaveProjectAs => k(CMD_SHIFT, Key::S),
             Action::RenderToWav => k(CMD_ALT, Key::R),
             Action::RenderSelection => None,
-            Action::RenderStems => None,
+            Action::RenderStems | Action::OpenInlineEditors | Action::CloseInlineEditors => None,
             Action::RenderProjectSettings | Action::QueueRender | Action::RunRenderQueue => None,
             Action::NewTab => k(CMD_ALT, Key::N),
             Action::CloseTab => k(CMD, Key::F4),
@@ -836,6 +842,17 @@ impl Action {
             }
             Action::TallerTracks => app.view.row_h = (app.view.row_h * 1.25).min(240.0),
             Action::ShorterTracks => app.view.row_h = (app.view.row_h / 1.25).max(30.0),
+            Action::OpenInlineEditors => {
+                for id in app.selected_items() {
+                    if !app.view.inline_midi.contains(&id) {
+                        crate::ui::midi_editor::toggle_inline(app, id);
+                    }
+                }
+            }
+            Action::CloseInlineEditors => {
+                let selected = app.selected_items();
+                app.view.inline_midi.retain(|id| !selected.contains(id));
+            }
             Action::ShowPalette => app.palette = Some(PaletteState::default()),
             Action::NamPanel => match app.nam_focus() {
                 Some(t) => {

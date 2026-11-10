@@ -232,6 +232,7 @@ fn ruler_timeline(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, axis: TimeAxis) 
 
     // Tempo changes, labelled unless they crowd the previous label.
     let mut last_label = f32::NEG_INFINITY;
+    let mut tempo_hits: Vec<(usize, Rect)> = Vec::new();
     for (i, pt) in app.project.tempo.points.iter().enumerate() {
         let x = axis.x(pt.time);
         if x < rect.left() - 40.0 || x > rect.right() {
@@ -243,6 +244,8 @@ fn ruler_timeline(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, axis: TimeAxis) 
             continue;
         }
         painter.vline(x, (rect.bottom() - 18.0)..=(rect.bottom() - 2.0), Stroke::new(1.0, theme::YELLOW));
+        tempo_hits
+            .push((i, Rect::from_min_max(pos2(x - 4.0, rect.bottom() - 26.0), pos2(x + 30.0, rect.bottom() - 2.0))));
         if x - last_label > 46.0 {
             let mut label = format!("{}", (pt.bpm * 10.0).round() / 10.0);
             if let Some((n, d)) = pt.time_sig {
@@ -316,6 +319,7 @@ fn ruler_timeline(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, axis: TimeAxis) 
         app.edit("Clear loop points", |p| p.time_selection = None);
     }
     resp.on_hover_text("Click to move the cursor · drag to set loop points · double-click to clear");
+    tempo_markers(app, ui, tempo_hits);
 
     // Marker pills sit on top of the ruler: click jumps, double-click renames, right-click deletes.
     for (i, pill) in pills {
@@ -427,6 +431,100 @@ fn razor_drag(app: &mut ScytheApp, ui: &Ui, lanes: Rect, axis: TimeAxis, rows: R
             app.multi.clear();
             app.sel.item = None;
         }
+    }
+}
+
+/// Tempo markers on the ruler, as in REAPER: double-click or the menu's "Edit time signature
+/// marker..." opens their dialog, Alt+click or "Remove time signature marker" removes them.
+fn tempo_markers(app: &mut ScytheApp, ui: &mut Ui, hits: Vec<(usize, Rect)>) {
+    for (i, r) in hits {
+        let Some(point) = app.project.tempo.points.get(i).cloned() else { continue };
+        let resp = ui
+            .interact(r, Id::unique(("tempo-marker", i)), Sense::click())
+            .on_hover_text("Tempo marker: double-click to edit · Alt+click to remove · right-click for more");
+        let alt = ui.input(|inp| inp.modifiers.alt);
+        let mut remove = resp.clicked() && alt;
+        if resp.clicked() && !alt {
+            app.set_cursor(point.time);
+        }
+        if resp.double_clicked() {
+            app.view.tempo_edit = Some((i, point.clone()));
+        }
+        resp.context_menu(|ui| {
+            if menu_item(ui, "Edit time signature marker...", "Doubleclick") {
+                app.view.tempo_edit = Some((i, point.clone()));
+                ui.close();
+            }
+            if menu_item(ui, "Remove time signature marker", "Alt+Click") {
+                remove = true;
+                ui.close();
+            }
+        });
+        if remove {
+            app.edit("Remove tempo marker", |p| {
+                p.change_tempo(|t| {
+                    if i < t.points.len() {
+                        t.points.remove(i);
+                    }
+                    t.settle();
+                })
+            });
+            app.view.tempo_edit = None;
+            break;
+        }
+    }
+    tempo_dialog(app, ui);
+}
+
+fn menu_item(ui: &mut Ui, label: &str, hint: &str) -> bool {
+    ui.add(egui::Button::new(label).shortcut_text(hint)).clicked()
+}
+
+/// REAPER's tempo marker dialog: the tempo, an optional new time signature and whether the
+/// tempo ramps to the next marker.
+fn tempo_dialog(app: &mut ScytheApp, ui: &mut Ui) {
+    let Some((i, mut draft)) = app.view.tempo_edit.take() else { return };
+    let mut open = true;
+    let (mut apply, mut cancel) = (false, false);
+    egui::Window::new("Edit time signature marker")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .show(ui.ctx(), |ui| {
+            egui::Grid::new("tempo-edit").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
+                ui.label("Position");
+                ui.label(app.project.tempo.format_bar_beat(draft.time));
+                ui.end_row();
+                ui.label("BPM");
+                ui.add(egui::DragValue::new(&mut draft.bpm).range(1.0..=960.0).speed(0.1).fixed_decimals(3));
+                ui.end_row();
+                let mut has_sig = draft.time_sig.is_some();
+                ui.label("Time signature");
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut has_sig, "Set").changed() {
+                        let current = app.project.tempo.time_sig_at(draft.time);
+                        draft.time_sig = has_sig.then_some(current);
+                    }
+                    if let Some((n, d)) = &mut draft.time_sig {
+                        ui.add(egui::DragValue::new(n).range(1..=255));
+                        ui.label("/");
+                        ui.add(egui::DragValue::new(d).range(1..=128));
+                    }
+                });
+                ui.end_row();
+            });
+            ui.checkbox(&mut draft.linear, "Gradually transition tempo to next marker");
+            ui.horizontal(|ui| {
+                apply = ui.button("OK").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+    if apply {
+        let (bpm, sig, linear) = (draft.bpm, draft.time_sig, draft.linear);
+        app.edit("Edit tempo marker", |p| p.change_tempo(|t| _ = t.edit_point(i, bpm, sig, linear)));
+    } else if open && !cancel {
+        app.view.tempo_edit = Some((i, draft));
     }
 }
 

@@ -349,7 +349,9 @@ Working:
   render with more channels (`RENDER_CHANNELS`) writes them all.
 - **Tempo map** (`TEMPOENVEX`: tempo changes, linear ramps, time-signature changes) for the
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
-  cursor, the bpm control edits the tempo in effect at the cursor.
+  cursor, the bpm control edits the tempo in effect at the cursor. As in REAPER, right-click a
+  tempo marker for "Edit time signature marker..." (also a double-click: tempo, time signature,
+  gradual transition) and "Remove time signature marker" (also Alt+click).
 - **Metronome** (`C`; right-click the metronome button for count-in, pre-roll, level and
   output), **count-in** before playback and/or recording (REAPER's metronome settings, saved in
   the project's `<METRONOME` chunk) with the playhead waiting at the start, **pre-roll** and
@@ -438,7 +440,8 @@ Working:
   the virtual keyboard or the editor's keys go in at the step cursor), groove templates
   (`.rgt`, applied with a strength; notes save as one). Other selected MIDI items show behind
   the edited one and a click on one of their notes edits that item. Alt+double-click opens an
-  item's inline editor in the arrange view. The editor's settings are stored in the take as
+  item's inline editor in the arrange view, as do "Item: Open item inline editors" (40847) for
+  the selected items, and 41887 closes them. The editor's settings are stored in the take as
   REAPER stores them (`CFGEDIT` mode, channel, grid and swing; `KEYSNAP`; `EVTFILTER`; one
   `VELLANE` per lane); shaped controllers play as REAPER plays them (steps every 1/`CCINTERP`
   quarter note). The MIDI editor section's actions (32060) run by their REAPER ids through

@@ -48,6 +48,8 @@ pub struct ViewState {
     pub color_picker: Option<(TrackId, egui::Pos2, bool)>,
     /// Marker being renamed on the ruler, with the text typed so far.
     pub renaming_marker: Option<(usize, String)>,
+    /// The tempo marker being edited in its dialog, with the values entered so far.
+    pub tempo_edit: Option<(usize, scythe_core::tempo::TempoPoint)>,
     /// Track row height in points.
     pub row_h: f32,
     /// The effect whose parameters the inspector shows: its chain's owner and its path there (an
@@ -233,6 +235,7 @@ impl ScytheApp {
                 fx_target: FxTarget::Track,
                 color_picker: None,
                 renaming_marker: None,
+                tempo_edit: None,
                 row_h: 72.0,
                 expanded_fx: None,
                 midi_editor: None,

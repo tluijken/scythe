@@ -85,6 +85,25 @@ impl TempoMap {
         self.points.sort_by(|a, b| a.time.total_cmp(&b.time));
     }
 
+    /// Keeps the points in time order and the base tempo in step with a point at the start.
+    pub fn settle(&mut self) {
+        self.points.sort_by(|x, y| x.time.total_cmp(&y.time));
+        if let Some(first) = self.points.first().filter(|p| p.time <= 0.0) {
+            self.bpm = first.bpm;
+        }
+    }
+
+    /// Sets point `i`'s tempo, time signature and shape, as REAPER's "Edit time signature marker"
+    /// dialog does; false when there is no such point.
+    pub fn edit_point(&mut self, i: usize, bpm: f64, time_sig: Option<(u32, u32)>, linear: bool) -> bool {
+        let Some(p) = self.points.get_mut(i) else { return false };
+        p.bpm = bpm.clamp(1.0, 960.0);
+        p.time_sig = time_sig.filter(|&(n, d)| n > 0 && d > 0);
+        p.linear = linear;
+        self.settle();
+        true
+    }
+
     pub fn timeline(&self) -> Timeline {
         Timeline::new(self)
     }
@@ -342,6 +361,19 @@ mod tests {
 
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn editing_a_marker_keeps_its_place_and_the_base_tempo_in_step() {
+        let mut t = TempoMap::constant(120.0, 4, 4);
+        t.insert_point(4.0);
+        t.points[1].raw = vec!["PT".into(), "4".into()];
+        assert!(t.edit_point(1, 140.0, Some((3, 4)), true));
+        let p = &t.points[1];
+        assert_eq!((p.time, p.bpm, p.time_sig, p.linear, p.raw.len()), (4.0, 140.0, Some((3, 4)), true, 2));
+        assert!(t.edit_point(0, 90.0, Some((0, 4)), false));
+        assert_eq!((t.bpm, t.points[0].time_sig), (90.0, None));
+        assert!(!t.edit_point(2, 90.0, None, false));
     }
 
     #[test]

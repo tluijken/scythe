@@ -877,7 +877,7 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
                         });
                     }
                     tempo.points.push(point);
-                    settle_tempo(tempo);
+                    tempo.settle();
                 });
                 s.changed = true;
                 return Some(ret(Val::Bool(true)));
@@ -886,7 +886,7 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
             s.project.change_tempo(|tempo| {
                 let raw = std::mem::take(&mut tempo.points[k].raw);
                 tempo.points[k] = scythe_core::tempo::TempoPoint { raw, ..point };
-                settle_tempo(tempo);
+                tempo.settle();
             });
             s.changed = true;
             ret(Val::Bool(true))
@@ -903,14 +903,6 @@ fn tempo(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         },
         _ => return None,
     })
-}
-
-/// Keeps the tempo markers in time order and the base tempo in step with a marker at the start.
-fn settle_tempo(tempo: &mut scythe_core::TempoMap) {
-    tempo.points.sort_by(|x, y| x.time.total_cmp(&y.time));
-    if let Some(first) = tempo.points.first().filter(|p| p.time <= 0.0) {
-        tempo.bpm = first.bpm;
-    }
 }
 
 // ---- markers and regions -------------------------------------------------------------------
