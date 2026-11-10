@@ -954,38 +954,62 @@ the whole job.
 
 ## Audio device
 
-- **Audio device window** (REAPER's Preferences > Audio > Device page): opened with "Options:
-  Preferences..." (40016, Ctrl+P) or "Options: Audio device settings..." from the action
-  palette, the Audio device... button of the settings rail's window, or a click on the
-  rate · block · CPU pill in the top bar, as REAPER opens its device page from the audio status
-  in its menu bar. It offers the audio systems REAPER offers on Linux (JACK, ALSA, Dummy Audio),
-  the input and output channels to open, the ALSA input and output devices (listed as REAPER
-  lists them, `id ; name`), the sample rate and block size (REAPER's values, only those the
-  device supports when it says; JACK runs at the server's, as REAPER's JACK page has neither),
-  and Refresh. Apply stops the transport and opens the new device without closing the project:
-  effects keep their state, media is decoded again at a new rate, plugin editors close. When the
-  device cannot be opened the error shows in the window and the previous device plays on. The
-  window shows what plays: device, rate, block, latency and channel counts.
+- **Audio device window** (REAPER's Preferences > Audio > Device page, in Scythe's own rows,
+  dropdowns and switches): opened with "Options: Preferences..." (40016, Ctrl+P) or "Options:
+  Audio device settings..." from the action palette, the Audio device... button of the settings
+  rail's window, or a click on the rate · block · CPU pill in the top bar, as REAPER opens its
+  device page from the audio status in its menu bar. Each audio system shows REAPER's settings
+  for it: JACK the input and output channels, auto-start (with the launch command, blank for
+  libjack's own) and auto-connect to the hardware ports; ALSA the channels with the input and
+  output devices (listed as REAPER lists them, `id ; name`), sample rate, block size, bit depth
+  (16, 24 or 32-bit integer, the device's own format when it has not that one) and RT priority
+  for the audio thread (0 is non-RT); PulseAudio (a sound server of its own, or PipeWire's) the
+  channels, rate and block size, opened as 32-bit as REAPER opens it; Dummy Audio the rate and
+  block size. "Allow projects to override device sample rate", "Disable power management"
+  (`/dev/cpu_dma_latency` held at 0) and "Lock process memory with mlockall()" are there too.
+  Apply stops the transport and opens the new device without closing the project: effects keep
+  their state, media is decoded again at a new rate, plugin editors close. When the device
+  cannot be opened the error shows in the window and the previous device plays on. The window
+  shows what plays: device, rate, block, latency and channel counts.
 - **Saved as REAPER saves it**: the choice goes into the preferences under REAPER 7.73's Linux
   reaper.ini keys (`linux_audio_mode` 0 JACK, 1 ALSA, 2 Dummy, 3 PulseAudio; `alsa_indev`,
   `alsa_outdev`, `linux_audio_nch_in`, `linux_audio_nch_out`, `linux_audio_srate`,
-  `linux_audio_bsize`, `linux_audio_srateor`), so REAPER's settings carry over. The next start
-  (desktop and `scythe-server` without device flags or `[audio]`) opens the same device; one
-  that is missing falls back to the default device with a notice. The command-line flags
-  override it for one run. API: `audio.devices`, `audio.device`, `audio.set_device`,
-  `audio.channel_name` (admin only).
+  `linux_audio_bsize`, `linux_audio_bits`, `alsa_rtprio`, `jack_options` (bit 1 no auto-start,
+  2 no audio auto-connect), `jack_launchcmd`, `linux_audio_srateor`, `linux_disable_pm`,
+  `linux_mlockall`), so REAPER's settings carry over. The next start (desktop and
+  `scythe-server` without device flags or `[audio]`) opens the same device. One that does not
+  open leaves the audio closed and shows REAPER's "Error opening devices" window ("There was an
+  error opening the audio hardware.", Retry, Audio device, Close); the engine also looks for it
+  again every few seconds. The command-line flags override the choice for one run. API:
+  `audio.devices`, `audio.device`, `audio.set_device`, `audio.channel_name`,
+  `audio.channel_map` (admin only).
+- **Project sample rate**: with "Allow projects to override device sample rate" (REAPER's
+  default) a project whose Project settings ask for their rate (`SAMPLERATE <rate> 1`) reopens
+  the device at it when it opens; as in REAPER the device stays at that rate when a project that
+  asks for none is opened, a new project starts or tabs switch. JACK keeps the server's rate.
+- **Closing the device** (REAPER's Audio page, `audiocloseinactive_linux`,
+  `audioclosestop`): "Close audio device when stopped and application is inactive" (and, as a
+  sub-option, also while tracks are record armed) and "... when stopped and active (less
+  responsive)" close the device while stopped and open it again on play or when the window is
+  active again.
 - **Large interfaces**: every channel the device opens is offered. With no count chosen a
   hardware device with a fixed channel set (an 18-in, 20-out interface's `hw:` device) opens all
   its channels, a sound server or plugin device (`default`, `plughw`, JACK) a pair; the channel
   counts open more. Track record inputs ("Input: Mono" and "Input: Stereo" with every channel
-  and pair, as REAPER lists them, the pairs starting on even channels too unless
-  `allstereopairs=0`), track hardware outputs, monitor mixes, the metronome output
-  and ReaInsert list them all; monitoring and recording reach up to 64 inputs.
-- **Channel names**: channels go by REAPER's names (`Input 3`, `Output 12`; on JACK the system
-  port they connect to, `system:capture_3 (Input 3)`), or by aliases from the window's Channel
-  naming list (REAPER's channel name aliasing), kept per device as REAPER keeps them
-  (`[alias_in_<device>]` and `[alias_out_<device>]` sections with `name<i>`, `ch<i>`,
-  `map_size` and `map_hwnch`; `useinnc` bit 1 for inputs, bit 2 for outputs).
+  and pair, as REAPER lists them, the pairs starting on even channels too unless "Show
+  non-standard stereo channel pairs" is off, `allstereopairs=0`), track hardware outputs,
+  monitor mixes, the metronome output and ReaInsert list them all; monitoring and recording
+  reach up to 64 inputs. Monitoring and recording share the device's one capture stream, so a
+  device that opens for capture only once records while tracks monitor.
+- **Channel names and remapping** (REAPER's "Input/Output channel name aliasing/remapping"):
+  channels go by REAPER's names (`Input 3`, `Output 12`; on JACK the system port they connect
+  to, `system:capture_3 (Input 3)`), or by the window's channel map: per channel an alias and
+  the hardware channel it plays (or none, "(not connected)"), with Add, Remove, Reset, and Load
+  and Save of `.ReaperChanMap` files (`[reaper_chanmap]`, in `ChanMaps` beside the
+  preferences). Tracks see the map's channels: an input mapped to hardware input 3 records and
+  monitors that input, an output mapped to hardware output 3 plays there. The map is kept per
+  device as REAPER keeps it (`[alias_in_<device>]` and `[alias_out_<device>]` with `name<i>`,
+  `ch<i>` (-1 for none), `map_size`, `map_hwnch`; `useinnc` bit 1 for inputs, 2 for outputs).
 
 ## Command line
 

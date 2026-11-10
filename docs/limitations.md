@@ -13,23 +13,23 @@ measured.
   as "Custom" unless it is one of Scythe's scales. Modulation and learn
   from an editor work on a track's own top-level effects only. `TrackFX_Show` with flag 1 shows
   the effect's parameters in the inspector, as Scythe has no FX chain window.
-- Audio device page: Scythe's preferences are this one page and the channel naming of REAPER's
-  Audio page. Not there: PulseAudio as its own system (Scythe plays through ALSA's `default`
-  device, which PulseAudio or PipeWire provide; a REAPER file with `linux_audio_mode=3` opens
-  that), ALSA's bit depth and periods (`linux_audio_bits`, `linux_audio_bufs`: the backend
-  picks the format and period count; the keys stay in the file), RT priority, JACK's auto-start
-  command, auto-connect switches and MIDI port counts (Scythe always connects to the system
-  ports in order and uses ALSA MIDI), "Disable power management" and `mlockall`, "Allow
-  projects to override device sample rate" (kept, not applied: the device stays at its rate),
-  the "Close audio device when stopped/inactive" options, REAPER's channel remapping (`ch<i>`
-  is kept in the alias sections but channel *i* always plays hardware channel *i*), loading and
-  saving channel maps (`ChanMaps`), and "Virtual loopback audio hardware channels". REAPER
-  greys Dummy Audio's channels at 0 in and 2 out; the control API lets Dummy have more outputs
-  (`audio.set_device` with `output_channels`) for routing a large rig without hardware. A device
-  lost while playing is looked for again every five seconds as before; one missing at start is
-  replaced by the default device (REAPER keeps asking for its own). Recording opens the input a
-  second time beside monitoring, which an ALSA `hw:` device allowing one capture stream may
-  refuse (not tried on hardware): JACK or a `dsnoop` device avoid it.
+- Audio device page: ALSA periods (`linux_audio_bufs`) are kept but not applied: the audio
+  backend (cpal) always opens an ALSA device with two periods of the block size, and the window
+  says so. JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
+  channels" are kept but not used: Scythe's MIDI goes through the ALSA sequencer, which JACK and
+  PipeWire bridge. "Auto-suspend PulseAudio" (`linux_auto_pasuspend`, REAPER running its ALSA
+  device under `pasuspender`) is not done; on PipeWire systems the ALSA `pipewire` or `default`
+  device is the way to share the hardware. The ReWire option of "close audio device when
+  inactive" does not apply (no ReWire on Linux), nor does "Virtual loopback audio hardware
+  channels". RT priority applies to ALSA as REAPER's ALSA page has it; with JACK the server sets
+  it, and PulseAudio streams get Scythe's default promotion. REAPER greys Dummy Audio's channels
+  at 0 in and 2 out; the control API lets Dummy have more outputs for routing a large rig without
+  hardware. A device missing at start leaves the audio closed with REAPER's "Error opening
+  devices" window (Retry, Audio device, Close); unlike REAPER the engine also looks for it again
+  every five seconds, as for a device lost while playing. That monitoring and recording share
+  one capture stream was checked on a private PulseAudio server (one source output while both
+  run); no ALSA setup that refuses a second capture open was available without kernel modules,
+  so a `hw:` device was not tried.
 - Media explorer, project bay and themes: MIDI files are listed and inserted but not previewed;
   the preview plays through the device directly (REAPER's preview output and its "start on
   bar" are not there); metadata is not written back to files, and REAPER's custom columns

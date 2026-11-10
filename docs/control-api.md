@@ -609,8 +609,9 @@ Admin only. As the desktop app's audio device window (REAPER's Preferences > Aud
 |---|---|---|
 | `audio.devices` | | `[{"system", "devices": [{"id", "name", "input", "output"}]}]`: every audio system (`ALSA`, `JACK`, `Dummy`) and its devices |
 | `audio.device` | | `{"system", "output", "output_id", "input", "sample_rate", "block_size", "output_latency", "silent", "reason", "inputs", "outputs", "requested"}`: what plays, the channels by the names tracks show (aliases included) and what was asked for |
-| `audio.set_device` | any of `system`, `output`, `input` (an id from `audio.devices` or a name; empty for the default), `sample_rate`, `block_size` (0 for the device's own), `output_channels`, `input_channels` (0 for all of an interface, else a pair), `save` (default true: kept in the preferences) | the new `audio.device`; the transport stops and the project stays open. When the device cannot be opened the previous one plays on and the error says why |
+| `audio.set_device` | any of `system`, `output`, `input` (an id from `audio.devices` or a name; empty for the default), `sample_rate`, `block_size` (0 for the device's own), `output_channels`, `input_channels` (0 for all of an interface, else a pair), `bits` (ALSA, PulseAudio: 16, 24, 32), `save` (default true: kept in the preferences) | the new `audio.device`; the transport stops and the project stays open. When the device cannot be opened the previous one plays on and the error says why |
 | `audio.channel_name` | `kind` (`input`, `output`), `channel` (from 1), `name` (empty clears it) | `audio.device`; the alias is kept as REAPER keeps it and aliasing turns on for that side |
+| `audio.channel_map` | `kind`, `channels`: `[{"hardware": 3, "name"?}, {"hardware": null}, ...]` (hardware channels from 1, `null` for not connected; an empty list resets) | `audio.device`; the channels tracks see, each playing its hardware channel (REAPER's channel remapping), kept as REAPER keeps it; aliasing/remapping turns on for that side |
 
 ### MIDI devices and synchronization
 
