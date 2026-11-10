@@ -116,19 +116,25 @@ impl Browser {
 
     /// Evaluates `expression` in the page (awaiting a promise) and returns its value.
     pub fn eval(&mut self, expression: &str) -> Value {
+        self.try_eval(expression).unwrap_or_else(|e| panic!("{expression} threw {e}"))
+    }
+
+    /// [`Self::eval`], with what the expression threw as the error.
+    pub fn try_eval(&mut self, expression: &str) -> Result<Value, Value> {
         let r = self
             .call("Runtime.evaluate", json!({"expression": expression, "awaitPromise": true, "returnByValue": true}));
-        if let Some(e) = r.get("exceptionDetails") {
-            panic!("{expression} threw {e}");
+        match r.get("exceptionDetails") {
+            Some(e) => Err(e.clone()),
+            None => Ok(r["result"]["value"].clone()),
         }
-        r["result"]["value"].clone()
     }
 
     /// Evaluates `expression` until it is true.
     #[track_caller]
     pub fn wait_for(&mut self, what: &str, expression: &str) {
         let start = Instant::now();
-        while self.eval(expression) != Value::Bool(true) {
+        // While the page is still loading the expression may throw (no body yet): not true yet.
+        while self.try_eval(expression).ok() != Some(Value::Bool(true)) {
             let body = self.eval("document.body ? document.body.innerText.slice(0, 400) : ''");
             assert!(start.elapsed() < Duration::from_secs(20), "timed out waiting for {what}; page shows {body}");
             std::thread::sleep(Duration::from_millis(100));
