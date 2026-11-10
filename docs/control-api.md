@@ -493,8 +493,10 @@ Track, send and FX parameter envelopes, their points and shapes, automation item
 pools, automation modes and the global override. An envelope is named by `track`, `envelope`
 (`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,
 `dual_pan_right`, or `fx:<effect>:<parameter>` with REAPER's parameter order) and, for a send's
-`volume`, `pan` or `mute`, `send` (its index in `send.list`). Editing an envelope that does not
-exist creates it (an FX parameter envelope over the parameter's own range). Points are
+`volume`, `pan` or `mute`, `send` (its index in `send.list`); `item` names a take envelope
+(`volume`, `pan`, `mute` or `pitch` of the item's active take, points in project seconds) and
+`envelope: "tempo"` the tempo map (a point per tempo change; `square` jumps, `linear` ramps; any
+track). Editing an envelope that does not exist creates it (an FX parameter envelope over the parameter's own range). Points are
 `{"time", "value", "shape"?, "tension"?}` in seconds and the envelope's own units (volume as
 gain, pan with REAPER's sign: positive is left); shapes are `linear`, `square`,
 `slow_start_end`, `fast_start`, `fast_end` and `bezier`. Pool points are in quarter notes from
@@ -517,7 +519,7 @@ the pool's start with values 0..1 of the envelope's range. Edits are undo steps.
 | `envelope.item_duplicate` | envelope, `index`, `pooled?` | the envelope, the copy right after the item |
 | `envelope.item_unpool` | envelope, `index` | the envelope |
 | `envelope.pool` | `pool`, `points?`, `lfo?`, `length_qn?`, `name?` | `{"pool", "name", "length_qn", "lfo", "points", "items"}`; every pooled item follows |
-| `envelope.mode` | `track?` (every track when left out), `mode?` (`trim_read`, `read`, `touch`, `write`, `latch`, `latch_preview`) | `[{"track", "mode", "effective"}]` |
+| `envelope.mode` | `track?` (every track when left out), `mode?` (`trim_read`, `read`, `touch`, `write`, `latch`, `latch_preview`), `send?` (with `track`: that send's own mode, `track` to follow the track again; REAPER's send `I_AUTOMODE`) | `[{"track", "mode", "effective"}]`, or `{"track", "send", "mode", "effective"}` |
 | `envelope.latch_preview_apply` | `span` (`time_selection`, `to_end`, `to_start`) | `{"written"}`: the values the last latch preview pass remembered |
 | `envelope.global_override` | `mode?` (`none`, the modes above, or `bypass`) | `{"mode"}` |
 

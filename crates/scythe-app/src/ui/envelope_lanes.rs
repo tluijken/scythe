@@ -20,6 +20,7 @@ const LANE_H: f32 = 64.0;
 const LANE_GAP: f32 = 4.0;
 const STRIP_H: f32 = 13.0;
 const PARAM_COLOR: Color32 = Color32::from_rgb(0xae, 0x81, 0xff);
+const TEMPO_COLOR: Color32 = Color32::from_rgb(0xe8, 0x5d, 0x75);
 
 /// One lane: which envelope, its name and colour.
 struct Lane {
@@ -94,13 +95,13 @@ fn lanes(app: &ScytheApp, id: TrackId) -> Vec<Lane> {
     let Some(t) = app.project.track(id) else { return Vec::new() };
     let mut out = Vec::new();
     for e in &t.envelopes {
-        let at = EnvRef { track: track_ref(id), envelope: e.kind.name().into(), send: None };
+        let at = EnvRef { track: track_ref(id), envelope: e.kind.name().into(), send: None, item: None };
         out.push(Lane { at, label: e.kind.label().into(), color: envelope_color(e.kind), kind: Some(e.kind) });
     }
     for (s, send) in t.sends.iter().enumerate() {
         let dest = app.project.track(send.dest).map_or_else(|| format!("send {}", s + 1), |d| d.name.clone());
         for e in &send.envelopes {
-            let at = EnvRef { track: track_ref(id), envelope: e.kind.name().into(), send: Some(s) };
+            let at = EnvRef { track: track_ref(id), envelope: e.kind.name().into(), send: Some(s), item: None };
             out.push(Lane {
                 at,
                 label: format!("{} to {dest}", e.kind.label()),
@@ -112,10 +113,25 @@ fn lanes(app: &ScytheApp, id: TrackId) -> Vec<Lane> {
     for (fx, slot) in t.fx.iter().enumerate() {
         for p in slot.parameter_envelopes() {
             let Some(param) = p.param() else { continue };
-            let at = EnvRef { track: track_ref(id), envelope: format!("fx:{fx}:{param}"), send: None };
+            let at = EnvRef { track: track_ref(id), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
             let label = if p.label.is_empty() { format!("{} #{param}", slot.name) } else { p.label.clone() };
             out.push(Lane { at, label, color: PARAM_COLOR, kind: None });
         }
+    }
+    // The selected item's take envelopes, when it is on this track.
+    if let Some((tid, item)) = app.sel.item.and_then(|i| app.project.find_item(i)).filter(|(t, _)| *t == id) {
+        let _ = tid;
+        let name = if item.name().is_empty() { "item".to_owned() } else { item.name().to_owned() };
+        for e in item.take().map(|t| t.envelopes.clone()).unwrap_or_default() {
+            let envelope = if e.kind == EnvelopeKind::Pitch { "pitch".to_owned() } else { e.kind.name().to_owned() };
+            let at = EnvRef { track: track_ref(id), envelope, send: None, item: Some(item.id.0) };
+            let label = format!("Take {} · {name}", e.kind.label().to_lowercase());
+            out.push(Lane { at, label, color: envelope_color(e.kind), kind: Some(e.kind) });
+        }
+    }
+    if app.view.tempo_lane || !app.project.tempo.points.is_empty() {
+        let at = EnvRef { track: track_ref(id), envelope: "tempo".into(), send: None, item: None };
+        out.insert(0, Lane { at, label: "Tempo map".into(), color: TEMPO_COLOR, kind: None });
     }
     out
 }
@@ -252,9 +268,32 @@ fn header(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, track: Option<TrackId>) 
 /// Envelopes the track does not have yet: its own kinds and every effect parameter.
 fn add_menu(app: &mut ScytheApp, ui: &mut Ui, track: TrackId) {
     let Some(t) = app.project.track(track).cloned() else { return };
+    if !app.view.tempo_lane && app.project.tempo.points.is_empty() && ui.button("Tempo map").clicked() {
+        app.view.tempo_lane = true;
+    }
+    if let Some((_, item)) = app.sel.item.and_then(|i| app.project.find_item(i)).filter(|(t, _)| *t == track) {
+        let id = item.id;
+        let have: Vec<EnvelopeKind> = item.take().map(|t| t.envelopes.iter().map(|e| e.kind).collect()).unwrap_or_default();
+        for (kind, name) in [
+            (EnvelopeKind::Volume, "volume"),
+            (EnvelopeKind::Pan, "pan"),
+            (EnvelopeKind::Mute, "mute"),
+            (EnvelopeKind::Pitch, "pitch"),
+        ] {
+            if have.contains(&kind) || !ui.button(format!("Take {}", kind.label().to_lowercase())).clicked() {
+                continue;
+            }
+            let at = EnvRef { track: track_ref(track), envelope: name.into(), send: None, item: Some(id.0) };
+            let start = app.project.find_item(id).map_or(0.0, |(_, i)| i.position);
+            change(app, &at, "Add take envelope", false, |env, _| {
+                env.points.push(EnvPoint::new(start, kind.neutral()));
+            });
+        }
+        ui.separator();
+    }
     for kind in EnvelopeKind::ALL.into_iter().filter(|k| t.envelope(*k).is_none()) {
         if ui.button(kind.label()).clicked() {
-            let at = EnvRef { track: track_ref(track), envelope: kind.name().into(), send: None };
+            let at = EnvRef { track: track_ref(track), envelope: kind.name().into(), send: None, item: None };
             let base = if kind == EnvelopeKind::Volume { t.volume } else { kind.neutral() };
             change(app, &at, "Add envelope", false, |env, _| {
                 env.points.push(EnvPoint::new(0.0, base));
@@ -273,7 +312,7 @@ fn add_menu(app: &mut ScytheApp, ui: &mut Ui, track: TrackId) {
                     if slot.parameter_envelope(&param.to_string()).is_some() || !ui.button(&p.name).clicked() {
                         continue;
                     }
-                    let at = EnvRef { track: track_ref(track), envelope: format!("fx:{fx}:{param}"), send: None };
+                    let at = EnvRef { track: track_ref(track), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
                     let value = api::param_info(&app.session, Target::Track(track), fx, param).map_or(0.0, |i| i.3);
                     change(app, &at, "Add FX parameter envelope", false, |env, _| {
                         env.points.push(EnvPoint::new(0.0, value));
@@ -313,15 +352,20 @@ fn lane_header(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rec
     if !r.contains_rect(pill(3.0)) {
         return;
     }
+    let tempo = lane.at.envelope == "tempo";
     let (abg, afg) = if env.armed { (theme::PINK, BG) } else { (RAISED_HI, TEXT_MID) };
-    if text_pill(ui, pill(0.0), "Arm", theme::semibold(10.0), abg, afg)
+    if !tempo
+        && text_pill(ui, pill(0.0), "Arm", theme::semibold(10.0), abg, afg)
         .on_hover_text("Armed envelopes are written by touch, latch and write")
         .clicked()
     {
         let armed = !env.armed;
         change(app, &lane.at, "Arm envelope", false, |e, _| e.armed = armed);
     }
-    if lane.kind.is_some() && lane.at.send.is_none() {
+    if let (Some(send), TrackRef::Id(tid)) = (lane.at.send, &lane.at.track) {
+        send_mode_pill(app, ui, pill(1.0), TrackId(*tid), send);
+    }
+    if lane.kind.is_some() && lane.at.send.is_none() && lane.at.item.is_none() {
         let (vbg, vfg) = if env.visible { (ACCENT, BG) } else { (RAISED_HI, TEXT_MID) };
         if text_pill(ui, pill(1.0), "Show", theme::semibold(10.0), vbg, vfg)
             .on_hover_text("Draw over the track in the arrange view")
@@ -343,6 +387,9 @@ fn lane_header(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rec
             });
         }
     });
+    if tempo {
+        return;
+    }
     let resp = text_pill(ui, pill(3.0), "Item", theme::semibold(10.0), RAISED_HI, TEXT_MID)
         .on_hover_text("Insert an automation item at the time selection (or a bar at the cursor)");
     egui::Popup::menu(&resp).show(|ui| {
@@ -735,4 +782,39 @@ fn count_pool(app: &ScytheApp, pool: i64) -> usize {
             own + fx
         })
         .sum()
+}
+
+/// The automation mode of a send's envelopes: the track's, or one of its own (REAPER's per-send
+/// mode, `AUXRECV` field 12).
+fn send_mode_pill(app: &mut ScytheApp, ui: &mut Ui, r: Rect, track: TrackId, send: usize) {
+    let Some(t) = app.project.track(track) else { return };
+    let Some(own) = t.sends.get(send).map(|s| s.auto_mode()) else { return };
+    let label = own.map_or("Track", |m| match m {
+        AutoMode::TrimRead => "Trim",
+        AutoMode::Read => "Read",
+        AutoMode::Touch => "Touch",
+        AutoMode::Latch => "Latch",
+        AutoMode::LatchPreview => "Preview",
+        AutoMode::Write => "Write",
+    });
+    let (bg, fg) = if own.is_some() { (ACCENT, BG) } else { (RAISED_HI, TEXT_MID) };
+    let effective = app.project.send_auto_mode(t, send).label();
+    let resp = text_pill(ui, r, label, theme::semibold(10.0), bg, fg)
+        .on_hover_text(format!("The send's automation mode, now {effective}: the track's, or one of its own"));
+    egui::Popup::menu(&resp).show(|ui| {
+        let mut pick = None;
+        if ui.selectable_label(own.is_none(), "Use the track's mode").clicked() {
+            pick = Some(None);
+        }
+        for m in AutoMode::ALL {
+            if ui.selectable_label(own == Some(m), m.label()).clicked() {
+                pick = Some(Some(m));
+            }
+        }
+        if let Some(mode) = pick {
+            let name = mode.map_or("track".to_owned(), |m| m.name().to_owned());
+            run(app, api::EnvelopeCommand::Mode { track: Some(track_ref(track)), mode: Some(name), send: Some(send) });
+            ui.close();
+        }
+    });
 }

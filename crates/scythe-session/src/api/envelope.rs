@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use scythe_core::automation_item::{AutomationItem, AutomationPool, Lfo, LfoShape, capture};
 use scythe_core::fx_chain::ParamEnvelope;
 use scythe_core::model::GlobalAutomation;
-use scythe_core::{AutoMode, EnvPoint, Envelope, EnvelopeKind, PointShape, Project};
+use scythe_core::{AutoMode, EnvPoint, Envelope, EnvelopeKind, ItemId, PointShape, Project};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,11 +19,16 @@ use crate::{PreviewSpan, Session};
 pub struct EnvRef {
     pub track: TrackRef,
     /// `volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,
-    /// `dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.
+    /// `dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`
+    /// for the project's tempo map (REAPER's master tempo envelope; any track).
     pub envelope: String,
     /// A send's envelope (`volume`, `pan` or `mute`): the send's index in `send.list`.
     #[serde(default)]
     pub send: Option<usize>,
+    /// A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its
+    /// points given in project seconds.
+    #[serde(default)]
+    pub item: Option<u64>,
 }
 
 /// A point as the API gives and takes it.
@@ -229,13 +234,18 @@ pub enum EnvelopeCommand {
         name: Option<String>,
     },
     /// A track's automation mode, or sets it (on every track when `track` is left out):
-    /// `trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`.
+    /// `trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`. With `send`, the mode of
+    /// that send's envelopes (REAPER's per-send mode), where `track` means the send's own mode
+    /// is dropped and it follows the track again.
     #[serde(rename = "envelope.mode")]
     Mode {
         #[serde(default)]
         track: Option<TrackRef>,
         #[serde(default)]
         mode: Option<String>,
+        /// A send of `track`, by its index in `send.list`.
+        #[serde(default)]
+        send: Option<usize>,
     },
     /// Writes the values the last latch preview pass remembered: over the time selection
     /// (`time_selection`), from the edit cursor on (`to_end`) or up to it (`to_start`).
@@ -285,11 +295,25 @@ pub struct EnvelopeInfo {
 
 enum Which {
     Kind(EnvelopeKind),
+    Take(ItemId, EnvelopeKind),
+    Tempo,
     Send(usize, EnvelopeKind),
     Param(usize, usize),
 }
 
 fn which(at: &EnvRef) -> Result<Which, ApiError> {
+    if at.envelope == "tempo" {
+        return Ok(Which::Tempo);
+    }
+    if let Some(item) = at.item {
+        let kind = match at.envelope.as_str() {
+            "pitch" => EnvelopeKind::Pitch,
+            name => EnvelopeKind::from_name(name)
+                .filter(|k| matches!(k, EnvelopeKind::Volume | EnvelopeKind::Pan | EnvelopeKind::Mute))
+                .ok_or_else(|| ApiError::invalid("a take envelope is volume, pan, mute or pitch"))?,
+        };
+        return Ok(Which::Take(ItemId(item), kind));
+    }
     if let Some(rest) = at.envelope.strip_prefix("fx:") {
         let (fx, param) =
             rest.split_once(':').ok_or_else(|| ApiError::invalid("an FX envelope is \"fx:<effect>:<parameter>\""))?;
@@ -384,6 +408,17 @@ fn read(project: &Project, target: Target, at: &EnvRef) -> Result<Envelope, ApiE
     let t = target.get(project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     let mut env = match which(at)? {
         Which::Kind(kind) => t.envelope(kind).cloned().unwrap_or_else(|| Envelope::new(kind)),
+        Which::Tempo => return Ok(tempo_envelope(project)),
+        Which::Take(item, kind) => {
+            let (_, it) = project.find_item(item).ok_or_else(|| ApiError::not_found(format!("no item {}", item.0)))?;
+            let mut env = it
+                .take()
+                .and_then(|tk| tk.envelopes.iter().find(|e| e.kind == kind))
+                .cloned()
+                .unwrap_or_else(|| Envelope::new(kind));
+            env.points.iter_mut().for_each(|p| p.time += it.position);
+            return Ok(env);
+        }
         Which::Send(s, kind) => {
             let send = t.sends.get(s).ok_or_else(|| ApiError::not_found(format!("the track has no send {s}")))?;
             send.envelopes.iter().find(|e| e.kind == kind).cloned().unwrap_or_else(|| Envelope::new(kind))
@@ -434,8 +469,29 @@ pub fn change<R>(
     let mut project = session.project.clone();
     let mut env = read(&project, target, at)?;
     let out = f(&mut env, &mut project)?;
+    match which {
+        Which::Tempo => apply_tempo(&mut project, &env),
+        Which::Take(item, kind) => {
+            let it = project
+                .tracks
+                .iter_mut()
+                .find_map(|t| t.item_mut(item))
+                .ok_or_else(|| ApiError::not_found(format!("no item {}", item.0)))?;
+            let position = it.position;
+            let active = it.active_take;
+            let tk = it.takes.get_mut(active).ok_or_else(|| ApiError::not_found("the item has no take"))?;
+            let mut env = env.clone();
+            env.points.iter_mut().for_each(|p| p.time = (p.time - position).max(0.0));
+            match tk.envelopes.iter_mut().find(|e| e.kind == kind) {
+                Some(e) => *e = env,
+                None => tk.envelopes.push(env),
+            }
+        }
+        _ => {}
+    }
     let t = target.get_mut(&mut project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     match which {
+        Which::Tempo | Which::Take(..) => {}
         Which::Kind(kind) => {
             *t.envelope_mut(kind) = env;
         }
@@ -527,6 +583,8 @@ fn get(session: &Session, at: &EnvRef) -> Result<Value, ApiError> {
             .map(|p| p.label)
             .unwrap_or_default(),
         Which::Kind(k) | Which::Send(_, k) => k.label().to_owned(),
+        Which::Take(_, k) => format!("Take {}", k.label().to_lowercase()),
+        Which::Tempo => "Tempo map".to_owned(),
     };
     Ok(json(info(&session.project, at, &env, label)))
 }
@@ -552,19 +610,19 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
             let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
             let mut out = Vec::new();
             for e in &t.envelopes {
-                let at = EnvRef { track: track.clone(), envelope: e.kind.name().into(), send: None };
+                let at = EnvRef { track: track.clone(), envelope: e.kind.name().into(), send: None, item: None };
                 out.push(info(&session.project, &at, e, e.kind.label().into()));
             }
             for (s, send) in t.sends.iter().enumerate() {
                 for e in &send.envelopes {
-                    let at = EnvRef { track: track.clone(), envelope: e.kind.name().into(), send: Some(s) };
+                    let at = EnvRef { track: track.clone(), envelope: e.kind.name().into(), send: Some(s), item: None };
                     out.push(info(&session.project, &at, e, format!("Send {} {}", s + 1, e.kind.label())));
                 }
             }
             for (fx, slot) in t.fx.iter().enumerate() {
                 for p in slot.parameter_envelopes() {
                     let Some(param) = p.param() else { continue };
-                    let at = EnvRef { track: track.clone(), envelope: format!("fx:{fx}:{param}"), send: None };
+                    let at = EnvRef { track: track.clone(), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
                     out.push(info(&session.project, &at, &p.envelope, p.label.clone()));
                 }
             }
@@ -593,8 +651,21 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
             let target = at.track.resolve(&session.project)?;
             let which = which(&at)?;
             session.edit("Remove envelope", |p| {
+                match which {
+                    Which::Tempo => p.tempo.points.clear(),
+                    Which::Take(item, kind) => {
+                        if let Some(tk) = p.tracks.iter_mut().find_map(|t| t.item_mut(item)).and_then(|i| {
+                            let k = i.active_take;
+                            i.takes.get_mut(k)
+                        }) {
+                            tk.envelopes.retain(|e| e.kind != kind);
+                        }
+                    }
+                    _ => {}
+                }
                 let Some(t) = target.get_mut(p) else { return };
                 match which {
+                    Which::Tempo | Which::Take(..) => {}
                     Which::Kind(kind) => t.envelopes.retain(|e| e.kind != kind),
                     Which::Send(s, kind) => {
                         if let Some(send) = t.sends.get_mut(s) {
@@ -836,7 +907,30 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
                 "items": pooled_copies(&session.project, pool),
             }))
         }
-        C::Mode { track, mode } => {
+        C::Mode { track: Some(track), mode, send: Some(send) } => {
+            let id = track.track(&session.project)?;
+            if session.project.track(id).is_none_or(|t| send >= t.sends.len()) {
+                return Err(ApiError::not_found(format!("the track has no send {send}")));
+            }
+            if let Some(m) = mode {
+                let m = match m.as_str() {
+                    "track" => None,
+                    _ => Some(AutoMode::from_name(&m).ok_or_else(|| {
+                        ApiError::invalid("the mode is track, trim_read, read, touch, write, latch or latch_preview")
+                    })?),
+                };
+                session.edit("Send automation mode", |p| {
+                    if let Some(s) = p.track_mut(id).and_then(|t| t.sends.get_mut(send)) {
+                        s.set_auto_mode(m);
+                    }
+                });
+            }
+            let t = session.project.track(id).ok_or_else(|| ApiError::not_found("the track is gone"))?;
+            let own = t.sends[send].auto_mode().map_or("track", |m| m.name());
+            Ok(serde_json::json!({ "track": id.0, "send": send, "mode": own, "effective": session.project.send_auto_mode(t, send).name() }))
+        }
+        C::Mode { send: Some(_), .. } => Err(ApiError::invalid("a send's mode needs its track")),
+        C::Mode { track, mode, send: None } => {
             let mode = mode
                 .map(|m| {
                     AutoMode::from_name(&m).ok_or_else(|| {
@@ -885,4 +979,56 @@ pub fn execute(session: &mut Session, command: EnvelopeCommand) -> Result<Value,
             Ok(serde_json::json!({ "mode": GlobalAutomation::name(session.project.global_automation) }))
         }
     }
+}
+
+/// The tempo map as an envelope, as REAPER shows it on the master track: a point per tempo
+/// change (square, or linear when it ramps to the next), over 40-250 BPM or wider when the
+/// map needs it.
+fn tempo_envelope(project: &Project) -> Envelope {
+    let tempo = &project.tempo;
+    let mut env = Envelope::new(EnvelopeKind::Volume);
+    env.points = if tempo.points.is_empty() {
+        vec![EnvPoint { shape: PointShape::Square, ..EnvPoint::new(0.0, tempo.bpm) }]
+    } else {
+        tempo
+            .points
+            .iter()
+            .map(|p| EnvPoint {
+                shape: if p.linear { PointShape::Linear } else { PointShape::Square },
+                ..EnvPoint::new(p.time, p.bpm)
+            })
+            .collect()
+    };
+    let lo = env.points.iter().map(|p| p.value).fold(40.0, f64::min);
+    let hi = env.points.iter().map(|p| p.value).fold(250.0, f64::max);
+    env.range = Some((lo, hi));
+    env.fader_scaled = false;
+    env
+}
+
+/// Makes the tempo map hold the envelope's points: their times and tempos, a linear shape
+/// ramping; time signatures stay with points that stay at their time.
+fn apply_tempo(project: &mut Project, env: &Envelope) {
+    let old = std::mem::take(&mut project.tempo.points);
+    let mut points: Vec<scythe_core::tempo::TempoPoint> = env
+        .points
+        .iter()
+        .map(|p| {
+            let kept = old.iter().find(|o| (o.time - p.time).abs() < 1e-6);
+            scythe_core::tempo::TempoPoint {
+                time: p.time.max(0.0),
+                bpm: p.value.clamp(1.0, 960.0),
+                linear: matches!(p.shape, PointShape::Linear),
+                time_sig: kept.and_then(|o| o.time_sig),
+                raw: kept.map(|o| o.raw.clone()).unwrap_or_default(),
+            }
+        })
+        .collect();
+    points.sort_by(|a, b| a.time.total_cmp(&b.time));
+    if points.len() == 1 && points[0].time <= 0.0 && points[0].time_sig.is_none() && old.is_empty() {
+        project.tempo.bpm = points[0].bpm;
+        points.clear();
+    }
+    project.tempo.points = points;
+    project.tempo.settle();
 }

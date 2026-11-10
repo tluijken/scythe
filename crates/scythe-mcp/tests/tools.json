@@ -10962,8 +10962,18 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11025,7 +11035,7 @@
           ]
         },
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "in_lane": {
@@ -11033,6 +11043,16 @@
           "description": "In a lane of its own rather than over the track.",
           "type": [
             "boolean",
+            "null"
+          ]
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -11087,8 +11107,18 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11134,8 +11164,18 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11210,13 +11250,23 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11295,13 +11345,23 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11348,7 +11408,7 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "from": {
@@ -11356,6 +11416,16 @@
           "format": "double",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -11422,8 +11492,18 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11474,8 +11554,18 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "length": {
           "description": "Seconds.",
@@ -11588,13 +11678,23 @@
           ]
         },
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "length": {
           "default": null,
@@ -11699,13 +11799,23 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "keep_points": {
           "default": false,
@@ -11756,13 +11866,23 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "pooled": {
           "default": false,
@@ -11813,13 +11933,23 @@
     "inputSchema": {
       "properties": {
         "envelope": {
-          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, or `fx:<effect index>:<parameter index>` for an FX parameter.",
+          "description": "`volume`, `volume_pre_fx`, `trim`, `pan`, `mute`, `width`, `dual_pan_left`,\n`dual_pan_right`, `fx:<effect index>:<parameter index>` for an FX parameter, or `tempo`\nfor the project's tempo map (REAPER's master tempo envelope; any track).",
           "type": "string"
         },
         "index": {
           "format": "uint",
           "minimum": 0,
           "type": "integer"
+        },
+        "item": {
+          "default": null,
+          "description": "A take envelope (`volume`, `pan`, `mute` or `pitch`) of this item's active take, its\npoints given in project seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "send": {
           "default": null,
@@ -11974,13 +12104,23 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "A track's automation mode, or sets it (on every track when `track` is left out):\n`trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`.\n\nControl API command `envelope.mode`.",
+    "description": "A track's automation mode, or sets it (on every track when `track` is left out):\n`trim_read`, `read`, `touch`, `write`, `latch` or `latch_preview`. With `send`, the mode of\nthat send's envelopes (REAPER's per-send mode), where `track` means the send's own mode\nis dropped and it follows the track again.\n\nControl API command `envelope.mode`.",
     "inputSchema": {
       "properties": {
         "mode": {
           "default": null,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "send": {
+          "default": null,
+          "description": "A send of `track`, by its index in `send.list`.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },

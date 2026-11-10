@@ -150,7 +150,7 @@ impl Session {
     /// remembers it, in latch preview) and the transport runs. Returns false when the move
     /// should change the control itself.
     pub fn automate(&mut self, track: TrackId, target: AutoTarget, value: f64) -> bool {
-        let Some(mode) = self.project.track(track).map(|t| self.project.auto_mode_of(t)) else { return false };
+        let Some(mode) = target_mode(&self.project, track, target) else { return false };
         if !(mode.writes() || mode == AutoMode::LatchPreview) || !self.is_playing() {
             return false;
         }
@@ -244,10 +244,11 @@ impl Session {
     pub fn tick_automation(&mut self) {
         let modes: HashMap<TrackId, AutoMode> =
             self.project.tracks.iter().map(|t| (t.id, self.project.auto_mode_of(t))).collect();
+        let mode_of = |p: &Project, w: &AutoWrite| target_mode(p, w.track, w.target);
         if !self.is_playing() {
             if !self.auto_writes.is_empty() {
                 for w in &self.auto_writes {
-                    if modes.get(&w.track) == Some(&AutoMode::LatchPreview) {
+                    if mode_of(&self.project, w) == Some(AutoMode::LatchPreview) {
                         self.latch_preview.retain(|r| (r.track, r.target) != (w.track, w.target));
                         self.latch_preview.push(Remembered { track: w.track, target: w.target, value: w.value });
                     }
@@ -261,9 +262,10 @@ impl Session {
         // Write mode records volume and pan, and every other armed envelope, even when nobody
         // touches them.
         let mut fresh = Vec::new();
-        for t in self.project.tracks.iter().filter(|t| modes.get(&t.id) == Some(&AutoMode::Write)) {
+        for t in &self.project.tracks {
+            let track_writes = modes.get(&t.id) == Some(&AutoMode::Write);
             let armed = |k: EnvelopeKind| t.envelope(k).is_some_and(|e| e.armed);
-            let mut targets = vec![AutoTarget::Volume, AutoTarget::Pan];
+            let mut targets = if track_writes { vec![AutoTarget::Volume, AutoTarget::Pan] } else { Vec::new() };
             targets.extend(armed(EnvelopeKind::Width).then_some(AutoTarget::Width));
             targets.extend(armed(EnvelopeKind::Mute).then_some(AutoTarget::Mute));
             for (s, send) in t.sends.iter().enumerate() {
@@ -280,6 +282,9 @@ impl Session {
                 targets.extend(armed.map(|param| AutoTarget::Param { fx, param }));
             }
             for target in targets {
+                if target_mode(&self.project, t.id, target) != Some(AutoMode::Write) {
+                    continue;
+                }
                 if !self.auto_writes.iter().any(|w| w.track == t.id && w.target == target) {
                     let value = current(&self.project, t.id, target, now);
                     fresh.push(AutoWrite { track: t.id, target, value, touching: false, last: None });
@@ -291,7 +296,7 @@ impl Session {
         let active: Vec<usize> = writes
             .iter()
             .enumerate()
-            .filter(|(_, w)| match modes.get(&w.track) {
+            .filter(|(_, w)| match mode_of(&self.project, w) {
                 Some(AutoMode::Touch) => w.touching,
                 Some(AutoMode::Latch | AutoMode::Write) => true,
                 _ => false,
@@ -319,4 +324,14 @@ impl Session {
         }
         self.auto_writes = writes;
     }
+}
+
+/// The mode a control of `track` writes in: a send's own mode for its controls (REAPER's send
+/// `I_AUTOMODE`), else the track's; the global override over both.
+fn target_mode(project: &Project, track: TrackId, target: AutoTarget) -> Option<AutoMode> {
+    let t = project.track(track)?;
+    Some(match target {
+        AutoTarget::SendVolume(s) | AutoTarget::SendPan(s) | AutoTarget::SendMute(s) => project.send_auto_mode(t, s),
+        _ => project.auto_mode_of(t),
+    })
 }

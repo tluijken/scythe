@@ -581,6 +581,25 @@ pub struct Send {
 }
 
 impl Send {
+    /// The send's own automation mode (`AUXRECV` field 12, REAPER's send `I_AUTOMODE`): `None`
+    /// follows the track's.
+    pub fn auto_mode(&self) -> Option<AutoMode> {
+        let code: i64 = self.raw.as_ref()?.get(12)?.parse().ok()?;
+        (code >= 0).then(|| AutoMode::from_rpp(code))
+    }
+
+    pub fn set_auto_mode(&mut self, mode: Option<AutoMode>) {
+        let raw = self.raw.get_or_insert_with(|| {
+            ["AUXRECV", "0", "0", "1", "0", "0", "0", "0", "0", "0", "-1:U", "4177951", "-1", ""]
+                .map(String::from)
+                .to_vec()
+        });
+        raw.resize(raw.len().max(13), "-1".into());
+        raw[12] = mode.map_or(-1, AutoMode::rpp_code).to_string();
+    }
+}
+
+impl Send {
     pub fn new(dest: TrackId) -> Self {
         Self {
             dest,
@@ -1183,6 +1202,16 @@ impl Project {
     pub fn auto_mode_of(&self, track: &Track) -> AutoMode {
         match self.global_automation {
             Some(GlobalAutomation::Mode(m)) => m,
+            _ => track.auto_mode,
+        }
+    }
+
+    /// The automation mode send `send` of `track` works in: the global override's, the send's
+    /// own, or the track's.
+    pub fn send_auto_mode(&self, track: &Track, send: usize) -> AutoMode {
+        match (self.global_automation, track.sends.get(send).and_then(Send::auto_mode)) {
+            (Some(GlobalAutomation::Mode(m)), _) => m,
+            (_, Some(m)) => m,
             _ => track.auto_mode,
         }
     }
