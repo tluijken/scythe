@@ -292,10 +292,36 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// User ids are UUID strings; makes and tags may come either way.
+fn any_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => String::new(),
+        Some(serde_json::Value::String(s)) => s,
+        Some(other) => other.to_string(),
+    })
+}
+
+/// Tone and model ids are numbers, but a number sent as a string is taken too.
+fn numeric_id<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        None | Some(serde_json::Value::Null) => Ok(0),
+        Some(serde_json::Value::Number(n)) => n.as_i64().ok_or_else(|| D::Error::custom(format!("id {n}"))),
+        Some(serde_json::Value::String(s)) => s.parse().map_err(|_| D::Error::custom(format!("non-numeric id {s:?}"))),
+        Some(other) => Err(D::Error::custom(format!("id {other}"))),
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct User {
-    #[serde(default, deserialize_with = "nullable")]
-    pub id: i64,
+    #[serde(default, deserialize_with = "any_id")]
+    pub id: String,
     #[serde(default, deserialize_with = "nullable")]
     pub username: String,
     #[serde(default)]
@@ -315,15 +341,15 @@ impl User {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Named {
-    #[serde(default, deserialize_with = "nullable")]
-    pub id: i64,
+    #[serde(default, deserialize_with = "any_id")]
+    pub id: String,
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Tone {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "numeric_id")]
     pub id: i64,
     #[serde(default, deserialize_with = "nullable")]
     pub title: String,
@@ -369,9 +395,9 @@ impl Tone {
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Model {
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "numeric_id")]
     pub id: i64,
-    #[serde(default, deserialize_with = "nullable")]
+    #[serde(default, deserialize_with = "numeric_id")]
     pub tone_id: i64,
     #[serde(default, deserialize_with = "nullable")]
     pub name: String,
@@ -1011,14 +1037,17 @@ mod tests {
 
     #[test]
     fn null_fields_read_as_empty() {
-        let latest = r#"{"data":[{"id":9,"title":null,"makes":null,"tags":null,"sizes":null,
-            "user":{"id":3,"username":null,"display_name":null},"models_count":null}],
+        let latest = r#"{"data":[{"id":9,"title":null,"tags":null,"sizes":null,
+            "user":{"id":"913292c0-f036-4690-916d-043924eed513","username":null,"display_name":null},
+            "makes":[{"id":"7","name":"Friedman"}],"models_count":null},{"id":"12","title":"t"}],
             "page":null,"total_pages":null,"total":null}"#;
         let http = Recorded::with([(200, latest), (200, r#"{"id":5,"username":"me","display_name":null}"#)]);
         let client = signed_in(http, None);
         let page = client.tones(ToneList::Latest, 1).unwrap();
         assert_eq!(page.data[0].id, 9);
-        assert!(page.data[0].makes.is_empty() && page.data[0].tags.is_empty() && page.data[0].sizes.is_empty());
+        assert!(page.data[0].tags.is_empty() && page.data[0].sizes.is_empty());
+        assert_eq!(page.data[0].user.as_ref().unwrap().id, "913292c0-f036-4690-916d-043924eed513");
+        assert_eq!(page.data[1].id, 12, "a numeric id sent as a string");
         assert_eq!(page.data[0].author(), Some(""));
         assert_eq!(client.user().unwrap().shown_name(), "me");
     }
