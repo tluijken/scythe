@@ -30,6 +30,7 @@ pub mod modulation;
 pub mod nam;
 pub mod normalized;
 pub mod pcmfile;
+pub mod perf;
 pub mod preview;
 pub mod probe;
 mod r8brain;

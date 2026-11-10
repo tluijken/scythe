@@ -360,7 +360,12 @@ impl ChainNode {
         mute_skipped: bool,
     ) -> bool {
         match &self.kind {
-            NodeKind::Fx(f) => run_fx(f, ch, pin_bufs, input, position, midi, mute_skipped),
+            NodeKind::Fx(f) => {
+                let started = std::time::Instant::now();
+                let ran = run_fx(f, ch, pin_bufs, input, position, midi, mute_skipped);
+                f.fx.cpu.add(started);
+                ran
+            }
             NodeKind::Container(c) => c.run(ch, pin_bufs, input, position, midi),
         }
     }

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub struct Meter {
     left: AtomicU32,
     right: AtomicU32,
+    /// Time the track takes to render, its effects included.
+    pub cpu: crate::perf::CpuTime,
 }
 
 fn raise(slot: &AtomicU32, value: f32) {

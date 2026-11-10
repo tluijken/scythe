@@ -536,6 +536,8 @@ pub struct FxInstance {
     /// How far a rig stage is switched in, 0-1 (`f32` bits; NaN until a chain first holds
     /// it): it glides when the stage is switched, across graph rebuilds.
     pub(crate) stage_level: std::sync::atomic::AtomicU32,
+    /// Time spent running it, for the performance meter.
+    pub cpu: crate::perf::CpuTime,
 }
 
 impl FxInstance {
@@ -551,6 +553,7 @@ impl FxInstance {
             effect: Mutex::new(fx),
             mods: Default::default(),
             stage_level: std::sync::atomic::AtomicU32::new(f32::NAN.to_bits()),
+            cpu: Default::default(),
         }
     }
 

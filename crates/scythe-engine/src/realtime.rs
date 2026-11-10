@@ -68,11 +68,13 @@ impl Realtime {
     }
 }
 
-static PROMOTER: OnceLock<SyncSender<libc::pid_t>> = OnceLock::new();
+/// Threads to promote, and whether each is the one [`status`] reports on.
+static PROMOTER: OnceLock<SyncSender<(libc::pid_t, bool)>> = OnceLock::new();
 static STATUS: Mutex<Option<Realtime>> = Mutex::new(None);
 
-/// Threads promoted so far, demoted together when the CPU-time limit is hit.
-static PROMOTED: [AtomicI32; 8] = [const { AtomicI32::new(0) }; 8];
+/// Threads promoted so far (audio threads and the track threads helping them), demoted
+/// together when the CPU-time limit is hit.
+static PROMOTED: [AtomicI32; 64] = [const { AtomicI32::new(0) }; 64];
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 static DEMOTED: AtomicBool = AtomicBool::new(false);
 
@@ -81,7 +83,7 @@ static DEMOTED: AtomicBool = AtomicBool::new(false);
 pub fn enable() {
     PROMOTER.get_or_init(|| {
         catch_cpu_limit();
-        let (tx, rx) = sync_channel(4);
+        let (tx, rx) = sync_channel(PROMOTED.len());
         std::thread::Builder::new()
             .name("scythe-realtime".into())
             .spawn(move || promoter(rx))
@@ -97,7 +99,18 @@ pub fn request() {
         return;
     }
     if let Some(tx) = PROMOTER.get() {
-        let _ = tx.try_send(current_tid());
+        let _ = tx.try_send((current_tid(), true));
+    }
+}
+
+/// Like [`request`], for a thread the audio thread waits on (a track render thread): at the
+/// same priority, nothing that would not preempt the audio thread holds it up.
+pub fn request_helper() {
+    if WANTED.load(Ordering::Relaxed) == 0 {
+        return;
+    }
+    if let Some(tx) = PROMOTER.get() {
+        let _ = tx.try_send((current_tid(), false));
     }
 }
 
@@ -146,19 +159,35 @@ fn remember_promoted(tid: libc::pid_t) {
     DEMOTED.store(false, Ordering::Relaxed);
 }
 
-fn promoter(rx: Receiver<libc::pid_t>) {
+fn promoter(rx: Receiver<(libc::pid_t, bool)>) {
     let warned = AtomicBool::new(false);
-    while let Ok(tid) = rx.recv() {
+    // Helpers wait for an audio thread to be promoted first: RealtimeKit grants a user only so
+    // many threads and requests at a time, and the audio thread must not miss out.
+    let mut waiting: Vec<libc::pid_t> = Vec::new();
+    let mut audio_promoted = false;
+    while let Ok((tid, reported)) = rx.recv() {
+        if !reported && !audio_promoted {
+            waiting.push(tid);
+            continue;
+        }
         let status = promote(tid);
         if matches!(status.via, "direct" | "rtkit") {
             remember_promoted(tid);
+        }
+        if reported && status.is_realtime() && !audio_promoted {
+            audio_promoted = true;
+            for helper in waiting.drain(..) {
+                if matches!(promote(helper).via, "direct" | "rtkit") {
+                    remember_promoted(helper);
+                }
+            }
         }
         if let Some(reason) = &status.reason
             && !warned.swap(true, Ordering::Relaxed)
         {
             eprintln!("audio: no real-time priority ({reason}); xruns are more likely under load");
         }
-        if let Ok(mut s) = STATUS.lock() {
+        if reported && let Ok(mut s) = STATUS.lock() {
             *s = Some(status);
         }
     }

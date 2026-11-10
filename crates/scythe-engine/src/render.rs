@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::time::Instant;
 
 use scythe_core::recording::{RecordMode, RecordTap};
 use scythe_core::tempo::Timeline;
@@ -655,6 +656,8 @@ pub struct RenderGraph {
 #[derive(Debug)]
 pub struct RenderScratch {
     track_bufs: Vec<(Vec<f32>, Vec<f32>)>,
+    /// The tracks of the level being rendered, slowest first.
+    level_order: Vec<usize>,
     capacity: usize,
 }
 
@@ -664,6 +667,7 @@ impl RenderScratch {
     pub fn new(max_tracks: usize) -> Self {
         Self {
             track_bufs: (0..max_tracks).map(|_| (vec![0.0; Self::MAX_BLOCK], vec![0.0; Self::MAX_BLOCK])).collect(),
+            level_order: Vec::with_capacity(max_tracks),
             capacity: Self::MAX_BLOCK,
         }
     }
@@ -1198,17 +1202,36 @@ impl RenderGraph {
         for level in 0..self.level_count {
             // Tracks within a level do not feed each other, so they render in parallel; routing
             // into parents, send destinations and the master happens afterwards, in order.
-            let bufs = &mut scratch.track_bufs[..tracks];
+            let RenderScratch { track_bufs, level_order, .. } = &mut *scratch;
+            let bufs = &mut track_bufs[..tracks];
             let in_level = |i: usize| self.level_of[i] == level;
             if self.level_sizes[level] > 1 {
-                track_threads().install(|| {
-                    bufs.par_iter_mut().enumerate().filter(|(i, _)| in_level(*i)).for_each(|(i, (l, r))| {
-                        self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                // Each thread takes the slowest track left, so a heavy track does not start
+                // last behind light ones that happened to sit before it.
+                level_order.clear();
+                level_order.extend((0..tracks).filter(|&i| in_level(i)));
+                level_order.sort_unstable_by_key(|&i| std::cmp::Reverse(self.tracks[i].meter.cpu.last()));
+                let order = &level_order[..];
+                let next = std::sync::atomic::AtomicUsize::new(0);
+                let bufs = TrackBufs(bufs.as_mut_ptr());
+                let pool = track_threads();
+                pool.install(|| {
+                    (0..order.len().min(pool.current_num_threads())).into_par_iter().with_max_len(1).for_each(|_| {
+                        while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            // SAFETY: `order` names each track once and every index is taken
+                            // by one thread only, so no two threads reach the same buffers.
+                            let (l, r) = unsafe { bufs.get(i) };
+                            let started = Instant::now();
+                            self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                            self.tracks[i].meter.cpu.add(started);
+                        }
                     });
                 });
             } else if let Some(i) = (0..tracks).find(|&i| in_level(i)) {
                 let (l, r) = &mut bufs[i];
+                let started = Instant::now();
                 self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                self.tracks[i].meter.cpu.add(started);
             }
             for &ti in self.order.iter().filter(|&&i| in_level(i)) {
                 self.route_track(ti, start, n, scratch, out_l, out_r);
@@ -2104,6 +2127,61 @@ impl RenderGraph {
     }
 }
 
+/// The track buffers of a level, handed to the track threads.
+struct TrackBufs(*mut (Vec<f32>, Vec<f32>));
+
+// SAFETY: the threads reach disjoint buffers through it (see `render_block`).
+unsafe impl Sync for TrackBufs {}
+
+impl TrackBufs {
+    /// # Safety
+    /// No other thread may use buffer `i` while the result lives, and `i` must be in bounds.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get(&self, i: usize) -> &mut (Vec<f32>, Vec<f32>) {
+        unsafe { &mut *self.0.add(i) }
+    }
+}
+
+/// Starts the track render threads, so the first block played does not wait for them (and
+/// they are promoted to real-time priority when the audio thread is).
+pub fn start_track_threads() {
+    track_threads();
+}
+
+/// How many threads render tracks: `SCYTHE_TRACK_THREADS`, else one per fast physical core.
+/// More threads than that make blocks slower, not faster: every block wakes them all, and
+/// a heavy track landing on a hyperthread sibling or an efficiency core finishes late (on a
+/// 6+8-core laptop CPU, 128-frame blocks of a 48-track session took 0.72 ms with 6 threads
+/// and 1.25 ms with one per logical CPU).
+fn track_thread_count() -> usize {
+    if let Some(n) = std::env::var("SCYTHE_TRACK_THREADS").ok().and_then(|v| v.parse().ok()) {
+        return n;
+    }
+    let logical = std::thread::available_parallelism().map_or(4, |n| n.get());
+    fast_cores().unwrap_or(logical / 2).clamp(2, 8)
+}
+
+/// Physical cores among the CPUs that clock within 15 % of the fastest, from sysfs.
+fn fast_cores() -> Option<usize> {
+    let read = |path: String| std::fs::read_to_string(path).ok()?.trim().parse::<u64>().ok();
+    let cpus: Vec<(u64, u64, u64)> = (0..1024)
+        .map_while(|c| {
+            let base = format!("/sys/devices/system/cpu/cpu{c}");
+            std::path::Path::new(&base).exists().then(|| {
+                let freq = read(format!("{base}/cpufreq/cpuinfo_max_freq")).unwrap_or(0);
+                let core = read(format!("{base}/topology/core_id")).unwrap_or(c);
+                let package = read(format!("{base}/topology/physical_package_id")).unwrap_or(0);
+                (freq, package, core)
+            })
+        })
+        .collect();
+    let top = cpus.iter().map(|c| c.0).max().filter(|&f| f > 0)?;
+    let mut cores: Vec<(u64, u64)> = cpus.iter().filter(|c| c.0 * 100 >= top * 85).map(|c| (c.1, c.2)).collect();
+    cores.sort_unstable();
+    cores.dedup();
+    Some(cores.len())
+}
+
 /// The threads tracks render on. Not rayon's global pool: whatever else queues work there,
 /// such as converting media while a set loads, would hold up the audio callback behind it.
 fn track_threads() -> &'static rayon::ThreadPool {
@@ -2111,6 +2189,8 @@ fn track_threads() -> &'static rayon::ThreadPool {
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .thread_name(|i| format!("scythe-tracks-{i}"))
+            .num_threads(track_thread_count())
+            .start_handler(|_| crate::realtime::request_helper())
             .build()
             .expect("spawn track render threads")
     })

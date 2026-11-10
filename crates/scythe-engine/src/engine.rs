@@ -1169,6 +1169,7 @@ impl Engine {
     /// An engine on a silent real-time clock: no output device. `reason` says why, when it
     /// should have had one.
     pub fn start_null(pool: Arc<MediaPool>, sample_rate: u32, reason: Option<String>) -> Self {
+        crate::render::start_track_threads();
         let graph = Arc::new(ArcSwap::from_pointee(RenderGraph::empty(sample_rate)));
         let transport = Arc::new(Transport::new(sample_rate));
         let (senders, feeds) = feeds();
