@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
 use scythe_core::folders::RowShow;
 use scythe_core::groups::GroupedControl;
@@ -557,6 +559,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let scroll = app.view.track_scroll;
     let row_h = app.view.row_h;
     let layout = RowLayout::new(app);
+    // An item dragged onto a later track moves there mid-frame and would be drawn (and its
+    // widget registered) a second time on that row.
+    let mut drawn = HashSet::new();
     let row_rect = |i: usize| {
         let top = rows.top() + layout.tops[i] - scroll;
         Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), layout.heights[i]))
@@ -771,7 +776,7 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
 
         let dim = !audible || (any_solo && !track.solo && !audible);
-        for item in &track.items {
+        for item in track.items.iter().filter(|i| drawn.insert(i.id)) {
             let silent = !track.lane_plays(item.lane());
             draw_item(app, ui, &lane_painter, lane, axis, track.id, item.id, color, dim || silent);
         }
