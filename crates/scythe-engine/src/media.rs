@@ -661,6 +661,7 @@ fn gcd(a: u64, b: u64) -> u64 {
 /// 96 frames past that position.
 pub(crate) struct StreamResampler {
     kernel: SincKernel,
+    phases: PhaseTable,
     from: u64,
     to: u64,
     /// Input frames from absolute frame `start` on.
@@ -672,7 +673,8 @@ pub(crate) struct StreamResampler {
 impl StreamResampler {
     pub(crate) fn new(from: u32, to: u32) -> Self {
         let kernel = SincKernel::new(from as f64 / to as f64, 96, true);
-        Self { kernel, from: from as u64, to: to as u64, history: Vec::new(), start: 0, next: 0 }
+        let phases = PhaseTable::new(&kernel, from as u64, to as u64);
+        Self { kernel, phases, from: from as u64, to: to as u64, history: Vec::new(), start: 0, next: 0 }
     }
 
     /// Input frames that must follow a read position before its output frame is ready.
@@ -683,17 +685,29 @@ impl StreamResampler {
     pub(crate) fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
         self.history.extend_from_slice(input);
         let half = self.kernel.half as u64;
+        let width = 2 * self.kernel.half;
         let end = self.start + self.history.len() as u64;
         loop {
             let (base, rem) = (self.next * self.from / self.to, self.next * self.from % self.to);
             if base + half >= end {
                 break;
             }
-            let frac = rem as f64 / self.to as f64;
+            let from = (base + 1).saturating_sub(half).max(self.start);
             let mut acc = 0.0f64;
-            for idx in (base + 1).saturating_sub(half).max(self.start)..=base + half {
-                let x = self.history[(idx - self.start) as usize] as f64;
-                acc += x * self.kernel.tap(base as f64 + frac - idx as f64);
+            if self.phases.weights.is_empty() {
+                let frac = rem as f64 / self.to as f64;
+                for idx in from..=base + half {
+                    let x = self.history[(idx - self.start) as usize] as f64;
+                    acc += x * self.kernel.tap(base as f64 + frac - idx as f64);
+                }
+            } else {
+                // The row holds the weights of input frames `base + 1 - half ..= base + half`.
+                let row = &self.phases.weights[(rem / self.phases.unit) as usize * width..][..width];
+                let skip = (from + half - 1 - base) as usize;
+                let xs = &self.history[(from - self.start) as usize..][..width - skip];
+                for (&x, &w) in xs.iter().zip(&row[skip..]) {
+                    acc += x as f64 * w;
+                }
             }
             out.push(acc as f32);
             self.next += 1;
