@@ -5,7 +5,8 @@
 //! volume, trim and mute envelopes, its pan is offset by the leads' pans and pan envelopes,
 //! and its width is multiplied by theirs. A lead's mute button, solo and polarity leave the
 //! followers alone. Following pre-FX, the leads' levels act on the track's input instead of
-//! its fader, so pre-FX sends hear them too.
+//! its fader, so pre-FX sends hear them too. When playback starts, a follower's pan and width
+//! glide from its own to the leads' sum over the first 512 frames ([`VcaRamp`]).
 
 use scythe_core::envelope::PointShape;
 use scythe_core::fader::{PanMode, Panner};
@@ -34,6 +35,33 @@ pub struct FaderStage {
     pub automation: Option<Automation>,
     /// Levels of VCA leads followed pre-FX, applied to the track's input.
     pub pre_fx: Option<PreFxGain>,
+    pub vca_ramp: Option<VcaRamp>,
+}
+
+/// The glide a VCA follower's pan makes when playback starts: REAPER 7.73 starts the track at
+/// its own pan, width and dual pan and moves those linearly to the values with its leads'
+/// added over the first [`VcaRamp::FRAMES`] frames, the gains following per sample.
+#[derive(Debug, Clone, Copy)]
+pub struct VcaRamp {
+    pub from: Panner,
+    pub to: Panner,
+    /// The fader with the leads' faders and the polarity sign.
+    pub volume: f64,
+}
+
+impl VcaRamp {
+    pub const FRAMES: i64 = 512;
+
+    /// The gains `frames` into playback.
+    pub fn matrix_at(&self, frames: i64) -> Matrix {
+        let k = (frames as f64 / Self::FRAMES as f64).clamp(0.0, 1.0);
+        let mix = |a: f64, b: f64| a + (b - a) * k;
+        let mut p = self.to;
+        p.pan = mix(self.from.pan, self.to.pan);
+        p.width = mix(self.from.width, self.to.width);
+        p.dual = [mix(self.from.dual[0], self.to.dual[0]), mix(self.from.dual[1], self.to.dual[1])];
+        scaled(p.matrix(), self.volume)
+    }
 }
 
 /// Active track envelopes and what they modulate. Gains are evaluated every
@@ -73,6 +101,7 @@ impl FaderStage {
         let t = &project.tracks[ti];
         let sign = if t.phase { -1.0 } else { 1.0 };
         let mut panner = project.panner_for(t);
+        let own = panner;
         let mut volume = t.volume;
         let mut gains: Vec<Envelope> = GAIN_KINDS.into_iter().filter_map(|k| active(t, k)).collect();
         let mut mutes: Vec<Envelope> = active(t, EnvelopeKind::Mute).into_iter().collect();
@@ -105,7 +134,12 @@ impl FaderStage {
         let envelopes = !gains.is_empty() || !mutes.is_empty() || !pans.is_empty() || !widths.is_empty();
         let automation = (envelopes || dual.iter().any(|d| !d.is_empty()) && panner.mode == PanMode::Dual)
             .then_some(Automation { volume, panner, gains, mutes, pans, widths, dual });
-        Self { volume, matrix, automation, pre_fx: pre }
+        let vca_ramp = (automation.is_none() && own.matrix() != panner.matrix()).then_some(VcaRamp {
+            from: own,
+            to: panner,
+            volume,
+        });
+        Self { volume, matrix, automation, pre_fx: pre, vca_ramp }
     }
 }
 
@@ -233,5 +267,32 @@ mod tests {
         p.tracks[fi].phase = true;
         let f = FaderStage::new(&p, fi);
         assert!((f.volume + 0.8).abs() < 1e-9 && f.pre_fx.as_ref().is_some_and(|g| g.gain == 0.5));
+    }
+
+    #[test]
+    fn vca_pan_glides_in_at_playback_start() {
+        // REAPER 7.73, `vp_lm5w`: the lead in stereo pan at 0.3 with width 0.5, the follower
+        // centred; a left-only input at 0.5.
+        let mut p = Project::default();
+        let lead = p.add_track("lead");
+        let follower = p.add_track("follower");
+        let (li, fi) = (p.track_index(lead).unwrap(), p.track_index(follower).unwrap());
+        p.tracks[li].groups.set(GroupParam::VcaLead, 0, true);
+        p.tracks[fi].groups.set(GroupParam::VcaFollow, 0, true);
+        p.tracks[li].pan_mode = Some(PanMode::Stereo);
+        (p.tracks[li].pan, p.tracks[li].width) = (0.3, 0.5);
+        let f = FaderStage::new(&p, fi);
+        let ramp = f.vca_ramp.expect("a ramp");
+        let out = |frames: i64| ramp.matrix_at(frames).map(|g| g * 0.5);
+        for (frames, l, r) in
+            [(0, 0.5, 0.0), (1, 0.499_463_02, 0.000_244_141), (256, 0.371875, 0.0625), (512, 0.2625, 0.125)]
+        {
+            let m = out(frames);
+            assert!((m[0] - l).abs() < 1e-6 && (m[2] - r).abs() < 1e-6, "{frames}: {m:?}");
+        }
+        assert_eq!(ramp.matrix_at(512), f.matrix);
+        p.tracks[li].pan = 0.0;
+        p.tracks[li].width = 1.0;
+        assert!(FaderStage::new(&p, fi).vca_ramp.is_none());
     }
 }

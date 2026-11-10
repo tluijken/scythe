@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use scythe_core::recording::{RecordMode, RecordTap};
 use scythe_core::tempo::Timeline;
@@ -15,7 +16,7 @@ use crate::loudness::Loudness;
 use crate::meter::Meter;
 use crate::midi_io::{LiveMidi, OutMessage, RecInput};
 use crate::midi_sync::{LtcWriter, TimecodeRate};
-use crate::mix::{Automation, FaderStage, Matrix, PreFxGain};
+use crate::mix::{Automation, FaderStage, Matrix, PreFxGain, VcaRamp};
 use crate::synth::{ControlEvent, NoteList, SynthNote};
 use scythe_core::midi_route::SendMidi;
 
@@ -315,6 +316,8 @@ pub struct RenderTrack {
     pub parent: Option<usize>,
     pub main_send: bool,
     pub automation: Option<Arc<Automation>>,
+    /// A VCA follower's pan glide at playback start, with the first frame this graph played.
+    pub vca_ramp: Option<Arc<(VcaRamp, AtomicI64)>>,
     pub chain: Arc<FxChain>,
     /// Buffers the pins of effects with a pin map are gathered into, one per pin of the widest.
     pub pin_bufs: Option<Arc<AuxChannels>>,
@@ -955,6 +958,7 @@ impl RenderGraph {
                     parent: parents[ti],
                     main_send: t.main_send,
                     automation: fader.automation.map(Arc::new),
+                    vca_ramp: fader.vca_ramp.map(|r| Arc::new((r, AtomicI64::new(i64::MIN)))),
                     chain,
                     pin_bufs: pin_count.map(|c| Arc::new(AuxChannels::new(c.min(64)))),
                     chain_midi: Arc::default(),
@@ -1581,10 +1585,25 @@ impl RenderGraph {
             }
         }
         drop(aux);
+        let ramp = track.vca_ramp.as_deref().filter(|_| track.audible).and_then(|(ramp, first)| {
+            let _ = first.compare_exchange(i64::MIN, position, Ordering::Relaxed, Ordering::Relaxed);
+            let into = position - first.load(Ordering::Relaxed);
+            (into < VcaRamp::FRAMES).then_some((ramp, into))
+        });
         match (&track.automation, track.audible) {
             (_, false) => {
                 tl.fill(0.0);
                 tr.fill(0.0);
+            }
+            (None, true) if let Some((ramp, into)) = ramp => {
+                for (i, (sl, sr)) in tl.iter_mut().zip(tr.iter_mut()).enumerate() {
+                    let m = if into + (i as i64) < VcaRamp::FRAMES {
+                        ramp.matrix_at(into + i as i64)
+                    } else {
+                        track.matrix
+                    };
+                    crate::mix::apply(&m, sl, sr);
+                }
             }
             (None, true) if crate::mix::is_diagonal(&track.matrix) => {
                 let [gl, _, _, gr] = track.matrix;
