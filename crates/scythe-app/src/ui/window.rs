@@ -192,7 +192,15 @@ impl ScytheWindow {
             window = place_now(window, place.rect(size, bounds).min);
         }
 
-        let shown = window.show(ctx, add_contents);
+        // egui fits a window to what it holds; a resizable tool window keeps the size it was
+        // given (or resized to) even while its contents are shorter, as when a list is loading.
+        let fill = resizable && self.kind == WindowKind::Panel && self.size.is_some();
+        let shown = window.show(ctx, |ui| {
+            if fill {
+                ui.set_min_size(ui.available_size());
+            }
+            add_contents(ui)
+        });
         let rect = shown.as_ref().map(|s| s.response.rect);
         let user_moved = ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
         registry(ctx, |r| {

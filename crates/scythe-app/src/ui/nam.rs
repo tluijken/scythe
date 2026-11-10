@@ -46,7 +46,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let title = if app.nam_rig(&target).is_some() { "Guitar rig" } else { "Neural Amp Modeler" };
     let shown = scythe_window("nam-panel", format!("{title} · {track}"), WindowKind::Panel)
         .default_size(vec2(880.0, 760.0))
-        .min_size(vec2(420.0, 460.0))
+        // Tall enough for the stages, the model and some rows of the browser below them.
+        .min_size(vec2(560.0, 640.0))
         .show(&ctx, &mut open, |ui| body(app, ui, &target));
     app.nam.panel_rect = shown.map(|s| s.response.rect);
     if !open {
