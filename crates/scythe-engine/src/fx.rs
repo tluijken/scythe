@@ -756,6 +756,8 @@ struct Entry {
     nam: Option<Arc<NamControl>>,
     /// How a convolution instance takes a new impulse response while it plays.
     ir: Option<Arc<crate::reaverb::IrControl>>,
+    /// The latency the instance reported when the chain took it.
+    latency: usize,
 }
 
 /// Owns every effect instance across graph rebuilds.
@@ -870,14 +872,19 @@ impl FxRegistry {
         let state = plugin_state(slot);
         let stale =
             self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
-        if stale && !self.update_nam(&key, &state) && !self.update_stock(&key, &state) {
+        if stale
+            && !self.update_nam(&key, &state)
+            && !self.update_stock(&key, &state)
+            && !self.update_scythe_eq(&key, &state)
+        {
             let (instance, status) = match self.create(slot, channels) {
                 Ok((fx, status)) => (Some(Arc::new(FxInstance::new(fx))), status),
                 Err(reason) => (None, FxStatus::Unavailable(reason)),
             };
             let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
             let ir = instance.as_ref().and_then(|i| i.with(|e| e.ir_control()).flatten());
-            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam, ir });
+            let latency = instance.as_ref().and_then(|i| i.with(|e| e.latency())).unwrap_or(0);
+            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam, ir, latency });
         }
         let entry = &self.entries[&key];
         if let Some(control) = &entry.nam {
@@ -1085,8 +1092,14 @@ impl FxRegistry {
             }
             chunk.push_chunk(st);
         }
+        // A Scythe EQ whose latency changed (phase mode, spectral bands) needs a new instance
+        // so the chain compensates for it: leaving the old state in place makes the next sync
+        // build one.
+        let latency = if crate::scythe_eq::is_slot(slot) { inst.with(|e| e.latency()) } else { None };
         let key = entry.clone();
-        if let Some(entry) = self.entries.get_mut(&key) {
+        if let Some(entry) = self.entries.get_mut(&key)
+            && latency.is_none_or(|l| l == entry.latency)
+        {
             entry.state = plugin_state(slot);
         }
     }
@@ -1267,6 +1280,28 @@ impl FxRegistry {
         updated
     }
 
+    /// Hands a changed state of a running Scythe EQ to it (an undo, a pasted preset), keeping
+    /// its filter memories; false when the slot changed otherwise or the change moves its
+    /// latency, which needs a new instance so the chain compensates for it.
+    fn update_scythe_eq(&mut self, key: &(Owner, String), state: &[Node]) -> bool {
+        let Some(entry) = self.entries.get(key) else { return false };
+        let Some(inst) = entry.instance.clone() else { return false };
+        let (Some(Node::Chunk(old)), Some(Node::Chunk(new))) = (entry.state.first(), state.first()) else {
+            return false;
+        };
+        let is_eq = |c: &Chunk| c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == crate::scythe_eq::CLAP_ID);
+        if !is_eq(old) || !is_eq(new) {
+            return false;
+        }
+        let Some(chunk) = clap_state(new) else { return false };
+        let latency = entry.latency;
+        let fits = inst.with(|e| e.update_state(&chunk) && e.latency() == latency).unwrap_or(false);
+        if fits {
+            self.entries.get_mut(key).unwrap().state = state.to_vec();
+        }
+        fits
+    }
+
     fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
         let plugin_chunk = plugin;
@@ -1393,6 +1428,14 @@ impl FxRegistry {
             }
             "CLAP" => {
                 let id = args.get(1).cloned().ok_or("CLAP slot without a plugin id")?;
+                if id == crate::scythe_eq::CLAP_ID {
+                    let eq = match clap_state(plugin_chunk) {
+                        Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
+                            .ok_or("unreadable Scythe EQ state")?,
+                        None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
+                    };
+                    return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
+                }
                 let desc = self
                     .clap_plugins()
                     .iter()

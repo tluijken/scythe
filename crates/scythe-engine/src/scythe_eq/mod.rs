@@ -30,6 +30,58 @@ pub const CLAP_ID: &str = "scythe.eq";
 pub const DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
 pub const STATUS: &str = "Scythe EQ";
 
+/// Whether `slot` holds a Scythe EQ.
+pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
+    slot.raw.iter().any(|n| {
+        matches!(n, scythe_core::rpp::Node::Chunk(c)
+            if c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == CLAP_ID))
+    })
+}
+
+/// The values stored in a Scythe EQ slot.
+pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
+    use base64::Engine as _;
+    let chunk = slot.raw.iter().find_map(|n| match n {
+        scythe_core::rpp::Node::Chunk(c) if c.name() == "CLAP" => Some(c),
+        _ => None,
+    })?;
+    let state = chunk.chunks("STATE").next()?;
+    let text: String = state
+        .children
+        .iter()
+        .filter_map(|n| match n {
+            scythe_core::rpp::Node::Line(l) => Some(l.trim()),
+            scythe_core::rpp::Node::Chunk(_) => None,
+        })
+        .collect();
+    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?)
+}
+
+/// A new slot holding a Scythe EQ with `state` (the default when `None`).
+pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
+    use base64::Engine as _;
+    use scythe_core::rpp::{Chunk, Node};
+    let state = state.map_or_else(|| params::encode(&params::defaults()), <[u8]>::to_vec);
+    let mut chunk = Chunk::new("CLAP", &[DISPLAY, CLAP_ID, ""]);
+    chunk.line(["CFG", "4", "0", "0", ""]);
+    let mut st = Chunk::new("STATE", &[]);
+    let text = base64::engine::general_purpose::STANDARD.encode(&state);
+    for line in text.as_bytes().chunks(128) {
+        st.line([String::from_utf8_lossy(line)]);
+    }
+    chunk.push_chunk(st);
+    scythe_core::FxSlot {
+        name: DISPLAY.into(),
+        enabled: true,
+        raw: vec![
+            Node::Line("BYPASS 0 0 0".into()),
+            Node::Chunk(chunk),
+            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
+            Node::Line("WAK 0 0".into()),
+        ],
+    }
+}
+
 /// Frames between parameter updates of the zero-latency filters and the detectors.
 const SUB: usize = 32;
 const SMOOTH_SECONDS: f64 = 0.015;

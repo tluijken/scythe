@@ -392,7 +392,7 @@ fn find_plugin(session: &Session, wanted: &str) -> Option<FxSlot> {
 
 /// Where a chain lives.
 #[derive(Debug, Clone, Copy)]
-enum Loc {
+pub(crate) enum Loc {
     Track(Target),
     Input(TrackId),
     Take(TrackId, ItemId, usize),
@@ -400,7 +400,7 @@ enum Loc {
 }
 
 impl Loc {
-    fn owner(self) -> FxOwner {
+    pub(crate) fn owner(self) -> FxOwner {
         match self {
             Self::Track(Target::Master) => FxOwner::Master,
             Self::Track(Target::Track(id)) => FxOwner::Track(id),
@@ -411,7 +411,7 @@ impl Loc {
     }
 }
 
-fn locate(session: &Session, track: &TrackRef, at: &ChainAt) -> Result<Loc, ApiError> {
+pub(crate) fn locate(session: &Session, track: &TrackRef, at: &ChainAt) -> Result<Loc, ApiError> {
     match at.chain.unwrap_or(ChainKind::Track) {
         ChainKind::Monitor => Ok(Loc::Monitor),
         ChainKind::Track => Ok(Loc::Track(track.resolve(&session.project)?)),
@@ -436,7 +436,7 @@ fn take_loc(session: &Session, item: u64, take: Option<usize>) -> Result<Loc, Ap
     Err(ApiError::not_found(format!("no item with id {item}")))
 }
 
-fn chain(session: &Session, loc: Loc) -> Result<Vec<FxSlot>, ApiError> {
+pub(crate) fn chain(session: &Session, loc: Loc) -> Result<Vec<FxSlot>, ApiError> {
     let gone = || ApiError::not_found("the track is gone");
     Ok(match loc {
         Loc::Track(target) => target.get(&session.project).ok_or_else(gone)?.fx.clone(),
@@ -534,7 +534,7 @@ fn list(session: &Session, loc: Loc) -> Value {
     }
 }
 
-fn instance(
+pub(crate) fn instance(
     session: &Session,
     loc: Loc,
     at: &ChainAt,
@@ -606,7 +606,7 @@ impl EqKind {
 }
 
 /// Runs `f` on the effect as the stock type `T`, as one undo step.
-fn edit_stock<T: 'static, R>(
+pub(crate) fn edit_stock<T: 'static, R>(
     session: &mut Session,
     inst: &scythe_engine::fx::FxInstance,
     label: &str,

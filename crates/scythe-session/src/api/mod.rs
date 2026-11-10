@@ -11,6 +11,7 @@ pub mod bay;
 pub mod customize;
 pub mod editing;
 pub mod envelope;
+pub mod eq;
 pub mod events;
 pub mod explorer;
 pub mod feed;
@@ -85,6 +86,7 @@ pub enum Command {
     Nam(nam::NamCommand),
     Audio(audio::AudioCommand),
     Agents(agents::AgentsCommand),
+    Eq(eq::EqCommand),
 }
 
 /// Commands of other domains that `timing` answers, besides `item.stretch_markers*`.
@@ -152,6 +154,7 @@ impl<'de> Deserialize<'de> for Command {
             "nam" => serde_json::from_value(value).map(Command::Nam),
             "audio" => serde_json::from_value(value).map(Command::Audio),
             "agents" => serde_json::from_value(value).map(Command::Agents),
+            "eq" => serde_json::from_value(value).map(Command::Eq),
             _ => return Err(D::Error::custom(format!("unknown command domain \"{domain}\""))),
         };
         parsed.map_err(D::Error::custom)
@@ -193,6 +196,7 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
         Command::Nam(c) => nam::execute(session, c),
         Command::Audio(c) => audio::execute(session, c),
         Command::Agents(c) => agents::execute(session, c),
+        Command::Eq(c) => eq::execute(session, c),
     }
 }
 

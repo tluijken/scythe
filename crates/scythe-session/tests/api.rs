@@ -1756,3 +1756,55 @@ fn folder_actions_work_on_the_selected_tracks() {
     ok(&mut s, json!({"cmd": "action.run", "action": "40005"}));
     assert_eq!(s.project.tracks.len(), 4);
 }
+
+#[test]
+fn scythe_eq_bands_are_set_by_name_saved_and_undone() {
+    let mut s = session();
+    let t = add_track(&mut s, "Vox");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    let added = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": t, "index": 0, "shape": "high_shelf", "freq": 8000.0, "gain_db": 3.0}),
+    );
+    assert_eq!(added["band"], 0);
+    let dynamic = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": t, "index": 0, "freq": 3500.0, "gain_db": 0.0, "q": 4.0,
+               "dynamic": "dynamic", "range_db": -6.0, "threshold_db": -24.0, "stereo": "mid"}),
+    );
+    assert_eq!((dynamic["band"].as_u64(), dynamic["stereo"].as_str()), (Some(1), Some("mid")));
+    ok(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 0, "slope": 24}));
+    let got = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    assert_eq!(got["bands"].as_array().unwrap().len(), 2);
+    assert_eq!(got["bands"][0]["shape"], "high_shelf");
+    assert_eq!(got["bands"][0]["slope"], 24);
+    assert_eq!(got["latency"], 0);
+
+    let set = ok(&mut s, json!({"cmd": "eq.set", "track": t, "index": 0, "phase_mode": "linear"}));
+    assert_eq!(set["phase_mode"], "linear");
+    let got = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    assert_eq!(got["latency"], 2048, "the new phase mode reports its latency");
+
+    // Plain parameters reach the same values.
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    let gain = params.as_array().unwrap().iter().find(|p| p["name"] == "Band 1 Gain").unwrap().clone();
+    ok(&mut s, json!({"cmd": "fx.param", "track": t, "index": 0, "param": gain["id"], "value": -4.5}));
+    let got = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    assert_eq!(got["bands"][0]["gain_db"], -4.5);
+
+    let list = ok(&mut s, json!({"cmd": "eq.instances"}));
+    assert_eq!(list["instances"][0]["bands"], 2);
+    assert_eq!(list["instances"][0]["phase_mode"], "linear");
+
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<CLAP \"CLAP: Scythe EQ (Scythe)\" scythe.eq \"\""), "{text}");
+    let back = scythe_core::rpp::project_from_rpp(&text).unwrap();
+    let values = scythe_engine::scythe_eq::slot_values(&back.tracks[0].fx[0]).unwrap();
+    assert_eq!(values[3], -4.5);
+
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    let got = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    assert_eq!(got["bands"][0]["gain_db"], 3.0);
+    let err = execute_json(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "slope": 7})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+}

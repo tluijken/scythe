@@ -14966,6 +14966,516 @@
   },
   {
     "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Every Scythe EQ in the project: track, chain position, name, phase mode and the bands\nin use.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.instances`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "eq_instances",
+    "title": "Eq instances"
+  },
+  {
+    "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "One Scythe EQ's global settings and its bands in use, with each dynamic band's current\ngain change.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.get`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "eq_get",
+    "title": "Eq get"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Adds a band (when `band` is left out: the first free one) or changes one; fields left\nout stay as they are. `remove` takes the band out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
+    "inputSchema": {
+      "properties": {
+        "attack_ms": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "auto_threshold": {
+          "default": null,
+          "description": "The threshold follows the band's own average level.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "band": {
+          "default": null,
+          "description": "The band, 0-23; left out to add a band.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dynamic": {
+          "default": null,
+          "enum": [
+            "off",
+            "dynamic",
+            "spectral",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": null,
+          "description": "Whether the band plays (false bypasses it).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "external_sidechain": {
+          "default": null,
+          "description": "The detector listens to the track's channels 3/4 instead of the band's own input.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "freq": {
+          "default": null,
+          "description": "Frequency in Hz, 10-30000.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "gain_db": {
+          "default": null,
+          "description": "Gain in dB, -30 to 30 (bells, shelves and tilts).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "q": {
+          "default": null,
+          "description": "Q, 0.025-40.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "range_db": {
+          "default": null,
+          "description": "How far a dynamic band moves from its gain, in dB (negative cuts when loud).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "release_ms": {
+          "default": null,
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "remove": {
+          "default": false,
+          "type": "boolean"
+        },
+        "shape": {
+          "default": null,
+          "enum": [
+            "bell",
+            "low_shelf",
+            "high_shelf",
+            "low_cut",
+            "high_cut",
+            "notch",
+            "band_pass",
+            "tilt_shelf",
+            "flat_tilt",
+            "all_pass",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slope": {
+          "default": null,
+          "description": "Slope in dB per octave for cuts, shelves and band pass: 6, 12, 18, 24, 30, 36, 48,\n72 or 96, or 0 for a brickwall cut.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stereo": {
+          "default": null,
+          "enum": [
+            "stereo",
+            "left",
+            "right",
+            "mid",
+            "side",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threshold_db": {
+          "default": null,
+          "description": "The detector level, in dB, above which a dynamic band moves.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "eq_band",
+    "title": "Eq band"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes global settings; fields left out stay as they are. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.set`.",
+    "inputSchema": {
+      "properties": {
+        "auto_gain": {
+          "default": null,
+          "description": "Keeps the loudness the same as the curve changes.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "character": {
+          "default": null,
+          "enum": [
+            "clean",
+            "subtle",
+            "warm",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gain_q": {
+          "default": null,
+          "description": "Bells narrow as their gain grows.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "gain_scale": {
+          "default": null,
+          "description": "Scales every band's gain and range, in percent from -100 to 200.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output_db": {
+          "default": null,
+          "description": "Output gain in dB, -36 to 36.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "pan": {
+          "default": null,
+          "description": "Output balance, -100 (left) to 100 (right).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "phase_mode": {
+          "default": null,
+          "enum": [
+            "zero_latency",
+            "natural",
+            "linear",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolution": {
+          "default": null,
+          "description": "Linear phase resolution, 0 (low, least latency) to 4 (maximum).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "width": {
+          "default": null,
+          "description": "Stereo width in percent, 0-200.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "track",
+        "index"
+      ],
+      "type": "object"
+    },
+    "name": "eq_set",
+    "title": "Eq set"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

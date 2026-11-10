@@ -9,12 +9,12 @@ use schemars::generate::SchemaSettings;
 use scythe_session::access::AccessCommand;
 use scythe_session::api::{
     analysis::AnalysisCommand, audio::AudioCommand, bay::BayCommand, customize::CustomizeCommand,
-    envelope::EnvelopeCommand, explorer::ExplorerCommand, feed::EventsCommand, fx::FxCommand, groups::GroupCommand,
-    items::ItemCommand, markers::MarkerCommand, media::MediaCommand, midi::MidiCommand, midi_edit::MidiEditCommand,
-    mix::MixCommand, modulation::ModulationCommand, nam::NamCommand, project::ProjectCommand,
-    recording::RecordingCommand, render::RenderCommand, rig::RigCommand, script::ScriptCommand, sends::SendCommand,
-    setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand, theme::ThemeCommand, timing::TimingCommand,
-    tracks::TrackCommand, transport::TransportCommand,
+    envelope::EnvelopeCommand, eq::EqCommand, explorer::ExplorerCommand, feed::EventsCommand, fx::FxCommand,
+    groups::GroupCommand, items::ItemCommand, markers::MarkerCommand, media::MediaCommand, midi::MidiCommand,
+    midi_edit::MidiEditCommand, mix::MixCommand, modulation::ModulationCommand, nam::NamCommand,
+    project::ProjectCommand, recording::RecordingCommand, render::RenderCommand, rig::RigCommand,
+    script::ScriptCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand, tempo::TempoCommand,
+    theme::ThemeCommand, timing::TimingCommand, tracks::TrackCommand, transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -127,6 +127,7 @@ fn domains() -> Vec<Value> {
         schema::<RigCommand>(),
         schema::<NamCommand>(),
         schema::<AudioCommand>(),
+        schema::<EqCommand>(),
     ]
 }
 

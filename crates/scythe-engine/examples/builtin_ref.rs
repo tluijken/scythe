@@ -16,7 +16,7 @@ const SR: u32 = 48000;
 
 /// A built-in with parameters set the way the UI sets them, saved as Scythe saves it.
 fn edited(builtin: Builtin, changes: &[(u32, f64)]) -> scythe_core::FxSlot {
-    let stock = builtin.stock();
+    let stock = builtin.stock().expect("a stock plugin");
     let cx = scythe_engine::stock::StockContext { sample_rate: SR, project_dir: None, hardware: None };
     let mut fx = (stock.create)(&builtin.default_state(), &cx).unwrap();
     for &(id, value) in changes {

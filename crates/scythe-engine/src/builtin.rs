@@ -19,6 +19,8 @@ pub enum Builtin {
     MidiControl,
     FftEq,
     HardwareInsert,
+    /// Scythe's own dynamic EQ; REAPER keeps it as an unknown CLAP plugin.
+    ScytheEq,
 }
 
 /// Default states as REAPER writes them for a freshly added instance.
@@ -34,7 +36,7 @@ const LIMIT_DEFAULT: &str = "AwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAACAAAAAAAAAAA
 const XCOMP_DEFAULT: &str = "OAAAAAQAAAAAAAAAAABpQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAAAAAAAQI9AAAAAAAAA8D8AAAAAAADwPwAAAAAAAABAAAAAAAAAAAAPAAAAlgAAAAUAAAARAAAAAAAAAACIs0AAAAAAAADwPwAAAAAAAPA/AAAAAAAAAEAAAAAAAAAAAA8AAACWAAAABQAAABEAAAAAAAAAAHDXQAAAAAAAAPA/AAAAAAAA8D8AAAAAAAAAQAAAAAAAAAAADwAAAJYAAAAFAAAAEQAAAAEAAAABAAAAAAAAAAAA8D8AAAAAAAAAAAAAAAAAAAAAAgAAAA==";
 
 impl Builtin {
-    pub const ALL: [Builtin; 12] = [
+    pub const ALL: [Builtin; 13] = [
         Self::Eq,
         Self::Gate,
         Self::Compressor,
@@ -47,6 +49,7 @@ impl Builtin {
         Self::MidiControl,
         Self::FftEq,
         Self::HardwareInsert,
+        Self::ScytheEq,
     ];
 
     pub fn label(self) -> &'static str {
@@ -63,11 +66,12 @@ impl Builtin {
             Self::MidiControl => "MIDI control",
             Self::FftEq => "FFT EQ",
             Self::HardwareInsert => "Hardware insert",
+            Self::ScytheEq => "Scythe EQ",
         }
     }
 
-    /// The stock plugin REAPER knows the equivalent effect as.
-    pub fn stock(self) -> &'static crate::stock::StockPlugin {
+    /// The stock plugin REAPER knows the equivalent effect as; `None` for Scythe's own.
+    pub fn stock(self) -> Option<&'static crate::stock::StockPlugin> {
         let name = match self {
             Self::Eq => "ReaEQ",
             Self::Gate => "ReaGate",
@@ -81,8 +85,9 @@ impl Builtin {
             Self::MidiControl => "ReaControlMIDI",
             Self::FftEq => "ReaFir (FFT EQ+Dynamics Processor)",
             Self::HardwareInsert => "ReaInsert",
+            Self::ScytheEq => return None,
         };
-        crate::stock::by_name(name).expect("built-ins are stock plugins")
+        crate::stock::by_name(name)
     }
 
     pub fn default_state(self) -> Vec<u8> {
@@ -102,6 +107,7 @@ impl Builtin {
             Self::MidiControl => b64.decode(CONTROL_MIDI_DEFAULT).unwrap(),
             Self::FftEq => b64.decode(FIR_DEFAULT).unwrap(),
             Self::HardwareInsert => b64.decode(INSERT_DEFAULT).unwrap(),
+            Self::ScytheEq => crate::scythe_eq::params::encode(&crate::scythe_eq::params::defaults()),
         }
     }
 
@@ -112,7 +118,7 @@ impl Builtin {
 
     /// An FX slot holding `state` in REAPER's VST chunk layout.
     pub fn slot_with(self, state: &[u8]) -> FxSlot {
-        let stock = self.stock();
+        let Some(stock) = self.stock() else { return crate::scythe_eq::slot(Some(state)) };
         let display = stock.display();
         let id = format!("{}<{}>", stock.vst_id, stock.guid);
         let mut chunk = Chunk::new("VST", &[&display, stock.file, "0", "", &id, ""]);
