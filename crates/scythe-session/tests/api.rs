@@ -1371,6 +1371,7 @@ fn project_tabs() {
     let tabs = ok(&mut s, json!({"cmd": "project.tab_new"}));
     assert_eq!(tabs.as_array().unwrap().len(), 2);
     assert_eq!(tabs[1]["active"], true);
+    assert_eq!(tabs[1]["name"], "[Unsaved]", "REAPER's tab label");
     assert!(s.project.tracks.is_empty());
     ok(&mut s, json!({"cmd": "project.tab_switch", "index": 0}));
     assert_eq!(s.project.tracks[0].name, "One");
@@ -1570,4 +1571,20 @@ fn automation_writes_fx_parameters_sends_and_latch_preview() {
     let modes = ok(&mut s, json!({"cmd": "envelope.global_override", "mode": "read"}));
     assert_eq!(modes["mode"], "read");
     assert_eq!(ok(&mut s, json!({"cmd": "envelope.mode", "track": t}))[0]["effective"], "read");
+}
+
+#[test]
+fn toolbar_buttons_read_the_same_on_every_toolbar() {
+    let mut s = session();
+    let set = json!({"cmd": "toolbar.set", "toolbar": "3", "buttons": [
+        {"action": "1157"}, {"action": "-1"}, {"action": "40044"}, {"action": "1068", "text": "Loop"}
+    ]});
+    ok(&mut s, set);
+    let t = ok(&mut s, json!({"cmd": "toolbar.get", "toolbar": "3"}));
+    let texts: Vec<&str> = t["buttons"].as_array().unwrap().iter().map(|b| b["text"].as_str().unwrap()).collect();
+    assert_eq!(
+        texts,
+        ["Snap", "", "Play/stop", "Loop"],
+        "the main toolbar's label, else the name without its category"
+    );
 }

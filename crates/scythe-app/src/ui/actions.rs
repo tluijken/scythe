@@ -100,7 +100,8 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
         .collect();
     let mut run = None;
     let avail = ui.available_height() - 44.0;
-    egui::ScrollArea::vertical().max_height(avail.max(120.0)).show(ui, |ui| {
+    // Filling the space keeps the window its size while the filter narrows the list.
+    egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(avail.max(120.0)).show(ui, |ui| {
         egui::Grid::new("action-list").striped(true).spacing(vec2(12.0, 4.0)).min_col_width(40.0).show(ui, |ui| {
             for head in ["Shortcut", "Description", "Command ID", "State"] {
                 ui.label(RichText::new(head).color(TEXT_DIM).size(11.0));

@@ -250,7 +250,7 @@ pub fn editor(app: &mut ScytheApp, ui: &mut Ui) {
                         .take(200)
                     {
                         if ui.selectable_label(false, &a.name).on_hover_text("Add to the toolbar").clicked() {
-                            let text = a.name.split_once(": ").map_or(a.name.as_str(), |(_, t)| t).to_owned();
+                            let text = scythe_session::api::customize::button_text(&app.session, &a.command);
                             toolbar.buttons.push(Button { command: a.command.clone(), text, icon: None, flags: None });
                         }
                     }

@@ -192,11 +192,12 @@ Working:
   (`MediaDB/*.ReaperFileList`, the shortcut list in `[reaper_sexplorer]` as reaper.ini keeps
   it, so REAPER's own can be copied over), columns for length, rate, channels, bit depth or
   bitrate, BPM, key, title, artist, genre and comment (from Vorbis comments, ID3, MP4 tags,
-  RIFF `INFO`, BWF `bext` and ACID tempo), search (words, `-word`, `"phrases"`, subfolders),
-  favourites (the database's favourite flag), a preview player that plays straight to the
-  device after the master with tempo match (on, /2, x2, pitch kept or not), pitch and volume,
-  and inserting at the edit cursor on the selected or a new track, tempo-matched. The
-  explorer section's actions (preview, tempo match, insert, favourite, scan) have REAPER's ids.
+  RIFF `INFO`, BWF `bext` and ACID tempo; the columns share the window's width), search
+  (words, `-word`, `"phrases"`, subfolders), favourites (the database's favourite flag), a
+  preview player that plays straight to the device after the master with tempo match (on, /2,
+  x2, pitch kept or not), pitch and volume, and inserting at the edit cursor on the selected or
+  a new track, tempo-matched. The explorer section's actions (preview, tempo match, insert,
+  favourite, scan) have REAPER's ids.
 - **Project bay** (41157) and **clean project directory** (40098): the project's media files
   (with takes, items and tracks using each, missing ones marked), items and effects;
   retargeting a file in every take; the unused files of the recording folder listed as REAPER
@@ -316,7 +317,8 @@ Working:
   learn), so a REAPER keymap works in Scythe and back. Toolbars (`reaper-menu.ini`, `.ReaperMenu`
   import and export): the main toolbar as a strip under the header and 32 floating toolbars,
   with REAPER's toolbar icons when its `Data/toolbar_icons` is around, lit while their action is
-  on, and a toolbar editor. Mouse modifiers (`reaper-mouse.ini`): actions on clicks and double
+  on, and a toolbar editor; a new button reads the same on every toolbar (the main toolbar's label,
+  else the action's name without its category). Mouse modifiers (`reaper-mouse.ini`): actions on clicks and double
   clicks of items, track lanes, track headers and the ruler, per modifier keys, with an editor that names each unassigned combination's default as
   REAPER 7.73's preferences describe it.
   Window sets ("Screenset: Save/Load window set #01-10") keep the pages, windows, toolbars and
@@ -789,7 +791,8 @@ Working:
   (`qrender_<date>_<time>_<name>.RPP` with `QUEUED_RENDER_OUTFILE` lines), "Render all queued
   renders" and `--render-queue` render and remove each, and REAPER's own queued copies render
   in Scythe and the other way round. Project tabs: several open projects, the inactive ones
-  stopped with their undo history, kept in the preferences under REAPER's `projecttab<n>` keys. MP3, FLAC, Ogg Vorbis, Opus and
+  stopped with their undo history, an unsaved one named as REAPER names it (`[Unsaved]` on its tab,
+  `[unsaved project]` as the title), kept in the preferences under REAPER's `projecttab<n>` keys. MP3, FLAC, Ogg Vorbis, Opus and
   WavPack renders go through `lame`, `flac`, `oggenc`, `opusenc` and `wavpack` (in the devbox
   packages) with the project's settings (Opus: bitrate per channel, VBR/CVBR/hard CBR,
   complexity; WavPack: 16/24/32-bit integer or 32-bit float, fast/normal/high/very high), and

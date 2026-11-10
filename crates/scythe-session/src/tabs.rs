@@ -33,6 +33,9 @@ pub struct TabInfo {
     pub active: bool,
 }
 
+/// REAPER 7.73's project tab label for a project not saved yet.
+pub const UNSAVED_TAB: &str = "[Unsaved]";
+
 impl Session {
     /// The open tabs, in order.
     pub fn tabs(&self) -> Vec<TabInfo> {
@@ -44,7 +47,7 @@ impl Session {
                 };
                 TabInfo {
                     index: i,
-                    name: if project.path.is_some() { project.name() } else { "untitled".into() },
+                    name: if project.path.is_some() { project.name() } else { UNSAVED_TAB.into() },
                     path: project.path.clone(),
                     dirty,
                     active: i == self.active_tab,

@@ -18,7 +18,8 @@ use crate::actions;
 pub struct ButtonSpec {
     /// The action it runs (a command id or named command); `-1` for a separator.
     pub action: String,
-    /// Tooltip, and the label of a text button.
+    /// Tooltip, and the label of a text button; left empty, the label the main toolbar gives the
+    /// action, else its name without the category.
     #[serde(default)]
     pub text: String,
     /// An icon file from REAPER's `Data/toolbar_icons` (`toolbar_add.png`), or `text` for a
@@ -170,6 +171,16 @@ pub fn default_main_toolbar() -> Toolbar {
     }
 }
 
+/// The label a new button for `command` gets, on any toolbar: the default main toolbar's (so
+/// "Snap" reads the same everywhere), else the action's name without its category.
+pub fn button_text(session: &Session, command: &str) -> String {
+    if let Some(b) = default_main_toolbar().buttons.into_iter().find(|b| b.command == command) {
+        return b.text;
+    }
+    let name = session.action_name(command).unwrap_or_else(|| command.to_owned());
+    name.split_once(": ").map_or(name.as_str(), |(_, t)| t).to_owned()
+}
+
 /// The toolbar in `section` as it shows: the customised one, else the default (an empty one
 /// for a floating toolbar).
 pub fn toolbar_or_default(session: &Session, section: &str) -> Toolbar {
@@ -283,7 +294,14 @@ pub fn execute(session: &mut Session, cmd: CustomizeCommand) -> Result<Value, Ap
             });
             t.buttons = buttons
                 .into_iter()
-                .map(|b| Button { command: actions::normalize(&b.action), text: b.text, icon: b.icon, flags: None })
+                .map(|b| {
+                    let command = if b.action.trim() == "-1" { "-1".to_owned() } else { actions::normalize(&b.action) };
+                    let mut button = Button { command, text: b.text, icon: b.icon, flags: None };
+                    if button.text.is_empty() && !button.is_separator() {
+                        button.text = button_text(session, &button.command);
+                    }
+                    button
+                })
                 .collect();
             if title.is_some() {
                 t.title = title;

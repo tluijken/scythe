@@ -260,65 +260,92 @@ fn list(app: &mut ScytheApp, w: &mut ExplorerWindow, ui: &mut Ui) {
     let mut action: Option<(PathBuf, u32)> = None;
     let mut open_folder = None;
     let mut favorite = None;
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        egui::Grid::new("explorer-list").striped(true).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
-            for head in
-                ["Fav", "File", "Length", "Rate", "Ch", "Bits", "BPM", "Key", "Title", "Artist", "Genre", "Comment"]
-            {
-                ui.label(RichText::new(head).color(TEXT_DIM).size(11.0));
-            }
-            ui.end_row();
-            for e in &w.entries {
-                let mut fav = e.favorite;
-                if e.folder {
-                    ui.label("");
-                } else if ui.checkbox(&mut fav, "").on_hover_text("Favourite").changed() {
-                    favorite = Some((e.path.clone(), fav));
+    // The columns share the window's width (long texts are cut) rather than scrolling sideways.
+    let widths = column_widths(ui.available_width() - 24.0);
+    let sized = |ui: &mut Ui, k: usize, w: egui::Label| {
+        cell(ui, widths[k], w);
+    };
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Grid::new("explorer-list").striped(true).min_col_width(0.0).spacing(vec2(COLUMN_GAP, 4.0)).show(
+            ui,
+            |ui| {
+                for (k, head) in COLUMNS.iter().enumerate() {
+                    sized(ui, k, egui::Label::new(RichText::new(*head).color(TEXT_DIM).size(11.0)));
                 }
-                let name = if e.folder { format!("{}/", e.name()) } else { e.name() };
-                let r = ui.selectable_label(selected.as_ref() == Some(&e.path), name);
-                if r.clicked() {
-                    app.session.explorer.selected = Some(e.path.clone());
-                }
-                if r.double_clicked() {
-                    if e.folder {
-                        open_folder = Some(e.path.clone());
-                    } else {
-                        action = Some((e.path.clone(), 41000));
-                    }
-                }
-                if !e.folder {
-                    r.context_menu(|ui| {
-                        for (label, id) in [
-                            ("Preview", 1008),
-                            ("Insert into project", 41000),
-                            ("Insert on a new track", 41001),
-                            ("Set as favorite", 42084),
-                        ] {
-                            if ui.button(label).clicked() {
-                                action = Some((e.path.clone(), id));
-                                ui.close();
-                            }
-                        }
-                    });
-                }
-                let i = e.info.clone().unwrap_or_default();
-                let cell = |ui: &mut Ui, v: Option<String>| {
-                    ui.label(v.unwrap_or_default());
-                };
-                cell(ui, i.length.map(format_length));
-                cell(ui, i.sample_rate.map(|r| format!("{r}")));
-                cell(ui, i.channels.map(|c| c.to_string()));
-                cell(ui, i.bits.map(|b| b.to_string()).or(i.bitrate.map(|k| format!("{k}k"))));
-                cell(ui, i.bpm.map(|b| format!("{b}")));
-                cell(ui, i.key);
-                cell(ui, i.title);
-                cell(ui, i.artist);
-                cell(ui, i.genre);
-                cell(ui, i.comment);
                 ui.end_row();
-            }
-        });
+                for e in &w.entries {
+                    let mut fav = e.favorite;
+                    if e.folder {
+                        sized(ui, 0, egui::Label::new(""));
+                    } else if ui
+                        .add_sized(vec2(widths[0], 18.0), egui::Checkbox::without_text(&mut fav))
+                        .on_hover_text("Favourite")
+                        .changed()
+                    {
+                        favorite = Some((e.path.clone(), fav));
+                    }
+                    let name = if e.folder { format!("{}/", e.name()) } else { e.name() };
+                    let on = selected.as_ref() == Some(&e.path);
+                    let r = ui
+                        .allocate_ui_with_layout(
+                            vec2(widths[1], 18.0),
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                ui.set_width(widths[1]);
+                                ui.add(egui::Button::selectable(on, name).truncate())
+                            },
+                        )
+                        .inner
+                        .on_hover_text(e.path.display().to_string());
+                    if r.clicked() {
+                        app.session.explorer.selected = Some(e.path.clone());
+                    }
+                    if r.double_clicked() {
+                        if e.folder {
+                            open_folder = Some(e.path.clone());
+                        } else {
+                            action = Some((e.path.clone(), 41000));
+                        }
+                    }
+                    if !e.folder {
+                        r.context_menu(|ui| {
+                            for (label, id) in [
+                                ("Preview", 1008),
+                                ("Insert into project", 41000),
+                                ("Insert on a new track", 41001),
+                                ("Set as favorite", 42084),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    action = Some((e.path.clone(), id));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                    let i = e.info.clone().unwrap_or_default();
+                    let cells = [
+                        i.length.map(format_length),
+                        i.sample_rate.map(|r| format!("{r}")),
+                        i.channels.map(|c| c.to_string()),
+                        i.bits.map(|b| b.to_string()).or(i.bitrate.map(|k| format!("{k}k"))),
+                        i.bpm.map(|b| format!("{b}")),
+                        i.key,
+                        i.title,
+                        i.artist,
+                        i.genre,
+                        i.comment,
+                    ];
+                    for (k, v) in cells.into_iter().enumerate() {
+                        let text = v.unwrap_or_default();
+                        let resp = cell(ui, widths[k + 2], egui::Label::new(&text));
+                        if !text.is_empty() {
+                            resp.on_hover_text(text);
+                        }
+                    }
+                    ui.end_row();
+                }
+            },
+        );
         if w.entries.is_empty() && w.error.is_none() {
             ui.label(RichText::new("No media here.").color(TEXT_DIM));
         }
@@ -349,5 +376,52 @@ fn list(app: &mut ScytheApp, w: &mut ExplorerWindow, ui: &mut Ui) {
         if id == 42084 {
             w.stale = true;
         }
+    }
+}
+
+/// A left-aligned list cell `w` wide; its text is cut to fit.
+fn cell(ui: &mut Ui, w: f32, label: egui::Label) -> egui::Response {
+    ui.allocate_ui_with_layout(vec2(w, 18.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_width(w);
+        ui.add(label.truncate())
+    })
+    .inner
+}
+
+const COLUMNS: [&str; 12] =
+    ["Fav", "File", "Length", "Rate", "Ch", "Bits", "BPM", "Key", "Title", "Artist", "Genre", "Comment"];
+const COLUMN_GAP: f32 = 12.0;
+
+/// Each column's width in `total`: the numbers get what they need, the texts (file, title,
+/// artist, genre, comment) share the rest, none narrower than 40.
+fn column_widths(total: f32) -> [f32; 12] {
+    let fixed = [(0, 22.0), (2, 64.0), (3, 48.0), (4, 24.0), (5, 36.0), (6, 40.0), (7, 36.0)];
+    let flex = [(1, 3.0), (8, 1.5), (9, 1.2), (10, 0.8), (11, 1.5)];
+    let mut w = [0.0; 12];
+    for (k, v) in fixed {
+        w[k] = v;
+    }
+    let used: f32 = fixed.iter().map(|(_, v)| v).sum::<f32>() + COLUMN_GAP * 11.0;
+    let weight: f32 = flex.iter().map(|(_, f)| f).sum();
+    let room = (total - used).max(0.0);
+    for (k, f) in flex {
+        w[k] = (room * f / weight).max(40.0);
+    }
+    w
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COLUMN_GAP, column_widths};
+
+    #[test]
+    fn the_columns_fill_the_window_without_scrolling() {
+        for total in [800.0, 980.0, 1600.0] {
+            let w = column_widths(total);
+            let sum = w.iter().sum::<f32>() + COLUMN_GAP * 11.0;
+            assert!((sum - total).abs() < 0.5, "{total}: {sum}");
+            assert!(w[1] > w[8], "the file name gets the most room");
+        }
+        assert!(column_widths(100.0).iter().all(|&w| w >= 22.0));
     }
 }

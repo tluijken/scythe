@@ -525,7 +525,7 @@ REAPER's formats. Actions that need the window answer an error on a headless ser
 | `action.keymap.export` | | `{"text"}`: the shortcut file as a `.ReaperKeyMap` |
 | `action.keymap.import` | `text` | `{"lines"}` |
 | `toolbar.get` | `toolbar` (`main` or 1-32) | `{"toolbar", "title", "customized", "buttons": [{"action", "text", "icon", "name", "toggle"}]}` |
-| `toolbar.set` | `toolbar`, `buttons: [{"action", "text?", "icon?"}]`, `title?` | as `toolbar.get` |
+| `toolbar.set` | `toolbar`, `buttons: [{"action", "text?", "icon?"}]`, `title?` | as `toolbar.get`; a button without `text` gets the main toolbar's label for the action, else its name without the category |
 | `toolbar.reset` | `toolbar` | `{"reset"}` |
 | `toolbar.import` | `text` (a `.ReaperMenu` or `.ReaperMenuSet`) | `{"sections"}` |
 | `mouse.get` | `context?` | `[{"context", "modifiers", "assignment"}]`: what differs from the defaults |

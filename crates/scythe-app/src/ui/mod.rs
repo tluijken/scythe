@@ -180,7 +180,8 @@ fn top_bar(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let painter = ui.painter().clone();
     let cy = rect.center().y;
 
-    let title = app.project.name();
+    // REAPER 7.73 titles an unsaved project "[unsaved project]".
+    let title = if app.project.path.is_some() { app.project.name() } else { "[unsaved project]".to_owned() };
     let mut sub = app.saved_label();
     if app.media_loading() {
         sub.push_str(" · loading media…");

@@ -10108,7 +10108,7 @@
               },
               "text": {
                 "default": "",
-                "description": "Tooltip, and the label of a text button.",
+                "description": "Tooltip, and the label of a text button; left empty, the label the main toolbar gives the\naction, else its name without the category.",
                 "type": "string"
               }
             },
