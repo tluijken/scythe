@@ -11,9 +11,10 @@ use scythe_session::api::{
     analysis::AnalysisCommand, bay::BayCommand, customize::CustomizeCommand, envelope::EnvelopeCommand,
     explorer::ExplorerCommand, feed::EventsCommand, fx::FxCommand, groups::GroupCommand, items::ItemCommand,
     markers::MarkerCommand, media::MediaCommand, midi::MidiCommand, midi_edit::MidiEditCommand, mix::MixCommand,
-    modulation::ModulationCommand, project::ProjectCommand, recording::RecordingCommand, render::RenderCommand,
-    rig::RigCommand, script::ScriptCommand, sends::SendCommand, setlist::SetlistCommand, surface::SurfaceCommand,
-    tempo::TempoCommand, theme::ThemeCommand, timing::TimingCommand, tracks::TrackCommand, transport::TransportCommand,
+    modulation::ModulationCommand, nam::NamCommand, project::ProjectCommand, recording::RecordingCommand,
+    render::RenderCommand, rig::RigCommand, script::ScriptCommand, sends::SendCommand, setlist::SetlistCommand,
+    surface::SurfaceCommand, tempo::TempoCommand, theme::ThemeCommand, timing::TimingCommand, tracks::TrackCommand,
+    transport::TransportCommand,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -122,6 +123,7 @@ fn domains() -> Vec<Value> {
         schema::<AccessCommand>(),
         schema::<ScriptCommand>(),
         schema::<RigCommand>(),
+        schema::<NamCommand>(),
     ]
 }
 

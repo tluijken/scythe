@@ -269,6 +269,24 @@ pub struct ChainNode {
     /// Whether it writes audio; a MIDI-only effect adds nothing to a parallel sum.
     pub audio: bool,
     mix: Mutex<MixState>,
+    fade: Option<StageFade>,
+}
+
+/// A rig stage being switched on or off: rather than cutting in or out, it crossfades with
+/// its input over [`StageFade::SECONDS`], so switching a stage on stage does not click. A
+/// stage switched off stays in the chain, passing its input on, until the chain is rebuilt.
+struct StageFade {
+    fx: Arc<FxInstance>,
+    on: bool,
+    dry: Mutex<Vec<Vec<f32>>>,
+}
+
+impl StageFade {
+    const SECONDS: f32 = 0.01;
+
+    fn level(&self) -> f32 {
+        f32::from_bits(self.fx.stage_level.load(std::sync::atomic::Ordering::Relaxed))
+    }
 }
 
 impl ChainNode {
@@ -288,7 +306,45 @@ impl ChainNode {
             dry: if mixes && serial { buffers(channels) } else { Vec::new() },
             delay: Delay::new(if mixes && serial { latency as usize } else { 0 }, channels.max(2)),
         };
-        Self { kind, wet, parallel, latency, audio, mix: Mutex::new(mix) }
+        Self { kind, wet, parallel, latency, audio, mix: Mutex::new(mix), fade: None }
+    }
+
+    /// Runs the slot, crossfading with its input while its stage fades in or out.
+    fn run_fading(
+        &self,
+        fade: &StageFade,
+        ch: &mut Channels,
+        pin_bufs: Option<&mut [Vec<f32>]>,
+        input: &ChainInput,
+        position: i64,
+        midi: &mut MidiState,
+    ) {
+        let target = if fade.on { 1.0 } else { 0.0 };
+        let mut level = fade.level();
+        if level == target {
+            if fade.on {
+                self.run_mixed(ch, pin_bufs, input, position, midi);
+            }
+            return;
+        }
+        let Ok(mut dry) = fade.dry.try_lock() else {
+            self.run_mixed(ch, pin_bufs, input, position, midi);
+            return;
+        };
+        let n = ch.n;
+        ch.copy_to(&mut dry);
+        self.run_mixed(ch, pin_bufs, input, position, midi);
+        let step = 1.0 / (StageFade::SECONDS * input.sample_rate as f32).max(1.0);
+        let start = level;
+        for (c, d) in dry.iter().enumerate() {
+            let Some(out) = ch.get_mut(c) else { continue };
+            level = start;
+            for (o, &x) in out.iter_mut().zip(&d[..n]) {
+                level = if target > level { (level + step).min(target) } else { (level - step).max(target) };
+                *o = x + (*o - x) * level;
+            }
+        }
+        fade.fx.stage_level.store(level.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Runs the slot's effect or container in place; returns whether it ran. With
@@ -311,6 +367,20 @@ impl ChainNode {
 
     /// The slot on its own: its output mixed with its input as wet/dry says.
     fn run_serial(
+        &self,
+        ch: &mut Channels,
+        pin_bufs: Option<&mut [Vec<f32>]>,
+        input: &ChainInput,
+        position: i64,
+        midi: &mut MidiState,
+    ) {
+        match &self.fade {
+            Some(fade) => self.run_fading(fade, ch, pin_bufs, input, position, midi),
+            None => self.run_mixed(ch, pin_bufs, input, position, midi),
+        }
+    }
+
+    fn run_mixed(
         &self,
         ch: &mut Channels,
         pin_bufs: Option<&mut [Vec<f32>]>,
@@ -655,9 +725,10 @@ pub fn take_fx_span(start: i64, length: i64, sample_rate: u32) -> std::ops::Rang
 /// registry. Offline slots are left unloaded; bypassed ones keep their instance but do not
 /// run.
 pub fn build(registry: &mut FxRegistry, owner: &FxOwner, slots: &[FxSlot], channels: usize) -> FxChain {
-    build_at(registry, owner, slots, channels.max(2), "", Vec::new())
+    build_at(registry, owner, slots, channels.max(2), "", Vec::new(), false)
 }
 
+/// With `stages` (a rig's children), slots switching on or off fade (see [`StageFade`]).
 fn build_at(
     registry: &mut FxRegistry,
     owner: &FxOwner,
@@ -665,6 +736,7 @@ fn build_at(
     channels: usize,
     prefix: &str,
     mut mapped: Vec<Vec<ParamAutomation>>,
+    stages: bool,
 ) -> FxChain {
     mapped.resize_with(slots.len(), Vec::new);
     // Instances first: a modulation linked to another effect finds it by its position among
@@ -698,12 +770,28 @@ fn build_at(
             slots.get(i + 1).is_none_or(|next| next.parallel() == Parallel::Serial) && parallel == Parallel::Serial;
         let key = format!("{prefix}{}", slot_key(slot, i));
         let extra = std::mem::take(&mut mapped[i]);
+        let fade = instances[i].as_ref().filter(|_| stages && serial && parallel == Parallel::Serial).and_then(|fx| {
+            use std::sync::atomic::Ordering::Relaxed;
+            let target = if slot.enabled { 1.0f32 } else { 0.0 };
+            let level = f32::from_bits(fx.stage_level.load(Relaxed));
+            let latency = fx.with(|e| e.latency()).unwrap_or(0);
+            if level.is_nan() || latency != 0 {
+                fx.stage_level.store(target.to_bits(), Relaxed);
+                return None;
+            }
+            (level != target || !slot.enabled).then(|| StageFade {
+                fx: fx.clone(),
+                on: slot.enabled,
+                dry: Mutex::new(buffers(channels)),
+            })
+        });
+        let fading_out = fade.as_ref().is_some_and(|f| !f.on && f.level() > 0.0);
         let kind = if slot.offline() {
             None
         } else if slot.is_container() {
             slot.enabled.then(|| NodeKind::Container(Box::new(container(registry, owner, slot, &key, extra))))
         } else {
-            instances[i].clone().filter(|_| slot.enabled).map(|fx| {
+            instances[i].clone().filter(|_| slot.enabled || fading_out).map(|fx| {
                 let mut automation = slot_automation(slot, &fx, &registry.automation);
                 if !extra.is_empty() {
                     let params = fx.with(|e| e.params()).unwrap_or_default();
@@ -721,7 +809,11 @@ fn build_at(
         };
         entries.push((
             parallel,
-            kind.map(|k| ChainNode::new(k, WetDry::of(slot, &registry.automation), parallel, channels, serial)),
+            kind.map(|k| {
+                let mut node = ChainNode::new(k, WetDry::of(slot, &registry.automation), parallel, channels, serial);
+                node.fade = fade.filter(|f| f.on || fading_out);
+                node
+            }),
         ));
     }
     let mut steps = Vec::new();
@@ -778,7 +870,8 @@ fn container(
         list.push(a);
     }
     let channels = cfg.channels as usize;
-    let chain = build_at(registry, owner, &children, channels.max(2), &format!("{key}/"), mapped);
+    let chain =
+        build_at(registry, owner, &children, channels.max(2), &format!("{key}/"), mapped, crate::rig::is_rig(slot));
     let listed = |output: bool, count: u32| {
         let mut masks = slot.listed_pins(output).unwrap_or_default();
         let count = (count as usize).min(64);

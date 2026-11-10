@@ -121,6 +121,28 @@ pub enum RigCommand {
         #[serde(default)]
         store: bool,
     },
+    /// Tries an amp model (`model`, a `.nam` file) or a cab impulse response (`ir`, a WAV
+    /// file) in the rig without making it final: the first try remembers the rig's settings,
+    /// later ones in the same stage fold into one undo step. A model switches the cab as
+    /// `rig.set_amp` does. End it with `rig.keep` or `rig.revert`.
+    #[serde(rename = "rig.preview")]
+    Preview {
+        track: TrackRef,
+        #[serde(default)]
+        index: Option<usize>,
+        /// Path of a `.nam` file to try in the amp.
+        #[serde(default)]
+        model: Option<String>,
+        /// Path of an impulse response to try in the cab.
+        #[serde(default)]
+        ir: Option<String>,
+    },
+    /// Ends the running preview keeping what it plays.
+    #[serde(rename = "rig.keep")]
+    Keep,
+    /// Ends the running preview, putting back the rig's settings from before it.
+    #[serde(rename = "rig.revert")]
+    Revert,
     /// The saved rig presets.
     #[serde(rename = "rig.presets")]
     Presets,
@@ -307,6 +329,24 @@ pub fn execute(session: &mut Session, command: RigCommand) -> Result<Value, ApiE
             }
             Ok(describe(session, at))
         }
+        RigCommand::Preview { track, index, model, ir } => {
+            let at = at(session, &track, index)?;
+            let (path, is_ir) = match (model, ir) {
+                (Some(m), None) => (m, false),
+                (None, Some(i)) => (i, true),
+                _ => return Err(ApiError::invalid("give either model or ir")),
+            };
+            let preview = session.preview_rig(at, Path::new(&path), is_ir).map(super::nam::describe)?;
+            Ok(json!({ "preview": preview, "rig": describe(session, at) }))
+        }
+        RigCommand::Keep | RigCommand::Revert => {
+            let p = session.end_preview(command == RigCommand::Keep)?;
+            let rig = match p.slot {
+                rigs::PreviewSlot::Amp(at) | rigs::PreviewSlot::Cab(at) => describe(session, at),
+                rigs::PreviewSlot::Nam { .. } => Value::Null,
+            };
+            Ok(json!({ "preview": super::nam::describe(&p), "rig": rig }))
+        }
         RigCommand::Presets => Ok(json!(preset_names())),
         RigCommand::SavePreset { track, index, name } => {
             let at = at(session, &track, index)?;
@@ -399,5 +439,62 @@ mod tests {
             execute_json(&mut s, json!({"cmd": "rig.stage", "track": "Guitar", "stage": "reverb", "enabled": true}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn previews_fold_into_one_step_and_keep_or_revert() {
+        let mut s = session();
+        let t = s.project.add_track("Guitar");
+        s.edit("nam", |p| p.track_mut(t).unwrap().fx.push(scythe_engine::fx::nam_slot(None)));
+        execute_json(&mut s, json!({"cmd": "rig.convert", "track": "Guitar", "index": 0})).unwrap();
+        execute_json(&mut s, json!({"cmd": "rig.set_cab", "track": "Guitar", "ir": "/irs/v30.wav"})).unwrap();
+        let steps = s.history.depth();
+        let amp = |s: &Session| s.rig_settings(s.rig_at(t, None).unwrap()).unwrap().amp.model;
+        let cab = |s: &Session| s.rig_settings(s.rig_at(t, None).unwrap()).unwrap().cab.ir;
+        for m in ["/m/a.nam", "/m/b.nam", "/m/c.nam"] {
+            let r = execute_json(&mut s, json!({"cmd": "rig.preview", "track": "Guitar", "model": m})).unwrap();
+            assert_eq!((r["preview"]["slot"].as_str(), r["preview"]["path"].as_str()), (Some("rig_amp"), Some(m)));
+        }
+        assert_eq!(amp(&s).as_deref(), Some("/m/c.nam"));
+        assert_eq!(s.history.depth(), steps + 1, "every try is one undo step");
+        let state = execute_json(&mut s, json!({"cmd": "nam.previewing"})).unwrap();
+        assert_eq!(state["before"]["rig"]["amp"]["model"], Value::Null);
+        execute_json(&mut s, json!({"cmd": "rig.revert"})).unwrap();
+        assert_eq!(amp(&s), None);
+        assert_eq!(s.history.depth(), steps);
+        assert!(execute_json(&mut s, json!({"cmd": "rig.keep"})).is_err(), "nothing previews any more");
+
+        execute_json(&mut s, json!({"cmd": "rig.preview", "track": "Guitar", "ir": "/irs/greenback.wav"})).unwrap();
+        assert_eq!(cab(&s).as_deref(), Some("/irs/greenback.wav"));
+        execute_json(&mut s, json!({"cmd": "rig.keep"})).unwrap();
+        assert_eq!(cab(&s).as_deref(), Some("/irs/greenback.wav"));
+        assert_eq!(execute_json(&mut s, json!({"cmd": "nam.previewing"})).unwrap(), Value::Null);
+        // Reverting after another edit puts the old response back as a step of its own.
+        execute_json(&mut s, json!({"cmd": "rig.preview", "track": "Guitar", "ir": "/irs/other.wav"})).unwrap();
+        execute_json(&mut s, json!({"cmd": "rig.set", "track": "Guitar", "settings": {"output_db": -2.0}})).unwrap();
+        execute_json(&mut s, json!({"cmd": "rig.revert"})).unwrap();
+        assert_eq!(cab(&s).as_deref(), Some("/irs/greenback.wav"));
+        assert!(
+            execute_json(&mut s, json!({"cmd": "rig.preview", "track": "Guitar", "model": "/m/a.nam", "ir": "/i.wav"}))
+                .is_err()
+        );
+
+        let u = s.project.add_track("Bass");
+        s.edit("nam", |p| p.track_mut(u).unwrap().fx.push(scythe_engine::fx::nam_slot(Some(Path::new("/m/old.nam")))));
+        let model =
+            |s: &Session| scythe_engine::fx::nam_settings(&s.project.track(u).unwrap().fx[0]).and_then(|n| n.model);
+        for m in ["/m/x.nam", "/m/y.nam"] {
+            execute_json(&mut s, json!({"cmd": "nam.preview", "track": "Bass", "index": 0, "model": m})).unwrap();
+        }
+        assert_eq!(model(&s).as_deref(), Some("/m/y.nam"));
+        let ended = execute_json(&mut s, json!({"cmd": "nam.revert"})).unwrap();
+        assert_eq!((ended["slot"].as_str(), ended["before"]["model"].as_str()), (Some("nam"), Some("/m/old.nam")));
+        assert_eq!(model(&s).as_deref(), Some("/m/old.nam"));
+        execute_json(&mut s, json!({"cmd": "nam.preview", "track": "Bass", "index": 0, "model": "/m/x.nam"})).unwrap();
+        execute_json(&mut s, json!({"cmd": "nam.keep"})).unwrap();
+        assert_eq!(model(&s).as_deref(), Some("/m/x.nam"));
+        let not_nam =
+            execute_json(&mut s, json!({"cmd": "nam.preview", "track": "Guitar", "index": 0, "model": "/m/x.nam"}));
+        assert!(not_nam.is_err(), "a rig is not a NAM slot");
     }
 }

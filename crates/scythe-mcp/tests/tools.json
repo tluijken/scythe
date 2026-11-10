@@ -2751,7 +2751,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Sets parameter `param` (an id from `fx.params`) to `value`, within its range.\n\nControl API command `fx.param`.",
+    "description": "Sets parameter `param` (an id from `fx.params`) to `value`, within its range, as one\nundo step.\n\nControl API command `fx.param`.",
     "inputSchema": {
       "properties": {
         "chain": {
@@ -14242,6 +14242,93 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Tries an amp model (`model`, a `.nam` file) or a cab impulse response (`ir`, a WAV\nfile) in the rig without making it final: the first try remembers the rig's settings,\nlater ones in the same stage fold into one undo step. A model switches the cab as\n`rig.set_amp` does. End it with `rig.keep` or `rig.revert`.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.preview`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "default": null,
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ir": {
+          "default": null,
+          "description": "Path of an impulse response to try in the cab.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "default": null,
+          "description": "Path of a `.nam` file to try in the amp.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track"
+      ],
+      "type": "object"
+    },
+    "name": "rig_preview",
+    "title": "Rig preview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends the running preview keeping what it plays.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.keep`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "rig_keep",
+    "title": "Rig keep"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends the running preview, putting back the rig's settings from before it.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.revert`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "rig_revert",
+    "title": "Rig revert"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "The saved rig presets.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.presets`.",
     "inputSchema": {
       "properties": {},
@@ -14368,6 +14455,95 @@
     },
     "name": "rig_delete_preset",
     "title": "Rig delete preset"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Plays the model `model` (a `.nam` file) in the Neural Amp Modeler slot at `index`\nwithout making it final. The first try remembers what the slot played; later ones, in\nthis slot, fold into the same undo step.\n\nControl API command `nam.preview`.",
+    "inputSchema": {
+      "properties": {
+        "index": {
+          "description": "Position of the NAM slot in the track's chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Path of the `.nam` file.",
+          "type": "string"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "model"
+      ],
+      "type": "object"
+    },
+    "name": "nam_preview",
+    "title": "Nam preview"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends the running preview (of a NAM slot or a rig) keeping what it plays.\n\nControl API command `nam.keep`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "nam_keep",
+    "title": "Nam keep"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Ends the running preview (of a NAM slot or a rig), putting back what played before it.\n\nControl API command `nam.revert`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "nam_revert",
+    "title": "Nam revert"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "The running preview: where it plays, what, and what it would revert to; null when none.\n\nControl API command `nam.previewing`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "nam_previewing",
+    "title": "Nam previewing"
   },
   {
     "annotations": {

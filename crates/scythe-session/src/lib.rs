@@ -107,6 +107,8 @@ pub struct Session {
     gesture: Option<(String, Project)>,
     /// The gesture changes a running effect, whose state reaches the project when it ends.
     fx_gesture: bool,
+    /// A model or impulse response being tried in a slot over the control API.
+    pub preview: Option<rig::Preview>,
     meters_at: Instant,
     /// Controls being written as automation during this pass.
     auto_writes: Vec<AutoWrite>,
@@ -184,6 +186,7 @@ impl Session {
             toast: None,
             gesture: None,
             fx_gesture: false,
+            preview: None,
             meters_at: Instant::now(),
             auto_writes: Vec::new(),
             latch_preview: Vec::new(),

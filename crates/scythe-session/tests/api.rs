@@ -820,6 +820,12 @@ mod scopes {
             json!({"cmd": "transport.metronome", "enabled": true}),
             json!({"cmd": "transport.metronome_output", "output": 2}),
             json!({"cmd": "mix.click", "mix": "MON Drummer", "db": 0.0}),
+            json!({"cmd": "nam.preview", "track": 0, "index": 0, "model": "/m/a.nam"}),
+            json!({"cmd": "nam.keep"}),
+            json!({"cmd": "nam.revert"}),
+            json!({"cmd": "rig.preview", "track": 0, "ir": "/irs/a.wav"}),
+            json!({"cmd": "rig.keep"}),
+            json!({"cmd": "rig.revert"}),
         ] {
             forbidden(&mut s, &Scope::Stage, refused);
         }

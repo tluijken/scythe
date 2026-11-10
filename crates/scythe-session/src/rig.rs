@@ -1,6 +1,8 @@
 //! Guitar rigs on the session: finding a track's rig, changing it as one, its four snapshots
 //! (kept in the track's `<EXT` extension state, which REAPER keeps, under `scythe_rig:<FXID>`)
-//! and named presets in Scythe's data folder that load on any track.
+//! and named presets in Scythe's data folder that load on any track. Models and impulse
+//! responses can also be tried before keeping them ([`Preview`]): every try folds into one
+//! undo step, and reverting puts back what played before.
 
 use std::path::{Path, PathBuf};
 
@@ -342,6 +344,105 @@ impl Session {
         self.apply_rig_with(at, &format!("Load rig preset {name}"), &preset.settings, |x| x.preset = Some(name));
     }
 
+    /// Tries `model` in a Neural Amp Modeler slot (the effect at `index` of the track's chain),
+    /// remembering what it played before the first try.
+    pub fn preview_nam(&mut self, track: TrackId, index: usize, model: &Path) -> Result<&Preview, ApiError> {
+        let slot = self.project.track(track).and_then(|t| t.fx.get(index));
+        let Some(settings) = slot.and_then(scythe_engine::fx::nam_settings) else {
+            return Err(ApiError::invalid(format!("effect {index} is not a Neural Amp Modeler slot")));
+        };
+        let before = PreviewBefore::Nam(settings.model);
+        let fold = self.start_preview(PreviewSlot::Nam { track, index }, before, model);
+        self.edit_folding(PREVIEW_STEP, fold, |p| {
+            if let Some(slot) = p.track_mut(track).and_then(|t| t.fx.get_mut(index)) {
+                scythe_engine::fx::set_nam_model(slot, model);
+            }
+        });
+        self.engine.wake_effects();
+        Ok(self.preview.as_ref().expect("a preview"))
+    }
+
+    /// Tries an amp model (`ir` false) or an impulse response in the rig's cab, remembering
+    /// the rig's settings before the first try. A model switches the cab as `rig.set_amp`
+    /// does.
+    pub fn preview_rig(&mut self, at: RigAt, path: &Path, ir: bool) -> Result<&Preview, ApiError> {
+        let Some(mut s) = self.rig_settings(at) else { return Err(ApiError::not_found("not a rig")) };
+        let what = if ir { PreviewSlot::Cab(at) } else { PreviewSlot::Amp(at) };
+        let fold = self.start_preview(what, PreviewBefore::Rig(Box::new(s.clone())), path);
+        if ir {
+            s.cab.ir = Some(path.display().to_string());
+        } else {
+            s.amp.model = Some(path.display().to_string());
+            let gear = model_gear(&self.resolve_path(path));
+            s = auto_cab(s, gear.as_deref());
+        }
+        self.apply_rig_folding(at, &s, fold);
+        Ok(self.preview.as_ref().expect("a preview"))
+    }
+
+    /// Records a try in `slot`, starting a preview unless one runs there; answers whether the
+    /// try folds into the preview's undo step.
+    fn start_preview(&mut self, slot: PreviewSlot, before: PreviewBefore, path: &Path) -> bool {
+        let path = path.display().to_string();
+        match self.preview.as_mut().filter(|p| p.slot == slot) {
+            Some(p) => {
+                p.path = path;
+                self.history.undo_label() == Some(PREVIEW_STEP)
+            }
+            None => {
+                self.preview = Some(Preview { slot, before, path });
+                false
+            }
+        }
+    }
+
+    fn apply_rig_folding(&mut self, at: RigAt, settings: &RigSettings, fold: bool) {
+        let Some(id) = self.rig_slot(at).and_then(slot_id) else { return };
+        let mut extras = self.rig_extras(at);
+        extras.cab_auto = settings.cab.auto;
+        self.edit_folding(PREVIEW_STEP, fold, |p| {
+            let Some(t) = p.track_mut(at.track) else { return };
+            if let Some(slot) = t.fx.get_mut(at.index) {
+                rig::apply(slot, settings);
+            }
+            write_extras(t, &id, &extras);
+        });
+        self.engine.wake_effects();
+    }
+
+    /// Ends the preview: `keep` leaves what is playing, otherwise what played before comes
+    /// back (undoing the preview's step when it is still the last one). Answers the preview.
+    pub fn end_preview(&mut self, keep: bool) -> Result<Preview, ApiError> {
+        let p = self.preview.take().ok_or_else(|| ApiError::not_found("nothing is being previewed"))?;
+        if keep {
+            return Ok(p);
+        }
+        if self.history.undo_label() == Some(PREVIEW_STEP) {
+            self.undo();
+            self.engine.wake_effects();
+            return Ok(p);
+        }
+        match (&p.slot, &p.before) {
+            (PreviewSlot::Nam { track, index }, PreviewBefore::Nam(model)) => {
+                let (track, index) = (*track, *index);
+                self.edit("Revert NAM model", |proj| {
+                    if let Some(slot) = proj.track_mut(track).and_then(|t| t.fx.get_mut(index)) {
+                        match model {
+                            Some(m) => scythe_engine::fx::set_nam_model(slot, Path::new(m)),
+                            None => scythe_engine::fx::clear_nam_model(slot),
+                        }
+                    }
+                });
+            }
+            (PreviewSlot::Amp(at) | PreviewSlot::Cab(at), PreviewBefore::Rig(s)) => {
+                self.apply_rig(*at, "Revert rig", s)
+            }
+            _ => {}
+        }
+        self.engine.wake_effects();
+        Ok(p)
+    }
+
     /// Loads the preset `by` places from the one last loaded, in name order.
     pub fn step_rig_preset(&mut self, at: RigAt, by: isize) -> Result<String, ApiError> {
         let presets = list_presets(&presets_dir());
@@ -359,6 +460,36 @@ impl Session {
         self.load_rig_preset(at, &preset);
         Ok(preset.name)
     }
+}
+
+/// The undo step every try of a preview folds into.
+pub const PREVIEW_STEP: &str = "Preview model";
+
+/// Where a preview plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewSlot {
+    /// A Neural Amp Modeler slot outside a rig.
+    Nam { track: TrackId, index: usize },
+    /// A rig's amp.
+    Amp(RigAt),
+    /// A rig's cab (an impulse response).
+    Cab(RigAt),
+}
+
+/// What the slot played before a preview began.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PreviewBefore {
+    Nam(Option<String>),
+    Rig(Box<RigSettings>),
+}
+
+/// A model or impulse response being tried: where, what, and what to go back to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub slot: PreviewSlot,
+    pub before: PreviewBefore,
+    /// The file playing now.
+    pub path: String,
 }
 
 #[cfg(test)]

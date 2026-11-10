@@ -831,6 +831,48 @@ mod tests {
     }
 
     #[test]
+    fn switching_a_stage_crossfades_without_a_click() {
+        let dir = temp("stage");
+        let ir = dir.join("flip.wav");
+        write_ir(&ir, &[(0, -1.0)]);
+        let mut s = RigSettings {
+            gate: GateSettings { enabled: false, ..GateSettings::default() },
+            amp: AmpSettings { model: None, input_db: 0.0, output_db: 0.0, ..AmpSettings::default() },
+            cab: CabSettings { ir: Some(ir.display().to_string()), level_db: 0.0, ..CabSettings::default() },
+            eq: EqSettings { enabled: false, ..EqSettings::default() },
+            output_db: 0.0,
+        };
+        let mut rig = new_rig(&s);
+        let mut registry = FxRegistry::new(48_000);
+        let sine: Vec<f32> =
+            (0..48_000).map(|i| (i as f32 * 440.0 / 48_000.0 * std::f32::consts::TAU).sin() * 0.5).collect();
+        let mut out = Vec::new();
+        let play = |registry: &mut FxRegistry, rig: &FxSlot, blocks: std::ops::Range<usize>, out: &mut Vec<f32>| {
+            let chain = crate::chain::build(registry, &FxOwner::Master, std::slice::from_ref(rig), 2);
+            for k in blocks {
+                let block = &sine[k * 512..(k + 1) * 512];
+                let (mut l, mut r) = (block.to_vec(), block.to_vec());
+                run(&chain, &mut l, &mut r, (k * 512) as i64);
+                out.extend(l);
+            }
+        };
+        play(&mut registry, &rig, 0..20, &mut out);
+        s.cab.enabled = false;
+        apply(&mut rig, &s);
+        play(&mut registry, &rig, 20..40, &mut out);
+        s.cab.enabled = true;
+        apply(&mut rig, &s);
+        play(&mut registry, &rig, 40..60, &mut out);
+        let slope = 0.5 * 440.0 / 48_000.0 * std::f32::consts::TAU;
+        let worst = out.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(worst < slope * 1.5, "largest step {worst} against the sine's {slope}");
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!((1000..20 * 512).all(|i| close(out[i], -sine[i])), "the cab flips the sine");
+        assert!((21 * 512..40 * 512).all(|i| close(out[i], sine[i])), "switched off it passes the sine");
+        assert!((41 * 512..60 * 512).all(|i| close(out[i], -sine[i])), "and flips it again once back on");
+    }
+
+    #[test]
     fn changing_the_impulse_response_crossfades_without_a_jump() {
         let dir = temp("xfade");
         let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
