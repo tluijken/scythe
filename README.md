@@ -70,6 +70,9 @@ streams transport, meter and project-changed events. It covers transport, projec
 open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
 markers, the tempo map, monitor mixes, setlists and access links, plus a full `snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
 `--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
+The window runs the control API, control surfaces and marker actions on a thread of their own,
+so they keep their pace (commands answered in a few ms, events at 20 a second) while the window
+is hidden or minimised; only actions that need the window wait for its next frame.
 Binding beyond localhost without a token prints a warning.
 
 ### AI agents (MCP)

@@ -70,6 +70,8 @@ export class Client {
     this.timer = null;
     this.stopped = true;
     this.coalesced = new Map();
+    // When a continuous control last sent a value (ms since the epoch).
+    this.liveAt = -Infinity;
     // What the token may do (`{"role": "admin" | "musician" | "stage", "musician"?}`), once known.
     this.access = null;
   }
@@ -240,6 +242,7 @@ export class Client {
   // other and only the last is sent once it is answered, so a fader dragged on a phone over
   // wifi never builds a queue.
   sendLatest(key, command) {
+    this.liveAt = Date.now();
     const busy = this.coalesced.get(key);
     if (busy) {
       busy.next = command;

@@ -852,7 +852,11 @@ Who may run what is `scythe_session::access` (`Scope`, checked in `ControlPump` 
 command runs); a new command is admin-only until it is listed there. The server side is
 `crates/scythe-server`: `ControlServer::start` binds, runs axum on a thread
 and tokio runtime of its own, and returns a `ControlPump` that the thread owning the session
-calls (`pump` every frame, or `wait` in a loop) to run commands and publish events. The same
+calls (`pump` every frame, or `wait` in a loop) to run commands and publish events. The
+desktop app pumps it on a thread of its own (`crates/scythe-app/src/pump.rs`), taking turns
+with the window for the session, so commands do not wait for a frame the compositor may never
+give a hidden window. The server sets `TCP_NODELAY`: a reply written behind an event the client
+has not acknowledged otherwise waits out its delayed ACK. The same
 server answers MCP at `/mcp` with `scythe-mcp`'s `McpServer`.
 
 The web UI is in `crates/scythe-server/web` (plain ES modules, no build step), embedded by

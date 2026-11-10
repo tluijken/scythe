@@ -19,6 +19,7 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::serve::ListenerExt;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use scythe_mcp::{Backend, McpServer, Selection};
@@ -145,7 +146,11 @@ impl ControlServer {
         let thread = std::thread::Builder::new().name("scythe-control".into()).spawn(move || {
             runtime.block_on(async move {
                 let listener = match tokio::net::TcpListener::from_std(listener) {
-                    Ok(l) => l,
+                    // A reply written behind an event the client has not acknowledged yet
+                    // would otherwise wait out its delayed ACK, about 40 ms.
+                    Ok(l) => l.tap_io(|tcp| {
+                        let _ = tcp.set_nodelay(true);
+                    }),
                     Err(e) => return eprintln!("control server: {e}"),
                 };
                 tokio::select! {

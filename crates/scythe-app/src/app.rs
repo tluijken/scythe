@@ -127,7 +127,7 @@ pub const GRID_STEPS: [f64; 6] = [1.0 / 4.0, 1.0 / 8.0, 1.0 / 16.0, 1.0 / 32.0, 
 /// session's fields and methods are reachable through `Deref`, so `app.project` and
 /// `app.edit(…)` read as before the split.
 pub struct ScytheApp {
-    pub session: Session,
+    pub session: crate::pump::SessionCell,
     pub sel: Selection,
     pub view: ViewState,
     pub palette: Option<PaletteState>,
@@ -222,7 +222,7 @@ impl ScytheApp {
         let wake = ctx.clone();
         session.set_waker(Arc::new(move || wake.request_repaint()));
         let mut app = Self {
-            session,
+            session: crate::pump::SessionCell::new(session),
             sel: Selection::default(),
             view: ViewState {
                 start: 0.0,

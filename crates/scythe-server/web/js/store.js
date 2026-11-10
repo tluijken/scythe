@@ -4,6 +4,9 @@
 import { useEffect, useRef, useState } from "../vendor/preact-htm.js";
 import { meterFraction } from "./format.js";
 
+// How long continuous controls must rest before a changed project is fetched again.
+const LIVE_REST_MS = 250;
+
 export class Store {
   constructor(client) {
     this.client = client;
@@ -16,6 +19,7 @@ export class Store {
     this.listeners = { snapshot: new Set(), transport: new Set(), status: new Set(), notice: new Set(), access: new Set(), health: new Set() };
     this.fetching = false;
     this.wanted = 0;
+    this.deferred = null;
     client.on("status", (s) => this.set("status", s));
     client.on("hello", (h) => h.access && this.set("access", h.access));
     // A snapshot fetched on (re)connecting is the truth even when its revision is lower: the
@@ -59,10 +63,20 @@ export class Store {
     this.set("transport", snap.transport);
   }
 
-  // Fetches a new snapshot, one at a time: changes arriving meanwhile (a fader being dragged)
-  // fold into a single fetch after the current one.
+  // Fetches a new snapshot, one at a time: changes arriving meanwhile fold into a single fetch
+  // after the current one. While a fader or pan is being dragged its answers are patched in
+  // instead, and the project is fetched once it rests: a whole snapshot per step made dragging
+  // stutter on big projects.
   async refresh(revision = Infinity) {
     this.wanted = Math.max(this.wanted, revision);
+    const rest = (this.client.liveAt ?? -Infinity) + LIVE_REST_MS - Date.now();
+    if (rest > 0) {
+      this.deferred ??= setTimeout(() => {
+        this.deferred = null;
+        this.refresh(0);
+      }, rest);
+      return;
+    }
     if (this.fetching) return;
     this.fetching = true;
     try {
@@ -167,7 +181,12 @@ class MeterBus {
         const peak = peaks[Math.min(i, peaks.length - 1)] || 0;
         const fill = bars[i].firstElementChild;
         if (!fill) continue;
-        fill.style.transform = `${axis}(${meterFraction(peak)})`;
+        // Meters arrive 20 times a second and silent tracks stay put: writing an unchanged
+        // style every frame still costs a style pass.
+        const transform = `${axis}(${meterFraction(peak).toFixed(3)})`;
+        if (fill.dataset.shown === transform) continue;
+        fill.dataset.shown = transform;
+        fill.style.transform = transform;
         fill.classList.toggle("hot", peak >= 0.89);
       }
     }

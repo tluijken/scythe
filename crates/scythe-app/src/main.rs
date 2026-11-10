@@ -8,6 +8,7 @@ mod live;
 mod nam;
 mod palette;
 mod plugin_window;
+mod pump;
 mod script;
 mod script_host;
 mod theme;
@@ -18,11 +19,12 @@ use std::path::PathBuf;
 use scythe_core::Project;
 
 struct Shell {
-    app: app::ScytheApp,
+    /// Runs the control API's commands and events, the control surfaces (OSC devices, Mackie
+    /// Control, HUI), marker actions and automation between frames.
+    _pump: pump::Pump,
     /// The control API, when `--control` serves it; dropped (and stopped) with the window.
-    control: Option<(scythe_server::ControlServer, scythe_session::control::ControlPump)>,
-    /// The control surfaces in the preferences (OSC devices, Mackie Control, HUI).
-    surfaces: scythe_surface::SurfaceHost,
+    _control: Option<scythe_server::ControlServer>,
+    app: app::ScytheApp,
     /// ReaScripts from the command line, run once the window has drawn: a dialog they open
     /// blocks the window until answered.
     scripts: Vec<PathBuf>,
@@ -31,6 +33,7 @@ struct Shell {
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.app.session.acquire();
         self.app.poll();
         if ctx.cumulative_frame_nr() > 0 {
             for script in std::mem::take(&mut self.scripts) {
@@ -41,14 +44,10 @@ impl eframe::App for Shell {
         self.app.tick_editors();
         self.app.tick_automation();
         self.app.tick_script();
-        self.surfaces.pump(&mut self.app.session);
-        if let Some((_, pump)) = &mut self.control {
-            pump.pump(&mut self.app.session);
-            self.app.follow_session();
-        }
         palette::handle_shortcuts(&mut self.app, &ctx);
         ui::root(&mut self.app, ui);
         theme::recolor(&ctx, &self.app.session.theme);
+        self.app.session.release();
         // Meters and the clock need a steady frame rate even when nothing is playing.
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
@@ -231,22 +230,28 @@ fn main() -> eframe::Result {
                 app.toggle_play();
             }
             app.session.script_runner = Some(crate::script_host::control_runner());
-            let wake = cc.egui_ctx.clone();
-            let control = control.and_then(|config| {
-                match scythe_server::ControlServer::start(config, std::sync::Arc::new(move || wake.request_repaint())) {
-                    Ok((server, pump)) => {
-                        eprintln!("control API: http://{}/api", server.addr());
-                        Some((server, pump))
-                    }
-                    Err(e) => {
-                        app.notify(format!("Control API unavailable: {e}"));
-                        None
-                    }
+            let doorbell = pump::doorbell(&app.session);
+            let (control, commands) = match control.map(|c| scythe_server::ControlServer::start(c, doorbell.clone())) {
+                Some(Ok((server, commands))) => {
+                    eprintln!("control API: http://{}/api", server.addr());
+                    (Some(server), Some(commands))
                 }
-            });
+                Some(Err(e)) => {
+                    app.notify(format!("Control API unavailable: {e}"));
+                    (None, None)
+                }
+                None => (None, None),
+            };
+            let surfaces = scythe_surface::SurfaceHost::new(doorbell);
             let wake = cc.egui_ctx.clone();
-            let surfaces = scythe_surface::SurfaceHost::new(std::sync::Arc::new(move || wake.request_repaint()));
-            Ok(Box::new(Shell { app, control, surfaces, scripts }))
+            let pump = pump::Pump::start(
+                &app.session,
+                surfaces,
+                commands,
+                std::sync::Arc::new(move || wake.request_repaint()),
+            );
+            app.session.release();
+            Ok(Box::new(Shell { _pump: pump, _control: control, app, scripts }))
         }),
     )
 }

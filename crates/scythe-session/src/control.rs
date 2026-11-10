@@ -95,12 +95,16 @@ pub fn channel(wake: Waker, sink: EventSink) -> (ControlHandle, ControlPump) {
 }
 
 impl ControlPump {
-    /// Runs the queued commands, then publishes what changed. Call it every frame.
-    pub fn pump(&mut self, session: &mut Session) {
+    /// Runs the queued commands, then publishes what changed; how many commands ran. Call it
+    /// every frame.
+    pub fn pump(&mut self, session: &mut Session) -> usize {
+        let mut ran = 0;
         while let Ok(request) = self.rx.try_recv() {
             Self::run(session, request);
+            ran += 1;
         }
         self.publish(session);
+        ran
     }
 
     /// Waits up to `timeout` for a command, then pumps. For a loop without a UI to pace it.
