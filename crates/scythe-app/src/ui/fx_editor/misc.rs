@@ -2,6 +2,7 @@
 //! and envelope, ReaInsert's routing and ping, ReaControlMIDI's controls.
 
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui, pos2, vec2};
+use scythe_engine::devices::{DeviceChannels, pair_name};
 use scythe_engine::reaverb::ReaVerbCompat;
 use scythe_engine::stock::reacontrolmidi::ControlMidi;
 use scythe_engine::stock::reainsert::{INPUT, OUTPUT, PING};
@@ -258,7 +259,7 @@ pub fn insert(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
                     theme::regular(10.0),
                     TEXT_DIM,
                 );
-                value_box(cx, ui, r, *id, "");
+                device_pair(cx, ui, r, *id);
             }
             None => {
                 ui.painter().rect_filled(r, CornerRadius::same(8), theme::RAISED_HI);
@@ -291,6 +292,40 @@ pub fn insert(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let delay = Rect::from_min_size(pos2(inner.left(), ping.bottom() + 10.0), vec2(inner.width().min(320.0), 26.0));
     value_box(cx, ui, delay, 0, "Delay (frames)");
     knob_panel(cx, ui, knobs, &[(1, "Send"), (2, "Return")]);
+}
+
+/// ReaInsert's send or return channels: a pill with the device's pair and a menu of the pairs
+/// the device has.
+fn device_pair(cx: &mut Ctx, ui: &mut Ui, r: Rect, id: u32) {
+    type Devices = (Option<DeviceChannels>, Option<DeviceChannels>);
+    let output = id == OUTPUT;
+    let cache = egui::Id::unique("rea-insert-devices");
+    let known: Option<Devices> = ui.data(|d| d.get_temp(cache));
+    let devices = known.unwrap_or_else(|| {
+        let found = scythe_engine::devices::channels(cx.app.engine.devices());
+        ui.data_mut(|d| d.insert_temp(cache, found.clone()));
+        found
+    });
+    let side = if output { devices.0 } else { devices.1 };
+    let first = cx.value(id).round() as i64 - 1;
+    let name = side.as_ref().map(|d| d.name.clone());
+    let label = if first < 0 { "none".to_owned() } else { pair_name(first as usize, output, name.as_deref()) };
+    let shown = widgets::truncate(ui, &label, &theme::regular(11.0), r.width() - 12.0);
+    let resp = widgets::text_pill(ui, r, &shown, theme::regular(11.0), theme::RAISED_HI, TEXT).on_hover_text(&label);
+    egui::Popup::menu(&resp).show(|ui| {
+        if ui.selectable_label(first < 0, "none").clicked() {
+            cx.set_once(id, 0.0);
+        }
+        let count = side.as_ref().map_or(2, |d| d.channels as usize).max(2).max(first.max(0) as usize + 2);
+        for k in 0..count - 1 {
+            if ui.selectable_label(first == k as i64, pair_name(k, output, name.as_deref())).clicked() {
+                cx.set_once(id, k as f64 + 1.0);
+            }
+        }
+        if side.is_none() {
+            ui.label(egui::RichText::new(if output { "No output device" } else { "No input device" }).color(TEXT_DIM));
+        }
+    });
 }
 
 const NOTES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
@@ -335,7 +370,8 @@ pub fn control_midi(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         );
     }
     card(ui, keys);
-    section_title(ui, keys, "Scale");
+    let name = cx.read(|c: &mut ControlMidi| c.scale_name()).unwrap_or_default();
+    section_title(ui, keys, &format!("Scale · {name}"));
     let root = cx.value(11).round().rem_euclid(12.0) as usize;
     let snap = cx.value(10) >= 0.5;
     let kb = Rect::from_min_max(keys.min + vec2(10.0, 30.0), keys.max - vec2(10.0, 10.0));
@@ -345,10 +381,26 @@ pub fn control_midi(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         let degree = (n + 12 - root) % 12;
         let in_scale = scale[degree];
         let black = name.contains('#');
+        let resp = ui
+            .interact(r, egui::Id::unique(("fx-rcm-key", &cx.ed.owner, &cx.ed.path, n)), egui::Sense::click())
+            .on_hover_text("Click to put the note in the scale or take it out; right-click to make it the root");
+        if resp.clicked() && n != root {
+            let mut new = scale;
+            new[degree] = !new[degree];
+            new[0] = true;
+            let name = scythe_core::midi::scale::builtin()
+                .into_iter()
+                .find(|s| (0..12u8).all(|d| s.has(d) == new[d as usize]))
+                .map_or_else(|| "Custom".to_owned(), |s| s.name);
+            cx.edit_once("Edit ReaControlMIDI scale", |c: &mut ControlMidi| c.set_scale(new, &name));
+        }
+        if resp.secondary_clicked() {
+            cx.set_once(11, n as f64);
+        }
         let fill = if n == root {
             ACCENT
-        } else if in_scale && snap {
-            theme::with_alpha(ACCENT, 90)
+        } else if in_scale {
+            theme::with_alpha(ACCENT, if snap { 90 } else { 45 })
         } else if black {
             BG
         } else {

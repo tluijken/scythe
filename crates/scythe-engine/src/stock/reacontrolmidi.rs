@@ -181,6 +181,49 @@ impl ControlMidi {
     pub fn scale(&self) -> [bool; 12] {
         self.settings.scale
     }
+
+    /// Sets the scale notes snap to, by the semitones above the root it holds, and its name:
+    /// both stored as REAPER stores them, a length (counting the closing NUL) and the text,
+    /// the pattern in `.reascale` form.
+    pub fn set_scale(&mut self, scale: [bool; 12], name: &str) {
+        let Some(e) = path_end(&self.chunk) else { return };
+        let name_at = e + SCALE_NAME;
+        let Some(name_len) = word(&self.chunk, name_at).and_then(|n| usize::try_from(n).ok()) else { return };
+        let pattern_at = name_at + 4 + name_len;
+        let Some(pattern_len) = word(&self.chunk, pattern_at).and_then(|n| usize::try_from(n).ok()) else { return };
+        let end = pattern_at + 4 + pattern_len;
+        if end > self.chunk.len() {
+            return;
+        }
+        let mut degree = 0;
+        let pattern: String = scale
+            .iter()
+            .map(|&on| {
+                if !on {
+                    return '0';
+                }
+                degree += 1;
+                char::from_digit(degree, 16).map_or('1', |c| c.to_ascii_uppercase())
+            })
+            .collect();
+        let mut fields = Vec::new();
+        for text in [name, pattern.as_str()] {
+            fields.extend(((text.len() + 1) as i32).to_le_bytes());
+            fields.extend(text.as_bytes());
+            fields.push(0);
+        }
+        self.chunk.splice(name_at..end, fields);
+        self.settings.scale = scale;
+        self.pending = true;
+    }
+
+    /// The scale's name as stored.
+    pub fn scale_name(&self) -> String {
+        let Some(at) = path_end(&self.chunk).map(|e| e + SCALE_NAME) else { return String::new() };
+        let len = word(&self.chunk, at).and_then(|n| usize::try_from(n).ok()).unwrap_or(0);
+        let bytes = self.chunk.get(at + 4..at + 4 + len).unwrap_or_default();
+        String::from_utf8_lossy(bytes).trim_end_matches('\0').to_owned()
+    }
 }
 
 impl Effect for ControlMidi {
@@ -322,6 +365,36 @@ mod tests {
             root: 2,
             scale: [true, false, true, false, true, true, false, true, false, true, false, true],
         }
+    }
+
+    /// A state laid out as REAPER 7.73 saves a fresh one: an empty bank path, then the fields
+    /// after it, the scale name "Major" and its pattern, then the rest.
+    fn fresh() -> Vec<u8> {
+        let mut c = vec![0u8; 48 + SCALE_NAME];
+        for (text, _) in [("Major", 0), ("102034050607", 1)] {
+            c.extend(((text.len() + 1) as i32).to_le_bytes());
+            c.extend(text.as_bytes());
+            c.push(0);
+        }
+        c.extend([1, 0, 0, 0, 10, 0, 0, 0]);
+        c
+    }
+
+    #[test]
+    fn the_scale_is_edited_in_the_state() {
+        let mut fx = ControlMidi::from_chunk(&fresh()).unwrap();
+        assert_eq!((fx.scale_name().as_str(), fx.scale()[1], fx.scale()[2]), ("Major", false, true));
+        let mut minor = [false; 12];
+        for n in [0, 2, 3, 5, 7, 8, 10] {
+            minor[n] = true;
+        }
+        fx.set_scale(minor, "Custom");
+        let saved = fx.save_state().unwrap();
+        assert!(saved.ends_with(&[b'0', 0, 1, 0, 0, 0, 10, 0, 0, 0]), "the rest after the pattern stays");
+        let back = ControlMidi::from_chunk(&saved).unwrap();
+        assert_eq!((back.scale(), back.scale_name().as_str()), (minor, "Custom"));
+        let text = String::from_utf8_lossy(&saved);
+        assert!(text.contains("102304056070"), "{text:?}");
     }
 
     /// REAPER 7.73 snapping C4..B4 and the extremes to D major.

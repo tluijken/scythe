@@ -559,6 +559,24 @@ pub fn xcomp(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         theme::semibold(12.0),
         band_color(k),
     );
+    let remove = Rect::from_min_size(pos2(title.right() - 64.0, title.top() + 1.0), vec2(64.0, 20.0));
+    let add = remove.translate(vec2(-72.0, 0.0));
+    if widgets::text_pill(ui, add, "Split band", theme::regular(11.0), theme::RAISED_HI, TEXT)
+        .on_hover_text("Split this band in two at the middle of its range")
+        .clicked()
+    {
+        cx.edit_once("Add ReaXcomp band", |x: &mut MultibandCompressor| x.add_band(k));
+    }
+    if bands.len() > 1
+        && widgets::text_pill(ui, remove, "Remove", theme::regular(11.0), theme::RAISED_HI, TEXT)
+            .on_hover_text("Remove this band: the band above takes its range")
+            .clicked()
+    {
+        cx.edit_once("Remove ReaXcomp band", |x: &mut MultibandCompressor| x.remove_band(k));
+        cx.ed.band = k.saturating_sub(1);
+        cx.ed.sel = None;
+        return;
+    }
     let (knob_area, switch_area) = split_top(rest, rest.height() - 26.0, 0.0);
     knob_row(
         cx,

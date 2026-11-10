@@ -91,3 +91,36 @@ pub fn list() -> Vec<DeviceEntry> {
     }
     out
 }
+
+/// One side of the devices `request` opens, for naming their channels: the device's name and
+/// how many channels its default configuration has.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceChannels {
+    pub name: String,
+    pub channels: u16,
+}
+
+/// The output and input devices `request` opens, with their channel counts (`None` for a side
+/// that cannot be opened).
+pub fn channels(request: &DeviceRequest) -> (Option<DeviceChannels>, Option<DeviceChannels>) {
+    let out = output_device(request).ok().and_then(|d| {
+        let channels = d.default_output_config().ok()?.channels();
+        Some(DeviceChannels { name: device_name(&d), channels: channels.max(request.output_channels.unwrap_or(0)) })
+    });
+    let inp = input_device(request).ok().and_then(|d| {
+        let channels = d.default_input_config().ok()?.channels();
+        Some(DeviceChannels { name: device_name(&d), channels })
+    });
+    (out, inp)
+}
+
+/// The name of a pair of device channels (counted from 0) in ReaInsert's lists: the
+/// channel numbers and the device.
+pub fn pair_name(first: usize, output: bool, device: Option<&str>) -> String {
+    let side = if output { "Out" } else { "In" };
+    let pair = format!("{side} {} / {side} {}", first + 1, first + 2);
+    match device {
+        Some(d) if !d.is_empty() => format!("{pair} · {d}"),
+        _ => pair,
+    }
+}

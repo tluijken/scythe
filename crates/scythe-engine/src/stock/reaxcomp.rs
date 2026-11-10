@@ -19,6 +19,8 @@ use crate::probe::{self, FxProbe};
 const VERSION: u32 = 56;
 const BAND_BYTES: usize = 56;
 const PARAMS_PER_BAND: u32 = 12;
+/// The most bands the editor adds (the probe meters as many).
+const MAX_BANDS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Band {
@@ -283,6 +285,34 @@ impl MultibandCompressor {
             .collect()
     }
 
+    /// Splits band `k` in two at the middle of its range (on a log scale); both halves keep
+    /// its settings. Returns the new band count.
+    pub fn add_band(&mut self, k: usize) -> usize {
+        if k >= self.bands.len() || self.bands.len() >= MAX_BANDS {
+            return self.bands.len();
+        }
+        let lo = if k == 0 { 20.0 } else { self.bands[k - 1].top };
+        let hi = if k + 1 == self.bands.len() { 20000.0 } else { self.bands[k].top };
+        let lower = Band { top: (lo * hi.max(lo * 1.1)).sqrt(), ..self.bands[k] };
+        self.bands.insert(k, lower);
+        self.configure(false);
+        self.bands.len()
+    }
+
+    /// Removes band `k`: the band above takes its range (the band below, when it was the
+    /// highest). At least one band stays.
+    pub fn remove_band(&mut self, k: usize) -> usize {
+        if k >= self.bands.len() || self.bands.len() == 1 {
+            return self.bands.len();
+        }
+        let removed = self.bands.remove(k);
+        if k == self.bands.len() {
+            self.bands[k - 1].top = removed.top;
+        }
+        self.configure(false);
+        self.bands.len()
+    }
+
     /// Band `k`'s steady-state output in dB for an input at `in_db`, band gain included.
     pub fn transfer_db(&self, k: usize, in_db: f64) -> f64 {
         let (Some(b), Some(s)) = (self.bands.get(k), self.states.get(k)) else { return in_db };
@@ -486,6 +516,26 @@ mod tests {
         assert!(x.band_response_db(3, 20000.0).abs() < 0.5);
         assert!(x.band_response_db(3, 50.0) < -30.0);
         assert_eq!(x.band_views().len(), 4);
+    }
+
+    #[test]
+    fn bands_are_added_and_removed() {
+        let mut x = MultibandCompressor::from_reaxcomp(&chunk(0.1), 48000).unwrap();
+        assert_eq!(x.add_band(1), 5);
+        let tops: Vec<f64> = x.band_views().iter().map(|b| b.top.round()).collect();
+        assert_eq!(tops, [200.0, 447.0, 1000.0, 5000.0, 24000.0], "band 2 split at the middle of 200-1000 Hz");
+        assert_eq!(x.params().len(), 5 * 12);
+        let back = MultibandCompressor::from_reaxcomp(&x.save_state().unwrap(), 48000).unwrap();
+        assert_eq!(back.band_views().len(), 5);
+        assert_eq!(x.remove_band(4), 4);
+        assert_eq!(x.band_views().last().unwrap().top, 24000.0, "the highest band keeps the top");
+        assert_eq!(x.remove_band(0), 3);
+        for _ in 0..5 {
+            x.remove_band(0);
+        }
+        assert_eq!(x.band_views().len(), 1);
+        let (mut l, mut r) = (vec![0.5f32; 480], vec![0.5f32; 480]);
+        x.process(&mut l, &mut r, &context());
     }
 
     #[test]
