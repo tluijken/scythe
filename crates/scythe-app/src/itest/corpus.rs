@@ -35,8 +35,8 @@ fn exercise(name: &str, path: &Path) {
     t.frames(6);
     t.app().stop();
     for page in ["Setlist (L)", "Monitor mixes (in-ear)", "Arrange"] {
-        if let Some(node) = t.h.query_by_label(page) {
-            node.click();
+        if t.has(page) {
+            t.click(page);
         }
         t.frames(3);
     }

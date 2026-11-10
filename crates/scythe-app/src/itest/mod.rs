@@ -111,6 +111,14 @@ impl TestApp {
         let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
         app.no_input = true;
         app.session.script_runner = Some(crate::script_host::control_runner());
+        // Tests run side by side in one process and share its XDG folders: the NAM library and
+        // TONE3000 settings one test saves must not reach another.
+        app.nam = crate::nam::NamHub::with(
+            Default::default(),
+            dir.join("nam"),
+            crate::nam::tone3000::TokenStore::new(dir.join("tone3000-session.json")),
+            dir.join("nam-preview"),
+        );
         setup(&mut app);
         let h = Harness::builder()
             .with_size(SIZE)
@@ -172,8 +180,9 @@ impl TestApp {
         self.wait_has(label);
         let wanted = label.to_owned();
         self.settle(label, move |t| t.h.query_by_label(&wanted).map(|n| n.rect()));
-        self.h.get_by_label(label).click();
-        self.frames(3);
+        let node = self.h.get_by_label(label);
+        let (id, at) = (node.accesskit_node().locate().0, node.rect().center());
+        self.press(label, id, at);
     }
 
     /// Clicks the `role` widget labelled `label` (a button among labels with the same text).
@@ -181,8 +190,64 @@ impl TestApp {
     pub fn click_role(&mut self, role: Role, label: &str) {
         let wanted = label.to_owned();
         self.settle(label, move |t| t.h.query_by_role_and_label(role, &wanted).map(|n| n.rect()));
-        self.h.get_by_role_and_label(role, label).click();
-        self.frames(3);
+        let node = self.h.get_by_role_and_label(role, label);
+        let (id, at) = (node.accesskit_node().locate().0, node.rect().center());
+        self.press(label, id, at);
+    }
+
+    /// Clicks the first widget labelled `label`, for labels several widgets share.
+    #[track_caller]
+    pub fn click_first(&mut self, label: &str) {
+        self.click_nth(label, |_| 0);
+    }
+
+    #[track_caller]
+    pub fn click_last(&mut self, label: &str) {
+        self.click_nth(label, |n| n - 1);
+    }
+
+    /// Clicks widget `pick(count)` of those labelled `label`.
+    #[track_caller]
+    fn click_nth(&mut self, label: &str, pick: fn(usize) -> usize) {
+        let wanted = label.to_owned();
+        self.until(label, 10.0, move |t| t.h.query_all_by_label(&wanted).next().is_some());
+        let wanted = label.to_owned();
+        let nth = move |t: &Self| {
+            let nodes: Vec<_> = t.h.query_all_by_label(&wanted).collect();
+            nodes.get(pick(nodes.len())).map(|n| (n.accesskit_node().locate().0, n.rect()))
+        };
+        self.settle(label, |t| nth(t).map(|(_, r)| r));
+        let (id, rect) = nth(self).expect("the widget stays");
+        self.press(label, id, rect.center());
+    }
+
+    /// A click at `at` on the widget AccessKit knows as `target`, a frame for each event as a
+    /// hand gives them. egui pairs the release with the press by widget id; a widget earlier in
+    /// the frame that comes and goes shifts the automatic ids after it, and the click then goes
+    /// to whichever widget took the id, so that fails here rather than as a missing effect.
+    #[track_caller]
+    fn press(&mut self, what: &str, target: egui::accesskit::NodeId, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.h.event(egui::Event::PointerMoved(at));
+        self.h.step();
+        self.h.event(button(true));
+        self.h.step();
+        self.h.event(button(false));
+        self.h.step();
+        let clicked = self.h.ctx.viewport(|v| v.interact_widgets.clicked);
+        if let Some(id) = clicked {
+            assert_eq!(
+                id.accesskit_id(),
+                target,
+                "the click on {what:?} went to another widget ({id:?}): an id shifted between frames"
+            );
+        }
+        self.frames(2);
     }
 
     pub fn has(&self, label: &str) -> bool {

@@ -99,7 +99,7 @@ fn preview_then_revert_and_preview_then_keep() {
     wait_for(&mut t, "Tone Friedman BE-100 Deluxe");
     t.click("Tone Friedman BE-100 Deluxe");
     wait_for(&mut t, "Model BE ch, gain 2 o'clock");
-    t.h.get_all_by_label("Preview").next().unwrap().click();
+    t.click_first("Preview");
     t.until("the preview to play", 10.0, |t| {
         t.app().nam.preview.as_ref().is_some_and(|p| matches!(p.stage, Stage::Playing | Stage::Failed(_)))
     });
@@ -110,7 +110,7 @@ fn preview_then_revert_and_preview_then_keep() {
     assert!(t.app().nam.preview.is_none());
     t.until("the slot to empty again", 10.0, |t| t.app().nam_model_path(&target).is_none());
 
-    t.h.get_all_by_label("Preview").next().unwrap().click();
+    t.click_first("Preview");
     t.until("the preview to play", 10.0, |t| {
         t.app().nam.preview.as_ref().is_some_and(|p| matches!(p.stage, Stage::Playing))
     });

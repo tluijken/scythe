@@ -186,8 +186,7 @@ fn ctrl_drag_copies_a_note_and_alt_drag_sets_its_velocity() {
 fn folder_button_and_header_drag_make_folders() {
     let mut t = TestApp::live("folders");
     let folder_tip = "Normal track: click to make it a folder holding the tracks below";
-    t.h.get_all_by_label(folder_tip).next().unwrap().click();
-    t.frames(3);
+    t.click_first(folder_tip);
     assert_eq!(t.track("Drums").folder_depth, 1, "Drums became a folder");
     let keys = t.rect("Track Keys");
     let drums = t.rect("Track Drums");
@@ -254,8 +253,7 @@ fn project_tabs_open_switch_and_close() {
     assert!(t.project().tracks.is_empty(), "the new tab is empty");
     t.click("Project tab live");
     assert_eq!(t.project().tracks.len(), 3, "back on the live project");
-    t.h.get_all_by_label("Close tab").last().unwrap().click();
-    t.frames(3);
+    t.click_last("Close tab");
     assert_eq!(t.app().tab_count(), 1);
 }
 
