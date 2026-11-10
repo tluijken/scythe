@@ -296,3 +296,32 @@ fn scripts_need_a_runner_and_are_one_undo_step() {
     s.undo();
     assert_eq!(s.project.tracks.len(), 1, "and is one undo step");
 }
+
+#[test]
+fn agent_calls_name_effect_parameters_and_mark_their_undo_steps() {
+    let mut s = session();
+    ok(&mut s, json!({"cmd": "track.add", "name": "Bass"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": "Bass", "plugin": "builtin:compressor"}));
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": "Bass", "index": 0}));
+    let threshold =
+        params.as_array().unwrap().iter().find(|p| p["name"] == "Threshold").expect("a threshold")["id"].clone();
+    let agent = json!({"client": "c1", "name": "Claude Code", "transport": "stdio"});
+    let mut begin = agent.clone();
+    begin["cmd"] = "agents.call".into();
+    begin["tool"] = "fx_param".into();
+    begin["command"] = "fx.param".into();
+    begin["arguments"] = json!({"track": "Bass", "index": 0, "param": threshold, "value": -18.0});
+    let call = ok(&mut s, begin)["call"].clone();
+    let command = json!({"cmd": "fx.param", "track": "Bass", "index": 0, "param": threshold, "value": -18.0});
+    ok(&mut s, json!({"cmd": "agents.run", "call": call, "command": command}));
+    ok(&mut s, json!({"cmd": "agents.done", "call": call}));
+    let activity = ok(&mut s, json!({"cmd": "agents.activity"}));
+    let made = &activity["calls"][0];
+    let summary = made["summary"].as_str().unwrap();
+    assert!(summary.starts_with("Set ") && summary.ends_with(" Threshold on Bass to -18"), "{activity}");
+    assert_eq!(made["undo"], json!(["Adjust Threshold"]));
+    assert_eq!(s.history.undo_by(), Some("Claude Code"));
+    ok(&mut s, json!({"cmd": "agents.undo"}));
+    assert_eq!(s.history.undo_label(), Some("Add plugin"));
+    assert!(execute_json(&mut s, json!({"cmd": "agents.undo"})).is_err(), "the user's step is on top");
+}

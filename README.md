@@ -14,6 +14,11 @@ format, with a modern UI based on the "REAPER redesign" mockup.
   ReaComp, JSFX and resampling ([how](#how-scythe-is-verified)).
 - **Built for the stage.** In-ear monitor mixes with "more me", setlists with count-in and stop
   markers, footswitches and control surfaces, and a headless server that runs as a service.
+- **Drive it with an AI agent.** Claude Code and other MCP clients can build a live session from a
+  description of the band, mix against a reference track with measured loudness and EQ, and set
+  up each musician's in-ear mix, every change an undo step. A light in the top bar shows when an
+  agent is at work; a click shows what it says it is doing and every call it made, with undo,
+  pause and disconnect at hand ([how](#remote)).
 - **Remote and scriptable.** A web UI for tablets and phones, a JSON/WebSocket control API, an
   MCP server for AI agents (with mix analysis) and ReaScript in Lua, EEL2 and Python.
 
@@ -169,6 +174,15 @@ A summary; [docs/features.md](docs/features.md) has the full description of each
 - **MCP** for Claude Code, Claude Desktop and other agents: read and edit a running session,
   import media, find songs in backing tracks, and analyse a mix (loudness, spectrum, width,
   low end) against a reference with proposed EQ; see [docs/mcp.md](docs/mcp.md).
+- **Agent activity** in plain sight: a light in the top bar (desktop and web) shows when an agent is
+  connected and pulses while it works; its window lists what the agent says it is doing and each
+  tool call in words with the undo steps it made, and lets you undo the agent's last change, pause
+  agents (they can still read) or disconnect them.
+
+![The Agents window over the Nightfall demo: Claude Code balancing the mix, its status, and each call with its undo step](docs/screenshots/agent-activity.png)
+
+*Claude Code mixing the demo song over MCP, captured live: its status, each call in words with
+the undo step it made, and the light by the title pulsing while it measures the mix.*
 
 ![The web editor: arrange view, mixer and inspector in a browser](docs/screenshots/web-editor.png)
 

@@ -336,7 +336,7 @@ pub const CURATED: &[&str] = &[
 ];
 
 /// Which tools `tools/list` gives: the curated set and/or whole domains, or all of them.
-/// `get_project`, `scythe_command` and `scythe_tools` are always listed.
+/// `get_project`, `scythe_command`, `scythe_tools` and `set_status` are always listed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     pub all: bool,

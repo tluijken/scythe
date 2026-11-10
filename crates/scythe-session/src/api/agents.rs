@@ -180,7 +180,7 @@ pub fn execute(session: &mut Session, command: AgentsCommand) -> Result<Value, A
         }
         AgentsCommand::Call { client, name, version, transport, tool, command, arguments } => {
             let hello = Hello { client, name, version, transport, ttl: None };
-            let summary = crate::agents::summarize(&session.project, &tool, command.as_deref(), &arguments);
+            let summary = describe(session, &tool, command.as_deref(), &arguments);
             let call = session.agents.begin(&hello, &tool, summary).map_err(ApiError::failed)?;
             Ok(value!({"call": call, "paused": session.agents.paused()}))
         }
@@ -190,6 +190,28 @@ pub fn execute(session: &mut Session, command: AgentsCommand) -> Result<Value, A
             Ok(value!({}))
         }
     }
+}
+
+/// What a tool call does in words; an effect parameter by its name, which only the running
+/// effect knows.
+fn describe(session: &Session, tool: &str, command: Option<&str>, arguments: &Value) -> String {
+    let (cmd, args) = match (tool, command) {
+        ("scythe_command", _) => (arguments["command"]["cmd"].as_str(), arguments["command"].clone()),
+        (_, Some(cmd)) => (Some(cmd), arguments.clone()),
+        _ => (None, Value::Null),
+    };
+    if cmd == Some("fx.param") {
+        let mut command = args.clone();
+        command["cmd"] = "fx.param".into();
+        if let (Some((effect, param)), Some(value)) =
+            (super::fx::param_names(session, &command), args["value"].as_f64())
+        {
+            let track =
+                crate::agents::track_name(&session.project, &args["track"]).unwrap_or_else(|| "the track".into());
+            return format!("Set {effect} {param} on {track} to {}", (value * 100.0).round() / 100.0);
+        }
+    }
+    crate::agents::summarize(&session.project, tool, command, arguments)
 }
 
 fn run(session: &mut Session, call: u64, command: Value) -> Result<Value, ApiError> {

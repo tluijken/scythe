@@ -613,6 +613,29 @@ Admin only. As the desktop app's audio device window (REAPER's Preferences > Aud
 | `audio.channel_name` | `kind` (`input`, `output`), `channel` (from 1), `name` (empty clears it) | `audio.device`; the alias is kept as REAPER keeps it and aliasing turns on for that side |
 | `audio.channel_map` | `kind`, `channels`: `[{"hardware": 3, "name"?}, {"hardware": null}, ...]` (hardware channels from 1, `null` for not connected; an empty list resets) | `audio.device`; the channels tracks see, each playing its hardware channel (REAPER's channel remapping), kept as REAPER keeps it; aliasing/remapping turns on for that side |
 
+### Agents
+
+Admin only. The AI agents connected over MCP and what they do (see [mcp.md](mcp.md#watching-what-agents-do)).
+Times are milliseconds since the Unix epoch.
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `agents.activity` | `calls` (how many of the newest; all kept, up to 200, when left out) | `{"clients": [{"id", "name", "version", "transport", "role", "connected_ms", "active_ms", "status", "status_ms", "running"}], "calls": [{"id", "client", "agent", "tool", "summary", "started_ms", "duration_ms", "ok", "error", "undo": [labels], "changed"}], "paused", "busy", "status", "undo": {"label", "agent"}}`; `undo` is there while the last undo step is an agent's |
+| `agents.pause` | `paused` (default true) | `{"paused"}`: while paused, agents' commands that change anything are refused |
+| `agents.undo` | | `{"label", "undo"}`: undoes the last step if an agent made it, else fails |
+| `agents.disconnect` | `client` (all when left out) | `{"disconnected"}`: the client's calls are refused until it opens a new MCP session |
+
+The MCP servers report with the rest; other clients have no need to send them:
+
+| `cmd` | Arguments | Answer |
+|---|---|---|
+| `agents.hello` | `client`, `name`, `version`, `transport` (`http`, `stdio`), `ttl` (seconds it stays listed) | `{"paused"}`; refused for a disconnected client |
+| `agents.bye` | `client` | `{}` |
+| `agents.status` | `client`, `name`, `version`, `transport`, `text` (empty clears) | `{"status"}` |
+| `agents.call` | `client`, `name`, `version`, `transport`, `tool`, `command` (the `cmd` it runs, if any), `arguments` | `{"call", "paused"}`: a call starts |
+| `agents.run` | `call`, `command` | the command's answer; refused while paused unless it only reads; its undo steps are marked as the agent's. `agents.*` but `agents.activity` are refused |
+| `agents.done` | `call`, `error` | `{}` |
+
 ### MIDI devices and synchronization
 
 Devices keep stable numbers, as REAPER's `reaper-midihw-linux.ini` keeps them beside
@@ -893,6 +916,7 @@ runs (also across undo) but not across opening the project again; names and GUID
 | `notice` | `message` | what the UI shows as a toast: saved, could not open, recording started… |
 | `setlist` | the setlist status | when the setlist played, its current or next song, play state or options change (not as the song plays on; use `transport` for that) |
 | `health` | the health state | every second, and at once when xruns are counted or the device goes or comes back |
+| `agent_activity` | the `agents.activity` answer with the newest 30 calls | admin only; when an MCP agent connects, goes, says what it does or makes a call, and when the agent undo step changes (at most 10 a second) |
 
 ## Extending
 

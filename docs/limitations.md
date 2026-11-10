@@ -56,9 +56,11 @@ measured.
   advice rather than applied processing, and the measurements are checked against synthetic
   signals with known answers (EBU Tech 3341/3342 style sines, pink and white noise), not
   against another meter. `script.run` needs the desktop app (the headless server has no
-  ReaScript host) and stops scripts that `defer` after their first pass. MCP over HTTP keeps no
-  sessions: the tool selection of `/mcp?tools=…` and subscriptions are shared by every client of
-  that address.
+  ReaScript host) and stops scripts that `defer` after their first pass. MCP sessions over HTTP
+  only tell agents apart for the agents window: the tool selection of `/mcp?tools=…` and
+  subscriptions are shared by every client of that address. The agents' pause judges commands by
+  their action's words (`list`, `get`, `probe`… read), so a command that reads under another name
+  is refused while paused; MCP progress notifications are not shown (`set_status` is).
 - Editing: REAPER's detector for transients is not reproduced exactly (see the table in
   [verification.md](verification.md)), and the dynamic split dialog's gate and "split at" options other than transients are
   not there. Snapping to item edges and markers is a window setting (REAPER keeps its snap

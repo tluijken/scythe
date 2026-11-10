@@ -398,7 +398,7 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// A track named in a command's arguments, by its name.
-fn track_name(project: &Project, value: &Value) -> Option<String> {
+pub fn track_name(project: &Project, value: &Value) -> Option<String> {
     match value {
         Value::Number(n) => {
             let id = n.as_u64()?;
@@ -411,7 +411,7 @@ fn track_name(project: &Project, value: &Value) -> Option<String> {
 }
 
 /// A plugin as people say it: "VST3: Curve 3 (AcmeAudio)" is "Curve 3".
-fn plugin_name(name: &str) -> String {
+pub fn plugin_name(name: &str) -> String {
     let name = name.split_once(": ").map_or(name, |(_, n)| n);
     let name = match name.rfind(" (") {
         Some(at) if name.ends_with(')') && at > 0 => &name[..at],

@@ -967,3 +967,16 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
         }
     }
 }
+
+/// The effect and parameter an `fx.param` command (as JSON) names, as people say them:
+/// ("ReaComp", "Threshold").
+pub fn param_names(session: &Session, command: &Value) -> Option<(String, String)> {
+    let Ok(FxCommand::SetParam { track, index, param, at, .. }) = serde_json::from_value(command.clone()) else {
+        return None;
+    };
+    let loc = locate(session, &track, &at).ok()?;
+    let effect = crate::agents::plugin_name(&get_slot(session, loc, &at, index).ok()?.name);
+    let inst = instance(session, loc, &at, index).ok()?;
+    let name = inst.with(|e| e.params().into_iter().find(|p| p.id == param)).flatten()?.name;
+    Some((effect, name))
+}

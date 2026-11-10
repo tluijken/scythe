@@ -696,6 +696,17 @@ notices, transport and device health (stdio, or `GET /mcp` as server-sent events
 `build_live_session`, `setlist_from_backing_tracks` and `match_reference` walk an agent through
 the whole job.
 
+You see what an agent does while it works. A light in the top bar (desktop and web editor) shows
+when an agent is connected: dim while idle, a soft pulse while its calls run, pink briefly after
+one failed. Its tooltip says which agent and what it reports doing (`set_status`, such as
+"Balancing drums against the reference"); a click opens the Agents window with the connected
+agents (name and version from the client, HTTP or stdio, since when), every recent tool call in
+words ("Set Vocals volume to -3 dB") with its result and the undo steps it made, and three
+controls: undo the last agent change, pause agents (their changes are refused, reading still
+works) and disconnect. Undo steps carry the agent's name ("Undo: Track volume (Claude Code)")
+while their labels stay REAPER's. The same is in the control API (`agents.activity`,
+`agents.pause`, `agents.undo`, `agents.disconnect`, the `agent_activity` event).
+
 ## Scripting
 
 - **ReaScript (Lua 5.4, EEL2, Python)**: "Script: Run ReaScript" runs a `.lua`, `.eel` or `.py`

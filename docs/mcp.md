@@ -83,6 +83,7 @@ from the API. `crates/scythe-mcp/tests/tools.json` is a snapshot of the whole li
 | Access links | `access_whoami`, `access_list`, `access_create`, `access_update`, `access_renew`, `access_delete`: links for musicians' mixes and the stage tablet, with `urls`, their QR code payloads (served by `scythe-server` and `scythe --control`) |
 | Scripts | `script_run`: ReaScript text (Lua or EEL) in the desktop app, one undo step |
 | Tool choice | `scythe_tools`: which domains are listed, and listing more or fewer |
+| Status | `set_status`: what the agent is doing, shown in Scythe beside the agent light (see [Watching what agents do](#watching-what-agents-do)) |
 | Anything else | `scythe_command`: any command as JSON (`{"command": {"cmd": "mix.…", …}}`), so new API domains work before they get tools of their own |
 
 Results are the command's JSON answer; answers that are a whole project (`project_open`,
@@ -110,8 +111,8 @@ Listing all of Scythe's 200 tools costs a model context it would rather spend on
 so by default a compact set is listed: about 40 tools for building a live session, mixing and
 matching a reference (transport, save and undo, adding and naming tracks, levels and inputs,
 sends and hardware outputs, effects, markers, monitor mixes and setlists in brief, media,
-analysis, events), plus `get_project`, `scythe_command` and `scythe_tools`, which are always
-there. Any tool can still be called by name, listed or not.
+analysis, events), plus `get_project`, `scythe_command`, `scythe_tools` and `set_status`, which are
+always there. Any tool can still be called by name, listed or not.
 
 | Where | How |
 |---|---|
@@ -202,6 +203,56 @@ An example of what an agent does given `match_reference` with `/refs/album/03.fl
 The reference file is decoded and measured on the machine running Scythe; its measurement is
 cached in `$XDG_DATA_HOME/scythe/analysis-cache` and nothing is uploaded anywhere.
 
+## Watching what agents do
+
+Whoever sits at Scythe sees when an agent is at work. A small light in the top bar, beside the
+project's name (a badge on the logo when the name leaves no room), shows up while an MCP client
+is connected: dim while it is idle, a soft orange pulse while its tool calls run and for two
+seconds after, pink for a moment after a call failed, with a ring around it while agents are
+paused. Its tooltip names the agent and what it says it is doing; a click opens the Agents
+window:
+
+- the connected agents: the name and version from `initialize`'s `clientInfo` (`title`, else
+  `name`), the transport (`http` for `/mcp`, `stdio` for `scythe-mcp`), since when, and the
+  status text the agent set;
+- the activity: each tool call with when, what it did in words ("Set Vocals volume to -3 dB",
+  else the command and its arguments), whether it worked (the error when not), how long it took
+  and the undo steps it made; the last 200 calls are kept;
+- **Undo last agent change**, enabled while the last undo step is an agent's;
+- **Pause agents**: until resumed, tool calls that would change anything are refused with an
+  error saying the user paused agents; reading (`get_project`, `*_list`, measuring) still works;
+- **Disconnect** (one agent, or all): its calls are refused from then on and it is no longer
+  listed; it comes back by opening a new MCP session (restarting the MCP connection).
+
+The web editor's top bar shows the same light and panel to the admin.
+
+### `set_status`
+
+`set_status {"text": "Balancing drums against the reference"}` shows what the agent is doing
+beside the light until it sets another text or clears it with `""`. The server instructions and
+every prompt ask agents to call it before each step of a longer task.
+
+### How clients are told apart
+
+Both transports report to the session with `agents.*` control commands (see
+[control-api.md](control-api.md#agents)), so the window, the web UI and the API see one picture:
+
+- `/mcp` gives every `initialize` an MCP session (`Mcp-Session-Id`); requests naming it count
+  for that client, `DELETE /mcp` with it ends it, and a request naming an unknown session gets
+  404 so the client starts a new one (after Scythe restarted, say). Requests naming no session
+  count for the client that initialized last. A client holding `GET /mcp` open stays listed
+  while it does and 30 s after; one that never does, 30 minutes after its last request.
+- `scythe-mcp` (stdio, `--url` or `--headless`) is one client: it says hello to Scythe every 5 s,
+  so it is listed within seconds of Scythe starting and dropped 20 s after it quits; closing its
+  stdin ends it at once. Over `--url` its requests go to `/api/command` with the user agent
+  `scythe-mcp/<version>` and are not counted among the web clients of `/api/health`.
+
+Every tool call is bracketed by `agents.call` and `agents.done`, and its commands run through
+`agents.run`: the session refuses them while paused, and marks the undo steps they record with
+the agent's name. The labels stay REAPER's ("Track volume"); the window, the undo toast
+("Undo: Track volume (Claude Code)") and `agents.activity` show who made them. Undo history
+is not saved in the project, so RPP files are unchanged.
+
 ## Safety
 
 - Scythe's control API, and with it `/mcp`, listens on `127.0.0.1` unless told otherwise.
@@ -220,8 +271,11 @@ cached in `$XDG_DATA_HOME/scythe/analysis-cache` and nothing is uploaded anywher
 
 ## Limits
 
-- MCP over HTTP keeps no sessions: every client of one address shares its tool selection,
-  subscriptions and log level, and `GET /mcp` streams every notification to every listener.
+- MCP sessions over HTTP only tell clients apart for the agents window: every client of one
+  address shares its tool selection, subscriptions and log level, and `GET /mcp` streams every
+  notification to every listener.
+- The pause judges a command by its action's words (`list`, `get`, `probe`… read), as the
+  tools' read-only hints do; MCP progress notifications are not shown, `set_status` is.
 - Notifications are found by polling the session's events every quarter second, not pushed.
 - `script_run` needs the desktop app; the headless server answers `failed`.
 - Plugin parameters are not undo steps (as in the UI).

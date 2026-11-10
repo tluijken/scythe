@@ -60,7 +60,7 @@ export function AgentsDialog({ store, onClose }) {
       (c) => html`<div class="agent-client" key=${c.id}>
         <div class="agent-head">
           <strong>${c.name}</strong>
-          <span class="dim">${c.version ? ` ${c.version}` : ""} · ${c.transport} · connected ${agoText(c.connected_ms, now)} ago${c.running > 0 ? " · working" : ""}</span>
+          <span class="dim">${c.version ? ` ${c.version}` : ""} · ${c.transport} · connected ${agoText(c.connected_ms, now) === "now" ? "just now" : `${agoText(c.connected_ms, now)} ago`}${c.running > 0 ? " · working" : ""}</span>
           <button class="btn small" onClick=${() => run({ cmd: "agents.disconnect", client: c.id }, "Agent disconnected")}>Disconnect</button>
         </div>
         ${c.status && html`<div class="agent-status">${c.status}</div>`}
@@ -77,6 +77,6 @@ export function AgentsDialog({ store, onClose }) {
     <h3 class="agent-title">Activity</h3>
     ${list.length === 0
       ? html`<p class="dim">No tool calls yet.</p>`
-      : html`<ul class="agent-calls">${list.map((call) => html`<${CallRow} key=${call.id} call=${call} now=${now} several=${clients.length > 1} />`)}</ul>`}
+      : html`<ul class="agent-calls">${list.map((call) => html`<${CallRow} key=${call.id} call=${call} now=${now} several=${new Set(clients.map((c) => c.name)).size > 1} />`)}</ul>`}
   <//>`;
 }

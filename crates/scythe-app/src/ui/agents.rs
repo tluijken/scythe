@@ -87,6 +87,14 @@ pub fn dot(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) -> bool {
     true
 }
 
+/// "just now", "12 s ago".
+fn since(ms: u64, now: u64) -> String {
+    match ago(ms, now) {
+        n if n == "now" => "just now".into(),
+        n => format!("{n} ago"),
+    }
+}
+
 /// "now", "12 s", "4 min", "2 h": how long ago `ms` was.
 fn ago(ms: u64, now: u64) -> String {
     let s = now.saturating_sub(ms) / 1000;
@@ -125,12 +133,8 @@ fn body(app: &mut ScytheApp, ui: &mut Ui) {
             let version = c.version.as_deref().map(|v| format!(" {v}")).unwrap_or_default();
             let busy = if c.running > 0 { " · working" } else { "" };
             ui.label(
-                RichText::new(format!(
-                    "{version} · {} · connected {} ago{busy}",
-                    c.transport,
-                    ago(c.connected_ms, now)
-                ))
-                .color(TEXT_DIM),
+                RichText::new(format!("{version} · {} · connected {}{busy}", c.transport, since(c.connected_ms, now)))
+                    .color(TEXT_DIM),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("Disconnect").on_hover_text("Refuse this agent's calls from now on").clicked() {
@@ -191,7 +195,7 @@ fn calls(app: &mut ScytheApp, ui: &mut Ui, now: u64) {
         ui.label(RichText::new("No tool calls yet.").color(TEXT_DIM));
         return;
     }
-    let several = app.agents.clients().len() > 1;
+    let several = app.agents.clients().iter().any(|c| c.name != app.agents.clients()[0].name);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         for call in &list {
             row(ui, call, now, several);
@@ -219,18 +223,17 @@ fn row(ui: &mut Ui, call: &AgentCall, now: u64, several: bool) {
             call.duration_ms.map(|d| format!(" in {d} ms")).unwrap_or_default()
         ));
     });
-    let indent = 58.0;
+    // Under the summary: past the time and the mark (the label adds the second gap).
+    let indent = 44.0 + 10.0 + ui.spacing().item_spacing.x;
+    let note = |ui: &mut Ui, text: RichText| {
+        let mut area = ui.available_rect_before_wrap();
+        area.min.x += indent;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| ui.add(egui::Label::new(text).wrap()));
+    };
     if let Some(error) = &call.error {
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            ui.label(RichText::new(error).color(PINK).small());
-        });
+        note(ui, RichText::new(error).color(PINK).size(12.0));
     }
     if !call.undo.is_empty() {
-        ui.horizontal(|ui| {
-            ui.add_space(indent);
-            let text = format!("Undo: {}", call.undo.join(", "));
-            ui.label(RichText::new(text).color(TEXT_DIM).small());
-        });
+        note(ui, RichText::new(format!("Undo: {}", call.undo.join(", "))).color(TEXT_DIM).size(12.0));
     }
 }

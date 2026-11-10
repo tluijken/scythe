@@ -39,6 +39,7 @@ cannot find usually needs one.
 | Module | Covers |
 |---|---|
 | `flows` | opening a project; selecting, moving (also to another track) and splitting items with undo and redo; adding tracks; adding ReaEQ from the FX browser and dragging a band in its editor; the guitar rig and NAM panel; the monitor mix wizard; the setlist page (build a setlist, next, play, stop); drawing a note in the MIDI editor; folders and dragging a track header; the action palette; the main toolbar and the action list; Escape closing the focused window before it stops the transport; project tabs; saving and opening the result again |
+| `agents` | an agent driving the window's session over MCP at `/mcp` (a control server on a free port, pumped between frames): the agent light's states by name ("Agent activity (working)", "(error)", "(idle)"), the Agents window's status and calls with their undo steps, pause refusing changes but not reads, undoing the agent's changes and disconnecting |
 | `nam` | the NAM panel's TONE3000 tab against a local stand-in (`tone3000_mock`): asking for a key, signed out, the lists, a tone's models (in view, also in a rig), preview with revert and keep, HTML error pages and null pages |
 | `corpus` | every `.RPP` under `SCYTHE_ITEST_CORPUS` (folders separated by `:`, `~/music` by default) and every `<dir>/*/*.RPP` under `SCYTHE_ITEST_PROBES` opens, draws the arrange view and the setlist and monitor pages, plays a moment and stops without a panic, and is not marked changed by being looked at; the corpus is only read |
 | `snapshot` | the arrange view and the setlist page compared against `crates/scythe-app/tests/snapshots/*.png` with a tolerance; the CPU load and the toast are masked. Skipped (with a message) without a GPU adapter. `UPDATE_SNAPSHOTS=1` writes new pictures; a failing comparison leaves `*.new.png` and `*.diff.png` beside them |
@@ -58,7 +59,7 @@ The built binaries as processes, each with its own folders and a free loopback p
 | Test | Covers |
 |---|---|
 | `server` | `scythe-server --null-audio --token`: a live session built over HTTP and the WebSocket (tracks, inputs, monitor mixes, a setlist from the markers, access links), saved and opened again; a setlist song playing to its `!1016` stop; a WebSocket client reconnecting; musician and stage links refused what their role may not do |
-| `mcp` | `scythe-mcp` over stdio against a running server and with a session of its own (`--headless --null-audio`), and the server's own `/mcp` over HTTP with and without the token |
+| `mcp` | `scythe-mcp` over stdio against a running server and with a session of its own (`--headless --null-audio`), and the server's own `/mcp` over HTTP with and without the token; a stdio bridge listed as an agent (transport `stdio`, not a web client) and held by the pause |
 | `app` | `scythe-app --null-audio --control` on an X server of its own (Xvfb), driven over its control API while its window is shown and while it is hidden, with the round-trip latency printed and bounded |
 | `web` | `/`, `/monitor` and `/setlist` in headless Chromium over the DevTools protocol, one action on each, checked against the server's state; any page exception or `console.error` fails it |
 

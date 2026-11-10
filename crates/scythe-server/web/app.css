@@ -519,7 +519,7 @@ a.btn { text-decoration: none; }
 .agent-calls { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .agent-call { display: grid; grid-template-columns: 48px 12px 1fr; align-items: baseline; gap: 4px; font-size: 13px; }
 .agent-call .when { color: var(--text-dim); font-size: 11px; }
-.agent-call .mark { width: 7px; height: 7px; border-radius: 50%; background: var(--green); opacity: 0.8; align-self: center; }
+.agent-call .mark { width: 7px; height: 7px; border-radius: 50%; background: var(--green); opacity: 0.8; align-self: start; margin-top: 6px; }
 .agent-call.running .mark { background: var(--accent); }
 .agent-call.failed .mark { background: var(--pink); }
 .agent-call .error { color: var(--pink); font-size: 12px; }
