@@ -50,8 +50,9 @@ pub struct ViewState {
     pub renaming_marker: Option<(usize, String)>,
     /// Track row height in points.
     pub row_h: f32,
-    /// FX slot whose parameters are shown in the inspector.
-    pub expanded_fx: Option<(TrackId, usize)>,
+    /// The effect whose parameters the inspector shows: its chain's owner and its path there (an
+    /// index, then indices into containers).
+    pub expanded_fx: Option<(scythe_engine::fx::FxOwner, Vec<usize>)>,
     pub midi_editor: Option<ItemId>,
     pub midi_state: crate::ui::midi_editor::EditorState,
     /// MIDI items whose inline editor is open in the arrange view.

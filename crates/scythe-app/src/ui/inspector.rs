@@ -4,7 +4,7 @@ use scythe_core::midi_route::{MidiDevice, MidiInput, SendMidi};
 use scythe_core::timebase::Timebase;
 use scythe_core::units::format_db;
 use scythe_core::{ChannelMode, EnvelopeKind, FxSlot, HwOut, Send, SendMode, TrackId};
-use scythe_engine::fx::FxStatus;
+use scythe_engine::fx::{FxOwner, FxStatus};
 
 use crate::app::{FxTarget, InspectorTab, PresetSource, ScytheApp};
 use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID, track_color, with_alpha};
@@ -429,16 +429,13 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             });
         }
         if row.clicked() {
-            let key = (track_id, i);
-            app.view.expanded_fx = if app.view.expanded_fx == Some(key) { None } else { Some(key) };
+            toggle_params(app, FxOwner::Track(track_id), vec![i]);
         }
         *y += ROW_H + 6.0;
         if fx.is_container() {
             *y += container_rows(app, ui, painter, inner, *y, track_id, i);
         }
-        if app.view.expanded_fx == Some((track_id, i)) {
-            *y += fx_params(app, ui, painter, inner, *y, track_id, i);
-        }
+        *y += params_if_expanded(app, ui, painter, inner, *y, &FxOwner::Track(track_id), &[i]);
     }
     side_chain_rows(app, ui, painter, inner, y, track_id, FxTarget::Input);
     side_chain_rows(app, ui, painter, inner, y, track_id, FxTarget::Monitor);
@@ -823,6 +820,10 @@ fn container_rows(
             edit_children(app, "Toggle FX bypass", &|c| c[k].enabled = !c[k].enabled);
         }
         y += 34.0;
+        if row.clicked() {
+            toggle_params(app, FxOwner::Track(track_id), vec![i, k]);
+        }
+        y += params_if_expanded(app, ui, painter, inner, y, &FxOwner::Track(track_id), &[i, k]);
     }
     if children.is_empty() {
         painter.text(
@@ -890,6 +891,14 @@ fn side_chain_rows(
             set(app, chain);
         }
         *y += 34.0;
+        let owner = match which {
+            FxTarget::Input => FxOwner::Input(track_id),
+            _ => FxOwner::Monitor,
+        };
+        if row.clicked() {
+            toggle_params(app, owner.clone(), vec![k]);
+        }
+        *y += params_if_expanded(app, ui, painter, inner, *y, &owner, &[k]);
     }
     *y += 6.0;
 }
@@ -967,20 +976,68 @@ fn envelopes_tab(
 
 const PARAM_ROW: f32 = 32.0;
 
-/// Parameters of a hosted plugin as draggable rows; returns the height used.
+fn toggle_params(app: &mut ScytheApp, owner: FxOwner, path: Vec<usize>) {
+    let key = Some((owner, path));
+    app.view.expanded_fx = if app.view.expanded_fx == key { None } else { key };
+}
+
+/// The parameter rows of the effect at `path` in `owner`'s chain when they are expanded; returns
+/// the height used.
+fn params_if_expanded(
+    app: &mut ScytheApp,
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    inner: Rect,
+    y: f32,
+    owner: &FxOwner,
+    path: &[usize],
+) -> f32 {
+    let open = app.view.expanded_fx.as_ref().is_some_and(|(o, p)| o == owner && p == path);
+    if open { fx_params(app, ui, painter, inner, y, owner, path) } else { 0.0 }
+}
+
+/// The effects of `owner`'s chain: a track's own or record input chain, or the monitoring chain.
+fn chain_slots(app: &ScytheApp, owner: &FxOwner) -> Vec<FxSlot> {
+    match owner {
+        FxOwner::Track(t) => app.project.track(*t).map(|t| t.fx.clone()).unwrap_or_default(),
+        FxOwner::Input(t) => app.project.track(*t).map(|t| t.input_fx()).unwrap_or_default(),
+        FxOwner::Master => app.project.master.fx.clone(),
+        FxOwner::Monitor => app.monitor_fx(),
+        FxOwner::Take(item, k) => {
+            app.project.find_item(*item).and_then(|(_, it)| it.takes.get(*k)).map(|t| t.fx()).unwrap_or_default()
+        }
+    }
+}
+
+/// The slot at `path`: an index, then indices into containers.
+fn slot_at(slots: &[FxSlot], path: &[usize]) -> Option<FxSlot> {
+    let (first, rest) = path.split_first()?;
+    let slot = slots.get(*first)?.clone();
+    if rest.is_empty() { Some(slot) } else { slot_at(&slot.container_children(), rest) }
+}
+
+/// Parameters of the running effect at `path` in `owner`'s chain as draggable rows; returns the
+/// height used.
 fn fx_params(
     app: &mut ScytheApp,
     ui: &mut Ui,
     painter: &egui::Painter,
     inner: Rect,
     y: f32,
-    track_id: TrackId,
-    index: usize,
+    owner: &FxOwner,
+    path: &[usize],
 ) -> f32 {
-    let Some(slot) = app.project.track(track_id).and_then(|t| t.fx.get(index)).cloned() else { return 0.0 };
-    let Some(inst) = app.engine.fx().instance(Some(track_id), &slot, index) else {
+    let slots = chain_slots(app, owner);
+    let Some(slot) = slot_at(&slots, path) else { return 0.0 };
+    // Modulation and learn address a track's own top-level effects.
+    let track_fx = match (owner, path) {
+        (FxOwner::Track(t), [index]) => Some((*t, *index)),
+        _ => None,
+    };
+    let indent = 16.0 + 24.0 * (path.len() - 1) as f32;
+    let Some(inst) = app.engine.fx().instance_at(owner, &slots, path) else {
         painter.text(
-            pos2(inner.left() + 12.0, y + 10.0),
+            pos2(inner.left() + indent - 4.0, y + 10.0),
             Align2::LEFT_CENTER,
             "No parameters: not running",
             theme::regular(11.0),
@@ -1001,7 +1058,7 @@ fn fx_params(
         .unwrap_or_default();
     if params.is_empty() {
         painter.text(
-            pos2(inner.left() + 12.0, y + 10.0),
+            pos2(inner.left() + indent - 4.0, y + 10.0),
             Align2::LEFT_CENTER,
             "This plugin exposes no parameters",
             theme::regular(11.0),
@@ -1011,11 +1068,11 @@ fn fx_params(
     }
     let mut at = y;
     for (position, (p, value)) in params.into_iter().enumerate() {
-        let r = Rect::from_min_size(pos2(inner.left() + 16.0, at), vec2(inner.width() - 16.0, PARAM_ROW));
+        let r = Rect::from_min_size(pos2(inner.left() + indent, at), vec2(inner.width() - indent, PARAM_ROW));
         let param = crate::ui::modulation::reaper_index(&slot, p.id, position);
         let (v, text) = value.unwrap_or((p.default, String::new()));
         let name = widgets::truncate(ui, &p.name, &theme::regular(12.0), r.width() - 130.0);
-        let resp = ui.interact(r, Id::unique(("fx-param", track_id, index, p.id)), Sense::click_and_drag());
+        let resp = ui.interact(r, Id::unique(("fx-param", owner, path, p.id)), Sense::click_and_drag());
         painter.rect_filled(
             r,
             CornerRadius::same(10),
@@ -1028,27 +1085,36 @@ fn fx_params(
         let bar = Rect::from_min_size(r.left_bottom() - vec2(0.0, 3.0), vec2(r.width() * frac, 3.0));
         painter.rect_filled(bar, CornerRadius::same(2), ACCENT);
         painter.text(r.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, name, theme::regular(12.0), TEXT);
-        painter.text(r.right_center() - vec2(34.0, 0.0), Align2::RIGHT_CENTER, text, theme::mono(11.0), TEXT_DIM);
-        let mod_rect = Rect::from_center_size(r.right_center() - vec2(16.0, 0.0), vec2(20.0, 18.0));
-        let controlled = crate::ui::modulation::has_controls(&slot, param);
-        let mod_btn = widgets::text_pill(
-            ui,
-            mod_rect,
-            "~",
+        let value_right = if track_fx.is_some() { 34.0 } else { 10.0 };
+        painter.text(
+            r.right_center() - vec2(value_right, 0.0),
+            Align2::RIGHT_CENTER,
+            text,
             theme::mono(11.0),
-            if controlled { ACCENT } else { RAISED_HI },
-            if controlled { BG } else { TEXT_DIM },
-        )
-        .on_hover_text("Modulation, link and MIDI/OSC learn");
-        let open_mod = mod_btn.clicked();
-        resp.context_menu(|ui| {
-            if ui.button("Parameter modulation, link and learn…").clicked() {
+            TEXT_DIM,
+        );
+        if let Some((track_id, index)) = track_fx {
+            let mod_rect = Rect::from_center_size(r.right_center() - vec2(16.0, 0.0), vec2(20.0, 18.0));
+            let controlled = crate::ui::modulation::has_controls(&slot, param);
+            let mod_btn = widgets::text_pill(
+                ui,
+                mod_rect,
+                "~",
+                theme::mono(11.0),
+                if controlled { ACCENT } else { RAISED_HI },
+                if controlled { BG } else { TEXT_DIM },
+            )
+            .on_hover_text("Modulation, link and MIDI/OSC learn");
+            let open_mod = mod_btn.clicked();
+            resp.context_menu(|ui| {
+                if ui.button("Parameter modulation, link and learn…").clicked() {
+                    app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track_id, index, param));
+                    ui.close();
+                }
+            });
+            if open_mod {
                 app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track_id, index, param));
-                ui.close();
             }
-        });
-        if open_mod {
-            app.view.modulation = Some(crate::ui::modulation::ModWindow::new(track_id, index, param));
         }
         if resp.dragged() {
             let step = resp.drag_delta().x as f64 / r.width() as f64;
@@ -1645,5 +1711,16 @@ mod tests {
     fn plugin_names_split_on_type_prefix() {
         assert_eq!(split_plugin_name("VST3: Curve 3 (AcmeAudio)"), ("Curve 3 (AcmeAudio)".into(), "VST3".into()));
         assert_eq!(split_plugin_name("EQ"), ("EQ".into(), "plugin".into()));
+    }
+
+    #[test]
+    fn parameter_views_find_effects_inside_containers() {
+        let [a, b, first] = [0, 1, 2].map(|i| scythe_engine::builtin::Builtin::ALL[i].slot());
+        let mut c = FxSlot::container();
+        c.set_container_children(&[a, b.clone()]);
+        let chain = [first.clone(), c];
+        assert_eq!(slot_at(&chain, &[0]).unwrap().name, first.name);
+        assert_eq!(slot_at(&chain, &[1, 1]).unwrap().name, b.name);
+        assert!(slot_at(&chain, &[1, 2]).is_none() && slot_at(&chain, &[]).is_none());
     }
 }

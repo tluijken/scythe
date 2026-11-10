@@ -923,9 +923,13 @@ impl RenderGraph {
                         (first, (t.rec_input & 1024 != 0).then_some(first + 1))
                     });
                 let input_slots = t.input_fx();
-                let input_fx = (monitor.is_some() && input_slots.iter().any(FxSlot::active)).then(|| {
-                    Arc::new(BufferedChain::new(crate::chain::build(fx, &FxOwner::Input(t.id), &input_slots, 2), 2))
-                });
+                // Built while not monitored too, so the effects run (for their parameters and
+                // editors) as REAPER's do; only a monitored input plays through them.
+                let input_chain = input_slots
+                    .iter()
+                    .any(FxSlot::active)
+                    .then(|| crate::chain::build(fx, &FxOwner::Input(t.id), &input_slots, 2));
+                let input_fx = input_chain.filter(|_| monitor.is_some()).map(|c| Arc::new(BufferedChain::new(c, 2)));
                 let pre_fx_env = t
                     .envelope(EnvelopeKind::VolumePreFx)
                     .filter(|e| e.active && !e.points.is_empty())

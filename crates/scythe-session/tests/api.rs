@@ -169,6 +169,8 @@ fn chains_take_wet_parallel_and_containers() {
     let input = ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor", "chain": "input"}));
     assert_eq!(input.as_array().unwrap().len(), 1);
     assert_eq!(s.project.tracks[0].input_fx().len(), 1);
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0, "chain": "input"}));
+    assert!(!params.as_array().unwrap().is_empty(), "input FX run on a track that is not armed, as in REAPER");
     let item = Item::new(0.0, 1.0, Take::from_file("/nonexistent/take.wav".into()));
     let id = item.id.0;
     s.edit("Add item", |p| p.tracks[0].items.push(item));

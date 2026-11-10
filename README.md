@@ -617,7 +617,8 @@ Working:
   and output pin routing, parallel or serial children, nesting and container parameters that
   drive a child's; latency compensated through all of it. Take FX (`<TAKEFX`) process their
   take after its volume and fades on the take's channel count (`TAKEFX_NCH`), with two seconds
-  of tail past the item; input FX (`<FXCHAIN_REC`) process a monitored track's live input; the
+  of tail past the item; input FX (`<FXCHAIN_REC`) process a monitored track's live input (they run, for their
+  parameters, on tracks that are not monitored too); the
   monitoring chain processes only what the device plays and is kept in `reaper-hwoutfx.ini`
   beside the preferences. Freeze (actions 41223/41644, `track.freeze`) renders a track through
   its effects to `reaper_freeze_<name>.wav` and keeps the effects and items in a `<FREEZE`
@@ -737,7 +738,8 @@ Working:
   plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …; controls and state in REAPER's `<LV2` layout),
   VST 3 plugins (`$VST3_PATH`, `~/.vst3`, `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout)
   and Linux VST 2 plugins from `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`. Add them from the
-  inspector, click a slot for its parameters, and use **Edit** for the plugin's own editor (CLAP,
+  inspector, click a slot for its parameters (input FX, monitoring FX and effects inside
+  containers too), and use **Edit** for the plugin's own editor (CLAP,
   VST 2, VST 3 and LV2 X11 UIs, in a separate X11 window). Plugin latency is compensated across tracks,
   sends and folders.
 - **Time-stretch and pitch**: a take's play rate keeps its pitch when "Keep pitch" is on (REAPER's
