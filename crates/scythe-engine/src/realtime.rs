@@ -178,6 +178,60 @@ extern "C" fn on_cpu_limit(_: libc::c_int) {
     DEMOTED.store(true, Ordering::Relaxed);
 }
 
+/// The fastest cores: on a hybrid CPU the performance cores, from sysfs.
+pub struct FastCpus {
+    /// Their logical CPUs, hyperthread siblings included.
+    pub cpus: Vec<usize>,
+    /// Physical cores they make up.
+    pub cores: usize,
+    /// Whether there are slower CPUs besides them.
+    pub hybrid: bool,
+}
+
+/// The CPUs that clock within 15 % of the fastest; `None` where cpufreq says nothing.
+pub fn fast_cpus() -> Option<&'static FastCpus> {
+    static FAST: OnceLock<Option<FastCpus>> = OnceLock::new();
+    FAST.get_or_init(|| {
+        let read = |path: String| std::fs::read_to_string(path).ok()?.trim().parse::<u64>().ok();
+        let all: Vec<(usize, u64, u64, u64)> = (0..1024)
+            .map_while(|c| {
+                let base = format!("/sys/devices/system/cpu/cpu{c}");
+                std::path::Path::new(&base).exists().then(|| {
+                    let freq = read(format!("{base}/cpufreq/cpuinfo_max_freq")).unwrap_or(0);
+                    let core = read(format!("{base}/topology/core_id")).unwrap_or(c as u64);
+                    let package = read(format!("{base}/topology/physical_package_id")).unwrap_or(0);
+                    (c, freq, package, core)
+                })
+            })
+            .collect();
+        let top = all.iter().map(|c| c.1).max().filter(|&f| f > 0)?;
+        let fast: Vec<&(usize, u64, u64, u64)> = all.iter().filter(|c| c.1 * 100 >= top * 85).collect();
+        let mut cores: Vec<(u64, u64)> = fast.iter().map(|c| (c.2, c.3)).collect();
+        cores.sort_unstable();
+        cores.dedup();
+        Some(FastCpus { cpus: fast.iter().map(|c| c.0).collect(), cores: cores.len(), hybrid: fast.len() < all.len() })
+    })
+    .as_ref()
+}
+
+/// Keeps thread `tid` on the performance cores of a hybrid CPU. The real-time scheduler puts
+/// a waking thread on any CPU that runs nothing real-time, an efficiency core as readily as a
+/// performance core, and a track there takes about twice as long. A busy desktop, or the
+/// window drawing, keeps the performance cores busy at normal priority, which is when the
+/// track threads ended up on efficiency cores.
+fn keep_on_fast_cpus(tid: libc::pid_t) {
+    let Some(fast) = fast_cpus().filter(|f| f.hybrid) else { return };
+    // SAFETY: the set is zeroed and holds CPU numbers below CPU_SETSIZE; the call only reads
+    // it and changes thread `tid` of this process.
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        for &c in fast.cpus.iter().filter(|&&c| c < libc::CPU_SETSIZE as usize) {
+            libc::CPU_SET(c, &mut set);
+        }
+        libc::sched_setaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), &set);
+    }
+}
+
 fn remember_promoted(tid: libc::pid_t) {
     let slot = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % PROMOTED.len();
     PROMOTED[slot].store(tid, Ordering::Relaxed);
@@ -196,12 +250,14 @@ fn promoter(rx: Receiver<(libc::pid_t, bool)>) {
             continue;
         }
         let status = promote(tid);
+        keep_on_fast_cpus(tid);
         if matches!(status.via, "direct" | "rtkit") {
             remember_promoted(tid);
         }
         if reported && status.is_realtime() && !audio_promoted {
             audio_promoted = true;
             for helper in waiting.drain(..) {
+                keep_on_fast_cpus(helper);
                 if matches!(promote(helper).via, "direct" | "rtkit") {
                     remember_promoted(helper);
                 }
@@ -337,6 +393,20 @@ fn rttime_limit(hard: libc::rlim_t, kit_max: libc::rlim_t) -> libc::rlimit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fast_cpus_are_whole_cores_of_this_machine() {
+        let Some(fast) = fast_cpus() else { return };
+        assert!(!fast.cpus.is_empty());
+        assert!(fast.cores >= 1 && fast.cores <= fast.cpus.len());
+        assert_eq!(
+            fast.hybrid,
+            fast.cpus.len()
+                < (0..1024)
+                    .take_while(|c| std::path::Path::new(&format!("/sys/devices/system/cpu/cpu{c}")).exists())
+                    .count()
+        );
+    }
 
     #[test]
     fn a_thread_is_promoted_or_says_why_not() {

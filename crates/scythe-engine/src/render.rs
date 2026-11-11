@@ -2161,25 +2161,8 @@ fn track_thread_count() -> usize {
     fast_cores().unwrap_or(logical / 2).clamp(2, 8)
 }
 
-/// Physical cores among the CPUs that clock within 15 % of the fastest, from sysfs.
 fn fast_cores() -> Option<usize> {
-    let read = |path: String| std::fs::read_to_string(path).ok()?.trim().parse::<u64>().ok();
-    let cpus: Vec<(u64, u64, u64)> = (0..1024)
-        .map_while(|c| {
-            let base = format!("/sys/devices/system/cpu/cpu{c}");
-            std::path::Path::new(&base).exists().then(|| {
-                let freq = read(format!("{base}/cpufreq/cpuinfo_max_freq")).unwrap_or(0);
-                let core = read(format!("{base}/topology/core_id")).unwrap_or(c);
-                let package = read(format!("{base}/topology/physical_package_id")).unwrap_or(0);
-                (freq, package, core)
-            })
-        })
-        .collect();
-    let top = cpus.iter().map(|c| c.0).max().filter(|&f| f > 0)?;
-    let mut cores: Vec<(u64, u64)> = cpus.iter().filter(|c| c.0 * 100 >= top * 85).map(|c| (c.1, c.2)).collect();
-    cores.sort_unstable();
-    cores.dedup();
-    Some(cores.len())
+    crate::realtime::fast_cpus().map(|f| f.cores)
 }
 
 /// The threads tracks render on: for the audio thread, real-time ones; for offline renders,
