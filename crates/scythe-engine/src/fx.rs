@@ -774,9 +774,8 @@ pub struct FxRegistry {
     pub project_dir: Option<PathBuf>,
     /// Automation item pools and the tempo map, for items on parameter envelopes.
     pub automation: scythe_core::automation_item::AutomationContext,
-    clap_cache: std::sync::OnceLock<Vec<ClapDescriptor>>,
-    lv2_cache: std::sync::OnceLock<Vec<crate::lv2::Lv2Info>>,
-    vst3_cache: std::sync::OnceLock<Vec<crate::vst3_host::Vst3Info>>,
+    /// The installed plugins; `None` is the process's catalog of the standard folders.
+    catalog: Option<Arc<crate::plugin_scan::Catalog>>,
     /// Loaded VST 3 modules, so each library is entered once.
     vst3_modules: Mutex<HashMap<PathBuf, Arc<crate::vst3_host::Vst3Module>>>,
     /// NAM models loaded ahead (off the UI thread) for a slot about to switch to them.
@@ -797,9 +796,7 @@ impl FxRegistry {
             jsfx_paths: Default::default(),
             project_dir: None,
             automation: Default::default(),
-            clap_cache: Default::default(),
-            lv2_cache: Default::default(),
-            vst3_cache: Default::default(),
+            catalog: None,
             vst3_modules: Default::default(),
             nam_preloaded: Default::default(),
             monitor_fx: Vec::new(),
@@ -1128,26 +1125,38 @@ impl FxRegistry {
         self.jsfx_paths = std::sync::OnceLock::from(paths);
     }
 
+    /// The installed plugins this registry draws on.
+    pub fn catalog(&self) -> Arc<crate::plugin_scan::Catalog> {
+        self.catalog.clone().unwrap_or_else(crate::plugin_scan::Catalog::global)
+    }
+
+    /// Draws on `catalog` instead of the process's scan of the standard folders.
+    pub fn set_catalog(&mut self, catalog: Arc<crate::plugin_scan::Catalog>) {
+        self.catalog = Some(catalog);
+    }
+
+    fn fixed_catalog(&mut self) -> &crate::plugin_scan::Catalog {
+        self.catalog.get_or_insert_with(crate::plugin_scan::Catalog::fixed)
+    }
+
     /// Replaces the CLAP plugin list instead of scanning the standard locations.
     pub fn set_clap_plugins(&mut self, plugins: Vec<ClapDescriptor>) {
-        self.clap_cache = std::sync::OnceLock::from(plugins);
+        self.fixed_catalog().set_clap(plugins);
     }
 
     /// Replaces the LV2 plugin list instead of scanning the standard locations.
     pub fn set_lv2_plugins(&mut self, plugins: Vec<crate::lv2::Lv2Info>) {
-        self.lv2_cache = std::sync::OnceLock::from(plugins);
+        self.fixed_catalog().set_lv2(plugins);
     }
 
     /// Replaces the VST 3 plugin list instead of scanning the standard locations.
     pub fn set_vst3_plugins(&mut self, plugins: Vec<crate::vst3_host::Vst3Info>) {
-        self.vst3_cache = std::sync::OnceLock::from(plugins);
+        self.fixed_catalog().set_vst3(plugins);
     }
 
-    /// Installed VST 3 plugins, scanned on first use.
-    pub fn vst3_plugins(&self) -> &[crate::vst3_host::Vst3Info] {
-        self.vst3_cache.get_or_init(|| {
-            crate::vst3_host::scan_cached(&crate::vst3_host::search_paths(), crate::scan_cache::default_path("vst3"))
-        })
+    /// Installed VST 3 plugins known so far; the first call starts the background scan.
+    pub fn vst3_plugins(&self) -> Arc<Vec<crate::vst3_host::Vst3Info>> {
+        self.catalog().snapshot().vst3
     }
 
     fn vst3_module(&self, path: &Path) -> Result<Arc<crate::vst3_host::Vst3Module>, String> {
@@ -1160,14 +1169,28 @@ impl FxRegistry {
         Ok(module)
     }
 
-    /// Installed LV2 plugins, scanned on first use.
-    pub fn lv2_plugins(&self) -> &[crate::lv2::Lv2Info] {
-        self.lv2_cache.get_or_init(|| crate::lv2::scan(&crate::lv2::search_paths()))
+    /// Installed LV2 plugins known so far; the first call starts the background scan.
+    pub fn lv2_plugins(&self) -> Arc<Vec<crate::lv2::Lv2Info>> {
+        self.catalog().snapshot().lv2
     }
 
-    /// Installed CLAP plugins, scanned on first use.
-    pub fn clap_plugins(&self) -> &[ClapDescriptor] {
-        self.clap_cache.get_or_init(crate::clap_host::scan)
+    /// Installed CLAP plugins known so far; the first call starts the background scan.
+    pub fn clap_plugins(&self) -> Arc<Vec<ClapDescriptor>> {
+        self.catalog().snapshot().clap
+    }
+
+    /// The first plugin `pick` finds, waiting for a running scan when the known ones lack
+    /// it: a project that uses a plugin the cache does not know yet loads it once found.
+    fn find_installed<T>(&self, pick: impl Fn(&crate::plugin_scan::Snapshot) -> Option<T>) -> Option<T> {
+        let catalog = self.catalog();
+        let snapshot = catalog.snapshot();
+        if let Some(found) = pick(&snapshot) {
+            return Some(found);
+        }
+        if snapshot.scanning && catalog.wait(std::time::Duration::from_secs(120)) {
+            return pick(&catalog.snapshot());
+        }
+        None
     }
 
     /// The handle that switches the model and levels of a running Neural Amp Modeler slot.
@@ -1326,11 +1349,15 @@ impl FxRegistry {
                     let cid = args.get(4).and_then(|a| a.split_once('{')).map(|(_, rest)| rest.trim_end_matches('}'));
                     let file = args.get(1).cloned().unwrap_or_default();
                     let info = self
-                        .vst3_plugins()
-                        .iter()
-                        .find(|p| cid.is_some_and(|c| c.eq_ignore_ascii_case(&crate::vst3_host::cid_hex(&p.cid))))
-                        .or_else(|| self.vst3_plugins().iter().find(|p| p.file_name == file))
-                        .cloned()
+                        .find_installed(|s| {
+                            s.vst3
+                                .iter()
+                                .find(|p| {
+                                    cid.is_some_and(|c| c.eq_ignore_ascii_case(&crate::vst3_host::cid_hex(&p.cid)))
+                                })
+                                .or_else(|| s.vst3.iter().find(|p| p.file_name == file))
+                                .cloned()
+                        })
                         .ok_or_else(|| format!("{file} is not installed as a Linux VST 3 plugin"))?;
                     let module = self.vst3_module(&info.path)?;
                     let mut plugin = crate::vst3_host::Vst3Plugin::new(
@@ -1403,10 +1430,7 @@ impl FxRegistry {
             "LV2" => {
                 let uri = args.get(1).cloned().ok_or("LV2 slot without a plugin URI")?;
                 let info = self
-                    .lv2_plugins()
-                    .iter()
-                    .find(|p| p.uri == uri)
-                    .cloned()
+                    .find_installed(|s| s.lv2.iter().find(|p| p.uri == uri).cloned())
                     .ok_or_else(|| format!("LV2 plugin {uri} is not installed"))?;
                 let mut plugin = crate::lv2::Lv2Plugin::new(
                     &info,
@@ -1440,10 +1464,7 @@ impl FxRegistry {
                     return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
                 }
                 let desc = self
-                    .clap_plugins()
-                    .iter()
-                    .find(|d| d.id == id)
-                    .cloned()
+                    .find_installed(|s| s.clap.iter().find(|d| d.id == id).cloned())
                     .ok_or_else(|| format!("CLAP plugin {id} is not installed"))?;
                 let lib = ClapLibrary::load(&desc.path).map_err(|e| e.to_string())?;
                 let mut plugin = ClapPlugin::create(
@@ -1522,6 +1543,9 @@ fn vst_search_paths() -> Vec<PathBuf> {
         .filter_map(std::env::var_os)
         .flat_map(|v| std::env::split_paths(&v).collect::<Vec<_>>())
         .collect();
+    if !crate::plugin_scan::system_paths() {
+        return paths;
+    }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         paths.extend([home.join(".vst"), home.join(".lxvst"), home.join(".nix-profile/lib/vst")]);
     }

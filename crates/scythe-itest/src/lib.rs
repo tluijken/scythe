@@ -143,6 +143,7 @@ pub fn isolate(command: &mut Command, dir: &Path, display: Option<&str>) {
         command.env(var, p);
     }
     command.env_remove("WAYLAND_DISPLAY").env_remove("SCYTHE_CONTROL").env_remove("SCYTHE_CONTROL_TOKEN");
+    command.env("SCYTHE_SYSTEM_PLUGINS", "0");
     match display {
         Some(d) => command.env("DISPLAY", d),
         None => command.env_remove("DISPLAY"),

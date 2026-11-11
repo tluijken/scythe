@@ -214,11 +214,26 @@ function FxCatalog({ store, track, onClose }) {
   const [catalog, setCatalog] = useState(null);
   const [query, setQuery] = useState("");
   useEffect(() => {
-    store.client.send({ cmd: "fx.catalog" }).then(setCatalog, (e) => setCatalog({ error: e.message }));
+    let timer = null;
+    let open = true;
+    const load = () =>
+      store.client.send({ cmd: "fx.catalog" }).then(
+        (c) => {
+          if (!open) return;
+          setCatalog(c);
+          if (c.scanning) timer = setTimeout(load, 500);
+        },
+        (e) => open && setCatalog({ error: e.message }),
+      );
+    load();
+    return () => {
+      open = false;
+      clearTimeout(timer);
+    };
   }, []);
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const hits = Array.isArray(catalog)
-    ? catalog.filter((p) => words.every((w) => `${p.name} ${p.format} ${p.id}`.toLowerCase().includes(w))).slice(0, 200)
+  const hits = Array.isArray(catalog?.plugins)
+    ? catalog.plugins.filter((p) => words.every((w) => `${p.name} ${p.format} ${p.id}`.toLowerCase().includes(w))).slice(0, 200)
     : [];
   const add = (plugin) => {
     store.fire({ cmd: "fx.add", track: trackRef(track.id), plugin: plugin.id });
@@ -229,7 +244,8 @@ function FxCatalog({ store, track, onClose }) {
       <input placeholder="Search effects" value=${query} autofocus onInput=${(e) => setQuery(e.target.value)}
         onKeyDown=${(e) => e.key === "Enter" && hits[0] && add(hits[0])} /></div>
     <div class="catalog">
-      ${catalog === null && html`<p class="dim">Scanning plugins… the first time can take a while.</p>`}
+      ${catalog === null && html`<p class="dim">Loading effects…</p>`}
+      ${catalog?.scanning && html`<p class="dim">Scanning plugins… ${catalog.progress.total ? `${catalog.progress.done} of ${catalog.progress.total}` : ""}</p>`}
       ${catalog?.error && html`<p class="dim">${catalog.error}</p>`}
       ${hits.map((p) => html`<button class="catalog-row" key=${p.id} onClick=${() => add(p)}>
         <span class="ellipsis">${p.name}</span><span class="pill small">${p.format}</span></button>`)}

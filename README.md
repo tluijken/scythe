@@ -126,6 +126,8 @@ Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set 
   graphical editor drawn from the emulation's own math.
 - **Plugin hosting**: CLAP, LV2, VST 2 and VST 3 (instruments too), with their own editors,
   presets in REAPER's preset files and latency compensation across tracks, sends and folders.
+  Plugins are scanned in the background with a cache, CLAP and VST 3 in a child process with a
+  time limit, so a plugin that hangs or crashes while scanned is only marked as failed.
 - **JSFX** from their own source through an EEL2 interpreter that follows REAPER's compiled
   arithmetic: all 219 of REAPER's stock effects, with their `@gfx` views.
 - **FX chains** with wet/dry, parallel effects, FX containers with pin routing, take FX, input

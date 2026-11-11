@@ -20,12 +20,19 @@ pub enum FxCommand {
         at: ChainAt,
     },
     /// Effects that `fx.add` can add: the built-in ones and the installed CLAP, LV2 and VST 3
-    /// plugins.
+    /// plugins. Answers at once with what is known: plugins are scanned in the background
+    /// (the first call starts it; earlier runs' results come from the cache), and while that
+    /// runs `scanning` is true with `progress`, so ask again until it is false. `failed` lists
+    /// plugin files that hung, crashed or could not be read while scanning.
     #[serde(rename = "fx.catalog")]
     Catalog {
         /// Only entries whose name, id or format contain this, ignoring case.
         #[serde(default)]
         query: Option<String>,
+        /// Scans the plugin folders again, checking every file anew (also ones that failed
+        /// before) instead of trusting the cache.
+        #[serde(default)]
+        rescan: bool,
     },
     /// Adds the effect `plugin` names (a catalog `id` or exact `name`) at `index`, at the end
     /// of the chain when left out.
@@ -349,7 +356,10 @@ pub struct ParamValue {
 }
 
 fn catalog(session: &Session) -> Vec<(CatalogEntry, FxSlot)> {
-    let fx = session.engine.fx();
+    catalog_of(&session.engine.fx().catalog().snapshot())
+}
+
+fn catalog_of(installed: &scythe_engine::plugin_scan::Snapshot) -> Vec<(CatalogEntry, FxSlot)> {
     let mut out: Vec<(CatalogEntry, FxSlot)> = Builtin::ALL
         .iter()
         .map(|b| {
@@ -361,22 +371,22 @@ fn catalog(session: &Session) -> Vec<(CatalogEntry, FxSlot)> {
             (entry, b.slot())
         })
         .collect();
-    out.extend(fx.clap_plugins().iter().map(|d| {
+    out.extend(installed.clap.iter().map(|d| {
         let entry = CatalogEntry { id: format!("clap:{}", d.id), name: d.name.clone(), format: "CLAP".into() };
         (entry, scythe_engine::fx::clap_slot(d))
     }));
-    out.extend(fx.lv2_plugins().iter().map(|i| {
+    out.extend(installed.lv2.iter().map(|i| {
         let entry = CatalogEntry { id: format!("lv2:{}", i.uri), name: i.name.clone(), format: "LV2".into() };
         (entry, scythe_engine::fx::lv2_slot(i))
     }));
-    out.extend(fx.vst3_plugins().iter().map(|i| {
+    out.extend(installed.vst3.iter().map(|i| {
         let entry = CatalogEntry { id: format!("vst3:{}", i.name), name: i.name.clone(), format: "VST3".into() };
         (entry, scythe_engine::fx::vst3_slot(i))
     }));
     out
 }
 
-/// The built-in effects are found without scanning for plugins, which can take a while.
+/// Built-in effects first: they never depend on the plugin scan.
 fn find_plugin(session: &Session, wanted: &str) -> Option<FxSlot> {
     let builtin = Builtin::ALL.iter().find(|b| {
         let id = format!("builtin:{}", b.label().to_lowercase().replace(' ', "-"));
@@ -642,22 +652,44 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
             let loc = locate(session, &track, &at)?;
             Ok(list(session, loc))
         }
-        FxCommand::Catalog { query } => {
+        FxCommand::Catalog { query, rescan } => {
+            let installed = session.engine.fx().catalog();
+            if rescan {
+                installed.rescan(true);
+            }
+            let installed = installed.snapshot();
             let query = query.map(|q| q.to_lowercase());
             let matches = |e: &CatalogEntry| {
                 query
                     .as_deref()
                     .is_none_or(|q| [&e.name, &e.id, &e.format].iter().any(|field| field.to_lowercase().contains(q)))
             };
-            Ok(json(catalog(session).into_iter().map(|(e, _)| e).filter(matches).collect::<Vec<_>>()))
+            let plugins: Vec<CatalogEntry> =
+                catalog_of(&installed).into_iter().map(|(e, _)| e).filter(matches).collect();
+            Ok(serde_json::json!({
+                "plugins": plugins,
+                "scanning": installed.scanning,
+                "progress": installed.progress,
+                "failed": *installed.failures,
+            }))
         }
         FxCommand::Add { track, plugin, index, at } => {
             let loc = locate(session, &track, &at)?;
             let slot = if plugin.eq_ignore_ascii_case("container") {
                 FxSlot::container()
             } else {
-                find_plugin(session, &plugin)
-                    .ok_or_else(|| ApiError::not_found(format!("no effect \"{plugin}\"; see fx.catalog")))?
+                find_plugin(session, &plugin).ok_or_else(|| {
+                    let installed = session.engine.fx().catalog().snapshot();
+                    if installed.scanning {
+                        let p = &installed.progress;
+                        ApiError::not_found(format!(
+                            "no effect \"{plugin}\" yet: plugins are still being scanned ({} of {}); ask fx.catalog again shortly",
+                            p.done, p.total
+                        ))
+                    } else {
+                        ApiError::not_found(format!("no effect \"{plugin}\"; see fx.catalog"))
+                    }
+                })?
             };
             let mut slot = Some(slot);
             edit_chain(session, loc, "Add plugin", |slots| {

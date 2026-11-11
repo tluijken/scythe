@@ -281,12 +281,13 @@ impl Installed {
     }
 }
 
-fn installed_plugins(app: &ScytheApp) -> Vec<Installed> {
-    let fx = app.engine.fx();
-    let mut out: Vec<Installed> = fx.clap_plugins().iter().cloned().map(Installed::Clap).collect();
-    out.extend(fx.lv2_plugins().iter().cloned().map(Installed::Lv2));
-    out.extend(fx.vst3_plugins().iter().cloned().map(Installed::Vst3));
-    out
+/// The installed plugins known so far, and how far the background scan has got while it runs.
+fn installed_plugins(app: &ScytheApp) -> (Vec<Installed>, Option<scythe_engine::plugin_scan::Progress>) {
+    let installed = app.engine.fx().catalog().snapshot();
+    let mut out: Vec<Installed> = installed.clap.iter().cloned().map(Installed::Clap).collect();
+    out.extend(installed.lv2.iter().cloned().map(Installed::Lv2));
+    out.extend(installed.vst3.iter().cloned().map(Installed::Vst3));
+    (out, installed.scanning.then_some(installed.progress))
 }
 
 fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect, y: &mut f32, track_id: TrackId) {
@@ -570,6 +571,25 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             }
         }
         *y += 32.0;
+        let (plugins, scanning) = installed_plugins(app);
+        if let Some(progress) = &scanning {
+            let text = match progress.total {
+                0 => "Scanning plugins…".to_owned(),
+                total => format!("Scanning plugins… {} of {total}", progress.done),
+            };
+            let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 24.0));
+            ui.allocate_rect(r, Sense::click())
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
+            painter.text(
+                pos2(inner.left() + 4.0, *y + 12.0),
+                Align2::LEFT_CENTER,
+                text,
+                theme::regular(11.0),
+                TEXT_DIM,
+            );
+            *y += 28.0;
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
         let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width(), 32.0));
         let resp = ui.allocate_rect(r, Sense::click());
         resp.widget_info(|| widgets::button_info(ui, "FX container"));
@@ -671,8 +691,7 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             app.view.plugin_browser = false;
         }
         *y += 36.0;
-        let plugins = installed_plugins(app);
-        if plugins.is_empty() {
+        if scanning.is_none() && plugins.is_empty() {
             painter.text(
                 pos2(inner.left() + 4.0, *y + 14.0),
                 Align2::LEFT_CENTER,

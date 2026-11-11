@@ -25,7 +25,8 @@ devbox run -- scripts/cargo.sh test -p scythe-itest --features itest -- --nocapt
 Everything the tests write goes to `target/itest` (or `SCYTHE_ITEST_DIR`): projects,
 preferences, the NAM library, TONE3000 sessions and each process's XDG folders. Nothing reads
 or writes your own settings, and no test plays audio: the app and the servers run on the
-null audio device.
+null audio device. The plugins installed on the machine are not scanned either
+(`SCYTHE_SYSTEM_PLUGINS=0`, also set by `devbox run test`).
 
 ## UI tests (`crates/scythe-app/src/itest`)
 

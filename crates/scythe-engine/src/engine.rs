@@ -1287,6 +1287,11 @@ impl Engine {
         &self.fx
     }
 
+    /// Draws the effects on `catalog` instead of the process's plugin scan.
+    pub fn set_plugin_catalog(&mut self, catalog: Arc<crate::plugin_scan::Catalog>) {
+        self.fx.set_catalog(catalog);
+    }
+
     /// Writes hosted plugins' current state into the project before a save.
     pub fn store_plugin_states(&mut self, project: &mut Project) {
         self.fx.store_states(project);

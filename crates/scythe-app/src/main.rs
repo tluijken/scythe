@@ -189,11 +189,15 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    if let Some(code) = scythe_engine::plugin_scan::helper_main(&std::env::args().collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "--script-dialog") {
         dialog::run_child();
         return Ok(());
     }
+    scythe_engine::plugin_scan::Catalog::global().snapshot();
     // `--view START-END` (seconds) opens zoomed to that range.
     let view = args.iter().find_map(|a| a.strip_prefix("--view=")).and_then(|v| {
         let (a, b) = v.split_once('-')?;

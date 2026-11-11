@@ -104,6 +104,39 @@ fn fx_browser_adds_reaeq_and_its_editor_drags_a_band() {
 }
 
 #[test]
+fn fx_browser_shows_the_plugin_scan_while_it_runs() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = test_dir("fx_scan_plugins");
+    std::fs::create_dir_all(dir.join("clap")).unwrap();
+    std::fs::write(dir.join("clap/slow.clap"), "slow").unwrap();
+    let helper = dir.join("helper.sh");
+    let answer =
+        r#"{"Ok":[{"id":"test.slow","name":"Slow Plugin","vendor":"Test","features":["audio-effect"],"path":"x"}]}"#;
+    std::fs::write(&helper, format!("#!/bin/sh\necho 'scythe-plugin-scan 1'\nsleep 2\necho '{answer}'\n")).unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let catalog = scythe_engine::plugin_scan::Catalog::new(scythe_engine::plugin_scan::ScanConfig {
+        clap: vec![dir.join("clap")],
+        lv2: Vec::new(),
+        vst3: Vec::new(),
+        cache_dir: None,
+        helper: Some(helper),
+        timeout: std::time::Duration::from_secs(20),
+    });
+    let mut t = TestApp::live("fx_scan_plugins_app");
+    t.app().engine.set_plugin_catalog(catalog);
+    t.click("Track Drums");
+    t.click("Add plugin");
+    let scanning = |t: &TestApp| {
+        t.h.query_all(By::new()).any(|n| n.accesskit_node().value().is_some_and(|v| v.starts_with("Scanning plugins")))
+    };
+    assert!(scanning(&t), "{:#?}", t.labels());
+    assert!(t.has("Equalizer"), "the built-in effects are there while the scan runs");
+    t.until("the scan", 20.0, |t| !scanning(t));
+    let found = t.app().engine.fx().clap_plugins();
+    assert_eq!(found.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Slow Plugin"]);
+}
+
+#[test]
 fn guitar_rig_opens_the_nam_panel() {
     let mut t = TestApp::live("rig_panel");
     t.click("Track Bass");

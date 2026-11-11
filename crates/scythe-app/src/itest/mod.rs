@@ -46,6 +46,8 @@ fn isolate() {
             // the test binary reads the environment through libc while the tests start.
             unsafe { std::env::set_var(var, dir) };
         }
+        // SAFETY: as above. The machine's own plugins stay out of the tests.
+        unsafe { std::env::set_var("SCYTHE_SYSTEM_PLUGINS", "0") };
     });
 }
 

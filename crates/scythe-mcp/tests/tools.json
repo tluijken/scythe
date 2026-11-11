@@ -2417,7 +2417,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Effects that `fx.add` can add: the built-in ones and the installed CLAP, LV2 and VST 3\nplugins.\n\nControl API command `fx.catalog`.",
+    "description": "Effects that `fx.add` can add: the built-in ones and the installed CLAP, LV2 and VST 3\nplugins. Answers at once with what is known: plugins are scanned in the background\n(the first call starts it; earlier runs' results come from the cache), and while that\nruns `scanning` is true with `progress`, so ask again until it is false. `failed` lists\nplugin files that hung, crashed or could not be read while scanning.\n\nControl API command `fx.catalog`.",
     "inputSchema": {
       "properties": {
         "query": {
@@ -2427,6 +2427,11 @@
             "string",
             "null"
           ]
+        },
+        "rescan": {
+          "default": false,
+          "description": "Scans the plugin folders again, checking every file anew (also ones that failed\nbefore) instead of trusting the cache.",
+          "type": "boolean"
         }
       },
       "type": "object"

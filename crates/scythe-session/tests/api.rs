@@ -1833,3 +1833,48 @@ fn the_performance_meter_reads_tracks_and_effects() {
     assert_eq!(tracks[2]["index"], 0);
     assert!(meter["block_ms"].as_f64().unwrap() > 0.0, "{meter}");
 }
+
+/// `fx.catalog` answers from what is known while a slow plugin scan runs, and lists the
+/// plugins once it is done; `fx.add` of a plugin not found yet says the scan is running.
+#[test]
+fn the_catalog_answers_while_plugins_are_scanned() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Instant;
+    let dir = std::env::temp_dir().join(format!("scythe-api-catalog-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("clap")).unwrap();
+    std::fs::write(dir.join("clap/slow.clap"), "slow").unwrap();
+    let helper = dir.join("helper.sh");
+    let answer =
+        r#"{"Ok":[{"id":"test.slow","name":"Slow Plugin","vendor":"Test","features":["audio-effect"],"path":"x"}]}"#;
+    std::fs::write(&helper, format!("#!/bin/sh\necho 'scythe-plugin-scan 1'\nsleep 2\necho '{answer}'\n")).unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let catalog = scythe_engine::plugin_scan::Catalog::new(scythe_engine::plugin_scan::ScanConfig {
+        clap: vec![dir.join("clap")],
+        lv2: Vec::new(),
+        vst3: Vec::new(),
+        cache_dir: None,
+        helper: Some(helper),
+        timeout: Duration::from_secs(20),
+    });
+    let mut s = session();
+    s.engine.set_plugin_catalog(catalog.clone());
+    let track = add_track(&mut s, "Gtr");
+
+    let start = Instant::now();
+    let pending = ok(&mut s, json!({"cmd": "fx.catalog", "query": "slow"}));
+    assert!(start.elapsed() < Duration::from_secs(1), "fx.catalog waited for the scan");
+    assert_eq!(pending["scanning"], true, "{pending}");
+    assert_eq!(pending["plugins"], json!([]));
+    assert!(pending["progress"]["total"].as_u64() <= Some(1), "{pending}");
+    let err = execute_json(&mut s, json!({"cmd": "fx.add", "track": track, "plugin": "clap:test.slow"})).unwrap_err();
+    assert!(err.message.contains("still being scanned"), "{}", err.message);
+    assert_eq!(ok(&mut s, json!({"cmd": "track.list"})).as_array().map(Vec::len), Some(1));
+
+    assert!(catalog.wait(Duration::from_secs(20)));
+    let done = ok(&mut s, json!({"cmd": "fx.catalog", "query": "slow"}));
+    assert_eq!(done["scanning"], false);
+    assert_eq!(done["plugins"], json!([{"id": "clap:test.slow", "name": "Slow Plugin", "format": "CLAP"}]));
+    assert_eq!(done["failed"], json!([]));
+    std::fs::remove_dir_all(dir).ok();
+}

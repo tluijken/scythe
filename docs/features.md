@@ -211,9 +211,19 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   lists, loaded through its preset-load extension; like REAPER, only the provider whose id is the
   plugin's id is asked. Loading a preset does what REAPER does with the `<VST` header: the
   preset's pin maps and flag bits replace the slot's, and its state is taken only when its state
-  kind matches. Presets saved as `.RfxChain` files by earlier versions are still listed. Plugin
-  scans are cached per binary (path, size, modification time) in `~/.cache/scythe`, so only new or
-  changed plugins are loaded.
+  kind matches. Presets saved as `.RfxChain` files by earlier versions are still listed.
+- **Plugin scanning**: plugins are scanned on a background thread that starts with Scythe, so
+  the window, the session and the control API never wait for it; what earlier runs found is
+  listed at once from the scan cache (`$XDG_CACHE_HOME/scythe/{clap,lv2,vst3}.json`, per binary or
+  LV2 bundle by path, size, modification time and resolved path, so a Nix store update counts as
+  a change), and only new or changed plugins are loaded. CLAP and VST 3 binaries are loaded in a
+  child process (`scythe --scan-plugin …`) with a 30 s limit: a plugin that hangs or crashes
+  while it is scanned is marked as failed in the cache, like REAPER marks it, and is tried again
+  when it changes or on a full rescan. LV2 bundles are read from their Turtle files (LSP Plugins'
+  195-file bundle in 0.7 s). The FX browser shows "Scanning plugins… n of m" while a scan runs,
+  and `fx.catalog` answers straight away with `scanning` and `progress`, `failed`, and `rescan`.
+  `SCYTHE_SYSTEM_PLUGINS=0` limits the scan to `$CLAP_PATH`, `$LV2_PATH`, `$VST3_PATH` and
+  `$SCYTHE_VST_PATH` (the tests use it).
 - **Stock effect emulations**: ReaEQ, ReaVerb and ReaSamplOmatic5000 and ReaDelay settings stored
   in projects play through built-in equivalents (the sampler receives the track's MIDI, live input
   and MIDI an earlier effect sends; musical delay lengths follow the tempo map), as do the
@@ -261,7 +271,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   away) is one undo step. The meters and spectra come from a probe the effect fills only while its
   editor is open: atomics and two sample rings, nothing locked or allocated on the audio thread.
 - **Plugin hosting**: CLAP plugins are hosted, instruments included (scan `~/.clap`,
-  `/usr/lib/clap`, `$CLAP_PATH`), as are LV2 plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …;
+  `/usr/lib/clap`, `/etc/profiles/per-user/$USER/lib/clap`, `$CLAP_PATH`), as are LV2 plugins (`$LV2_PATH`, `~/.lv2`, `/usr/lib/lv2` …;
   controls and state in REAPER's `<LV2` layout), VST 3 plugins (`$VST3_PATH`, `~/.vst3`,
   `/usr/lib/vst3` …; state in REAPER's VST 3 chunk layout) and Linux VST 2 plugins from
   `$SCYTHE_VST_PATH`/`$VST_PATH`/`~/.vst`. Add them from the inspector, click a slot for its

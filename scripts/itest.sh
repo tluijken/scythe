@@ -12,6 +12,10 @@ for d in config data cache; do mkdir -p "$SCYTHE_ITEST_DIR/xdg/$d"; done
 export XDG_CONFIG_HOME="$SCYTHE_ITEST_DIR/xdg/config" XDG_DATA_HOME="$SCYTHE_ITEST_DIR/xdg/data"
 export XDG_CACHE_HOME="$SCYTHE_ITEST_DIR/xdg/cache"
 unset SCYTHE_CONTROL SCYTHE_CONTROL_TOKEN SCYTHE_TONE3000_CLIENT_ID SCYTHE_TONE3000_BASE_URL
+# Nor the plugins installed on the machine: scanning those makes the tests slow and their
+# results depend on what is installed.
+export SCYTHE_SYSTEM_PLUGINS=0
+unset CLAP_PATH LV2_PATH VST3_PATH VST_PATH SCYTHE_VST_PATH
 
 # Xvfb and Chromium from PATH, else from nixpkgs when nix is there; the tests that need them
 # say they are skipped when neither has them.

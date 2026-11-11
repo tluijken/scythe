@@ -100,6 +100,9 @@ fn run(options: Options) -> Result<(), String> {
 }
 
 fn main() {
+    if let Some(code) = scythe_engine::plugin_scan::helper_main(&std::env::args().collect::<Vec<_>>()) {
+        std::process::exit(code);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");

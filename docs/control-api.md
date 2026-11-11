@@ -326,7 +326,7 @@ itself).
 | `cmd` | Arguments | Answer |
 |---|---|---|
 | `fx.list` | `track` | `[{"index", "name", "enabled", "running", "offline", "wet", "delta", "parallel", "container"}]` (`running`: processing audio, not passed through; `parallel`: `serial`, `parallel` or `merge_midi`; `container`: `{"channels", "inputs", "outputs", "effects"}` for an FX container) |
-| `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case) | `[{"id", "name", "format"}]`: built-in effects and installed CLAP, LV2 and VST 3 plugins (the first call scans for plugins) |
+| `fx.catalog` | `query?` (only entries whose name, id or format contain it, ignoring case), `rescan?` (check every plugin file anew, failed ones too) | `{"plugins": [{"id", "name", "format"}], "scanning", "progress": {"done", "total", "current"}, "failed": [{"format", "path", "reason"}]}`: built-in effects and the installed CLAP, LV2 and VST 3 plugins known so far. It answers at once: plugins are scanned in the background (from the cache when unchanged), and while `scanning` is true more may follow, so ask again; `fx.add` of a plugin not found yet says the scan is still running |
 | `fx.add` | `track`, `plugin` (a catalog `id` such as `builtin:compressor`; the built-ins are `equalizer`, `gate`, `compressor`, `delay`, `convolution-reverb`, `limiter`, `multiband-compressor`, `algorithmic-reverb`, `synth` and `midi-control`; or an exact name), `index?` | the chain |
 | `fx.remove` | `track`, `index` | the chain |
 | `fx.bypass` | `track`, `index`, `bypassed?` | the chain |

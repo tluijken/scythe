@@ -8,7 +8,7 @@ use scythe_session::api::{ApiError, Command, ErrorKind};
 use scythe_session::control::ControlHandle;
 use serde_json::{Value, json};
 
-/// The first `fx.catalog` scans for plugins, which can take a while.
+/// Opening a project can wait for the plugin scan to find a plugin it uses.
 const TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How `scythe-mcp` introduces itself to a running Scythe.

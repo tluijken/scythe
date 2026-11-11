@@ -68,6 +68,7 @@ pub fn run(options: Options) -> Result<(), String> {
     }
     install_signal_handlers();
     scythe_engine::realtime::enable();
+    scythe_engine::plugin_scan::Catalog::global().snapshot();
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
     let mut notice = None;
     let engine = if options.null_audio {

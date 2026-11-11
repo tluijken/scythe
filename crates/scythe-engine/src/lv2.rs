@@ -28,7 +28,7 @@ const STATE_INTERFACE: &str = "http://lv2plug.in/ns/ext/state#interface";
 const ATOM_STRING: &str = "http://lv2plug.in/ns/ext/atom#String";
 const ATOM_PATH: &str = "http://lv2plug.in/ns/ext/atom#Path";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PortKind {
     Audio,
     Control,
@@ -36,7 +36,7 @@ pub enum PortKind {
     Cv,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PortInfo {
     pub index: u32,
     pub symbol: String,
@@ -55,7 +55,7 @@ pub struct PortInfo {
     pub min_size: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Lv2Info {
     pub uri: String,
     pub name: String,
@@ -68,10 +68,13 @@ pub struct Lv2Info {
 }
 
 /// Directories LV2 bundles are looked up in: `$LV2_PATH`, then the usual user and system
-/// locations.
+/// locations unless `SCYTHE_SYSTEM_PLUGINS=0`.
 pub fn search_paths() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("LV2_PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    if !crate::plugin_scan::system_paths() {
+        return dirs;
+    }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         dirs.extend([home.join(".lv2"), home.join(".nix-profile/lib/lv2")]);
     }
@@ -82,19 +85,26 @@ pub fn search_paths() -> Vec<PathBuf> {
     dirs
 }
 
-/// Every plugin in the bundles under `dirs`.
-pub fn scan(dirs: &[PathBuf]) -> Vec<Lv2Info> {
+/// The bundles (folders with a `manifest.ttl`) directly under `dirs`.
+pub fn bundles(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        let mut bundles: Vec<PathBuf> =
+        let mut found: Vec<PathBuf> =
             entries.flatten().map(|e| e.path()).filter(|p| p.join("manifest.ttl").is_file()).collect();
-        bundles.sort();
-        for bundle in bundles {
-            match load_bundle(&bundle) {
-                Ok(mut plugins) => out.append(&mut plugins),
-                Err(e) => eprintln!("lv2: {}: {e}", bundle.display()),
-            }
+        found.sort();
+        out.append(&mut found);
+    }
+    out
+}
+
+/// Every plugin in the bundles under `dirs`.
+pub fn scan(dirs: &[PathBuf]) -> Vec<Lv2Info> {
+    let mut out = Vec::new();
+    for bundle in bundles(dirs) {
+        match load_bundle(&bundle) {
+            Ok(mut plugins) => out.append(&mut plugins),
+            Err(e) => eprintln!("lv2: {}: {e}", bundle.display()),
         }
     }
     out

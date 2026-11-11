@@ -544,9 +544,13 @@ impl Drop for Vst3Module {
     }
 }
 
+/// `VST3_PATH`, then the standard locations unless `SCYTHE_SYSTEM_PLUGINS=0`.
 pub fn search_paths() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("VST3_PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    if !crate::plugin_scan::system_paths() {
+        return dirs;
+    }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         dirs.extend([home.join(".vst3"), home.join(".nix-profile/lib/vst3")]);
     }
@@ -568,35 +572,50 @@ fn module_binary(entry: &Path) -> Option<PathBuf> {
     }
 }
 
-pub fn scan(dirs: &[PathBuf]) -> Vec<Vst3Info> {
-    scan_cached(dirs, None)
+/// A module to scan: the shared library and the `.vst3` name REAPER stores in slots.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Vst3Bundle {
+    pub binary: PathBuf,
+    pub file_name: String,
 }
 
-/// Like [`scan`], taking unchanged modules from the scan cache at `cache`.
-pub fn scan_cached(dirs: &[PathBuf], cache: Option<PathBuf>) -> Vec<Vst3Info> {
-    let mut cache = crate::scan_cache::ScanCache::open(cache);
+/// The `.vst3` modules under `dirs`, looking into subfolders.
+pub fn modules(dirs: &[PathBuf]) -> Vec<Vst3Bundle> {
     let mut found = Vec::new();
-    let mut stack: Vec<PathBuf> = dirs.to_vec();
+    let mut stack: Vec<PathBuf> = dirs.iter().rev().cloned().collect();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
             if path.extension().is_some_and(|e| e == "vst3") {
                 let Some(binary) = module_binary(&path) else { continue };
                 let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                found.extend(cache.get(&binary, || match Vst3Module::load(&binary) {
-                    Ok(module) => module.classes(&file_name),
-                    Err(e) => {
-                        eprintln!("vst3: {}: {e}", binary.display());
-                        Vec::new()
-                    }
-                }));
+                found.push(Vst3Bundle { binary, file_name });
             } else if path.is_dir() {
                 stack.push(path);
             }
         }
     }
-    cache.save();
+    found
+}
+
+/// The classes of the module at `binary`, loading it in this process.
+pub fn scan_module(binary: &Path, file_name: &str) -> Result<Vec<Vst3Info>, String> {
+    Vst3Module::load(binary).map(|m| m.classes(file_name))
+}
+
+/// Every plugin under `dirs`, loading each module in this process.
+pub fn scan(dirs: &[PathBuf]) -> Vec<Vst3Info> {
+    let mut found: Vec<Vst3Info> = modules(dirs)
+        .iter()
+        .flat_map(|m| {
+            scan_module(&m.binary, &m.file_name).unwrap_or_else(|e| {
+                eprintln!("vst3: {}: {e}", m.binary.display());
+                Vec::new()
+            })
+        })
+        .collect();
     found.sort_by_key(|p| p.name.to_lowercase());
     found
 }

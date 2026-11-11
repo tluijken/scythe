@@ -276,6 +276,14 @@ measured.
   Scythe versions carry a header REAPER ignores; they get REAPER's header once edited.
 - Plugins that are not installed as Linux plugins (ReaTune, the Windows/macOS VST 3s in the
   corpus such as Amp Room) pass audio through; the inspector says so per slot.
+- Plugin scanning: REAPER keeps its CLAP cache in `reaper-clap-linux-x86_64.ini` (a section per
+  file with two file times, then `id=instrument|name (vendor)`) and reads LV2 anew at every
+  start (about 2 s for LSP Plugins); Scythe keeps its own JSON caches instead, since they also
+  hold features, ports and failures, and does not read or write REAPER's. A project that uses a
+  plugin the cache does not know yet waits for the running scan when it opens (at most 2
+  minutes), as REAPER scans before it opens a project. LV2 bundles are read in Scythe's own
+  process (they are only text), and there is no list of failed plugins in the window yet:
+  `fx.catalog` reports them.
 - Stock plugins: ReaSynth's portamento (REAPER then glides monophonically) is ignored, and a
   decay towards a sustain below 0 dB is within 2e-4 (REAPER pauses it for a frame at a block
   boundary in a way not modelled). ReaControlMIDI's two user CC sliders are kept but not sent,

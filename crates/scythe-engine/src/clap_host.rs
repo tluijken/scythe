@@ -151,28 +151,39 @@ impl Drop for ClapLibrary {
     }
 }
 
-/// Every `.clap` in `CLAP_PATH` and the standard locations; unchanged files come from the scan
-/// cache instead of being loaded.
-pub fn scan() -> Vec<ClapDescriptor> {
-    let mut cache = crate::scan_cache::ScanCache::open(crate::scan_cache::default_path("clap"));
+/// `CLAP_PATH`, then the standard locations unless `SCYTHE_SYSTEM_PLUGINS=0`.
+pub fn search_paths() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("CLAP_PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
+    if !crate::plugin_scan::system_paths() {
+        return dirs;
+    }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         dirs.extend([home.join(".clap"), home.join(".nix-profile/lib/clap")]);
     }
+    if let Some(user) = std::env::var_os("USER") {
+        dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/clap"));
+    }
     dirs.extend(["/usr/lib/clap", "/usr/local/lib/clap", "/run/current-system/sw/lib/clap"].map(PathBuf::from));
+    dirs
+}
+
+/// Every `.clap` file directly under `dirs`.
+pub fn bundles(dirs: &[PathBuf]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().is_some_and(|x| x == "clap") {
-                out.extend(cache.get(&p, || ClapLibrary::load(&p).map(|lib| lib.descriptors()).unwrap_or_default()));
-            }
-        }
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let mut found: Vec<PathBuf> =
+            entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "clap")).collect();
+        found.sort();
+        out.append(&mut found);
     }
-    cache.save();
     out
+}
+
+/// The plugins in the `.clap` file at `path`, loading it in this process.
+pub fn scan_bundle(path: &Path) -> Result<Vec<ClapDescriptor>, String> {
+    ClapLibrary::load(path).map(|lib| lib.descriptors()).map_err(|e| e.to_string())
 }
 
 static HOST_NAME: &CStr = c"Scythe";
