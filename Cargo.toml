@@ -60,3 +60,7 @@ opt-level = 2
 # loads 2.4x slower and renders at 2.4x the load); level 1 costs about 5 s per engine rebuild.
 [profile.dev.package.scythe-engine]
 opt-level = 1
+
+# cpal with the ALSA period count settable (REAPER's `linux_audio_bufs`); see vendor/cpal.
+[patch.crates-io]
+cpal = { path = "vendor/cpal" }
