@@ -2145,7 +2145,7 @@ impl TrackBufs {
 /// Starts the track render threads, so the first block played does not wait for them (and
 /// they are promoted to real-time priority when the audio thread is).
 pub fn start_track_threads() {
-    track_threads();
+    live_threads();
 }
 
 /// How many threads render tracks: `SCYTHE_TRACK_THREADS`, else one per fast physical core.
@@ -2182,15 +2182,33 @@ fn fast_cores() -> Option<usize> {
     Some(cores.len())
 }
 
-/// The threads tracks render on. Not rayon's global pool: whatever else queues work there,
-/// such as converting media while a set loads, would hold up the audio callback behind it.
+/// The threads tracks render on: for the audio thread, real-time ones; for offline renders,
+/// others at normal priority. A render runs its threads flat out without ever blocking, which
+/// at real-time priority would run into RealtimeKit's CPU-time limit and get every audio
+/// thread demoted. Neither is rayon's global pool: whatever else queues work there, such as
+/// converting media while a set loads, would hold up the audio callback behind it.
 fn track_threads() -> &'static rayon::ThreadPool {
+    if crate::realtime::is_audio_thread() { live_threads() } else { offline_threads() }
+}
+
+fn live_threads() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .thread_name(|i| format!("scythe-tracks-{i}"))
             .num_threads(track_thread_count())
             .start_handler(|_| crate::realtime::request_helper())
+            .build()
+            .expect("spawn track render threads")
+    })
+}
+
+fn offline_threads() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("scythe-render-{i}"))
+            .num_threads(track_thread_count())
             .build()
             .expect("spawn track render threads")
     })

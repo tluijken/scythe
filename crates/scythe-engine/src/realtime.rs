@@ -95,12 +95,27 @@ pub fn enable() {
 /// Asks for real-time priority for the calling thread. Never blocks or allocates, so the audio
 /// callback can call it.
 pub fn request() {
+    mark_audio_thread();
     if WANTED.load(Ordering::Relaxed) == 0 {
         return;
     }
     if let Some(tx) = PROMOTER.get() {
         let _ = tx.try_send((current_tid(), true));
     }
+}
+
+thread_local! {
+    static AUDIO_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the calling thread as one that plays audio to a device in real time ([`request`]
+/// does too), so the track threads it waits on are the real-time ones.
+pub fn mark_audio_thread() {
+    AUDIO_THREAD.with(|a| a.set(true));
+}
+
+pub fn is_audio_thread() -> bool {
+    AUDIO_THREAD.with(|a| a.get())
 }
 
 /// Like [`request`], for a thread the audio thread waits on (a track render thread): at the

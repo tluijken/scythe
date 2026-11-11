@@ -31,6 +31,8 @@ fn main() {
             other => panic!("unknown argument {other}"),
         }
     }
+    // Render on the track threads the audio callback uses.
+    scythe_engine::realtime::mark_audio_thread();
     let project = read_project(path.as_ref()).unwrap();
     let pool = Arc::new(MediaPool::default());
     let t = Instant::now();
