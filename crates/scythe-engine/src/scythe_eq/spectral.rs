@@ -28,7 +28,7 @@ pub struct SpectralBand {
     pub release_ms: f64,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct BandState {
     config: Option<SpectralBand>,
     /// Bins the band touches and their weights.
@@ -39,6 +39,7 @@ struct BandState {
     mean_db: f32,
 }
 
+#[derive(Clone)]
 pub struct Spectral {
     n: usize,
     hop: usize,

@@ -1092,15 +1092,15 @@ impl FxRegistry {
             }
             chunk.push_chunk(st);
         }
-        // A Scythe EQ whose latency changed (phase mode, spectral bands) needs a new instance
-        // so the chain compensates for it: leaving the old state in place makes the next sync
-        // build one.
+        // A Scythe EQ whose latency changed (phase mode, spectral bands) crossfades to its new
+        // processing itself; the next sync rebuilds the chain, which compensates the new latency.
         let latency = if crate::scythe_eq::is_slot(slot) { inst.with(|e| e.latency()) } else { None };
         let key = entry.clone();
-        if let Some(entry) = self.entries.get_mut(&key)
-            && latency.is_none_or(|l| l == entry.latency)
-        {
+        if let Some(entry) = self.entries.get_mut(&key) {
             entry.state = plugin_state(slot);
+            if let Some(l) = latency {
+                entry.latency = l;
+            }
         }
     }
 
@@ -1307,8 +1307,8 @@ impl FxRegistry {
     }
 
     /// Hands a changed state of a running Scythe EQ to it (an undo, a pasted preset), keeping
-    /// its filter memories; false when the slot changed otherwise or the change moves its
-    /// latency, which needs a new instance so the chain compensates for it.
+    /// its filter memories (it crossfades a change of latency); false when the slot changed
+    /// otherwise.
     fn update_scythe_eq(&mut self, key: &(Owner, String), state: &[Node]) -> bool {
         let Some(entry) = self.entries.get(key) else { return false };
         let Some(inst) = entry.instance.clone() else { return false };
@@ -1320,12 +1320,13 @@ impl FxRegistry {
             return false;
         }
         let Some(chunk) = clap_state(new) else { return false };
-        let latency = entry.latency;
-        let fits = inst.with(|e| e.update_state(&chunk) && e.latency() == latency).unwrap_or(false);
-        if fits {
-            self.entries.get_mut(key).unwrap().state = state.to_vec();
-        }
-        fits
+        let Some(latency) = inst.with(|e| e.update_state(&chunk).then(|| e.latency())).flatten() else {
+            return false;
+        };
+        let entry = self.entries.get_mut(key).unwrap();
+        entry.state = state.to_vec();
+        entry.latency = latency;
+        true
     }
 
     fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
@@ -2634,5 +2635,22 @@ mod nam_tests {
         let mut right = vec![0.0f32; 64];
         chain[0].process(&mut left, &mut right, &context());
         assert!(left.iter().chain(&right).all(|&s| s == 0.5));
+    }
+
+    /// A Scythe EQ whose phase mode changes keeps its instance (it crossfades inside), and the
+    /// chain built next reads the new latency.
+    #[test]
+    fn scythe_eq_latency_changes_keep_the_instance() {
+        use crate::scythe_eq::params::{self, GLOBAL, global};
+        let mut registry = FxRegistry::new(48_000);
+        let first_slot = crate::scythe_eq::slot(None);
+        let first = registry.chain(None, std::slice::from_ref(&first_slot))[0].clone();
+        let mut values = params::defaults();
+        values[(GLOBAL + global::PHASE) as usize] = 2.0;
+        let mut linear = crate::scythe_eq::slot(Some(&params::encode(&values)));
+        linear.raw[2] = first_slot.raw[2].clone();
+        let second = registry.chain(None, &[linear])[0].clone();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(second.with(|e| e.latency()), Some(2048));
     }
 }

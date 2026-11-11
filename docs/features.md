@@ -352,8 +352,11 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     only, as a symmetric FIR of 2048 to 32768 points (resolution low to maximum: 1024–16384
     frames of latency at 48 kHz) with an ideal brickwall. Both run as a partitioned overlap-save
     convolution with a 2×2 kernel matrix for mid/side and single-channel bands, crossfade when
-    the curve changes, and report their latency so the chain compensates for it; changing the
-    phase mode makes a new instance so compensation follows.
+    the curve changes, and report their latency so the chain compensates for it. Changing the
+    phase mode, the resolution or whether any band is spectral while playing keeps the old
+    processing running until the new one has filled its latency, then crossfades over 30 ms
+    (equal power, each at its own timing: the chain moves its compensation to the new latency
+    when it is rebuilt right after), so the switch does not click.
   - *Stereo placement* per band: stereo, left, right, mid or side.
   - *Dynamic bands* (bells, shelves and tilts): the band moves from its gain towards gain +
     range while its detector (the band's region filtered out of the band's input, or out of the

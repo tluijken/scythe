@@ -414,3 +414,46 @@ fn solo_plays_the_band_region() {
     assert!(gain_at(&mut eq, 1000.0, sr).abs() < 0.2);
     assert!(gain_at(&mut eq, 100.0, sr) < -20.0);
 }
+
+/// Switching the phase mode, the linear phase resolution or spectral processing while a sine
+/// plays crossfades: no step between samples is larger than the sine's own steepest.
+#[test]
+fn structural_switches_while_playing_do_not_click() {
+    let sr = 48000u32;
+    let (f, amp) = (220.0, 0.5);
+    let mut eq = ScytheEq::new(sr);
+    set_band(&mut eq, 1, Shape::Bell, 1000.0, 6.0, 1.0);
+    let n = sr as usize;
+    let input = sine(f, amp, n * 6, sr as f64);
+    let (mut l, mut r) = (input.clone(), input.clone());
+    let c = ctx(sr);
+    type Switch = Box<dyn Fn(&mut ScytheEq)>;
+    let switches: [(usize, Switch, usize); 5] = [
+        (1, Box::new(|eq| eq.set(GLOBAL + global::PHASE, 2.0)), 2048),
+        (2, Box::new(|eq| eq.set(GLOBAL + global::RESOLUTION, 3.0)), 8192),
+        (3, Box::new(|eq| eq.set(GLOBAL + global::PHASE, 1.0)), 1024),
+        (4, Box::new(|eq| dynamic_band(eq, 0, 2.0, -6.0, -40.0)), 1024 + 2048),
+        (5, Box::new(|eq| eq.set(GLOBAL + global::PHASE, 0.0)), 2048),
+    ];
+    let mut next = 0;
+    for (k, (a, b)) in l.chunks_mut(256).zip(r.chunks_mut(256)).enumerate() {
+        if let Some((second, switch, latency)) = switches.get(next)
+            && k * 256 >= second * n
+        {
+            switch(&mut eq);
+            assert_eq!(eq.latency(), *latency, "switch {next}");
+            next += 1;
+        }
+        eq.process(a, b, &c);
+    }
+    assert_eq!(next, switches.len());
+    let steepest = (2.0 * PI * f / sr as f64 * amp) as f32;
+    for (i, w) in l.windows(2).enumerate().skip(n / 2) {
+        let step = (w[1] - w[0]).abs();
+        assert!(
+            step < 1.6 * steepest,
+            "a step of {step} at {:.3} s (the sine's steepest is {steepest})",
+            i as f64 / sr as f64
+        );
+    }
+}
