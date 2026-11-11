@@ -43,7 +43,7 @@ measured.
   automation mode"), the render-ahead for open FX windows and the media buffer settings are
   not followed; "Allow live FX multiprocessing" is kept in Scythe's own key `scythe_livefxmp`
   (REAPER's bit for it in `workrender` is not known) and is on by default, where REAPER's is
-  off. The thread count applies at the next start. Tracks wait for a whole dependency level
+  off. Tracks wait for a whole dependency level
   (all tracks at the same depth) rather than only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
   the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
   "prevent anticipative FX" flags; the NAM slot reports no separate model cost. NAM models trained at another rate than the

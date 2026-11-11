@@ -2426,30 +2426,51 @@ impl RenderGraph {
 }
 
 /// How many threads render tracks ahead of the playhead: REAPER's "audio reading/processing
-/// threads", 0 for one per fast core. Read when the threads start.
+/// threads", 0 for one per fast core.
 static AHEAD_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+type AheadPool = Option<(usize, std::sync::Arc<rayon::ThreadPool>)>;
+
+static AHEAD_POOL: std::sync::Mutex<AheadPool> = std::sync::Mutex::new(None);
+
+fn ahead_thread_count() -> usize {
+    match AHEAD_THREADS.load(Ordering::Relaxed) {
+        0 => track_thread_count(),
+        n => n.clamp(1, 64),
+    }
+}
+
+/// Sets the thread count. A running pool is replaced at once: the worker takes the pool per
+/// chunk, so the chunk in flight finishes on the old threads, which exit when it lets go.
 pub fn set_ahead_threads(n: usize) {
     AHEAD_THREADS.store(n, Ordering::Relaxed);
+    let want = ahead_thread_count();
+    if let Ok(mut pool) = AHEAD_POOL.lock()
+        && pool.as_ref().is_some_and(|(have, _)| *have != want)
+    {
+        *pool = Some((want, std::sync::Arc::new(build_ahead_pool(want))));
+    }
+}
+
+fn build_ahead_pool(n: usize) -> rayon::ThreadPool {
+    rayon::ThreadPoolBuilder::new()
+        .thread_name(|i| format!("scythe-ahead-{i}"))
+        .num_threads(n)
+        .start_handler(|_| crate::realtime::request_worker())
+        .build()
+        .expect("spawn anticipative render threads")
 }
 
 /// The threads that render tracks ahead of the playhead (anticipative FX). They run at normal
 /// priority: they work a render-ahead's length before the audio is due, so the callback and
 /// the track threads it waits on, being real-time, always come first.
-pub fn ahead_threads() -> &'static rayon::ThreadPool {
-    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
-    POOL.get_or_init(|| {
-        let n = match AHEAD_THREADS.load(Ordering::Relaxed) {
-            0 => track_thread_count(),
-            n => n.clamp(1, 64),
-        };
-        rayon::ThreadPoolBuilder::new()
-            .thread_name(|i| format!("scythe-ahead-{i}"))
-            .num_threads(n)
-            .start_handler(|_| crate::realtime::request_worker())
-            .build()
-            .expect("spawn anticipative render threads")
-    })
+pub fn ahead_threads() -> std::sync::Arc<rayon::ThreadPool> {
+    let mut pool = AHEAD_POOL.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, p) = pool.get_or_insert_with(|| {
+        let n = ahead_thread_count();
+        (n, std::sync::Arc::new(build_ahead_pool(n)))
+    });
+    p.clone()
 }
 
 /// The track buffers of a level, handed to the track threads.
@@ -2758,6 +2779,17 @@ fn fade_gain(rel: i64, length: i64, fade_in: &(i64, Fade), fade_out: &(i64, Fade
 mod tests {
     use super::*;
     use scythe_core::{Item, Send, Take};
+
+    #[test]
+    fn ahead_thread_count_applies_to_a_running_pool() {
+        set_ahead_threads(2);
+        let old = ahead_threads();
+        assert_eq!(old.current_num_threads(), 2);
+        set_ahead_threads(3);
+        assert_eq!(ahead_threads().current_num_threads(), 3);
+        assert_eq!(old.current_num_threads(), 2);
+        set_ahead_threads(0);
+    }
 
     fn graph_with(project: &Project, audio: AudioData) -> RenderGraph {
         let audio = Arc::new(audio);

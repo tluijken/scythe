@@ -84,7 +84,7 @@ pub enum AudioCommand {
         /// heard within a few blocks whatever it is.
         #[serde(default)]
         render_ahead_ms: Option<u32>,
-        /// Threads rendering ahead, 0 for one per performance core; applies at the next start.
+        /// Threads rendering ahead, 0 for one per performance core.
         #[serde(default)]
         threads: Option<u32>,
         /// "Allow live FX multiprocessing": the tracks rendered live spread over the track

@@ -14967,7 +14967,7 @@
         },
         "threads": {
           "default": null,
-          "description": "Threads rendering ahead, 0 for one per performance core; applies at the next start.",
+          "description": "Threads rendering ahead, 0 for one per performance core.",
           "format": "uint32",
           "minimum": 0,
           "type": [

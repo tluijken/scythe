@@ -40,8 +40,7 @@ pub struct Buffering {
     pub anticipative: bool,
     /// "Render-ahead" in milliseconds (`renderaheadlen`, default 200).
     pub render_ahead_ms: u32,
-    /// Threads that render ahead (`workthreads`); 0 for one per fast core. Takes effect at the
-    /// next start.
+    /// Threads that render ahead (`workthreads`); 0 for one per fast core. Applies at once.
     pub threads: usize,
     /// "Allow live FX multiprocessing": the tracks the callback renders spread over the
     /// real-time track threads instead of all running on the audio thread.
@@ -363,7 +362,7 @@ impl Worker {
                 &mut self.scratch,
                 &input,
                 &mut chunk.channels,
-                crate::render::ahead_threads(),
+                &crate::render::ahead_threads(),
                 &abort,
             );
             (chunk.epoch, chunk.serial, chunk.pos, chunk.len) = (epoch, serial, pos, len);
