@@ -30,27 +30,65 @@ pub struct Instance {
     pub label: String,
 }
 
-/// Every Scythe EQ on the tracks and the master, in track order.
+/// Every Scythe EQ in the project, in track order: each track's chain, input chain and take
+/// chains, then the master's and the monitoring chain, containers included. The label says
+/// where: "Vocals", "Vocals · input", "Guitar · Rig › 3".
 pub fn all_instances(app: &ScytheApp) -> Vec<Instance> {
     let mut out = Vec::new();
-    let mut add = |owner: FxOwner, slots: &[FxSlot], name: &str| {
-        for (i, slot) in slots.iter().enumerate() {
-            if scythe_eq::is_slot(slot) {
-                let label = if slots.iter().filter(|s| scythe_eq::is_slot(s)).count() > 1 {
-                    format!("{name} · {}", i + 1)
+    for t in &app.project.tracks {
+        let name = if t.name.is_empty() { "Track" } else { t.name.as_str() };
+        add_chain(&mut out, FxOwner::Track(t.id), &t.fx, name);
+        add_chain(&mut out, FxOwner::Input(t.id), &t.input_fx(), &format!("{name} · input"));
+        for it in &t.items {
+            for (k, take) in it.takes.iter().enumerate() {
+                let label = if take.name.is_empty() {
+                    format!("{name} · take {}", k + 1)
                 } else {
-                    name.to_owned()
+                    format!("{name} · {}", take.name)
                 };
-                out.push(Instance { owner: owner.clone(), path: vec![i], label });
+                add_chain(&mut out, FxOwner::Take(it.id, k), &take.fx(), &label);
             }
         }
-    };
-    for t in &app.project.tracks {
-        let name = if t.name.is_empty() { "Track".to_owned() } else { t.name.clone() };
-        add(FxOwner::Track(t.id), &t.fx, &name);
     }
-    add(FxOwner::Master, &app.project.master.fx, "Master");
+    add_chain(&mut out, FxOwner::Master, &app.project.master.fx, "Master");
+    add_chain(&mut out, FxOwner::Monitor, &app.monitor_fx(), "Monitoring");
     out
+}
+
+fn add_chain(out: &mut Vec<Instance>, owner: FxOwner, slots: &[FxSlot], name: &str) {
+    let start = out.len();
+    walk(out, &owner, slots, &mut Vec::new(), &mut Vec::new(), name);
+    // A lone top-level instance goes by its chain's name alone.
+    if out.len() - start == 1 && out[start].path.len() == 1 {
+        out[start].label = name.to_owned();
+    }
+}
+
+fn walk(
+    out: &mut Vec<Instance>,
+    owner: &FxOwner,
+    slots: &[FxSlot],
+    path: &mut Vec<usize>,
+    crumbs: &mut Vec<String>,
+    name: &str,
+) {
+    for (i, slot) in slots.iter().enumerate() {
+        path.push(i);
+        if scythe_eq::is_slot(slot) {
+            crumbs.push((i + 1).to_string());
+            out.push(Instance {
+                owner: owner.clone(),
+                path: path.clone(),
+                label: format!("{name} · {}", crumbs.join(" › ")),
+            });
+            crumbs.pop();
+        } else if slot.is_container() {
+            crumbs.push(if slot.name.is_empty() { "Container".to_owned() } else { slot.name.clone() });
+            walk(out, owner, &slot.container_children(), path, crumbs, name);
+            crumbs.pop();
+        }
+        path.pop();
+    }
 }
 
 /// The other Scythe EQs, for comparing and matching.

@@ -406,8 +406,9 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     over 100 Hz–10 kHz removed), smooths it (0.05–2 octaves), scales it by the amount and fits up
     to 16 bands (shelves where the difference reaches an end of the spectrum, bells elsewhere,
     gains refined together); Apply adds them to free bands as one undo step.
-  - *Instance list* ("Instances"): every Scythe EQ in the project with its curve; open or bypass
-    each, click a band to bypass it, drag it up and down for its gain.
+  - *Instance list* ("Instances"): every Scythe EQ in the project with its curve and where it
+    sits (track, input and take chains, the master, monitoring, containers: "Vocals · input",
+    "Guitar · Rig › 3"); open or bypass each, click a band to bypass it, drag it up and down for its gain.
   - *Storage*: a CLAP slot, `<CLAP "CLAP: Scythe EQ (Scythe)" scythe.eq "">` with its settings
     in `<STATE` (magic `SCEQ`, a version, then every value as a double in its own units).
     REAPER 7.73 opens such a project with "the following effects … are not available"; the slot
@@ -416,7 +417,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     the EQ intact.
   - *Control API and MCP*: every band and global value is a parameter (`fx.params`, `fx.param`,
     automation, modulation and MIDI/OSC learn; solo and audition are momentary and not stored);
-    `eq.instances`, `eq.get`, `eq.band` (add, change or remove a band by number with named
+    `eq.instances` (every chain and container), `eq.get`, `eq.band` (add, change or remove a band by number with named
     shapes) `eq.set` (globals) address it directly; `eq.compare` gives this EQ's and a track's (the
     master's, another instance's) third-octave levels with the collisions, and `eq.match` fits
     bands towards a track, an instance or a file (proposed, or applied as one undo step). The web UI's inspector lists the bands

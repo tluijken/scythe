@@ -1817,6 +1817,24 @@ fn scythe_eq_bands_are_set_by_name_saved_and_undone() {
     assert_eq!(got["live"], false);
     let err = execute_json(&mut s, json!({"cmd": "eq.match", "track": t, "index": 0, "reference": {}})).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Invalid);
+
+    // The list reaches input chains and containers, with the fields eq.get takes.
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq", "chain": "input"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "container"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq", "inside": [1]}));
+    let list = ok(&mut s, json!({"cmd": "eq.instances"}));
+    let found: Vec<(String, u64, Value)> = list["instances"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["chain"].as_str().unwrap().to_owned(), i["index"].as_u64().unwrap(), i["inside"].clone()))
+        .collect();
+    assert_eq!(
+        found,
+        [("track".into(), 0, json!([])), ("track".into(), 0, json!([1])), ("input".into(), 0, json!([]))]
+    );
+    ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0, "inside": [1]}));
+    ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0, "chain": "input"}));
 }
 
 /// The performance meter counts each track's and effect's render time on a playing engine,

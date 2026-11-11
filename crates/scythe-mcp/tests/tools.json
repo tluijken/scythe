@@ -15080,7 +15080,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Every Scythe EQ in the project: track, chain position, name, phase mode and the bands\nin use.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.instances`.",
+    "description": "Every Scythe EQ in the project, input, take and monitoring chains and containers\nincluded: track, chain (with `item` and `take` for a take), `index` and `inside` as\n`eq.get` takes them, name, phase mode and the bands in use.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.instances`.",
     "inputSchema": {
       "properties": {},
       "type": "object"

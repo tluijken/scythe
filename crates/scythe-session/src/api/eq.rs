@@ -17,8 +17,9 @@ use crate::Session;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum EqCommand {
-    /// Every Scythe EQ in the project: track, chain position, name, phase mode and the bands
-    /// in use.
+    /// Every Scythe EQ in the project, input, take and monitoring chains and containers
+    /// included: track, chain (with `item` and `take` for a take), `index` and `inside` as
+    /// `eq.get` takes them, name, phase mode and the bands in use.
     #[serde(rename = "eq.instances")]
     Instances,
     /// One Scythe EQ's global settings and its bands in use, with each dynamic band's current
@@ -323,22 +324,57 @@ fn running(
     Ok(inst)
 }
 
-/// Every Scythe EQ on the tracks and the master: `(track, index)` with `None` for the master.
-pub fn instances(session: &Session) -> Vec<(Option<scythe_core::TrackId>, usize, String)> {
+/// Every Scythe EQ in the project, containers included: the track (`null` for the master and
+/// the monitoring chain), the chain fields `eq.get` takes and the instance's summary.
+pub fn instances(session: &Session) -> Vec<Value> {
     let mut out = Vec::new();
-    for (i, slot) in session.project.master.fx.iter().enumerate() {
-        if scythe_eq::is_slot(slot) {
-            out.push((None, i, slot.name.clone()));
+    let mut add = |track: Option<&scythe_core::Track>, chain: &str, extra: Value, slots: &[scythe_core::FxSlot]| {
+        let mut found = Vec::new();
+        walk(slots, &mut Vec::new(), &mut found);
+        for (path, slot) in found {
+            let values = scythe_eq::slot_values(&slot).unwrap_or_else(p::defaults);
+            let used = (0..BANDS).filter(|b| values[p::band_param(*b, band::USED) as usize] >= 0.5).count();
+            let (index, inside) = path.split_last().map(|(i, rest)| (*i, rest.to_vec())).unwrap_or_default();
+            let mut v = json!({
+                "track": track.map(|t| t.id.0),
+                "track_name": track.map_or(if chain == "monitor" { "MONITORING" } else { "MASTER" }.to_owned(), |t| t.name.clone()),
+                "chain": chain,
+                "index": index,
+                "inside": inside,
+                "name": slot.name,
+                "phase_mode": PHASE[values[(GLOBAL + global::PHASE) as usize] as usize],
+                "bands": used,
+            });
+            if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            out.push(v);
         }
-    }
+    };
     for t in &session.project.tracks {
-        for (i, slot) in t.fx.iter().enumerate() {
-            if scythe_eq::is_slot(slot) {
-                out.push((Some(t.id), i, slot.name.clone()));
+        add(Some(t), "track", json!({}), &t.fx);
+        add(Some(t), "input", json!({}), &t.input_fx());
+        for it in &t.items {
+            for (k, take) in it.takes.iter().enumerate() {
+                add(Some(t), "take", json!({ "item": it.id.0, "take": k }), &take.fx());
             }
         }
     }
+    add(None, "track", json!({}), &session.project.master.fx);
+    add(None, "monitor", json!({}), &session.monitor_fx());
     out
+}
+
+fn walk(slots: &[scythe_core::FxSlot], path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, scythe_core::FxSlot)>) {
+    for (i, slot) in slots.iter().enumerate() {
+        path.push(i);
+        if scythe_eq::is_slot(slot) {
+            out.push((path.clone(), slot.clone()));
+        } else if slot.is_container() {
+            walk(&slot.container_children(), path, out);
+        }
+        path.pop();
+    }
 }
 
 /// Points the match is fitted on.
@@ -481,27 +517,7 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
     match command {
         EqCommand::Instances => {
             session.engine.store_plugin_states(&mut session.project);
-            let list: Vec<Value> = instances(session)
-                .into_iter()
-                .map(|(track, index, name)| {
-                    let t = track.and_then(|t| session.project.track(t));
-                    let slot = match t {
-                        Some(t) => t.fx.get(index),
-                        None => session.project.master.fx.get(index),
-                    };
-                    let values = slot.and_then(scythe_eq::slot_values).unwrap_or_else(p::defaults);
-                    let used = (0..BANDS).filter(|b| values[p::band_param(*b, band::USED) as usize] >= 0.5).count();
-                    json!({
-                        "track": track.map(|t| t.0),
-                        "track_name": t.map_or("MASTER".to_owned(), |t| t.name.clone()),
-                        "index": index,
-                        "name": name,
-                        "phase_mode": PHASE[values[(GLOBAL + global::PHASE) as usize] as usize],
-                        "bands": used,
-                    })
-                })
-                .collect();
-            Ok(json!({ "instances": list }))
+            Ok(json!({ "instances": instances(session) }))
         }
         EqCommand::Get { track, index, at } => {
             let inst = running(session, &track, index, &at)?;

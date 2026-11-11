@@ -27,8 +27,7 @@ measured.
   read a live source over its last third of a second only. EQ Match fits bells and shelves only. Changing the phase mode, the linear phase resolution or
   whether any band is spectral while playing crossfades the old and new processing each at its
   own latency (the old cannot be advanced to a shorter one), so broadband material briefly
-  doubles over the 30 ms fade. The instance list covers top-level slots on tracks and
-  the master (not input, take or monitoring chains or containers). There is no undo history of
+  doubles over the 30 ms fade. There is no undo history of
   the analyzer settings (they are stored with the instance but not automatable).
 - Audio performance: anticipative FX renders ahead only while a device plays (the silent
   clock of `--null-audio` renders every track in the callback). The first change to an effect
