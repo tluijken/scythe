@@ -81,8 +81,25 @@ fn cstr(p: *const c_char) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
+/// Every library loaded so far, by canonical path. CLAP allows `init` once per load, and many
+/// plugins (LSP among them) stay mapped after `dlclose`, so a second `init` after `deinit`
+/// fails; a library is therefore kept, initialised, until the process exits.
+static LOADED: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, Arc<ClapLibrary>>>> =
+    std::sync::LazyLock::new(Default::default);
+
 impl ClapLibrary {
     pub fn load(path: &Path) -> Result<Arc<Self>, ClapError> {
+        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(lib) = loaded.get(&key) {
+            return Ok(lib.clone());
+        }
+        let lib = Self::open(path)?;
+        loaded.insert(key, lib.clone());
+        Ok(lib)
+    }
+
+    fn open(path: &Path) -> Result<Arc<Self>, ClapError> {
         // SAFETY: loading a plugin runs its initialisers; inherent to hosting plugins.
         let lib = unsafe { libloading::Library::new(path) }.map_err(|e| ClapError::Load(path.into(), e.to_string()))?;
         // SAFETY: `clap_entry` is a `clap_plugin_entry` by the CLAP ABI.

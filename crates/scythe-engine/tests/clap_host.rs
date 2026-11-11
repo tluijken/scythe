@@ -49,6 +49,22 @@ fn hosts_scans_processes_and_restores_state() {
 }
 
 #[test]
+fn keeps_one_library_per_file_for_the_whole_process() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let first = ClapLibrary::load(&path).unwrap();
+    let again = ClapLibrary::load(&path.parent().unwrap().join(".").join(path.file_name().unwrap())).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &again));
+
+    drop(ClapPlugin::create(first, "org.scythe.test-gain", 48000.0, 512).unwrap());
+    drop(again);
+    let reloaded = ClapLibrary::load(&path).unwrap();
+    assert!(ClapPlugin::create(reloaded, "org.scythe.test-gain", 48000.0, 512).is_ok());
+}
+
+#[test]
 fn discovers_and_loads_factory_presets() {
     let Some(path) = test_plugin() else {
         eprintln!("clap-test-gain not built; skipping");
