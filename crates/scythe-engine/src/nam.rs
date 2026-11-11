@@ -603,18 +603,29 @@ impl NamInfo {
 /// Modeler LV2 plugin does in REAPER: no rate conversion, so no delay. A 48 kHz model in a
 /// 44.1 kHz project shapes the signal as if it were 9 % slower, as there (REAPER 7.73 with the
 /// plugin's 0.1.4 at 44.1 kHz renders what running the model straight at 44.1 kHz gives, and
-/// the plugin adds no latency).
+/// the plugin adds no latency). Its output is brought to the plugin's level: a model that
+/// states its loudness is turned up or down to [`NORMALIZED_LOUDNESS`].
 pub struct NamVoice {
     model: NamModel,
+    gain: f32,
 }
+
+/// The loudness, in dB, the LV2 plugin brings every model's output to that states one in its
+/// metadata (REAPER 7.73 with the plugin 0.1.4: levels within 0.09 dB of REAPER's on models from
+/// -8.9 to -39.6 dB); a model without it plays as it is.
+pub const NORMALIZED_LOUDNESS: f64 = -18.0;
 
 impl NamVoice {
     pub fn new(model: NamModel) -> Self {
-        Self { model }
+        let gain = model.loudness.map_or(1.0, |l| 10f64.powf((NORMALIZED_LOUDNESS - l) / 20.0) as f32);
+        Self { model, gain }
     }
 
     fn process(&mut self, buf: &mut [f32]) {
         self.model.process(buf);
+        if self.gain != 1.0 {
+            buf.iter_mut().for_each(|s| *s *= self.gain);
+        }
     }
 
     /// Frames of input after which the voice no longer hears the silence it started from.
@@ -973,6 +984,26 @@ mod tests {
     }
 
     /// A 48 kHz model that passes its input through, in a 44.1 kHz project: it runs at the
+    /// A model that passes its input through, stating its loudness or not: one at -24 dB comes
+    /// out 6 dB louder, as the LV2 plugin brings it to -18 dB; one without plays as it is.
+    #[test]
+    fn a_stated_loudness_is_brought_to_minus_18_db() {
+        for (loudness, gain) in [(Some(-24.0), 1.995_262f32), (None, 1.0)] {
+            let metadata = loudness.map_or(String::new(), |l| format!(r#""metadata": {{"loudness": {l}}},"#));
+            let json = format!(
+                r#"{{"architecture": "WaveNet", "sample_rate": 48000, {metadata}
+                "config": {{"layers": [{{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
+                  "kernel_size": 2, "dilations": [1], "activation": "Hardtanh", "gated": false, "head_bias": true}}],
+                  "head_scale": 1.0}},
+                "weights": [1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0]}}"#
+            );
+            let mut voice = NamVoice::new(NamModel::from_json(json.as_bytes()).unwrap());
+            let mut buf = vec![0.25f32; 64];
+            voice.process(&mut buf);
+            assert!((buf[63] - 0.25 * gain).abs() < 1e-5, "{loudness:?}: {}", buf[63]);
+        }
+    }
+
     /// project's rate, as the LV2 plugin does in REAPER, so the input comes out as it went in,
     /// on the same frame.
     #[test]

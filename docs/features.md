@@ -427,7 +427,15 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   rate the model was trained at, as the plugin (0.1.4) does in REAPER: no conversion, so no
   latency (measured in REAPER 7.73: a 48 kHz model adds 13.0 frames at 48 and at 44.1 kHz, the
   model's own delay, and Scythe the same; renders at both rates match REAPER's to the same
-  residual). The NAM slot's **Edit** opens the NAM panel: the model's name,
+  residual). Like the plugin, a model that states its loudness (`metadata.loudness`) is
+  brought to -18 dB: its output is turned by -18 minus that loudness in dB, before the slot's
+  output level; one without plays as it is. This holds for the LV2 slot, the NAM stage of a
+  guitar rig and the NAM panel's and TONE3000 previews alike (REAPER 7.73 with the plugin 0.1.4,
+  six models from -8.9 to -39.6 dB and one without, at 44.1 and 48 kHz, input and output levels
+  0 and +6/-3 dB: output level within 0.09 dB of REAPER's, 0.15 dB for the model without).
+  Mixes made in Scythe before this change hear each such NAM slot (-18 - loudness) dB louder or
+  quieter than before: 6.9 dB quieter for a model at -11.1 dB, 21.6 dB louder for one at
+  -39.6 dB. The NAM slot's **Edit** opens the NAM panel: the model's name,
   gear, author, architecture and rate, input and output knobs, previous/next model
   (Alt+Left/Right), four snapshots per slot to A/B models and levels (click to switch, Shift+click
   to store, Alt+1…4), and a two-pane browser (list beside the picked entry, stacked when the panel

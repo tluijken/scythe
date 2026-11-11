@@ -48,9 +48,7 @@ measured.
   the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
   "prevent anticipative FX" flags; the NAM slot reports no separate model cost. NAM models trained at another rate than the
   project's run at the project's, as REAPER's plugin runs them, so a 48 kHz model in a 44.1 kHz
-  project sounds a little different from the model at its own rate; the plugin's loudness
-  normalization (REAPER's output is the model's `loudness` metadata brought to -18 dB, 6.9 dB
-  lower for a model at -11.1 dB) is not applied.
+  project sounds a little different from the model at its own rate.
 - Audio device page: JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
   channels" are kept but not used: Scythe's MIDI goes through the ALSA sequencer, which JACK and
   PipeWire bridge. "Auto-suspend PulseAudio" (`linux_auto_pasuspend`, REAPER running its ALSA
