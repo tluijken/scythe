@@ -13,7 +13,9 @@ fn main() {
     let start = Instant::now();
     let found = match kind.as_str() {
         "lv2" => lv2::scan(&dirs).len(),
-        "clap" => clap_host::bundles(&dirs).iter().filter_map(|b| clap_host::scan_bundle(b).ok()).map(|d| d.len()).sum(),
+        "clap" => {
+            clap_host::bundles(&dirs).iter().filter_map(|b| clap_host::scan_bundle(b).ok()).map(|d| d.len()).sum()
+        }
         "vst3" => vst3_host::scan(&dirs).len(),
         _ => {
             eprintln!("usage: scan_probe lv2|clap|vst3 DIR...");

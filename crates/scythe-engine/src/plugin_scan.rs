@@ -226,8 +226,7 @@ impl Catalog {
             self.in_helper(config, &["clap"], p, || crate::clap_host::scan_bundle(p))
         });
         self.publish(|s| s.clap = Arc::new(found));
-        let found =
-            self.scan_format(config.cache("lv2"), clear, "LV2", &lv2, &mut failures, crate::lv2::load_bundle);
+        let found = self.scan_format(config.cache("lv2"), clear, "LV2", &lv2, &mut failures, crate::lv2::load_bundle);
         self.publish(|s| s.lv2 = Arc::new(found));
         let binaries: Vec<PathBuf> = vst3.iter().map(|m| m.binary.clone()).collect();
         let mut found = self.scan_format(config.cache("vst3"), clear, "VST3", &binaries, &mut failures, |p| {
