@@ -721,6 +721,37 @@ fn fx_tab(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, inner: Rect
             }
             *y += 36.0;
         }
+        let failures = app.engine.fx().catalog().snapshot().failures;
+        if scanning.is_none() && !failures.is_empty() {
+            let text = match failures.len() {
+                1 => "1 plugin failed to load".to_owned(),
+                n => format!("{n} plugins failed to load"),
+            };
+            let tip = failures
+                .iter()
+                .map(|f| format!("{} {}: {}", f.format, f.path.display(), f.reason))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let r = Rect::from_min_size(pos2(inner.left(), *y), vec2(inner.width() - 84.0, 24.0));
+            ui.allocate_rect(r, Sense::hover())
+                .on_hover_text(tip)
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.as_str()));
+            painter.text(
+                pos2(inner.left() + 4.0, *y + 12.0),
+                Align2::LEFT_CENTER,
+                text,
+                theme::regular(11.0),
+                TEXT_DIM,
+            );
+            let pill = Rect::from_min_size(pos2(inner.right() - 76.0, *y + 1.0), vec2(76.0, 22.0));
+            if text_pill(ui, pill, "Rescan", theme::regular(11.0), BG, TEXT_MID)
+                .on_hover_text("Check every plugin file again, also the ones that failed")
+                .clicked()
+            {
+                app.engine.fx().catalog().rescan(true);
+            }
+            *y += 28.0;
+        }
         *y += 8.0;
     }
 }
