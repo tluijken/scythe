@@ -1808,6 +1808,15 @@ fn scythe_eq_bands_are_set_by_name_saved_and_undone() {
     assert_eq!(got["bands"][0]["gain_db"], 3.0);
     let err = execute_json(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "slope": 7})).unwrap_err();
     assert_eq!(err.kind, ErrorKind::Invalid);
+
+    // Nothing plays yet: comparing and matching with a track answer that, and a source
+    // needs a track or a file.
+    let got = ok(&mut s, json!({"cmd": "eq.compare", "track": t, "index": 0, "with": {"track": "master"}}));
+    assert_eq!(got["live"], false);
+    let got = ok(&mut s, json!({"cmd": "eq.match", "track": t, "index": 0, "reference": {"track": t}}));
+    assert_eq!(got["live"], false);
+    let err = execute_json(&mut s, json!({"cmd": "eq.match", "track": t, "index": 0, "reference": {}})).unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
 }
 
 /// The performance meter counts each track's and effect's render time on a playing engine,

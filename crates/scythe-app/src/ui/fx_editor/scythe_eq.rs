@@ -16,6 +16,7 @@ use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, St
 use scythe_engine::fx::FxOwner;
 use scythe_engine::probe::{Side, Watch};
 use scythe_engine::scythe_eq::filters::{Design, Prototype, SLOPES, Shape as BandShape, slope_label};
+use scythe_engine::scythe_eq::matching::collisions;
 use scythe_engine::scythe_eq::params::{self as p, BANDS, CHARACTERS, GLOBAL, Placement, RESOLUTIONS, band, global};
 use scythe_engine::scythe_eq::{BandSettings, Meters, ScytheEq};
 
@@ -45,7 +46,8 @@ pub struct EqView {
     alt_solo: Option<usize>,
     /// EQ scale: ± this many dB.
     pub range_db: f64,
-    /// Another Scythe EQ to show (and find collisions with).
+    /// Another Scythe EQ, or a track's output when the path is empty, to show (and find
+    /// collisions with).
     pub other: Option<(FxOwner, Vec<usize>)>,
     pub collisions: bool,
     pub frozen: bool,
@@ -237,6 +239,9 @@ fn feed_analyzer(cx: &mut Ctx, st: &State) {
     };
     let probe = cx.inst.probe.clone();
     let other = cx.ed.eq.as_ref().and_then(|v| v.other.clone()).and_then(|(owner, path)| {
+        if path.is_empty() {
+            return super::eq_match::track_probe(cx.app, &owner);
+        }
         let slots = super::chain_slots(cx.app, &owner);
         cx.app.engine.fx().instance_at(&owner, &slots, &path).map(|i| i.probe.clone())
     });
@@ -444,34 +449,6 @@ fn draw_collisions(ui: &Ui, plot: &Plot, levels: &Levels, view: &EqView) {
         mesh.add_triangle(i, i + 2, i + 3);
     }
     ui.painter_at(plot.rect).add(Shape::mesh(mesh));
-}
-
-/// Grid ranges where both spectra are above `floor` dB and within 6 dB of each other, with a
-/// strength from 0 to 1 (how loud and how close they are).
-pub fn collisions(ours: &[f32], theirs: &[f32], floor: f32) -> Vec<(usize, usize, f32)> {
-    let mut out = Vec::new();
-    let mut start: Option<(usize, f32)> = None;
-    for i in 0..ours.len().min(theirs.len()) {
-        let (a, b) = (ours[i], theirs[i]);
-        let hit = a > floor && b > floor && (a - b).abs() < 6.0;
-        let strength =
-            if hit { (((a.min(b) - floor) / 30.0).clamp(0.0, 1.0)) * (1.0 - (a - b).abs() / 6.0) } else { 0.0 };
-        match (&mut start, hit) {
-            (None, true) => start = Some((i, strength)),
-            (Some((_, s)), true) => *s = s.max(strength),
-            (Some((from, s)), false) => {
-                if i - *from >= 3 {
-                    out.push((*from, i - 1, *s));
-                }
-                start = None;
-            }
-            (None, false) => {}
-        }
-    }
-    if let Some((from, s)) = start {
-        out.push((from, ours.len() - 1, s));
-    }
-    out
 }
 
 fn band_curve(d: &Design, xs: &[f64]) -> Vec<f64> {
@@ -1333,7 +1310,7 @@ fn bottom_bar(cx: &mut Ctx, ui: &mut Ui, rect: Rect, view: &mut EqView, st: &Sta
     if toggle(ui, row.next(58.0), key("freeze"), "Freeze", view.frozen, ACCENT) {
         view.frozen = !view.frozen;
     }
-    let others = super::eq_match::other_instances(cx);
+    let others = super::eq_match::compare_sources(cx);
     let mut labels = vec!["None".to_owned()];
     labels.extend(others.iter().map(|o| o.label.clone()));
     let current = view

@@ -15585,6 +15585,299 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "What this Scythe EQ puts out next to what a track, the master or another instance\nplays, on third-octave bands, with the ranges where they collide (both loud and within\n6 dB). It reads the last third of a second of audio, so ask while the part plays; the\nfirst call after a pause starts listening and may answer `live: false`.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.compare`.",
+    "inputSchema": {
+      "properties": {
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        },
+        "with": {
+          "description": "What to compare with.",
+          "properties": {
+            "file": {
+              "default": null,
+              "description": "An audio file: its long-term spectrum.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "index": {
+              "default": null,
+              "description": "With `track`: the Scythe EQ at this position of the track's chain instead, its output.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "A track or `\"master\"`: its audio after its effects, before its fader."
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "with"
+      ],
+      "type": "object"
+    },
+    "name": "eq_compare",
+    "title": "Eq compare"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "EQ Match: bells and shelves that move this Scythe EQ's input towards the spectrum of\na track, the master, another instance or an audio file. Live sources are read over the\nlast third of a second, so ask while the part plays. With `apply` the bands go into\nfree band slots as one undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.match`.",
+    "inputSchema": {
+      "properties": {
+        "amount": {
+          "default": null,
+          "description": "Percent of the difference to correct, 0-100 (100 when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "apply": {
+          "default": false,
+          "description": "Adds the bands to the EQ; otherwise they are only proposed.",
+          "type": "boolean"
+        },
+        "bands": {
+          "default": null,
+          "description": "Most bands to use, 1-16 (8 when left out).",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "chain": {
+          "default": null,
+          "description": "`track` (the default), `input` (the record input chain, on the live input the track monitors),\n`take` (with `item` and `take`), or `monitor` (the monitoring chain after the master,\nheard on the device only and never rendered; `track` is then ignored).",
+          "enum": [
+            "track",
+            "input",
+            "take",
+            "monitor",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Position in the chain, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inside": {
+          "default": [],
+          "description": "The container the effect sits in, as positions from the top of the chain (each one\ninside the container before it); left out for the chain itself.",
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "item": {
+          "default": null,
+          "description": "For the `take` chain: the item id.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reference": {
+          "description": "What to match to.",
+          "properties": {
+            "file": {
+              "default": null,
+              "description": "An audio file: its long-term spectrum.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "index": {
+              "default": null,
+              "description": "With `track`: the Scythe EQ at this position of the track's chain instead, its output.",
+              "format": "uint",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "track": {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ],
+                  "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "A track or `\"master\"`: its audio after its effects, before its fader."
+            }
+          },
+          "type": "object"
+        },
+        "smoothing": {
+          "default": null,
+          "description": "Smoothing in octaves, 0.05-2 (a third when left out).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "take": {
+          "default": null,
+          "description": "For the `take` chain: the take index, the active take when left out.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "index",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "name": "eq_match",
+    "title": "Eq match"
+  },
+  {
+    "annotations": {
       "destructiveHint": true,
       "idempotentHint": false,
       "openWorldHint": false,

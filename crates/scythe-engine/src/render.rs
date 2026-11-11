@@ -18,6 +18,7 @@ use crate::meter::Meter;
 use crate::midi_io::{LiveMidi, OutMessage, RecInput};
 use crate::midi_sync::{LtcWriter, TimecodeRate};
 use crate::mix::{Automation, FaderStage, Matrix, PreFxGain, VcaRamp};
+use crate::probe::Side;
 use crate::synth::{ControlEvent, NoteList, SynthNote};
 use scythe_core::midi_route::SendMidi;
 
@@ -1383,6 +1384,9 @@ impl RenderGraph {
             );
         }
         taps.fill(taps.post_fx.as_ref(), out_l, out_r, master_aux.as_deref().map(|a| &a[..]), start, sr);
+        if self.master_meter.probe.active() {
+            self.master_meter.probe.tap(Side::Post, out_l, out_r, self.sample_rate);
+        }
         // The master fader acts on every channel; its pan on the first pair only.
         if let Some(aux) = master_aux.as_deref_mut() {
             for b in aux.iter_mut() {
@@ -1734,6 +1738,9 @@ impl RenderGraph {
         drop(midi_bufs);
         if track.audible {
             track.taps.fill(track.taps.post_fx.as_ref(), tl, tr, aux.as_deref().map(|a| &a[..]), read, sr_f);
+        }
+        if track.meter.probe.active() {
+            track.meter.probe.tap(Side::Post, tl, tr, self.sample_rate);
         }
         // Compensated output recording places the audio where the chain's latency put it.
         let tap_frame = |tap: &crate::record::OutputTap| if tap.compensated { position } else { read };
@@ -2867,6 +2874,28 @@ mod tests {
         p.tracks[0].muted = true;
         let (l, _) = render(&graph_with(&p, ones(100)), 0, 10);
         assert!(l.iter().all(|&s| s == 0.0));
+    }
+
+    /// A track's tap holds its audio after the effects and before the fader, the master's
+    /// the mix after the master effects, and only while someone reads them.
+    #[test]
+    fn track_and_master_taps_hold_the_post_fx_audio() {
+        let mut p = project_with_item(0.0, 1.0);
+        p.tracks[0].volume = 0.5;
+        let g = graph_with(&p, ones(100));
+        render(&g, 0, 10);
+        assert_eq!(g.tracks[0].meter.probe.latest(Side::Post, &mut [0.0; 4]), 0);
+        let _track = g.tracks[0].meter.probe.watch();
+        let _master = g.master_meter.probe.watch();
+        let (l, r) = render(&g, 10, 10);
+        let mut got = [0.0f32; 10];
+        assert_eq!(g.tracks[0].meter.probe.latest(Side::Post, &mut got), 10);
+        assert!(got.iter().all(|s| (s - 1.0).abs() < 1e-6), "{got:?}");
+        assert_eq!(g.tracks[0].meter.probe.sample_rate(), 100);
+        g.master_meter.probe.latest(Side::Post, &mut got);
+        for i in 0..10 {
+            assert!((got[i] - (l[i] + r[i]) * 0.5).abs() < 1e-6 && got[i] < 0.9, "{got:?}");
+        }
     }
 
     #[test]

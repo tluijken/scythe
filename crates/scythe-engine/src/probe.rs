@@ -138,6 +138,12 @@ impl FxProbe {
         self.lease.fetch_max(blocks, Ordering::Relaxed);
     }
 
+    /// Like [`FxProbe::lease`], also keeping the audio in the rings (made here the first time).
+    pub fn lease_audio(&self, blocks: u32) {
+        self.rings.get_or_init(|| Rings { pre: Ring::new(), post: Ring::new() });
+        self.lease(blocks);
+    }
+
     /// Raises `slot` to `value` if it is higher (values are never negative).
     #[inline]
     pub fn publish_max(&self, slot: usize, value: f32) {
@@ -166,11 +172,9 @@ impl FxProbe {
     /// Called by the effect's host around each block while the probe is active.
     pub fn tap(&self, side: Side, left: &[f32], right: &[f32], sample_rate: u32) {
         let peak = left.iter().chain(right).fold(0.0f32, |m, s| m.max(s.abs()));
+        self.sample_rate.store(sample_rate, Ordering::Relaxed);
         match side {
-            Side::Pre => {
-                self.publish_max(INPUT, peak);
-                self.sample_rate.store(sample_rate, Ordering::Relaxed);
-            }
+            Side::Pre => self.publish_max(INPUT, peak),
             Side::Post => {
                 self.publish_max(OUTPUT, peak);
                 let lease = self.lease.load(Ordering::Relaxed);

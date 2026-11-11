@@ -23,9 +23,8 @@ measured.
   bands run in order). Cut, notch, band pass and all pass bands cannot be dynamic. Spectral
   bands detect on the EQ's output (or the external sidechain), not on its input, and add an
   STFT's latency in every phase mode. Solo and sidechain audition skip the latency
-  compensation of the FIR modes. The analyzer's "Compare", collisions and EQ Match read
-  another Scythe EQ instance's signal (or a file); a track without one cannot be compared.
-  EQ Match fits bells and shelves only. Changing the phase mode, the linear phase resolution or
+  compensation of the FIR modes. Over the control API, `eq.compare` and `eq.match`
+  read a live source over its last third of a second only. EQ Match fits bells and shelves only. Changing the phase mode, the linear phase resolution or
   whether any band is spectral makes a new instance (for latency compensation), which restarts
   its filters with a click if it plays. The instance list covers top-level slots on tracks and
   the master (not input, take or monitoring chains or containers). There is no undo history of

@@ -58,6 +58,29 @@ pub fn other_instances(cx: &Ctx) -> Vec<Instance> {
     all_instances(cx.app).into_iter().filter(|i| !(i.owner == cx.ed.owner && i.path == cx.ed.path)).collect()
 }
 
+/// What an instance can compare and match with: the other Scythe EQs, then every track's
+/// and the master's output after its effects (an empty path).
+pub fn compare_sources(cx: &Ctx) -> Vec<Instance> {
+    let mut out: Vec<Instance> =
+        other_instances(cx).into_iter().map(|i| Instance { label: format!("{} (Scythe EQ)", i.label), ..i }).collect();
+    for t in &cx.app.project.tracks {
+        let label = if t.name.is_empty() { "Track".to_owned() } else { t.name.clone() };
+        out.push(Instance { owner: FxOwner::Track(t.id), path: Vec::new(), label });
+    }
+    out.push(Instance { owner: FxOwner::Master, path: Vec::new(), label: "Master".to_owned() });
+    out
+}
+
+/// The tap on a track's (or the master's) output after its effects.
+pub fn track_probe(app: &ScytheApp, owner: &FxOwner) -> Option<std::sync::Arc<scythe_engine::probe::FxProbe>> {
+    let meters = app.engine.meters();
+    match owner {
+        FxOwner::Track(id) => meters.get(*id).map(|m| m.probe.clone()),
+        FxOwner::Master => Some(meters.master.probe.clone()),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 enum Reference {
     #[default]
@@ -182,7 +205,7 @@ fn measure_file(path: PathBuf) -> Receiver<Result<Vec<f64>, String>> {
 
 pub(super) fn window(cx: &mut Ctx, ui: &mut Ui, view: &mut EqView, values: &[f64]) {
     let Some(mut panel) = view.match_panel.take() else { return };
-    let others = other_instances(cx);
+    let others = compare_sources(cx);
     if panel.capturing {
         let (pre, other) = view.capture_curves();
         if let Some(c) = pre {
@@ -263,7 +286,7 @@ fn match_body(
         let label = if panel.capturing { "Stop learning" } else { "Learn" };
         if ui
             .button(label)
-            .on_hover_text("Average this EQ's input (and the reference instance) while playing")
+            .on_hover_text("Average this EQ's input (and the reference track or instance) while playing")
             .clicked()
         {
             panel.capturing = !panel.capturing;
@@ -278,7 +301,7 @@ fn match_body(
     let secs = |frames: usize| frames as f64 / 60.0;
     let status = match (&panel.reference, panel.job.is_some()) {
         (_, true) => "Measuring the file…".to_owned(),
-        (Reference::None, _) => "Pick another Scythe EQ or an audio file to match to".to_owned(),
+        (Reference::None, _) => "Pick a track, another Scythe EQ or an audio file to match to".to_owned(),
         _ => format!(
             "Input learned {:.0} s{}",
             secs(panel.current_frames),
@@ -332,31 +355,13 @@ fn match_body(
         let apply = ui.add_enabled(n > 0, egui::Button::new(format!("Apply {n} band(s)")));
         if apply.clicked() {
             let proposal = panel.proposal.clone();
-            cx.edit_once("EQ match", |eq: &mut ScytheEq| apply_bands(eq, &proposal));
+            cx.edit_once("EQ match", |eq: &mut ScytheEq| matching::apply_bands(eq, &proposal));
             panel.capturing = false;
         }
         if free < panel.proposal.len() {
             ui.label(egui::RichText::new(format!("only {free} free band(s)")).color(TEXT_DIM));
         }
     });
-}
-
-/// Adds `bands` into free band slots of `eq`.
-pub fn apply_bands(eq: &mut ScytheEq, bands: &[Design]) {
-    let mut free = (0..BANDS).filter(|b| eq.value(p::band_param(*b, band::USED)) < 0.5).collect::<Vec<_>>().into_iter();
-    for d in bands {
-        let Some(b) = free.next() else { break };
-        let id = |o: u32| p::band_param(b, o);
-        for o in 0..band::COUNT {
-            eq.set(id(o), p::default(id(o)));
-        }
-        eq.set(id(band::SHAPE), d.shape.index() as f64);
-        eq.set(id(band::FREQ), d.freq);
-        eq.set(id(band::GAIN), d.gain_db);
-        eq.set(id(band::Q), d.q);
-        eq.set(id(band::SLOPE), d.slope as f64);
-        eq.set(id(band::USED), 1.0);
-    }
 }
 
 /// The instance list: every Scythe EQ with its curve and bands, editable in place.

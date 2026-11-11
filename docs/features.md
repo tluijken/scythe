@@ -394,10 +394,12 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     averaged while a sine keeps its level. The display eases between analyzer updates for a
     fluid 60 fps. *Spectrum grab*: a peak near the pointer standing 6 dB over its surroundings is
     highlighted; dragging it makes a bell there with the gain following the pointer.
-  - *Compare and collisions*: "Compare" shows another Scythe EQ's output; where both signals are
-    loud and within 6 dB of each other the frequencies are shaded as collisions.
-  - *EQ Match*: learns this instance's input against another Scythe EQ's signal (both averaged
-    while playing) or against an audio file (measured offline), levels the difference (its mean
+  - *Compare and collisions*: "Compare" shows any track's or the master's output (after its
+    effects, before its fader, tapped by the engine only while someone reads it) or another
+    Scythe EQ's; where both signals are loud and within 6 dB of each other the frequencies are
+    shaded as collisions.
+  - *EQ Match*: learns this instance's input against a track's, the master's or another Scythe
+    EQ's signal (both averaged while playing) or against an audio file (measured offline), levels the difference (its mean
     over 100 Hz–10 kHz removed), smooths it (0.05–2 octaves), scales it by the amount and fits up
     to 16 bands (shelves where the difference reaches an end of the spectrum, bells elsewhere,
     gains refined together); Apply adds them to free bands as one undo step.
@@ -412,7 +414,9 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   - *Control API and MCP*: every band and global value is a parameter (`fx.params`, `fx.param`,
     automation, modulation and MIDI/OSC learn; solo and audition are momentary and not stored);
     `eq.instances`, `eq.get`, `eq.band` (add, change or remove a band by number with named
-    shapes) and `eq.set` (globals) address it directly. The web UI's inspector lists the bands
+    shapes) `eq.set` (globals) address it directly; `eq.compare` gives this EQ's and a track's (the
+    master's, another instance's) third-octave levels with the collisions, and `eq.match` fits
+    bands towards a track, an instance or a file (proposed, or applied as one undo step). The web UI's inspector lists the bands
     with shape, placement, frequency, gain and Q.
   - *CPU* (one instance, 48 kHz, 256-frame blocks, eight bands, release build on the test
     machine): zero latency 31 µs per block (0.6 % of one core), natural phase 17 µs (0.3 %),

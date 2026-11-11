@@ -87,8 +87,8 @@ that beyond ReaEQ can be
 - placed on **stereo, left, right, mid or side** each;
 - run at **zero latency** (matched filters that keep the analog shape up to Nyquist), in
   **natural phase** or in **linear phase**, with the latency compensated;
-- matched to another track's Scythe EQ or a reference file with **EQ Match**, edited across the project in
-  the **instance list**, and checked for **collisions** with the spectrum of another track's Scythe EQ.
+- matched to any track, the master, another Scythe EQ or a reference file with **EQ Match**, edited
+  across the project in the **instance list**, and checked for **collisions** with any track's spectrum.
 
 The editor draws every band and the summed curve, with each dynamic band moving live, over a
 high-resolution analyzer (pre, post and sidechain; resolution, speed, tilt, range, peak hold,

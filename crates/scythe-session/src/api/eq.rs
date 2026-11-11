@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use scythe_engine::scythe_eq::filters::{SLOPES, Shape};
+use scythe_engine::scythe_eq::matching::{self, MatchOptions};
 use scythe_engine::scythe_eq::params::{self as p, BANDS, GLOBAL, band, global};
 use scythe_engine::scythe_eq::{self, BandSettings, ScytheEq};
 use serde::{Deserialize, Serialize};
@@ -117,6 +118,61 @@ pub enum EqCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
+    /// What this Scythe EQ puts out next to what a track, the master or another instance
+    /// plays, on third-octave bands, with the ranges where they collide (both loud and within
+    /// 6 dB). It reads the last third of a second of audio, so ask while the part plays; the
+    /// first call after a pause starts listening and may answer `live: false`.
+    #[serde(rename = "eq.compare")]
+    Compare {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        /// What to compare with.
+        with: EqSource,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
+    /// EQ Match: bells and shelves that move this Scythe EQ's input towards the spectrum of
+    /// a track, the master, another instance or an audio file. Live sources are read over the
+    /// last third of a second, so ask while the part plays. With `apply` the bands go into
+    /// free band slots as one undo step.
+    #[serde(rename = "eq.match")]
+    Match {
+        track: TrackRef,
+        /// Position in the chain, from 0.
+        index: usize,
+        /// What to match to.
+        reference: EqSource,
+        /// Percent of the difference to correct, 0-100 (100 when left out).
+        #[serde(default)]
+        amount: Option<f64>,
+        /// Smoothing in octaves, 0.05-2 (a third when left out).
+        #[serde(default)]
+        smoothing: Option<f64>,
+        /// Most bands to use, 1-16 (8 when left out).
+        #[serde(default)]
+        bands: Option<usize>,
+        /// Adds the bands to the EQ; otherwise they are only proposed.
+        #[serde(default)]
+        apply: bool,
+        #[serde(flatten)]
+        at: ChainAt,
+    },
+}
+
+/// A signal Scythe EQ compares or matches with: give `track` alone, `track` and `index`, or
+/// `file`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EqSource {
+    /// A track or `"master"`: its audio after its effects, before its fader.
+    #[serde(default)]
+    pub track: Option<TrackRef>,
+    /// With `track`: the Scythe EQ at this position of the track's chain instead, its output.
+    #[serde(default)]
+    pub index: Option<usize>,
+    /// An audio file: its long-term spectrum.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -285,6 +341,142 @@ pub fn instances(session: &Session) -> Vec<(Option<scythe_core::TrackId>, usize,
     out
 }
 
+/// Points the match is fitted on.
+const MATCH_POINTS: usize = 240;
+/// Blocks a live source keeps tapping after a read (a few seconds).
+const LEASE: u32 = 400;
+
+/// The newest audio of one side of a probe, `None` until it has played.
+fn live_audio(probe: &scythe_engine::probe::FxProbe, side: scythe_engine::probe::Side) -> Option<(Vec<f32>, f64)> {
+    probe.lease_audio(LEASE);
+    let mut buf = vec![0.0f32; scythe_engine::probe::RING];
+    let head = probe.latest(side, &mut buf);
+    (head >= buf.len() && buf.iter().any(|s| *s != 0.0)).then(|| (buf, probe.sample_rate().max(1) as f64))
+}
+
+/// A source's levels at `freqs` over `octaves` wide bands; `Ok(None)` while a live source
+/// has not played yet.
+fn source_levels(
+    session: &Session,
+    source: &EqSource,
+    freqs: &[f64],
+    octaves: f64,
+) -> Result<Option<Vec<f64>>, ApiError> {
+    use scythe_engine::probe::Side;
+    if let Some(file) = &source.file {
+        let audio = scythe_engine::media::decode_file(std::path::Path::new(file))
+            .map_err(|e| ApiError::invalid(format!("{file}: {e}")))?;
+        let a = scythe_engine::analysis::analyse(&audio.channels, audio.sample_rate, None, None);
+        let hz: Vec<f64> = a.bands.iter().map(|b| b.hz.ln()).collect();
+        let db: Vec<f64> = a.bands.iter().map(|b| b.level_db).collect();
+        return Ok(Some(
+            freqs
+                .iter()
+                .map(|f| {
+                    let x = f.ln();
+                    match hz.iter().position(|h| *h >= x) {
+                        Some(0) => db[0],
+                        Some(k) => db[k - 1] + (x - hz[k - 1]) / (hz[k] - hz[k - 1]) * (db[k] - db[k - 1]),
+                        None => *db.last().unwrap_or(&-150.0),
+                    }
+                })
+                .collect(),
+        ));
+    }
+    let track = source.track.as_ref().ok_or_else(|| ApiError::invalid("give `track` (with `index`) or `file`"))?;
+    let audio = match source.index {
+        Some(index) => live_audio(&running(session, track, index, &ChainAt::default())?.probe, Side::Post),
+        None => {
+            let meters = session.engine.meters();
+            let meter = match track.resolve(&session.project)? {
+                super::Target::Master => Some(&meters.master),
+                super::Target::Track(id) => meters.get(id),
+            };
+            let meter = meter.ok_or_else(|| ApiError::failed("the track does not play"))?;
+            live_audio(&meter.probe, Side::Post)
+        }
+    };
+    Ok(audio.map(|(buf, sr)| matching::levels(&buf, sr, freqs, octaves)))
+}
+
+fn round(v: f64) -> f64 {
+    (v * 10.0).round() / 10.0
+}
+
+fn compare(
+    session: &Session,
+    track: &TrackRef,
+    index: usize,
+    at: &ChainAt,
+    with: &EqSource,
+) -> Result<Value, ApiError> {
+    let inst = running(session, track, index, at)?;
+    let thirds: Vec<f64> = (-17..=13).map(|k| 1000.0 * 2f64.powf(k as f64 / 3.0)).collect();
+    let fine = matching::log_grid(MATCH_POINTS);
+    let ours = live_audio(&inst.probe, scythe_engine::probe::Side::Post);
+    let (Some((ours, sr)), Some(theirs), Some(theirs_fine)) =
+        (ours, source_levels(session, with, &thirds, 1.0 / 3.0)?, source_levels(session, with, &fine, 1.0 / 6.0)?)
+    else {
+        return Ok(json!({ "live": false }));
+    };
+    let ours_thirds = matching::levels(&ours, sr, &thirds, 1.0 / 3.0);
+    let ours_fine: Vec<f32> = matching::levels(&ours, sr, &fine, 1.0 / 6.0).iter().map(|v| *v as f32).collect();
+    let theirs_fine: Vec<f32> = theirs_fine.iter().map(|v| *v as f32).collect();
+    let top = ours_fine.iter().chain(&theirs_fine).copied().fold(-150.0f32, f32::max);
+    let bands: Vec<Value> = thirds
+        .iter()
+        .zip(ours_thirds.iter().zip(&theirs))
+        .map(|(hz, (o, t))| json!({ "hz": round(*hz), "ours_db": round(*o), "theirs_db": round(*t) }))
+        .collect();
+    let collisions: Vec<Value> = matching::collisions(&ours_fine, &theirs_fine, top - 50.0)
+        .into_iter()
+        .map(|(lo, hi, s)| json!({ "from_hz": round(fine[lo]), "to_hz": round(fine[hi]), "strength": round(s as f64) }))
+        .collect();
+    Ok(json!({ "live": true, "bands": bands, "collisions": collisions }))
+}
+
+fn match_to(
+    session: &mut Session,
+    track: &TrackRef,
+    index: usize,
+    at: &ChainAt,
+    reference: &EqSource,
+    options: MatchOptions,
+    apply: bool,
+) -> Result<Value, ApiError> {
+    let inst = running(session, track, index, at)?;
+    let freqs = matching::log_grid(MATCH_POINTS);
+    let current = live_audio(&inst.probe, scythe_engine::probe::Side::Pre)
+        .map(|(buf, sr)| matching::levels(&buf, sr, &freqs, 1.0 / 6.0));
+    let (Some(current), Some(target)) = (current, source_levels(session, reference, &freqs, 1.0 / 6.0)?) else {
+        return Ok(json!({ "live": false }));
+    };
+    // Levels too low to measure would only add noise to the difference.
+    let usable: Vec<bool> = current.iter().zip(&target).map(|(c, r)| *c > -110.0 && *r > -110.0).collect();
+    let pick = |v: &[f64]| v.iter().zip(&usable).map(|(x, u)| if *u { *x } else { 0.0 }).collect::<Vec<f64>>();
+    let curve = matching::target(&freqs, &pick(&current), &pick(&target), &options);
+    let proposal = matching::fit(&freqs, &curve, &options);
+    let bands: Vec<Value> = proposal
+        .iter()
+        .map(|d| {
+            json!({
+                "shape": EqShape::of(d.shape),
+                "freq": round(d.freq),
+                "gain_db": round(d.gain_db),
+                "q": (d.q * 100.0).round() / 100.0,
+            })
+        })
+        .collect();
+    let applied = if apply && !proposal.is_empty() {
+        edit_stock(session, &inst, "EQ match", "Scythe EQ", |eq: &mut ScytheEq| {
+            Ok(matching::apply_bands(eq, &proposal))
+        })?
+    } else {
+        0
+    };
+    Ok(json!({ "live": true, "bands": bands, "applied": applied }))
+}
+
 pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiError> {
     match command {
         EqCommand::Instances => {
@@ -431,6 +623,16 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
                 Ok(describe(eq.values(), None, None))
             })?;
             Ok(out)
+        }
+        EqCommand::Compare { track, index, with, at } => compare(session, &track, index, &at, &with),
+        EqCommand::Match { track, index, reference, amount, smoothing, bands, apply, at } => {
+            let options = MatchOptions {
+                amount: amount.unwrap_or(100.0).clamp(0.0, 100.0) / 100.0,
+                smoothing: smoothing.unwrap_or(1.0 / 3.0).clamp(0.05, 2.0),
+                max_bands: bands.unwrap_or(8).clamp(1, 16),
+                ..Default::default()
+            };
+            match_to(session, &track, index, &at, &reference, options, apply)
         }
     }
 }
