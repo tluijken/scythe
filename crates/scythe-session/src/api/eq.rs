@@ -64,6 +64,9 @@ pub enum EqCommand {
         /// Whether the band plays (false bypasses it).
         #[serde(default)]
         enabled: Option<bool>,
+        /// `dynamic` works on bells, shelves and tilts, and in zero latency on cuts (their
+        /// frequency moves an octave per 12 dB of range) and notches (their depth follows the
+        /// range); `spectral` on bells, shelves and tilts.
         #[serde(default)]
         dynamic: Option<EqDynamic>,
         /// How far a dynamic band moves from its gain, in dB (negative cuts when loud).

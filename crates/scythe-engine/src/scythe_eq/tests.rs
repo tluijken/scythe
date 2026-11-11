@@ -457,3 +457,39 @@ fn structural_switches_while_playing_do_not_click() {
         );
     }
 }
+
+/// In zero latency a dynamic low cut moves up while the lows it removes are loud, and a
+/// dynamic notch is transparent until its region is loud, then as deep as its range.
+#[test]
+fn dynamic_cuts_and_notches_move_in_zero_latency() {
+    let sr = 48000;
+    let gain = |shape: Shape, freq: f64, tone: f64, amp: f64, dynamic: bool| {
+        let mut eq = ScytheEq::new(sr);
+        set_band(&mut eq, 0, shape, freq, 0.0, 4.0);
+        if dynamic {
+            eq.set(band::DYNAMIC, 1.0);
+            eq.set(band::RANGE, -12.0);
+            eq.set(band::THRESHOLD, -40.0);
+            eq.set(band::ATTACK, 2.0);
+        }
+        let n = sr as usize;
+        let mut l = sine(tone, amp, n, sr as f64);
+        let mut r = l.clone();
+        run(&mut eq, &mut l, &mut r, sr);
+        db(amplitude(&l[n / 2..], tone, sr as f64) / amp)
+    };
+    let fixed = gain(Shape::LowCut, 100.0, 70.0, 0.5, false);
+    let moved = gain(Shape::LowCut, 100.0, 70.0, 0.5, true);
+    assert!(moved < fixed - 6.0, "low cut: static {fixed} dB, dynamic {moved} dB");
+    let quiet = gain(Shape::LowCut, 100.0, 70.0, 0.001, true);
+    assert!((quiet - gain(Shape::LowCut, 100.0, 70.0, 0.001, false)).abs() < 0.5, "quiet low cut {quiet}");
+    let loud = gain(Shape::Notch, 1000.0, 1000.0, 0.5, true);
+    assert!((loud + 12.0).abs() < 1.0, "loud notch {loud}");
+    let quiet = gain(Shape::Notch, 1000.0, 1000.0, 0.001, true);
+    assert!(quiet.abs() < 0.5, "quiet notch {quiet}");
+    let mut eq = ScytheEq::new(sr);
+    set_band(&mut eq, 0, Shape::Notch, 1000.0, 0.0, 4.0);
+    eq.set(band::DYNAMIC, 1.0);
+    eq.set(GLOBAL + global::PHASE, 2.0);
+    assert_eq!(eq.band(0).dynamic, 0, "static in the FIR modes");
+}

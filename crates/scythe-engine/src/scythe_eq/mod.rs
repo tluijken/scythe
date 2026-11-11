@@ -153,6 +153,8 @@ impl BandSettings {
         let v = |o: u32| values[(b as u32 * BAND_STRIDE + o) as usize];
         let scale = values[(GLOBAL + global::GAIN_SCALE) as usize] / 100.0;
         let shape = Shape::from_index(v(band::SHAPE) as usize);
+        let zero_latency = values[(GLOBAL + global::PHASE) as usize] < 0.5;
+        let dynamic = v(band::DYNAMIC) as u8;
         Self {
             used: v(band::USED) >= 0.5,
             enabled: v(band::ENABLED) >= 0.5,
@@ -165,7 +167,11 @@ impl BandSettings {
                 gain_q: values[(GLOBAL + global::GAIN_Q) as usize] >= 0.5,
             },
             placement: Placement::from_index(v(band::STEREO) as usize),
-            dynamic: if shape.has_gain() { v(band::DYNAMIC) as u8 } else { 0 },
+            dynamic: if shape.has_gain() || (dynamic == 1 && zero_latency && shape.dynamic_in_zero_latency()) {
+                dynamic
+            } else {
+                0
+            },
             range: v(band::RANGE) * scale,
             threshold: v(band::THRESHOLD),
             auto_threshold: v(band::AUTO_THRESHOLD) >= 0.5,
@@ -181,8 +187,14 @@ impl BandSettings {
         self.used && self.enabled
     }
 
+    /// The design at rest: a dynamic notch is transparent until it moves.
+    pub fn rest(&self) -> Design {
+        if self.dynamic == 1 { self.design.moved(0.0) } else { self.design }
+    }
+
     fn structure(&self) -> (Shape, usize, bool) {
-        (self.design.shape, self.design.slope, self.design.gain_q)
+        let shape = if self.dynamic == 1 { self.design.moved(0.0).shape } else { self.design.shape };
+        (shape, self.design.slope, self.design.gain_q)
     }
 }
 
@@ -469,7 +481,7 @@ impl ScytheEq {
     /// The EQ's static response at `hz` for a placement's channel, as the editor draws it
     /// (gain changes of dynamic bands left out).
     pub fn response(&self, hz: f64) -> f64 {
-        self.settings.iter().filter(|s| s.active()).map(|s| Prototype::design(&s.design).magnitude(hz)).product()
+        self.settings.iter().filter(|s| s.active()).map(|s| Prototype::design(&s.rest()).magnitude(hz)).product()
     }
 
     fn auto_target(&self) -> f64 {
@@ -485,7 +497,7 @@ impl ScytheEq {
                     Placement::Stereo | Placement::Mid => 1.0,
                     _ => 0.5,
                 };
-                (Prototype::design(&s.design), w)
+                (Prototype::design(&s.rest()), w)
             })
             .collect();
         auto_gain_db(|hz| protos.iter().map(|(p, w)| p.magnitude(hz).powf(2.0 * w)).product())
@@ -572,7 +584,13 @@ impl ScytheEq {
                 band.dynamic_db = 0.0;
                 continue;
             }
-            band.detector.retune(&s.design, fs);
+            // A dynamic cut listens to what it removes.
+            let listen = match s.design.shape {
+                Shape::LowCut => Design { shape: Shape::LowShelf, ..s.design },
+                Shape::HighCut => Design { shape: Shape::HighShelf, ..s.design },
+                _ => s.design,
+            };
+            band.detector.retune(&listen, fs);
             for i in 0..frames {
                 let (l, r) = if s.external {
                     ctx.aux.map_or((0.0, 0.0), |(al, ar)| {
@@ -638,12 +656,8 @@ impl ScytheEq {
                 snap(&mut band.gain, s.design.gain_db);
                 snap(&mut band.log_q, s.design.q.ln());
             }
-            let design = Design {
-                freq: band.log_freq.exp(),
-                gain_db: band.gain + band.dynamic_db,
-                q: band.log_q.exp(),
-                ..s.design
-            };
+            let rest = Design { freq: band.log_freq.exp(), gain_db: band.gain, q: band.log_q.exp(), ..s.design };
+            let design = if s.dynamic == 1 || s.design.shape.has_gain() { rest.moved(band.dynamic_db) } else { rest };
             let design = Design { shape: band.structure.map_or(design.shape, |st| st.0), ..design };
             if band.last != Some(design) {
                 band.cascade = Cascade::matched(&Prototype::design(&design), fs);

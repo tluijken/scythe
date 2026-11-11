@@ -20,15 +20,17 @@ measured.
   ones move at once; in natural phase the band's movement between its gain and its range is a
   blend of the two curves rather than the analog filter at each gain in between. In those
   modes mid/side bands act before left/right bands whatever their numbers (in zero latency the
-  bands run in order). Cut, notch, band pass and all pass bands cannot be dynamic. Spectral
-  bands detect on the EQ's output (or the external sidechain), not on its input, and add an
-  STFT's latency in every phase mode. Solo and sidechain audition skip the latency
-  compensation of the FIR modes. Over the control API, `eq.compare` and `eq.match`
-  read a live source over its last third of a second only. EQ Match fits bells and shelves only. Changing the phase mode, the linear phase resolution or
-  whether any band is spectral while playing crossfades the old and new processing each at its
-  own latency (the old cannot be advanced to a shorter one), so broadband material briefly
-  doubles over the 30 ms fade. There is no undo history of
-  the analyzer settings (they are stored with the instance but not automatable).
+  bands run in order). Cuts and notches can be dynamic in zero latency only (in the FIR modes
+  they stay static: a moving cutoff is not a blend of two fixed curves); band pass and all pass
+  bands cannot be dynamic (neither has a gain or a depth to move). Spectral bands detect on the
+  EQ's output (or the external sidechain), not on its input, and add an STFT's latency in
+  every phase mode. Solo and sidechain audition skip the latency compensation of the FIR
+  modes. Over the control API `eq.compare` and `eq.match` read a live source over its last
+  third of a second only. EQ Match fits bells and shelves only. Changing the phase mode, the
+  linear phase resolution or whether any band is spectral while playing crossfades the old and
+  new processing each at its own latency (the old cannot be advanced to a shorter one), so
+  broadband material briefly doubles over the 30 ms fade. There is no undo history of the
+  analyzer settings (they are stored with the instance but not automatable).
 - Audio performance: anticipative FX renders ahead only while a device plays (the silent
   clock of `--null-audio` renders every track in the callback). The first change to an effect
   on a track rendered ahead is heard a render-ahead later (200 ms by default), as in REAPER;

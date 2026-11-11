@@ -133,7 +133,7 @@ impl State {
     fn live_design(&self, b: usize) -> Design {
         let s = self.band(b);
         let dynamic = if s.dynamic == 1 { self.meters.dynamic(b) as f64 } else { 0.0 };
-        Design { gain_db: s.design.gain_db + dynamic, ..s.design }
+        if s.dynamic == 1 { s.design.moved(dynamic) } else { s.design }
     }
 }
 
@@ -467,7 +467,7 @@ fn draw_bands(ui: &Ui, plot: &Plot, view: &EqView, st: &State) {
     for b in st.used() {
         let s = st.band(b);
         let color = band_color(b);
-        let static_curve = band_curve(&s.design, &xs);
+        let static_curve = band_curve(&s.rest(), &xs);
         let live = st.live_design(b);
         let live_curve = if s.dynamic == 1 { band_curve(&live, &xs) } else { static_curve.clone() };
         if s.enabled {
@@ -489,9 +489,9 @@ fn draw_bands(ui: &Ui, plot: &Plot, view: &EqView, st: &State) {
         fill_between(ui, clip, &pts, zero, theme::with_alpha(color, alpha));
         let stroke = Stroke::new(if selected { 1.6 } else { 1.0 }, theme::with_alpha(color, if on { 190 } else { 60 }));
         painter.add(Shape::line(pts.clone(), stroke));
-        if s.dynamic > 0 && s.design.shape.has_gain() {
+        if s.dynamic > 0 {
             // The range the band can move through, and where it stands now.
-            let reach = Design { gain_db: s.design.gain_db + s.range, ..s.design };
+            let reach = s.design.moved(s.range);
             let reach_pts: Vec<Pos2> =
                 xs.iter().zip(band_curve(&reach, &xs)).map(|(&f, db)| plot.point(f, db.clamp(-60.0, 60.0))).collect();
             painter.add(Shape::dashed_line(&reach_pts, Stroke::new(1.0, theme::with_alpha(color, 120)), 4.0, 4.0));
@@ -1191,17 +1191,18 @@ fn band_panel(cx: &mut Ctx, ui: &mut Ui, rect: Rect, view: &mut EqView, st: &Sta
         return;
     }
     let mut row = Row { x: rect.left() + 36.0, top: rect.top() + 42.0, h: 26.0, right: rect.right() - 8.0 };
-    if !s.design.shape.has_gain() {
+    let gain = s.design.shape.has_gain();
+    if !gain && !(s.design.shape.dynamic_in_zero_latency() && st.g(global::PHASE) < 0.5) {
         ui.painter().text(
             pos2(row.x, row.top + 13.0),
             Align2::LEFT_CENTER,
-            "Dynamics need a bell, shelf or tilt",
+            "Dynamics need a bell, shelf or tilt, or a cut or notch in zero latency",
             theme::regular(11.0),
             TEXT_DIM,
         );
         return;
     }
-    let modes = names(p::DYNAMIC_MODES);
+    let modes = names(p::DYNAMIC_MODES.iter().take(if gain { 3 } else { 2 }).copied());
     if let Some(i) = choice(ui, row.next(116.0), key("dynamic"), "Dyn", &modes, s.dynamic as usize) {
         put_once(cx, "Change EQ band dynamics", p::band_param(b, band::DYNAMIC), i as f64);
     }

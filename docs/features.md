@@ -364,7 +364,10 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     with a 6 dB soft knee, never past the range; attack and release per band; auto threshold
     follows the detector's own average level (1.5 s). In the FIR modes a dynamic band adds a
     correction kernel scaled by its current amount, so the response stays linear (or natural)
-    phase while it moves. The sidechain can be auditioned.
+    phase while it moves. The sidechain can be auditioned. In zero latency cuts and notches can
+    be dynamic too: a cut's frequency moves an octave per 12 dB of range (into the pass band
+    for a negative range) while what it removes is loud, and a dynamic notch is transparent at
+    rest and as deep as its range when its region is loud (a bell of that depth).
   - *Spectral dynamics*: a spectral band works per frequency bin inside its region (an STFT of
     2048 at 48 kHz, 75 % overlap, after the EQ), so a resonance that pokes out is pulled down
     while its neighbours keep their level; same threshold, range, attack, release and auto

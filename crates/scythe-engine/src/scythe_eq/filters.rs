@@ -72,6 +72,12 @@ impl Shape {
         matches!(self, Self::Bell | Self::LowShelf | Self::HighShelf | Self::TiltShelf | Self::FlatTilt)
     }
 
+    /// Whether the shape can be dynamic in the zero-latency path, where the movement shifts
+    /// its frequency (cuts) or sets its depth (notch) rather than its gain.
+    pub fn dynamic_in_zero_latency(self) -> bool {
+        matches!(self, Self::LowCut | Self::HighCut | Self::Notch)
+    }
+
     pub fn has_slope(self) -> bool {
         matches!(
             self,
@@ -518,6 +524,20 @@ impl CascadeState {
 
 /// The 2nd-order filter that lets a band's region through when it is soloed or its detector
 /// is auditioned.
+impl Design {
+    /// What a dynamic band plays once it has moved `db` from rest: a gain shape's gain moves;
+    /// a cut's frequency moves an octave per 12 dB, into the pass band when `db` is negative;
+    /// a notch becomes a bell `db` deep, transparent at rest.
+    pub fn moved(&self, db: f64) -> Design {
+        match self.shape {
+            Shape::LowCut => Design { freq: (self.freq * 2f64.powf(-db / 12.0)).clamp(10.0, 30000.0), ..*self },
+            Shape::HighCut => Design { freq: (self.freq * 2f64.powf(db / 12.0)).clamp(10.0, 30000.0), ..*self },
+            Shape::Notch => Design { shape: Shape::Bell, gain_db: db, ..*self },
+            _ => Design { gain_db: self.gain_db + db, ..*self },
+        }
+    }
+}
+
 pub fn audition_design(d: &Design) -> Design {
     let shape = match d.shape {
         Shape::LowShelf | Shape::HighCut => Shape::HighCut,

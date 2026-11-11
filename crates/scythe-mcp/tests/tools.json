@@ -15223,6 +15223,7 @@
         },
         "dynamic": {
           "default": null,
+          "description": "`dynamic` works on bells, shelves and tilts, and in zero latency on cuts (their\nfrequency moves an octave per 12 dB of range) and notches (their depth follows the\nrange); `spectral` on bells, shelves and tilts.",
           "enum": [
             "off",
             "dynamic",
