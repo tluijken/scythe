@@ -47,6 +47,7 @@ pub fn request_from_prefs(prefs: &AudioDevicePrefs) -> DeviceRequest {
         host: Some(system.host().to_owned()),
         sample_rate: prefs.sample_rate,
         buffer_size: prefs.block_size,
+        periods: prefs.periods,
         output_channels: channels(prefs.output_channels),
         input_channels: channels(prefs.input_channels),
         ..Default::default()
@@ -88,6 +89,7 @@ pub fn prefs_from_request(request: &DeviceRequest, keep: &AudioDevicePrefs) -> A
         sample_rate: request.sample_rate,
         block_size: request.buffer_size,
         bits: request.bits.map(u32::from).or(keep.bits),
+        periods: request.periods.or(keep.periods),
         ..keep.clone()
     }
 }

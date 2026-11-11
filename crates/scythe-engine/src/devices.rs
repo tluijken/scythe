@@ -33,6 +33,9 @@ pub struct DeviceRequest {
     /// Bits per sample to ask for (REAPER's ALSA "Bit depth": 16, 24 or 32 bit integer); the
     /// device's own format when it does not offer it.
     pub bits: Option<u16>,
+    /// ALSA periods: the ring holds this many blocks (REAPER's "periods", 2-8, default 3); the
+    /// output latency is the block times one less.
+    pub periods: Option<u32>,
     /// JACK: start the server when it is not running, with this command (empty: as libjack
     /// starts it, from `~/.jackdrc`).
     pub jack_start: Option<String>,
@@ -82,9 +85,34 @@ pub const COMMON_RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192
 pub const COMMON_BLOCK_SIZES: [u32; 8] = [16, 32, 64, 128, 256, 512, 1024, 2048];
 /// REAPER's block size on a fresh configuration.
 pub const DEFAULT_BLOCK_SIZE: u32 = 512;
-/// The periods the audio backend opens a device with whatever is asked: an ALSA ring of two
-/// blocks, a PulseAudio target length of two.
+/// ALSA periods (REAPER's `linux_audio_bufs`) when none are asked for, as REAPER opens them.
+pub const DEFAULT_PERIODS: u32 = 3;
+/// The ALSA periods REAPER's device page offers.
+pub const PERIOD_RANGE: std::ops::RangeInclusive<u32> = 2..=8;
+/// The periods the other audio backends buffer: a PulseAudio target length of two blocks.
 pub const BACKEND_PERIODS: u32 = 2;
+
+/// The periods `request` opens its devices with: on ALSA as many as it asks for (2-8),
+/// elsewhere what the backend buffers.
+pub fn periods(request: &DeviceRequest) -> u32 {
+    if host_name(request).eq_ignore_ascii_case("ALSA") {
+        request.periods.unwrap_or(DEFAULT_PERIODS).clamp(*PERIOD_RANGE.start(), *PERIOD_RANGE.end())
+    } else {
+        BACKEND_PERIODS
+    }
+}
+
+/// Makes ALSA streams opened from now on use the periods `request` asks for.
+pub fn apply_periods(request: &DeviceRequest) {
+    if host_name(request).eq_ignore_ascii_case("ALSA") {
+        cpal::set_alsa_periods(periods(request));
+    }
+}
+
+/// The period and ring size, in frames, the ALSA output opened last got from the driver.
+pub fn alsa_ring() -> Option<(u64, u64)> {
+    cpal::alsa_negotiated()
+}
 
 /// The input and output latency REAPER shows for `block` frames in `periods` periods at `rate`,
 /// in seconds: one block in, every period but the one being filled out.

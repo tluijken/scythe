@@ -53,6 +53,7 @@ impl Capture {
         rate: u32,
         map: Option<&[i32]>,
     ) -> Result<(Self, rtrb::Consumer<f32>), String> {
+        crate::devices::apply_periods(devices);
         let device = crate::devices::input_device(devices)?;
         let name = crate::devices::device_name(&device);
         let (config, format) = crate::devices::input_config(&device, devices, rate)?;

@@ -14,6 +14,7 @@
 //! input = "Scarlett 18i20"
 //! sample_rate = 48000
 //! buffer_size = 128
+//! periods = 3
 //! output_channels = 8
 //! null = false
 //! ```
@@ -50,6 +51,8 @@ pub struct AudioConfig {
     pub input: Option<String>,
     pub sample_rate: Option<u32>,
     pub buffer_size: Option<u32>,
+    /// ALSA periods, 2-8 (REAPER's default 3).
+    pub periods: Option<u32>,
     pub output_channels: Option<u16>,
     pub input_channels: Option<u16>,
     /// Run without opening any audio device (silent, for tests and dry runs).
@@ -102,6 +105,7 @@ usage: scythe-server [project.RPP] [options]
   --input-device NAME    input device for monitoring and recording
   --sample-rate HZ       device sample rate
   --buffer-size FRAMES   frames per audio callback
+  --periods N            ALSA periods, the blocks the device ring holds (2-8, default 3)
   --output-channels N    output channels to open (default: all of an interface, else 2)
   --input-channels N     input channels to open, likewise
   --null-audio           open no audio device at all
@@ -113,7 +117,7 @@ usage: scythe-server [project.RPP] [options]
 ";
 
 /// Flags followed by a value.
-pub const VALUED: [&str; 12] = [
+pub const VALUED: [&str; 13] = [
     "--config",
     "--control",
     "--token",
@@ -124,6 +128,7 @@ pub const VALUED: [&str; 12] = [
     "--input-device",
     "--sample-rate",
     "--buffer-size",
+    "--periods",
     "--output-channels",
     "--input-channels",
 ];
@@ -152,6 +157,7 @@ pub fn audio_flags(args: &[String]) -> Result<AudioConfig, String> {
         input: value("--input-device"),
         sample_rate: number("--sample-rate")?,
         buffer_size: number("--buffer-size")?,
+        periods: number("--periods")?,
         output_channels: channels("--output-channels")?,
         input_channels: channels("--input-channels")?,
         null: args.iter().any(|a| a == "--null-audio"),
@@ -244,6 +250,7 @@ pub fn options(args: &[String]) -> Result<Options, String> {
         input: flags.input.or(audio.input),
         sample_rate: flags.sample_rate.or(audio.sample_rate),
         buffer_size: flags.buffer_size.or(audio.buffer_size),
+        periods: flags.periods.or(audio.periods),
         output_channels: flags.output_channels.or(audio.output_channels),
         input_channels: flags.input_channels.or(audio.input_channels),
         no_input: flag("--no-input").is_some() || config.no_input,

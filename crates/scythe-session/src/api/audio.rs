@@ -59,6 +59,11 @@ pub enum AudioCommand {
         /// ALSA and PulseAudio: bits per sample (16, 24 or 32 bit integer); 0 for the device's own.
         #[serde(default)]
         bits: Option<u16>,
+        /// ALSA: periods, the blocks the device's ring holds (REAPER's "periods", 2-8, default 3).
+        /// More periods ride out late blocks; the output latency is the block size times one less
+        /// than the periods.
+        #[serde(default)]
+        periods: Option<u32>,
         /// Keep the choice for the next start (true when left out).
         #[serde(default)]
         save: Option<bool>,
@@ -124,6 +129,7 @@ pub struct Requested {
     pub block_size: Option<u32>,
     pub output_channels: Option<u16>,
     pub input_channels: Option<u16>,
+    pub periods: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -145,6 +151,11 @@ pub struct DeviceState {
     pub input_latency: Option<f64>,
     /// REAPER's latency readout for the block size and periods (`~2.9/2.9ms`, input/output).
     pub latency: Option<String>,
+    /// ALSA: the periods the output opened with, and the period and ring sizes in frames the
+    /// driver gave it.
+    pub periods: Option<u32>,
+    pub period_frames: Option<u64>,
+    pub ring_frames: Option<u64>,
     /// No device is playing (silent clock), and why.
     pub silent: bool,
     pub reason: Option<String>,
@@ -188,6 +199,9 @@ pub fn state(session: &Session) -> DeviceState {
         output_latency: health.output_latency,
         input_latency: health.input_latency,
         latency: health.block_latency.map(scythe_engine::devices::latency_text),
+        periods: health.periods,
+        period_frames: health.ring.map(|r| r.0),
+        ring_frames: health.ring.map(|r| r.1),
         silent: health.silent,
         reason: health.reason,
         waiting: session.waiting_for_device(),
@@ -204,6 +218,7 @@ pub fn state(session: &Session) -> DeviceState {
             block_size: r.buffer_size,
             output_channels: r.output_channels,
             input_channels: r.input_channels,
+            periods: r.periods,
         },
     }
 }
@@ -221,6 +236,7 @@ pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, Ap
             output_channels,
             input_channels,
             bits,
+            periods,
             save,
         } => {
             let mut r: DeviceRequest = session.engine.devices().clone();
@@ -256,6 +272,13 @@ pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, Ap
             }
             if let Some(v) = bits {
                 r.bits = Some(v).filter(|v| *v > 0);
+            }
+            if let Some(v) = periods {
+                let range = scythe_engine::devices::PERIOD_RANGE;
+                if !range.contains(&v) {
+                    return Err(ApiError::invalid(format!("periods run from {} to {}", range.start(), range.end())));
+                }
+                r.periods = Some(v);
             }
             session.change_audio_device(r, save.unwrap_or(true)).map_err(ApiError::failed)?;
             Ok(json(state(session)))

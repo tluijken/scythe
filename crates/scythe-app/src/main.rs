@@ -170,6 +170,7 @@ fn overlay(
     r.input = flags.input.clone().or(r.input);
     r.sample_rate = flags.sample_rate.or(r.sample_rate);
     r.buffer_size = flags.buffer_size.or(r.buffer_size);
+    r.periods = flags.periods.or(r.periods);
     r.output_channels = flags.output_channels.or(r.output_channels);
     r.input_channels = flags.input_channels.or(r.input_channels);
     r.no_input = no_input;

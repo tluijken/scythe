@@ -38,9 +38,7 @@ measured.
   only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
   the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
   "prevent anticipative FX" flags; the NAM slot reports no separate model and resampling cost.
-- Audio device page: ALSA periods (`linux_audio_bufs`) are kept but not applied: the audio
-  backend (cpal) always opens an ALSA device with two periods of the block size, and the window
-  says so. JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
+- Audio device page: JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
   channels" are kept but not used: Scythe's MIDI goes through the ALSA sequencer, which JACK and
   PipeWire bridge. "Auto-suspend PulseAudio" (`linux_auto_pasuspend`, REAPER running its ALSA
   device under `pasuspender`) is not done; on PipeWire systems the system default (PipeWire's
@@ -61,8 +59,8 @@ measured.
   names go through `--output-device`, `[audio]` or `audio.set_device`. On first start REAPER
   7.73 picks JACK (and, with no JACK server running, opens nothing); Scythe opens the system
   default (PipeWire's or PulseAudio's default device) instead and says so in the window and the
-  pill, so a fresh install plays without setup. The latency figure assumes the two periods the
-  backend opens; on JACK the server's period count is not known and two are assumed. The
+  pill, so a fresh install plays without setup. On JACK the server's period count is not known
+  and the latency figure assumes two. The
   busy-device wait was tried with an ALSA PCM of a private configuration made to refuse opens
   with `EBUSY` (an `LD_PRELOAD` shim) and in unit tests, not with a card PipeWire holds; the
   holder's name comes from `/proc/asound/cardN/pcmMp/subS/status`, which the kernel fills only

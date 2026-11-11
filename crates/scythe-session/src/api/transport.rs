@@ -112,7 +112,11 @@ pub enum TransportCommand {
     /// the CPU it takes, its longest block and plugin delay, with each effect's CPU. Updated
     /// about once a second.
     #[serde(rename = "transport.performance")]
-    Performance,
+    Performance {
+        /// Start a new window for the block-time percentiles (`rt_block_*`) after this reading.
+        #[serde(default)]
+        reset: bool,
+    },
     /// Play state, playhead and edit cursor, loop and metronome.
     #[serde(rename = "transport.state")]
     State,
@@ -213,7 +217,17 @@ pub fn execute(session: &mut Session, command: TransportCommand) -> Result<Value
             });
         }
         TransportCommand::Health => return Ok(json(health(session))),
-        TransportCommand::Performance => return Ok(json(session.performance())),
+        TransportCommand::Performance { reset } => {
+            let mut meter = session.performance().clone();
+            let blocks = session.engine.block_times(reset);
+            let ms = |s: f64| (s * 1e5).round() / 100.0;
+            meter.rt_blocks = blocks.blocks;
+            meter.rt_block_p50_ms = ms(blocks.p50);
+            meter.rt_block_p99_ms = ms(blocks.p99);
+            meter.rt_block_p999_ms = ms(blocks.p999);
+            meter.rt_block_max_ms = ms(blocks.max);
+            return Ok(json(meter));
+        }
         TransportCommand::State => {}
     }
     Ok(json(snapshot::transport(session)))
@@ -250,6 +264,11 @@ pub struct HealthInfo {
     /// REAPER's latency readout for the block size and periods, input/output (`~2.9/2.9ms`).
     #[serde(default)]
     pub latency: Option<String>,
+    /// ALSA: the periods the output opened with, and the ring the driver gave it in frames.
+    #[serde(default)]
+    pub periods: Option<u32>,
+    #[serde(default)]
+    pub ring_frames: Option<u64>,
     /// DSP time over buffer time in the last callback, in percent; at 100 the audio drops out.
     pub cpu: f64,
     /// The highest `cpu` of the last few seconds.
@@ -293,6 +312,8 @@ pub fn health(session: &Session) -> HealthInfo {
         buffer_ms: h.block_size.map(|b| (b as f64 * 1000.0 / h.sample_rate as f64 * 100.0).round() / 100.0),
         output_latency_ms: (h.output_latency * 100_000.0).round() / 100.0,
         latency: h.block_latency.map(scythe_engine::devices::latency_text),
+        periods: h.periods,
+        ring_frames: h.ring.map(|r| r.1),
         cpu: percent(h.load),
         cpu_peak: percent(h.load_peak),
         xruns: h.xruns,

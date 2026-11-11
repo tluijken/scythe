@@ -24,6 +24,18 @@ pub struct PerfMeter {
     /// milliseconds ("RT longest-block").
     pub rt_longest_block_ms: f64,
     pub block_ms: f64,
+    /// Blocks rendered since the window started (the start, or the last `reset`), and the time
+    /// they took at the median, the 99th and 99.9th percentile and the longest, in milliseconds.
+    #[serde(default)]
+    pub rt_blocks: u64,
+    #[serde(default)]
+    pub rt_block_p50_ms: f64,
+    #[serde(default)]
+    pub rt_block_p99_ms: f64,
+    #[serde(default)]
+    pub rt_block_p999_ms: f64,
+    #[serde(default)]
+    pub rt_block_max_ms: f64,
     /// Device xruns and blocks that took longer than their budget, since the start.
     pub xruns: u64,
     pub overloads: u64,
@@ -135,6 +147,7 @@ impl Session {
             overloads: health.overloads,
             tracks_cpu: (tracks.iter().map(|t| t.cpu).sum::<f64>() * 10.0).round() / 10.0,
             tracks,
+            ..Default::default()
         };
         sampler.tracks = track_totals;
         sampler.fx = fx_totals;

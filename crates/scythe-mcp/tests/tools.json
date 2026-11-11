@@ -349,7 +349,13 @@
     },
     "description": "The performance meter (REAPER's): real-time CPU, the longest block, xruns, and per track\nthe CPU it takes, its longest block and plugin delay, with each effect's CPU. Updated\nabout once a second.\n\nControl API command `transport.performance`.",
     "inputSchema": {
-      "properties": {},
+      "properties": {
+        "reset": {
+          "default": false,
+          "description": "Start a new window for the block-time percentiles (`rt_block_*`) after this reading.",
+          "type": "boolean"
+        }
+      },
       "type": "object"
     },
     "name": "transport_performance",
@@ -14855,6 +14861,16 @@
           "description": "Output channels to open; 0 opens every channel of a hardware device (a pair on a\nsound server).",
           "format": "uint16",
           "maximum": 65535,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "periods": {
+          "default": null,
+          "description": "ALSA: periods, the blocks the device's ring holds (REAPER's \"periods\", 2-8, default 3).\nMore periods ride out late blocks; the output latency is the block size times one less\nthan the periods.",
+          "format": "uint32",
           "minimum": 0,
           "type": [
             "integer",

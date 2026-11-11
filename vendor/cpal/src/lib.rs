@@ -192,6 +192,13 @@ pub use platform::{
     SupportedInputConfigs, SupportedOutputConfigs, ALL_HOSTS,
 };
 pub use sample_format::{FromSample, Sample, SampleFormat, SizedSample, I24, U24};
+#[cfg(any(
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd"
+))]
+pub use host::alsa::{negotiated as alsa_negotiated, set_periods as set_alsa_periods};
 #[cfg(all(
     target_arch = "wasm32",
     target_os = "unknown",

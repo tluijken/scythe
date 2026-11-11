@@ -92,6 +92,26 @@ mod enumerate;
 const DEFAULT_DEVICE: &str = "default";
 const DEFAULT_PERIODS: alsa::pcm::Frames = 2;
 
+// Scythe: the ring size in periods for `BufferSize::Fixed` streams (REAPER's ALSA "periods"),
+// and the period and ring size the last playback stream got.
+static PERIODS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(DEFAULT_PERIODS);
+static NEGOTIATED: std::sync::Mutex<Option<(u64, u64)>> = std::sync::Mutex::new(None);
+
+/// Sets how many periods the ring of streams opened from now on holds (2 to 32).
+pub fn set_periods(periods: u32) {
+    let periods = alsa::pcm::Frames::from(periods.clamp(2, 32));
+    PERIODS.store(periods, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The period and ring size, in frames, of the playback stream opened last.
+pub fn negotiated() -> Option<(u64, u64)> {
+    *NEGOTIATED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn periods() -> alsa::pcm::Frames {
+    PERIODS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // Some ALSA plugins (e.g. alsaequal, certain USB drivers) are not reentrant.
 static ALSA_OPEN_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -395,6 +415,9 @@ impl Device {
         let (buffer_size, period_size) = set_sw_params_from_format(&handle, stream_type)?;
         if buffer_size == 0 || period_size == 0 {
             return Err(ErrorKind::DeviceNotAvailable.into());
+        }
+        if stream_type == alsa::Direction::Playback {
+            *NEGOTIATED.lock().unwrap_or_else(|e| e.into_inner()) = Some((period_size as u64, buffer_size as u64));
         }
 
         handle.prepare()?;
@@ -1472,7 +1495,7 @@ fn supported_period_size_range(
     // cpal double-buffers (ring = DEFAULT_PERIODS × period), so the achievable
     // period maximum is also bounded by max_buffer / DEFAULT_PERIODS.
     let effective_max = match p.get_buffer_size_max() {
-        Ok(max_buf) if max_buf > 0 => max.min(max_buf / DEFAULT_PERIODS),
+        Ok(max_buf) if max_buf > 0 => max.min(max_buf / periods()),
         _ => max,
     };
     if effective_max >= min_frames {
@@ -1621,10 +1644,10 @@ fn set_hw_params_from_format(
             }
         }
 
-        let buffer_size = DEFAULT_PERIODS * period_size;
+        let buffer_size = periods() * period_size;
         if let Ok(max_buffer) = hw_params.get_buffer_size_max() {
             if max_buffer > 0 && buffer_size > max_buffer {
-                let effective_max = max_buffer / DEFAULT_PERIODS;
+                let effective_max = max_buffer / periods();
                 return Err(Error::with_message(
                     ErrorKind::UnsupportedConfig,
                     format!("Buffer size {period_size} exceeds the maximum supported value of {effective_max}"),
@@ -1649,7 +1672,7 @@ fn set_hw_params_from_format(
 
             // Set both period (to device's chosen value) and buffer (to 2 periods)
             hw_params.set_period_size_near(period_size, alsa::ValueOr::Nearest)?;
-            hw_params.set_buffer_size_near(DEFAULT_PERIODS * period_size)?;
+            hw_params.set_buffer_size_near(periods() * period_size)?;
 
             // Re-apply with new constraints
             pcm_handle.hw_params(&hw_params)?;

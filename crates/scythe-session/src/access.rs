@@ -140,7 +140,7 @@ pub fn run(session: &mut Session, scope: &Scope, command: Command) -> Result<Val
                 | TransportCommand::Stop
                 | TransportCommand::State
                 | TransportCommand::Health
-                | TransportCommand::Performance
+                | TransportCommand::Performance { .. }
         ) | Command::Setlist(
             SetlistCommand::Songs
                 | SetlistCommand::List

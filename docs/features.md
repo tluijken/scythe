@@ -1101,8 +1101,12 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   below ten (measured in REAPER 7.73: 128 frames in 2 periods at 48 kHz is `~2.6/2.6ms`, 512 in 4
   `~10/32ms`, 64 in 3 at 96 kHz `~0.6/1.3ms`). Their tooltips add the delay the device measures
   (the driver's queue, a USB interface's transfer buffers included) for output and, while the
-  input is open, input. ALSA devices open with exactly the block size in two periods (the
-  fewest the backend allows); the input runs at the same block size; the monitored input is
+  input is open, input. ALSA devices open with exactly the block size in the periods the
+  window's "Periods" sets (REAPER's `linux_audio_bufs`, 2-8, default 3 as in REAPER; each
+  choice shows the latency it gives, the output being the block times the periods but one;
+  `--periods`, `periods` in `[audio]` and `audio.set_device`); `audio.device` reports the
+  periods and the period and ring sizes the driver granted (`period_frames`, `ring_frames`),
+  `transport.health` the periods and ring. The input runs at the same block size; the monitored input is
   played in the block it arrives in, with at most one block of slack between the capture and
   playback clocks. A PulseAudio/PipeWire stream asks for a two-block buffer of the block size
   (512 frames when none is set) instead of the server's default, and opens at the sink's own

@@ -9,7 +9,9 @@ use scythe_core::prefs::{
 };
 use scythe_engine::DeviceRequest;
 use scythe_engine::Health;
-use scythe_engine::devices::{BACKEND_PERIODS, COMMON_BLOCK_SIZES, COMMON_RATES, Capabilities, DeviceEntry};
+use scythe_engine::devices::{
+    COMMON_BLOCK_SIZES, COMMON_RATES, Capabilities, DEFAULT_PERIODS, DeviceEntry, PERIOD_RANGE,
+};
 
 use crate::app::ScytheApp;
 use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW};
@@ -48,6 +50,8 @@ pub struct Draft {
     pub sample_rate: u32,
     pub block_size: u32,
     pub bits: u32,
+    /// ALSA periods.
+    pub periods: u32,
     pub rt_priority: u32,
     pub jack_autostart: bool,
     pub jack_launch: String,
@@ -73,6 +77,7 @@ impl Draft {
             sample_rate: r.sample_rate.unwrap_or(info.sample_rate),
             block_size: r.buffer_size.or(info.block_size).unwrap_or(512),
             bits: a.bits.unwrap_or(32),
+            periods: r.periods.or(a.periods).unwrap_or(DEFAULT_PERIODS),
             rt_priority: a.rt_priority.unwrap_or(scythe_engine::realtime::PRIORITY as u32),
             jack_autostart: jack & JACK_NO_START == 0,
             jack_launch: a.jack_launch.clone().unwrap_or_default(),
@@ -100,6 +105,7 @@ impl Draft {
             output_channels: Some(if dummy { 2 } else { self.output_channels.max(1) }),
             input_channels: Some(if dummy { 0 } else { self.input_channels }),
             bits: (alsa || system == Some(AudioSystem::PulseAudio)).then_some(self.bits as u16),
+            periods: alsa.then_some(self.periods),
             jack_start: (jack && self.jack_autostart).then(|| self.jack_launch.clone()),
             jack_no_connect: jack && !self.jack_connect,
             no_input,
@@ -383,10 +389,13 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
         value_row(ui, "Bit depth", &bits, &mut state.draft.bits, |b| format!("{b} bit"));
     }
     if alsa {
-        let r = row(ui, "Periods");
-        let text = format!("{BACKEND_PERIODS}, as the audio backend opens ALSA devices");
-        ui.painter().text(r.left_center(), Align2::LEFT_CENTER, text, theme::regular(12.0), TEXT_DIM);
-        end_row(ui, r);
+        let periods: Vec<u32> = PERIOD_RANGE.collect();
+        let (block, rate) = (state.draft.block_size, state.draft.sample_rate);
+        let label = |p: u32| {
+            let latency = scythe_engine::devices::latency_text(scythe_engine::devices::block_latency(block, p, rate));
+            format!("{p} ({latency})")
+        };
+        value_row(ui, "Periods", &periods, &mut state.draft.periods, label);
         let label = |p: u32| match p {
             0 => "0 (non-RT)".to_owned(),
             40 => "40 (suggested setting for RT use)".to_owned(),

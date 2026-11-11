@@ -58,6 +58,8 @@ pub struct Transport {
     overloads: AtomicU64,
     /// Highest `load` since the last health report, as f32 bits.
     load_peak: AtomicU32,
+    /// How long each callback took to render.
+    block_times: crate::perf::BlockTimes,
     /// Output callbacks so far, so a stream that stopped calling back shows.
     callbacks: AtomicU64,
     /// The device reported it is gone.
@@ -95,6 +97,7 @@ impl Transport {
             xruns: AtomicU64::new(0),
             overloads: AtomicU64::new(0),
             load_peak: AtomicU32::new(0),
+            block_times: crate::perf::BlockTimes::default(),
             callbacks: AtomicU64::new(0),
             lost: AtomicBool::new(false),
             block_frames: AtomicU32::new(0),
@@ -636,8 +639,10 @@ impl Processor {
         self.hardware.mix_into(&mut self.left[..frames], &mut self.right[..frames], &mut self.extra);
         self.preview.mix_into(&mut self.left[..frames], &mut self.right[..frames]);
         let budget = frames as f32 / self.transport.sample_rate as f32;
-        let load = started.elapsed().as_secs_f32() / budget;
+        let took = started.elapsed();
+        let load = took.as_secs_f32() / budget;
         let t = &self.transport;
+        t.block_times.add(took.as_nanos() as u64);
         t.load.store(load.to_bits(), Ordering::Relaxed);
         if load > f32::from_bits(t.load_peak.load(Ordering::Relaxed)) {
             t.load_peak.store(load.to_bits(), Ordering::Relaxed);
@@ -843,6 +848,10 @@ pub struct Health {
     /// The latency REAPER shows for the block size and periods, input and output seconds: one
     /// block in, the periods but one out.
     pub block_latency: Option<(f64, f64)>,
+    /// ALSA periods the output was asked to open with, and the period and ring the driver
+    /// gave it, in frames.
+    pub periods: Option<u32>,
+    pub ring: Option<(u64, u64)>,
     /// DSP time over buffer time in the last callback; above 1 the output drops out.
     pub load: f32,
     /// Highest `load` since [`Engine::take_load_peak`] last ran.
@@ -1139,6 +1148,8 @@ impl Engine {
             output_latency: t.output_latency(),
             input_latency: self.capture.as_ref().map(crate::capture::Capture::latency),
             block_latency: self.block_latency(),
+            periods: self.alsa().then(|| crate::devices::periods(&self.devices)),
+            ring: self.alsa().then(crate::devices::alsa_ring).flatten(),
             load: t.load(),
             load_peak: f32::from_bits(t.load_peak.load(Ordering::Relaxed)),
             xruns: t.xruns.load(Ordering::Relaxed),
@@ -1157,8 +1168,20 @@ impl Engine {
             cpal::BufferSize::Fixed(n) => n,
             cpal::BufferSize::Default => self.transport.block_frames.load(Ordering::Relaxed),
         };
-        (block > 0)
-            .then(|| crate::devices::block_latency(block, crate::devices::BACKEND_PERIODS, self.info.sample_rate))
+        (block > 0).then(|| {
+            crate::devices::block_latency(block, crate::devices::periods(&self.devices), self.info.sample_rate)
+        })
+    }
+
+    /// Whether an ALSA device plays.
+    fn alsa(&self) -> bool {
+        matches!(self.output, Output::Device(_)) && self.info.host.eq_ignore_ascii_case("ALSA")
+    }
+
+    /// How long the callbacks of the current window took to render; `restart` starts a new
+    /// window.
+    pub fn block_times(&self, restart: bool) -> crate::perf::BlockStats {
+        self.transport.block_times.read(restart)
     }
 
     /// The highest load since the last call, starting a new window.
@@ -1657,6 +1680,7 @@ impl Engine {
 }
 
 fn open_device(request: &DeviceRequest) -> Result<(cpal::Device, StreamConfig, SampleFormat, String), String> {
+    crate::devices::apply_periods(request);
     let device = crate::devices::output_device(request)?;
     let name = crate::devices::device_name(&device);
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
