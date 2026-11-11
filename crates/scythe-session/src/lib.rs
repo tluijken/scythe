@@ -690,6 +690,13 @@ impl Session {
     }
 
     /// Drains the engine meters into display levels that fall back at ~20 dB/s.
+    /// Whether a track or the master meter still shows a level, so the window keeps drawing
+    /// them as they fall.
+    pub fn meters_moving(&self) -> bool {
+        let shows = |(l, r): (f32, f32)| l > 1e-4 || r > 1e-4;
+        shows(self.master_level) || self.levels.values().copied().any(shows)
+    }
+
     pub fn update_meters(&mut self) {
         let dt = self.meters_at.elapsed().as_secs_f32();
         self.meters_at = Instant::now();

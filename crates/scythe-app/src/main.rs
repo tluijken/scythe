@@ -29,10 +29,47 @@ struct Shell {
     /// ReaScripts from the command line, run once the window has drawn: a dialog they open
     /// blocks the window until answered.
     scripts: Vec<PathBuf>,
+    profile: Option<FrameProfile>,
+}
+
+/// Frames per second and the time `ui` takes, printed every second when `SCYTHE_UI_PROFILE`
+/// is set.
+struct FrameProfile {
+    since: std::time::Instant,
+    frames: u32,
+    busy: std::time::Duration,
+    longest: std::time::Duration,
+}
+
+impl FrameProfile {
+    fn from_env() -> Option<Self> {
+        std::env::var_os("SCYTHE_UI_PROFILE").map(|_| Self::new())
+    }
+
+    fn new() -> Self {
+        Self { since: std::time::Instant::now(), frames: 0, busy: Default::default(), longest: Default::default() }
+    }
+
+    fn frame(&mut self, took: std::time::Duration) {
+        self.frames += 1;
+        self.busy += took;
+        self.longest = self.longest.max(took);
+        if self.since.elapsed() >= std::time::Duration::from_secs(1) {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+            eprintln!(
+                "ui: {} frames/s, {:.2} ms per frame, longest {:.2} ms",
+                self.frames,
+                ms(self.busy) / self.frames as f64,
+                ms(self.longest)
+            );
+            *self = Self::new();
+        }
+    }
 }
 
 impl eframe::App for Shell {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let started = std::time::Instant::now();
         let ctx = ui.ctx().clone();
         self.app.session.acquire();
         self.app.poll();
@@ -44,9 +81,16 @@ impl eframe::App for Shell {
             }
         }
         ui::frame(&mut self.app, ui);
+        let moving =
+            self.app.is_playing() || self.app.is_recording() || self.app.meters_moving() || self.app.busy.is_some();
         self.app.session.release();
-        // Meters and the clock need a steady frame rate even when nothing is playing.
-        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        // The playhead, clock and meters move at a steady rate while anything plays or rings
+        // out; otherwise a few frames a second keep the status current. Input and changes from
+        // the pump or the control API wake the window on their own.
+        ctx.request_repaint_after(if moving { ui::MOVING_FRAME } else { ui::IDLE_FRAME });
+        if let Some(p) = &mut self.profile {
+            p.frame(started.elapsed());
+        }
     }
 }
 
@@ -302,7 +346,7 @@ fn main() -> eframe::Result {
                 std::sync::Arc::new(move || wake.request_repaint()),
             );
             app.session.release();
-            Ok(Box::new(Shell { _pump: pump, _control: control, app, scripts }))
+            Ok(Box::new(Shell { _pump: pump, _control: control, app, scripts, profile: FrameProfile::from_env() }))
         }),
     )
 }

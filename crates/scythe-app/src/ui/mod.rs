@@ -40,6 +40,11 @@ use crate::theme::{self, ACCENT, BG, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, T
 use widgets::{Icon, icon_button, label_pill, paint_icon, rail_button};
 
 pub const GAP: f32 = 10.0;
+/// Time between frames while the playhead or meters move: 30 frames a second, whatever the
+/// display's refresh rate. Drawing at a 144 Hz display's rate took most of a core.
+pub const MOVING_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+/// Time between frames while nothing moves.
+pub const IDLE_FRAME: std::time::Duration = std::time::Duration::from_millis(250);
 const HEADER_H: f32 = 56.0;
 const RAIL_W: f32 = 56.0;
 const INSPECTOR_W: f32 = 300.0;

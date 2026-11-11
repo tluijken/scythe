@@ -136,7 +136,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         lane_clip.circle_filled(pos2(px, span.top() + 6.0), 6.0, ACCENT);
     }
     if app.is_playing() {
-        ui.ctx().request_repaint();
+        ui.ctx().request_repaint_after(crate::ui::MOVING_FRAME);
     }
 }
 

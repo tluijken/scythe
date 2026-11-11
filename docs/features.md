@@ -1169,7 +1169,15 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   audio thread's real-time priority once it has it (asked for after the audio thread, as
   RealtimeKit grants a user only a few threads), so a busy desktop cannot hold up a block. On
   a 48-track session with six NAM amps (6 P + 8 E cores) 128-frame blocks at 44.1 kHz took
-  0.72 ms at the median with six threads and 1.25 ms with one per logical CPU.
+  0.72 ms at the median with six threads and 1.25 ms with one per logical CPU. On a hybrid
+  CPU the audio thread and the track threads stay on the performance cores: the real-time
+  scheduler otherwise wakes them on whichever CPU runs nothing real-time, and with the window
+  and other programs busy on the performance cores that was mostly an efficiency core (90 of
+  105 samples), where a track takes about twice as long.
+- **Window frame rate**: the window draws 30 frames a second while the transport plays, records
+  or a meter still moves, whatever the display's refresh rate, and 4 a second otherwise (input,
+  edits and control API commands redraw at once). `SCYTHE_UI_PROFILE=1` prints frames per second
+  and the time each frame's layout takes.
 
 ## Command line
 
