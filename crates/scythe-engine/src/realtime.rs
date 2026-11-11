@@ -14,7 +14,7 @@ use std::sync::{Mutex, OnceLock};
 
 /// `SCHED_FIFO` priority asked for directly: above PipeWire's and JACK's clients, below
 /// the IRQ threads of a real-time kernel.
-const PRIORITY: i32 = 70;
+pub const PRIORITY: i32 = 70;
 
 /// The `SCHED_FIFO` priority to ask for (REAPER's "RT priority"); 0 keeps audio threads at
 /// normal priority.
@@ -24,6 +24,16 @@ static WANTED: AtomicI32 = AtomicI32::new(PRIORITY);
 /// 0 for none ("non-RT"), `None` for Scythe's default.
 pub fn set_priority(priority: Option<u32>) {
     WANTED.store(priority.map_or(PRIORITY, |p| p.min(99) as i32), Ordering::Relaxed);
+    if priority == Some(0)
+        && let Ok(mut s) = STATUS.lock()
+    {
+        *s = Some(Realtime {
+            policy: "SCHED_OTHER",
+            priority: 0,
+            via: "none",
+            reason: Some("RT priority is set to 0 (non-RT) in the audio device settings".into()),
+        });
+    }
 }
 
 /// Locks the process's memory in RAM (REAPER's "Lock process memory with mlockall()"), so

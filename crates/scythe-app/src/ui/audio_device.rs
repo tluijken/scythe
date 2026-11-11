@@ -73,7 +73,7 @@ impl Draft {
             sample_rate: r.sample_rate.unwrap_or(info.sample_rate),
             block_size: r.buffer_size.or(info.block_size).unwrap_or(512),
             bits: a.bits.unwrap_or(32),
-            rt_priority: a.rt_priority.unwrap_or(0),
+            rt_priority: a.rt_priority.unwrap_or(scythe_engine::realtime::PRIORITY as u32),
             jack_autostart: jack & JACK_NO_START == 0,
             jack_launch: a.jack_launch.clone().unwrap_or_default(),
             jack_connect: jack & JACK_NO_CONNECT == 0,
@@ -395,6 +395,14 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
             p => p.to_string(),
         };
         value_row(ui, "RT priority", &RT_PRIORITIES, &mut state.draft.rt_priority, label);
+        if state.draft.rt_priority == 0 {
+            // REAPER rides out a late audio thread on its anticipative FX buffering; Scythe renders
+            // in the callback, so without real-time priority the desktop can make it miss blocks.
+            note(
+                ui,
+                "Without real-time priority the audio thread can be held up by other programs, which gives dropouts at small block sizes.",
+            );
+        }
     }
     if jack {
         let r = row(ui, "RT priority");
