@@ -361,6 +361,9 @@ pub struct RenderTrack {
     pub hw_delays: Vec<Option<Arc<DelayLine>>>,
     /// Gain of the metronome in this track (a monitor mix with a click), zero for none.
     pub click: f32,
+    /// The track renders in the audio callback whatever feeds it: it is armed, or REAPER's
+    /// track performance flag prevents its anticipative FX.
+    pub prevent_ahead: bool,
 }
 
 /// One send or hardware output as the graph plays it.
@@ -566,6 +569,8 @@ pub struct LiveInput<'a> {
     pub recording: bool,
     pub midi_out: Option<MidiOutClock<'a>>,
     pub clicks: Clicks,
+    /// Rendering ahead of the playhead in this chunk: meters show the block once it is played.
+    pub ahead: Option<i64>,
 }
 
 /// Where hardware MIDI goes, and when a project frame is heard.
@@ -586,6 +591,7 @@ impl Default for LiveInput<'_> {
             recording: false,
             midi_out: None,
             clicks: Clicks::Off,
+            ahead: None,
         }
     }
 }
@@ -607,6 +613,7 @@ impl<'a> LiveInput<'a> {
                 }
                 c => c,
             },
+            ahead: self.ahead,
         }
     }
 }
@@ -650,6 +657,9 @@ pub struct RenderGraph {
     pub timeline: Arc<Timeline>,
     pub clicks: Arc<ClickSounds>,
     pub metronome: MetronomeRouting,
+    /// Which tracks render ahead of the playhead (anticipative FX) and where their output
+    /// meets the tracks the callback renders; `None` when every track renders live.
+    pub ahead: Option<Arc<AheadPlan>>,
 }
 
 /// Scratch space owned by the audio callback so rendering never allocates.
@@ -760,6 +770,7 @@ impl RenderGraph {
             timeline: Arc::new(scythe_core::TempoMap::default().timeline()),
             clicks: Arc::new(ClickSounds::new(sample_rate)),
             metronome: MetronomeRouting::default(),
+            ahead: None,
         }
     }
 
@@ -1012,6 +1023,7 @@ impl RenderGraph {
                         .then(|| t.ext(scythe_core::monitor::EXT_CLICK)?.trim().parse::<f64>().ok())
                         .flatten()
                         .map_or(0.0, |g| (g * CLICK_LEVEL) as f32),
+                    prevent_ahead: t.armed || t.perf_flags() & 2 != 0,
                 }
             })
             .collect::<Vec<_>>();
@@ -1074,6 +1086,7 @@ impl RenderGraph {
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
         let linked_fx = tracks.iter().any(|t| t.chain.links_effects());
+        let ahead = AheadPlan::new(&tracks, master_channels, hw_bus.is_some().then_some(device_channels)).map(Arc::new);
         Self {
             master_hw_outs,
             master_taps,
@@ -1099,6 +1112,7 @@ impl RenderGraph {
             timeline,
             clicks: Arc::new(ClickSounds::new(sample_rate)),
             metronome,
+            ahead,
         }
     }
 
@@ -1175,28 +1189,110 @@ impl RenderGraph {
         scratch: &mut RenderScratch,
         input: &LiveInput,
     ) {
+        self.render_part(start, out_l, out_r, scratch, input, Part::All, track_threads(), true);
+    }
+
+    /// Renders the tracks rendered in the callback, `sinks` holding what the tracks rendered
+    /// ahead feed them over the same frames ([`AheadPlan`] lays them out); without `sinks`
+    /// the tracks rendered ahead stay silent. Overwrites `out_l` and `out_r`. At most
+    /// `RenderScratch::MAX_BLOCK` frames.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_live(
+        &self,
+        start: i64,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        scratch: &mut RenderScratch,
+        input: &LiveInput,
+        sinks: Option<&[Vec<f32>]>,
+        parallel: bool,
+    ) {
+        self.render_part(start, out_l, out_r, scratch, input, Part::Live(sinks), track_threads(), parallel);
+    }
+
+    /// Renders the tracks [`AheadPlan`] puts ahead of the playhead over `n` frames from
+    /// `start`, leaving what they feed the callback's tracks and the master in `sinks`
+    /// (at least `plan.channels` buffers of `n` frames). At most `RenderScratch::MAX_BLOCK`.
+    pub fn render_ahead(
+        &self,
+        start: i64,
+        n: usize,
+        scratch: &mut RenderScratch,
+        input: &LiveInput,
+        sinks: &mut [Vec<f32>],
+        pool: &rayon::ThreadPool,
+    ) {
+        if self.ahead.is_none() {
+            return;
+        }
+        self.render_part(start, &mut [], &mut [], scratch, input, Part::Ahead(sinks, n), pool, true);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_part(
+        &self,
+        start: i64,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+        scratch: &mut RenderScratch,
+        input: &LiveInput,
+        mut part: Part,
+        pool: &rayon::ThreadPool,
+        parallel: bool,
+    ) {
         out_l.fill(0.0);
         out_r.fill(0.0);
-        let n = out_l.len();
+        let n = match &part {
+            Part::Ahead(_, n) => *n,
+            _ => out_l.len(),
+        };
         if !scratch.ensure(self.tracks.len()) {
             // Graph grew beyond what the callback preallocated; stay silent rather than allocate.
             return;
         }
-        for (l, r) in scratch.track_bufs.iter_mut().take(self.tracks.len()) {
-            l[..n].fill(0.0);
-            r[..n].fill(0.0);
+        let plan = self.ahead.as_deref();
+        let ahead = matches!(part, Part::Ahead(..));
+        let live = matches!(part, Part::Live(_));
+        // Which tracks this call renders: all, those in the callback, or those ahead.
+        let owns = |i: usize| match plan {
+            Some(p) if live => p.live[i],
+            Some(p) if ahead => !p.live[i],
+            _ => !ahead,
+        };
+        for (i, (l, r)) in scratch.track_bufs.iter_mut().take(self.tracks.len()).enumerate() {
+            if owns(i) {
+                l[..n].fill(0.0);
+                r[..n].fill(0.0);
+            }
         }
-        for aux in self.tracks.iter().filter_map(|t| t.aux.as_ref()).chain(&self.master_aux).chain(&self.hw_bus) {
+        let own_aux = self.tracks.iter().enumerate().filter(|(i, _)| owns(*i)).filter_map(|(_, t)| t.aux.as_ref());
+        let shared_aux = self.master_aux.iter().chain(&self.hw_bus).filter(|_| !ahead);
+        for aux in own_aux.chain(shared_aux) {
             if let Ok(mut bufs) = aux.0.try_lock() {
                 for b in bufs.iter_mut() {
                     b[..n].fill(0.0);
                 }
             }
         }
-        for inbox in self.tracks.iter().filter_map(|t| t.midi_inbox.as_ref()) {
+        for (_, inbox) in self
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| owns(*i))
+            .filter_map(|(i, t)| Some((i, t.midi_inbox.as_ref()?)))
+        {
             if let Ok(mut m) = inbox.0.try_lock() {
                 m.clear();
             }
+        }
+        match (&mut part, plan) {
+            (Part::Ahead(sinks, _), Some(p)) => {
+                for s in sinks.iter_mut().take(p.channels) {
+                    s[..n].fill(0.0);
+                }
+            }
+            (Part::Live(Some(sinks)), Some(p)) => self.take_sinks(p, sinks, n, scratch, out_l, out_r),
+            _ => {}
         }
         let tracks = self.tracks.len();
         for level in 0..self.level_count {
@@ -1204,17 +1300,16 @@ impl RenderGraph {
             // into parents, send destinations and the master happens afterwards, in order.
             let RenderScratch { track_bufs, level_order, .. } = &mut *scratch;
             let bufs = &mut track_bufs[..tracks];
-            let in_level = |i: usize| self.level_of[i] == level;
-            if self.level_sizes[level] > 1 {
+            let in_level = |i: usize| self.level_of[i] == level && owns(i);
+            level_order.clear();
+            level_order.extend((0..tracks).filter(|&i| in_level(i)));
+            if parallel && level_order.len() > 1 {
                 // Each thread takes the slowest track left, so a heavy track does not start
                 // last behind light ones that happened to sit before it.
-                level_order.clear();
-                level_order.extend((0..tracks).filter(|&i| in_level(i)));
                 level_order.sort_unstable_by_key(|&i| std::cmp::Reverse(self.tracks[i].meter.cpu.last()));
                 let order = &level_order[..];
                 let next = std::sync::atomic::AtomicUsize::new(0);
                 let bufs = TrackBufs(bufs.as_mut_ptr());
-                let pool = track_threads();
                 pool.install(|| {
                     (0..order.len().min(pool.current_num_threads())).into_par_iter().with_max_len(1).for_each(|_| {
                         while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
@@ -1227,15 +1322,24 @@ impl RenderGraph {
                         }
                     });
                 });
-            } else if let Some(i) = (0..tracks).find(|&i| in_level(i)) {
-                let (l, r) = &mut bufs[i];
-                let started = Instant::now();
-                self.process_track(i, start, &mut l[..n], &mut r[..n], input);
-                self.tracks[i].meter.cpu.add(started);
+            } else {
+                for &i in level_order.iter() {
+                    let (l, r) = &mut bufs[i];
+                    let started = Instant::now();
+                    self.process_track(i, start, &mut l[..n], &mut r[..n], input);
+                    self.tracks[i].meter.cpu.add(started);
+                }
             }
             for &ti in self.order.iter().filter(|&&i| in_level(i)) {
-                self.route_track(ti, start, n, scratch, out_l, out_r);
+                let sinks = match (&mut part, plan) {
+                    (Part::Ahead(sinks, _), Some(p)) => Some((p, &mut **sinks)),
+                    _ => None,
+                };
+                self.route_track(ti, start, n, scratch, out_l, out_r, sinks);
             }
+        }
+        if ahead {
+            return;
         }
         let mut master_aux = self.master_aux.as_ref().and_then(|a| a.0.try_lock().ok());
         let sr = self.sample_rate as f64;
@@ -1707,7 +1811,10 @@ impl RenderGraph {
             let aux = track.aux.as_ref().and_then(|a| a.0.try_lock().ok());
             tap.write(tap_frame(tap), tl, tr, aux.as_deref().map(|a| &a[..]));
         }
-        track.meter.record(tl, tr);
+        match input.ahead {
+            Some(serial) => track.meter.record_ahead(serial, tl, tr),
+            None => track.meter.record(tl, tr),
+        }
     }
 
     /// Plays an item through its take's effects into the track's channels.
@@ -1916,6 +2023,7 @@ impl RenderGraph {
 
     /// Mixes a track's output into its send destinations and its parent or the master.
     /// `start` is the block's project frame at the master.
+    #[allow(clippy::too_many_arguments)]
     fn route_track(
         &self,
         ti: usize,
@@ -1924,6 +2032,7 @@ impl RenderGraph {
         scratch: &mut RenderScratch,
         out_l: &mut [f32],
         out_r: &mut [f32],
+        mut sinks: Option<(&AheadPlan, &mut [Vec<f32>])>,
     ) {
         let track = &self.tracks[ti];
         let (l, r) = std::mem::take(&mut scratch.track_bufs[ti]);
@@ -1966,11 +2075,31 @@ impl RenderGraph {
         // through channel `k` of `delay` when there is one.
         let add = |scratch: &mut RenderScratch,
                    out: (&mut [f32], &mut [f32]),
+                   sinks: &mut Option<(&AheadPlan, &mut [Vec<f32>])>,
                    dest: Dest,
                    (tap, src, dst): (SendMode, usize, usize),
                    delay: Option<(&mut Vec<Vec<f32>>, usize, usize)>,
                    gain: &dyn Fn(usize) -> f32| {
             let Some(input) = source(tap, src) else { return };
+            // Rendering ahead: whatever the callback renders (a live track, the master, the
+            // device) is reached through the sinks instead.
+            if let Some((plan, bufs)) = sinks.as_mut() {
+                let live = |d: usize| plan.live[d].then(|| (plan.sink[d], self.tracks[d].channels));
+                let target = match dest {
+                    Dest::Device => Some((plan.hw, self.device_channels)),
+                    Dest::Track(d) => live(d),
+                    Dest::Parent => match track.parent {
+                        Some(p) => live(p),
+                        None => Some((plan.master, self.master_channels)),
+                    },
+                };
+                if let Some((base, width)) = target {
+                    if let Some(b) = base.filter(|_| dst < width).and_then(|b| bufs.get_mut(b + dst)) {
+                        mix(&mut b[..n], input, delay, gain);
+                    }
+                    return;
+                }
+            }
             let dest = match dest {
                 Dest::Device => {
                     let Some(bus) = self.hw_bus.as_ref() else { return };
@@ -2030,7 +2159,7 @@ impl RenderGraph {
                         }
                 };
                 let line = delay.as_deref_mut().map(|(lines, at)| (lines, k, *at));
-                add(scratch, (&mut *out_l, &mut *out_r), dest, (send.tap, src, dst), line, &gain);
+                add(scratch, (&mut *out_l, &mut *out_r), &mut sinks, dest, (send.tap, src, dst), line, &gain);
             }
             if let Some((lines, at)) = delay.as_deref_mut() {
                 *at = (*at + n) % lines[0].len();
@@ -2041,7 +2170,7 @@ impl RenderGraph {
             for c in 0..track.channels {
                 let line = delay.as_deref_mut().map(|(lines, at)| (lines, c, *at));
                 let route = (SendMode::PostFader, c, c + track.main_offset);
-                add(scratch, (&mut *out_l, &mut *out_r), Dest::Parent, route, line, &|_| 1.0);
+                add(scratch, (&mut *out_l, &mut *out_r), &mut sinks, Dest::Parent, route, line, &|_| 1.0);
             }
             if let Some((lines, at)) = delay.as_deref_mut() {
                 *at = (*at + n) % lines[0].len();
@@ -2125,6 +2254,180 @@ impl RenderGraph {
             }
         });
     }
+}
+
+/// What one render call covers: every track, the tracks the callback renders (with what the
+/// tracks rendered ahead feed them), or the tracks rendered ahead (into sinks of `n` frames).
+enum Part<'a> {
+    All,
+    Live(Option<&'a [Vec<f32>]>),
+    Ahead(&'a mut [Vec<f32>], usize),
+}
+
+/// The most sink channels a plan may have; a graph needing more renders every track live.
+pub const MAX_SINK_CHANNELS: usize = 64;
+
+/// Anticipative FX: which tracks can render ahead of the playhead and which must render in
+/// the audio callback, and the sinks where the first meet the second. Live are the tracks that
+/// hear or send something live (armed tracks, hardware MIDI out, a hardware insert, a monitor
+/// mix's click, output recording, REAPER's "prevent anticipative FX") and everything they feed; a track sending
+/// MIDI to a live track is live too, so its MIDI arrives on time. A sink holds what the tracks
+/// rendered ahead route into a live track, the master or the device outputs, channel by
+/// channel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AheadPlan {
+    pub live: Vec<bool>,
+    /// First sink channel of each live track that tracks rendered ahead feed.
+    pub sink: Vec<Option<usize>>,
+    pub master: Option<usize>,
+    pub hw: Option<usize>,
+    pub channels: usize,
+    /// Tells plans with the same tracks and sinks apart from others.
+    pub key: u64,
+}
+
+impl AheadPlan {
+    /// The plan for `tracks`, `None` when all of them render live. `hw` is the device bus's
+    /// width when the graph has one.
+    pub fn new(tracks: &[RenderTrack], master_channels: usize, hw: Option<usize>) -> Option<Self> {
+        let mut live: Vec<bool> = tracks
+            .iter()
+            .map(|t| {
+                t.prevent_ahead
+                    || t.monitor.is_some()
+                    || t.midi_input.is_some()
+                    || t.input_fx.is_some()
+                    || t.midi_out.is_some()
+                    || t.click > 0.0
+                    || t.record_tap.is_some()
+                    || t.midi_record.is_some()
+                    || t.chain.effects().any(|e| e.fx.with(|e| e.device_outputs()).is_some_and(|n| n > 0))
+            })
+            .collect();
+        loop {
+            let mut changed = false;
+            for (i, t) in tracks.iter().enumerate() {
+                if live[i] {
+                    let dests = t.sends.iter().map(|s| s.dest).chain(t.midi_sends.iter().map(|s| s.0)).chain(t.parent);
+                    for d in dests {
+                        changed |= !std::mem::replace(&mut live[d], true);
+                    }
+                } else if t.midi_sends.iter().any(|s| live[s.0]) {
+                    live[i] = true;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        if live.iter().all(|&l| l) {
+            return None;
+        }
+        let ahead = |i: usize| !live[i];
+        let feeds = |d: usize| {
+            tracks
+                .iter()
+                .enumerate()
+                .any(|(i, t)| ahead(i) && (t.sends.iter().any(|s| s.dest == d) || t.parent == Some(d)))
+        };
+        let to_master = tracks.iter().enumerate().any(|(i, t)| ahead(i) && t.parent.is_none() && t.main_send);
+        let to_hw = tracks.iter().enumerate().any(|(i, t)| ahead(i) && !t.hw_outs.is_empty());
+        let mut channels = 0;
+        let mut take = |width: usize| {
+            channels += width;
+            Some(channels - width)
+        };
+        let master = if to_master { take(master_channels) } else { None };
+        let hw = hw.filter(|_| to_hw).and_then(&mut take);
+        let sink: Vec<Option<usize>> =
+            (0..tracks.len()).map(|d| if live[d] && feeds(d) { take(tracks[d].channels) } else { None }).collect();
+        if channels > MAX_SINK_CHANNELS {
+            return None;
+        }
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (&live, &sink, master, hw, channels).hash(&mut h);
+        Some(Self { live, sink, master, hw, channels, key: h.finish() })
+    }
+
+    /// Tracks rendered in the callback.
+    pub fn live_tracks(&self) -> usize {
+        self.live.iter().filter(|&&l| l).count()
+    }
+}
+
+impl RenderGraph {
+    /// Adds the sinks the tracks rendered ahead filled to the live tracks, the master and the
+    /// device bus, before the callback renders those.
+    fn take_sinks(
+        &self,
+        plan: &AheadPlan,
+        sinks: &[Vec<f32>],
+        n: usize,
+        scratch: &mut RenderScratch,
+        out_l: &mut [f32],
+        out_r: &mut [f32],
+    ) {
+        fn add(dst: &mut [f32], src: Option<&Vec<f32>>) {
+            if let Some(src) = src {
+                dst.iter_mut().zip(src).for_each(|(d, s)| *d += s);
+            }
+        }
+        for (d, base) in plan.sink.iter().enumerate().filter_map(|(d, b)| Some((d, (*b)?))) {
+            let (l, r) = &mut scratch.track_bufs[d];
+            add(&mut l[..n], sinks.get(base));
+            add(&mut r[..n], sinks.get(base + 1));
+            if let Some(mut aux) = self.tracks[d].aux.as_ref().and_then(|a| a.0.try_lock().ok()) {
+                for (c, b) in aux.iter_mut().enumerate().take(self.tracks[d].channels.saturating_sub(2)) {
+                    add(&mut b[..n], sinks.get(base + 2 + c));
+                }
+            }
+        }
+        if let Some(m) = plan.master {
+            add(&mut out_l[..n], sinks.get(m));
+            add(&mut out_r[..n], sinks.get(m + 1));
+            if let Some(mut aux) = self.master_aux.as_ref().and_then(|a| a.0.try_lock().ok()) {
+                for (c, b) in aux.iter_mut().enumerate().take(self.master_channels.saturating_sub(2)) {
+                    add(&mut b[..n], sinks.get(m + 2 + c));
+                }
+            }
+        }
+        if let Some(h) = plan.hw
+            && let Some(mut bus) = self.hw_bus.as_ref().and_then(|b| b.0.try_lock().ok())
+        {
+            for (c, b) in bus.iter_mut().enumerate().take(self.device_channels) {
+                add(&mut b[..n], sinks.get(h + c));
+            }
+        }
+    }
+}
+
+/// How many threads render tracks ahead of the playhead: REAPER's "audio reading/processing
+/// threads", 0 for one per fast core. Read when the threads start.
+static AHEAD_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn set_ahead_threads(n: usize) {
+    AHEAD_THREADS.store(n, Ordering::Relaxed);
+}
+
+/// The threads that render tracks ahead of the playhead (anticipative FX). They run at normal
+/// priority: they work a render-ahead's length before the audio is due, so the callback and
+/// the track threads it waits on, being real-time, always come first.
+pub fn ahead_threads() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = match AHEAD_THREADS.load(Ordering::Relaxed) {
+            0 => track_thread_count(),
+            n => n.clamp(1, 64),
+        };
+        rayon::ThreadPoolBuilder::new()
+            .thread_name(|i| format!("scythe-ahead-{i}"))
+            .num_threads(n)
+            .start_handler(|_| crate::realtime::request_worker())
+            .build()
+            .expect("spawn anticipative render threads")
+    })
 }
 
 /// The track buffers of a level, handed to the track threads.
@@ -2532,6 +2835,28 @@ mod tests {
         let g = graph_with(&p, audio);
         let (l, _) = render(&g, 0, 8);
         assert_eq!(&l[..7], &[5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn the_ahead_plan_keeps_what_live_tracks_feed_live() {
+        let mut p = project_with_item(0.0, 1.0);
+        let src = p.tracks[0].id;
+        let bus = p.add_track("bus");
+        let armed = p.add_track("armed");
+        let fed = p.add_track("fed by armed");
+        p.track_mut(src).unwrap().sends.push(Send::new(bus));
+        p.track_mut(src).unwrap().sends.push(Send::new(armed));
+        p.track_mut(armed).unwrap().armed = true;
+        p.track_mut(armed).unwrap().sends.push(Send::new(fed));
+        let g = graph_with(&p, ones(100));
+        let plan = g.ahead.as_deref().expect("some tracks render ahead");
+        assert_eq!(plan.live, [false, false, true, true]);
+        // The source feeds the master and the armed track; the bus only the master.
+        assert_eq!(plan.master, Some(0));
+        assert_eq!((plan.sink[2], plan.sink[3], plan.channels), (Some(2), None, 4));
+        p.track_mut(armed).unwrap().armed = false;
+        p.track_mut(src).unwrap().armed = true;
+        assert!(graph_with(&p, ones(100)).ahead.is_none(), "everything is fed by the armed source");
     }
 
     #[test]

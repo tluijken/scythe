@@ -202,6 +202,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 device_page(app, ui, &mut state);
                 closing(app, ui);
+                buffering(app, ui);
                 channel_naming(app, ui, &mut state);
             });
         },
@@ -405,8 +406,8 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
         };
         value_row(ui, "RT priority", &RT_PRIORITIES, &mut state.draft.rt_priority, label);
         if state.draft.rt_priority == 0 {
-            // REAPER rides out a late audio thread on its anticipative FX buffering; Scythe renders
-            // in the callback, so without real-time priority the desktop can make it miss blocks.
+            // Tracks rendered live (and the master) still run on the audio thread, so without
+            // real-time priority the desktop can make it miss blocks.
             note(
                 ui,
                 "Without real-time priority the audio thread can be held up by other programs, which gives dropouts at small block sizes.",
@@ -604,6 +605,37 @@ fn closing(app: &mut ScytheApp, ui: &mut Ui) {
     if switch_row(ui, "Close audio device when stopped and active (less responsive)", stopped, true) {
         app.change_preferences(|p| p.audio.close_stopped = Some(!stopped));
     }
+}
+
+/// Render-ahead lengths the buffering section offers, in milliseconds.
+const RENDER_AHEAD_MS: [u32; 7] = [25, 50, 100, 200, 400, 800, 1200];
+
+/// REAPER's Buffering page: anticipative FX processing and its render-ahead.
+fn buffering(app: &mut ScytheApp, ui: &mut Ui) {
+    section(ui, "Buffering");
+    let a = app.prefs.audio.clone();
+    let on = a.anticipative();
+    if switch_row(ui, "Anticipative FX processing (renders tracks without live input ahead)", on, true) {
+        app.change_preferences(|p| p.audio.set_anticipative(!on));
+    }
+    let mut ms = a.render_ahead_ms.filter(|&ms| ms > 0).unwrap_or(200);
+    let before = ms;
+    value_row(ui, "Render-ahead", &RENDER_AHEAD_MS, &mut ms, |ms| format!("{ms} ms"));
+    if ms != before {
+        app.change_preferences(|p| p.audio.render_ahead_ms = Some(ms));
+    }
+    let mp = a.live_fx_multiprocessing.unwrap_or(true);
+    if switch_row(ui, "Allow live FX multiprocessing", mp, on) {
+        app.change_preferences(|p| p.audio.live_fx_multiprocessing = Some(!mp));
+    }
+    let stats = app.engine.ahead_stats();
+    let text = if stats.running {
+        let ms = stats.lead_frames as f64 * 1000.0 / app.engine.sample_rate().max(1) as f64;
+        format!("Rendering {ms:.0} ms ahead; {} tracks live in the audio callback.", stats.live_tracks)
+    } else {
+        "Armed and monitored tracks, and what they feed, render live at the device block.".to_owned()
+    };
+    note(ui, &text);
 }
 
 /// REAPER's "Input/Output channel name aliasing/remapping" and its channel map editor.

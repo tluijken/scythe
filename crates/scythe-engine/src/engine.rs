@@ -361,6 +361,8 @@ struct Processor {
     preview: Arc<crate::preview::Preview>,
     /// The device channel each output slot plays to (REAPER's output remapping); -1 for none.
     out_map: Option<Vec<i32>>,
+    /// Anticipative FX: the callback's side of the worker rendering tracks ahead.
+    ahead: Option<crate::ahead::AheadClient>,
 }
 
 /// The queue hardware MIDI outputs are fed through.
@@ -397,6 +399,7 @@ impl Processor {
             hardware: Arc::default(),
             preview: Arc::default(),
             out_map: None,
+            ahead: None,
         }
     }
 
@@ -530,6 +533,9 @@ impl Processor {
             segment.1 += counted;
         }
         let graph = self.graph.load();
+        if let Some(a) = self.ahead.as_mut() {
+            a.begin(&graph, frames);
+        }
         if counted == 0
             && let Some(&(pos, _, _)) = segments[..n].first()
         {
@@ -552,6 +558,8 @@ impl Processor {
         // What leaves the speakers now was rendered one output latency ago.
         let heard = Instant::now() + Duration::from_secs_f64(self.transport.output_latency());
         let sr = self.transport.sample_rate as f64;
+        // How long the callback waits for a late chunk rendered ahead before rendering itself.
+        let deadline = started + Duration::from_secs_f64(frames as f64 / sr * 0.5);
         let clock = |frame: i64, off: usize| {
             self.midi_out.as_deref().map(|queue| MidiOutClock {
                 queue,
@@ -586,9 +594,11 @@ impl Processor {
                 recording,
                 midi_out: clock(pos, 0),
                 clicks: Clicks::CountIn { clicks, at },
+                ahead: None,
             };
             self.hardware.segment(0);
-            graph.render_with(pos, &mut l[..len], &mut r[..len], &mut self.scratch, &live);
+            let (seg_l, seg_r) = (&mut l[..len], &mut r[..len]);
+            render_segment(&graph, self.ahead.as_mut(), &mut self.scratch, pos, seg_l, seg_r, &live, false, deadline);
             graph.master_extra_at(0, len, &mut self.extra);
             graph.device_out_at(0, len, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, 0, len, l, r, &mut self.extra);
@@ -601,9 +611,10 @@ impl Processor {
                 recording,
                 midi_out: clock(pos, 0),
                 clicks: Clicks::Off,
+                ahead: None,
             };
             self.hardware.segment(0);
-            graph.render_with(pos, l, r, &mut self.scratch, &live);
+            render_segment(&graph, self.ahead.as_mut(), &mut self.scratch, pos, l, r, &live, false, deadline);
             graph.master_extra_at(0, frames, &mut self.extra);
             graph.device_out_at(0, frames, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, 0, frames, l, r, &mut self.extra);
@@ -613,6 +624,7 @@ impl Processor {
             Some(_) => None,
             None => self.count_in_tail.filter(|_| n > 0),
         };
+        let ahead_ok = counted == 0 && tail.is_none();
         for (i, &(pos, off, len)) in segments[..n].iter().enumerate() {
             let midi: &[LiveMidi] = if i == 0 && counted == 0 { &self.live } else { &[] };
             let clicks = match tail {
@@ -626,12 +638,33 @@ impl Processor {
                 recording,
                 midi_out: clock(pos, off),
                 clicks,
+                ahead: None,
             };
             self.hardware.segment(off);
-            graph.render_with(pos, &mut l[off..off + len], &mut r[off..off + len], &mut self.scratch, &live);
+            let (seg_l, seg_r) = (&mut l[off..off + len], &mut r[off..off + len]);
+            render_segment(
+                &graph,
+                self.ahead.as_mut(),
+                &mut self.scratch,
+                pos,
+                seg_l,
+                seg_r,
+                &live,
+                ahead_ok,
+                deadline,
+            );
             graph.master_extra_at(off, len, &mut self.extra);
             graph.device_out_at(off, len, l, r, &mut self.extra);
             graph.monitor_fx_at(pos, off, len, l, r, &mut self.extra);
+        }
+        if let Some(a) = self.ahead.as_mut() {
+            a.release_meters(&graph);
+            let want = n > 0 && ahead_ok && a.eligible(&graph);
+            if want && !a.running() {
+                a.start(&graph, self.transport.position.load(Ordering::Relaxed));
+            } else if !want && a.running() {
+                a.pause();
+            }
         }
         self.count_in_tail = tail
             .map(|(clicks, at)| (clicks, at + frames as i64))
@@ -661,6 +694,44 @@ impl Processor {
                 Some(map) => interleave_mapped(chunk, channels, map, &self.left, &self.right, &self.extra),
             }
         }
+    }
+}
+
+/// Renders one segment of a callback into `l` and `r`. With anticipative FX running and
+/// `ahead_ok`, the callback renders the live tracks over what the tracks rendered ahead left
+/// in their sinks; otherwise (or when that is late or does not fit) every track, once the
+/// worker has stopped, or the live tracks alone while it cannot be stopped in time.
+#[allow(clippy::too_many_arguments)]
+fn render_segment(
+    graph: &Arc<RenderGraph>,
+    ahead: Option<&mut crate::ahead::AheadClient>,
+    scratch: &mut RenderScratch,
+    pos: i64,
+    l: &mut [f32],
+    r: &mut [f32],
+    live: &LiveInput,
+    ahead_ok: bool,
+    deadline: Instant,
+) {
+    let Some(a) = ahead else {
+        graph.render_with(pos, l, r, scratch, live);
+        return;
+    };
+    let mp = a.live_multiprocessing();
+    if ahead_ok
+        && a.running()
+        && let Some(plan) = graph.ahead.as_deref()
+    {
+        if a.take(plan, pos, l.len(), deadline) == crate::ahead::Gather::Ready {
+            graph.render_live(pos, l, r, scratch, live, Some(a.sinks()), mp);
+            return;
+        }
+        a.miss();
+    }
+    if a.exclusive(deadline) {
+        graph.render_with(pos, l, r, scratch, live);
+    } else {
+        graph.render_live(pos, l, r, scratch, live, None, mp);
     }
 }
 
@@ -928,6 +999,9 @@ pub struct Engine {
     preview: Arc<crate::preview::Preview>,
     /// Frames per block of the silent clock.
     null_block: usize,
+    /// Anticipative FX: settings and counters shared with the callback and the worker.
+    ahead: Arc<crate::ahead::AheadShared>,
+    _ahead_worker: crate::ahead::AheadWorker,
 }
 
 impl Engine {
@@ -1078,6 +1152,7 @@ impl Engine {
                     host,
                 };
                 self.callbacks_seen = (self.transport.callbacks.load(Ordering::Relaxed), Instant::now());
+                self.set_device_playing(true);
                 self.transport.lost.store(false, Ordering::Relaxed);
                 Ok(())
             }
@@ -1097,6 +1172,7 @@ impl Engine {
     }
 
     fn go_silent(&mut self) {
+        self.set_device_playing(false);
         self.output = Output::null(self.proc.clone(), self.info.sample_rate, self.null_block);
         self.info.block_size = Some(self.null_block as u32);
     }
@@ -1184,6 +1260,37 @@ impl Engine {
         self.transport.block_times.read(restart)
     }
 
+    /// Whether a device plays: anticipative FX renders ahead only for one.
+    fn set_device_playing(&self, on: bool) {
+        if let Ok(mut p) = self.proc.lock()
+            && let Some(a) = p.ahead.as_mut()
+        {
+            a.set_device(on);
+        }
+    }
+
+    /// REAPER's Preferences > Audio > Buffering: anticipative FX and its render-ahead.
+    pub fn set_buffering(&self, settings: crate::ahead::Buffering) {
+        self.ahead.configure(settings, self.info.sample_rate);
+    }
+
+    pub fn buffering(&self) -> crate::ahead::Buffering {
+        self.ahead.settings()
+    }
+
+    /// How anticipative FX is doing.
+    pub fn ahead_stats(&self) -> crate::ahead::AheadStats {
+        self.ahead.stats()
+    }
+
+    /// Makes the callback wait up to `patience` for a late chunk rendered ahead, and treat
+    /// the silent clock as a device, so tests can compare its output with and without
+    /// anticipative FX.
+    pub fn test_anticipative(&self, patience: Duration) {
+        self.ahead.set_patience(patience);
+        self.set_device_playing(true);
+    }
+
     /// The highest load since the last call, starting a new window.
     pub fn take_load_peak(&self) -> f32 {
         f32::from_bits(self.transport.load_peak.swap(0, Ordering::Relaxed))
@@ -1199,8 +1306,27 @@ impl Engine {
         let proc = Arc::new(Mutex::new(Processor::new(graph.clone(), transport.clone(), feeds)));
         let hardware = proc.lock().map(|p| p.hardware.clone()).ok();
         let preview = proc.lock().map(|p| p.preview.clone()).unwrap_or_default();
+        let (ahead_worker, ahead) = {
+            let (t, l) = (transport.clone(), transport.clone());
+            crate::ahead::start(
+                graph.clone(),
+                Arc::new(move || t.recording.load(Ordering::Relaxed)),
+                Arc::new(move || {
+                    l.loop_enabled
+                        .load(Ordering::Relaxed)
+                        .then(|| (l.loop_start.load(Ordering::Relaxed), l.loop_end.load(Ordering::Relaxed)))
+                }),
+            )
+        };
+        let ahead_shared = ahead.shared().clone();
+        ahead_shared.configure(crate::ahead::Buffering::default(), sample_rate);
+        if let Ok(mut p) = proc.lock() {
+            p.ahead = Some(ahead);
+        }
         let output = Output::null(proc.clone(), sample_rate, Output::NULL_BLOCK);
         Self {
+            ahead: ahead_shared,
+            _ahead_worker: ahead_worker,
             graph,
             transport,
             pool,
@@ -1663,6 +1789,7 @@ impl Engine {
 
     /// Keeps effects running for a few seconds while stopped.
     pub fn wake_effects(&self) {
+        self.ahead.tweak();
         let frames = self.info.sample_rate as i64 * 3;
         self.transport.wake_frames.store(frames, Ordering::Relaxed);
     }
@@ -2145,6 +2272,106 @@ mod tests {
             block = if block > 1500 { 97 } else { block * 2 + 1 };
         }
         out
+    }
+
+    /// A mix of items with fades, a delay into a folder bus with an EQ, a send into it, and
+    /// optionally an armed track a send reaches (so it renders live).
+    fn ahead_project(armed: bool) -> (Project, MediaPool, std::path::PathBuf) {
+        use crate::builtin::Builtin;
+        use scythe_core::{Item, Send, Take};
+        let (mut p, pool, dir) = ones_project(0.1);
+        let src = p.tracks[0].items[0].take().unwrap().source.file().unwrap().to_owned();
+        let bus = p.add_track("bus");
+        let lead = p.add_track("lead");
+        let side = p.add_track("side");
+        p.tracks.swap(0, 1);
+        p.tracks[0].folder_depth = 1;
+        p.tracks[2].folder_depth = -1;
+        p.tracks[0].fx.push(Builtin::Eq.slot());
+        p.tracks[1].fx.push(Builtin::Delay.slot());
+        for (i, at) in [(2, 0.37), (3, 0.71)] {
+            let mut item = Item::new(at, 0.9, Take::from_file(src.clone()));
+            item.fade_in.length = 0.2;
+            item.fade_out.length = 0.3;
+            p.tracks[i].items.push(item);
+        }
+        p.tracks[2].volume = 0.7;
+        p.tracks[2].pan = -0.4;
+        p.track_mut(side).unwrap().sends.push(Send { volume: 0.5, ..Send::new(bus) });
+        if armed {
+            let live = p.add_track("live");
+            p.track_mut(live).unwrap().armed = true;
+            p.track_mut(lead).unwrap().sends.push(Send { volume: 0.25, ..Send::new(live) });
+        }
+        (p, pool, dir)
+    }
+
+    /// Plays `p` from 0.05 s in 128-frame blocks through a 0.6-1.4 s loop, without and with
+    /// anticipative FX; both channels of each.
+    fn play_both_ways(p: &Project, pool: &MediaPool, chunk: usize) -> [Vec<f32>; 2] {
+        std::array::from_fn(|ahead| {
+            let transport = Arc::new(Transport::new(8000));
+            let graph = RenderGraph::build(p, pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+            let graph = Arc::new(ArcSwap::from_pointee(graph));
+            let (_senders, feeds) = feeds();
+            let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
+            proc.set_outputs(2);
+            let _worker = (ahead == 1).then(|| {
+                let (t, l) = (transport.clone(), transport.clone());
+                let (worker, mut client) = crate::ahead::start(
+                    graph.clone(),
+                    Arc::new(move || t.recording.load(Ordering::Relaxed)),
+                    Arc::new(move || {
+                        l.loop_enabled
+                            .load(Ordering::Relaxed)
+                            .then(|| (l.loop_start.load(Ordering::Relaxed), l.loop_end.load(Ordering::Relaxed)))
+                    }),
+                );
+                client.shared().configure(crate::ahead::Buffering::default(), 8000);
+                client.shared().set_patience(Duration::from_secs(5));
+                client.shared().set_chunk(chunk);
+                client.set_device(true);
+                proc.ahead = Some(client);
+                worker
+            });
+            transport.loop_start.store(4800, Ordering::Relaxed);
+            transport.loop_end.store(11_200, Ordering::Relaxed);
+            transport.loop_enabled.store(true, Ordering::Relaxed);
+            transport.position.store(400, Ordering::Relaxed);
+            transport.playing.store(true, Ordering::Relaxed);
+            let mut out = Vec::new();
+            for _ in 0..250 {
+                let mut buf = vec![0.0f32; 256];
+                proc.write_interleaved(&mut buf, 2);
+                out.extend_from_slice(&buf);
+            }
+            if let Some(a) = &proc.ahead {
+                let stats = a.shared().stats();
+                assert!(stats.running && stats.misses == 0, "{stats:?}");
+            }
+            out
+        })
+    }
+
+    #[test]
+    fn anticipative_playback_is_sample_identical() {
+        let (p, pool, dir) = ahead_project(false);
+        for chunk in [128, 640] {
+            let [direct, ahead] = play_both_ways(&p, &pool, chunk);
+            assert!(direct.iter().any(|s| s.abs() > 0.1));
+            assert!(direct == ahead, "first difference at {:?}", direct.iter().zip(&ahead).position(|(a, b)| a != b));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn anticipative_playback_feeds_live_tracks() {
+        let (p, pool, dir) = ahead_project(true);
+        let [direct, ahead] = play_both_ways(&p, &pool, 640);
+        let worst = direct.iter().zip(&ahead).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // Only the order the live track and the tracks rendered ahead are summed in differs.
+        assert!(worst < 1e-6, "{worst}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// A hardware insert on the null engine with a 300-frame loopback cable on outputs and

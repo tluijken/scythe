@@ -36,6 +36,15 @@ pub struct PerfMeter {
     pub rt_block_p999_ms: f64,
     #[serde(default)]
     pub rt_block_max_ms: f64,
+    /// Anticipative FX: how far ahead the tracks without live input are rendered, in
+    /// milliseconds, the blocks that found nothing rendered ahead since the start, and the
+    /// tracks rendered live in the callback.
+    #[serde(default)]
+    pub ahead_ms: f64,
+    #[serde(default)]
+    pub ahead_misses: u64,
+    #[serde(default)]
+    pub live_tracks: u32,
     /// Device xruns and blocks that took longer than their budget, since the start.
     pub xruns: u64,
     pub overloads: u64,

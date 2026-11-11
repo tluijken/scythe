@@ -74,6 +74,17 @@ pub fn request_from_prefs(prefs: &AudioDevicePrefs) -> DeviceRequest {
     request
 }
 
+/// REAPER's Preferences > Audio > Buffering as the preferences set it.
+pub fn buffering(prefs: &AudioDevicePrefs) -> scythe_engine::ahead::Buffering {
+    let default = scythe_engine::ahead::Buffering::default();
+    scythe_engine::ahead::Buffering {
+        anticipative: prefs.anticipative(),
+        render_ahead_ms: prefs.render_ahead_ms.filter(|&ms| ms > 0).unwrap_or(default.render_ahead_ms),
+        threads: prefs.work_threads.map_or(0, |n| n as usize),
+        live_multiprocessing: prefs.live_fx_multiprocessing.unwrap_or(default.live_multiprocessing),
+    }
+}
+
 /// What the preferences keep of `request`.
 pub fn prefs_from_request(request: &DeviceRequest, keep: &AudioDevicePrefs) -> AudioDevicePrefs {
     let system = match request.host.as_deref() {
@@ -213,6 +224,7 @@ impl Session {
         }
         let mut engine = engine;
         engine.set_default_click_output(self.prefs.metronome_default_output);
+        engine.set_buffering(buffering(&self.prefs.audio));
         engine.set_monitor_fx(self.engine.fx().monitor_fx.clone());
         engine.set_marker_actions(self.engine.marker_actions());
         let old = std::mem::replace(&mut self.engine, engine);
@@ -235,6 +247,7 @@ impl Session {
         let a = self.prefs.audio.clone();
         let alsa = a.system == Some(AudioSystem::Alsa);
         scythe_engine::realtime::set_priority(if alsa { a.rt_priority } else { None });
+        self.engine.set_buffering(buffering(&a));
         if a.lock_memory == Some(true) && !self.memory_locked {
             match scythe_engine::realtime::lock_memory() {
                 Ok(()) => self.memory_locked = true,

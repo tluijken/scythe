@@ -68,6 +68,30 @@ pub enum AudioCommand {
         #[serde(default)]
         save: Option<bool>,
     },
+    /// REAPER's Preferences > Audio > Buffering: anticipative FX (tracks that hear nothing live
+    /// render ahead of the playhead on worker threads, so heavy effects need not fit in one
+    /// block), its render-ahead and threads, and how it is doing.
+    #[serde(rename = "audio.buffering")]
+    Buffering,
+    /// Changes the buffering settings; fields left out keep their value. Kept in the
+    /// preferences.
+    #[serde(rename = "audio.set_buffering")]
+    SetBuffering {
+        /// "Anticipative FX processing": render the tracks without live input ahead.
+        #[serde(default)]
+        anticipative: Option<bool>,
+        /// How far ahead, in milliseconds (10-2000, REAPER's default 200). Effect changes are
+        /// heard within a few blocks whatever it is.
+        #[serde(default)]
+        render_ahead_ms: Option<u32>,
+        /// Threads rendering ahead, 0 for one per performance core; applies at the next start.
+        #[serde(default)]
+        threads: Option<u32>,
+        /// "Allow live FX multiprocessing": the tracks rendered live spread over the track
+        /// threads.
+        #[serde(default)]
+        live_multiprocessing: Option<bool>,
+    },
     /// Sets the channel map of the inputs or outputs (REAPER's channel alias/mapping window):
     /// one entry per channel tracks see, each playing a hardware channel or none, with an
     /// optional name. Turns aliasing/remapping on for that side; an empty list resets the map.
@@ -170,6 +194,39 @@ pub struct DeviceState {
     pub requested: Requested,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct BufferingState {
+    pub anticipative: bool,
+    pub render_ahead_ms: u32,
+    /// 0 for one per performance core.
+    pub threads: u32,
+    pub live_multiprocessing: bool,
+    /// Tracks render ahead now (playing on a device).
+    pub running: bool,
+    /// How far ahead of the playhead they are, in milliseconds.
+    pub ahead_ms: f64,
+    /// Blocks the callback found nothing rendered ahead for, since the start.
+    pub misses: u64,
+    /// Tracks rendered live, in the audio callback.
+    pub live_tracks: u32,
+}
+
+pub fn buffering(session: &Session) -> BufferingState {
+    let b = session.engine.buffering();
+    let stats = session.engine.ahead_stats();
+    let rate = session.engine.sample_rate().max(1) as f64;
+    BufferingState {
+        anticipative: b.anticipative,
+        render_ahead_ms: b.render_ahead_ms,
+        threads: b.threads as u32,
+        live_multiprocessing: b.live_multiprocessing,
+        running: stats.running,
+        ahead_ms: (stats.lead_frames as f64 / rate * 10_000.0).round() / 10.0,
+        misses: stats.misses,
+        live_tracks: stats.live_tracks,
+    }
+}
+
 pub fn devices(every: bool) -> Vec<HostEntry> {
     let all = if every { scythe_engine::devices::list_all() } else { scythe_engine::devices::list() };
     scythe_engine::devices::hosts()
@@ -227,6 +284,22 @@ pub fn execute(session: &mut Session, command: AudioCommand) -> Result<Value, Ap
     match command {
         AudioCommand::Devices { all } => Ok(json(devices(all))),
         AudioCommand::Device => Ok(json(state(session))),
+        AudioCommand::Buffering => Ok(json(buffering(session))),
+        AudioCommand::SetBuffering { anticipative, render_ahead_ms, threads, live_multiprocessing } => {
+            if render_ahead_ms.is_some_and(|ms| !(10..=2000).contains(&ms)) {
+                return Err(ApiError::invalid("render_ahead_ms runs from 10 to 2000"));
+            }
+            session.change_preferences(|p| {
+                let a = &mut p.audio;
+                if let Some(on) = anticipative {
+                    a.set_anticipative(on);
+                }
+                a.render_ahead_ms = render_ahead_ms.or(a.render_ahead_ms);
+                a.work_threads = threads.or(a.work_threads);
+                a.live_fx_multiprocessing = live_multiprocessing.or(a.live_fx_multiprocessing);
+            });
+            Ok(json(buffering(session)))
+        }
         AudioCommand::SetDevice {
             system,
             output,

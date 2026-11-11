@@ -1188,6 +1188,31 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   scheduler otherwise wakes them on whichever CPU runs nothing real-time, and with the window
   and other programs busy on the performance cores that was mostly an efficiency core (90 of
   105 samples), where a track takes about twice as long.
+- **Anticipative FX** (REAPER's Preferences > Audio > Buffering, "Anticipative FX processing";
+  on by default as in REAPER): while a device plays, the tracks that hear nothing live render
+  ahead of the playhead on worker threads, by the render-ahead (200 ms by default, `renderaheadlen`),
+  in chunks of about 512 frames, so a heavy chain only has to keep up on average instead of
+  finishing within every device block. Live are the armed tracks, tracks with a hardware MIDI
+  output or a hardware insert, a monitor mix's click, output recording, REAPER's per-track
+  "prevent anticipative FX" (`PERF` 2), and everything they feed (a track sending MIDI to a live
+  track too); they render in the callback at the device block, so monitored input, live MIDI
+  and virtual instruments keep their latency, with what the tracks rendered ahead send into
+  them added in. The master renders in the callback. A jump (seek, loop end, marker action),
+  start or stop hands every track back to the callback for that block; an edit or an effect
+  parameter change keeps four blocks (at least 10 ms) of what was rendered and renders the rest
+  again, and holds the render-ahead there for a second so a knob being turned is heard at once.
+  Meters of tracks rendered ahead move when their audio is played. Playback is sample-identical
+  to rendering every track in the callback: Song 2's effects (NAM, ReaVerb, ReaComp, ReaEQ,
+  ReaGate, ReaLimit, Scythe EQ) give the same samples at 128, 384, 512 and 1024-frame blocks
+  (`examples/block_identity.rs`), and a test plays a project with folders, sends, a delay, an
+  EQ and a loop both ways and compares them. Settings in the audio device window (Buffering:
+  anticipative FX, render-ahead, "Allow live FX multiprocessing"), `workrender` bit 1,
+  `renderaheadlen` and `workthreads` (threads rendering ahead, 0 for one per performance core)
+  in the preferences; API `audio.buffering` / `audio.set_buffering`, and `ahead_ms`,
+  `ahead_misses` and `live_tracks` in `transport.performance`. On a 48-track session with six
+  NAM amps the callback took 0.06 ms at the median and at most 0.4 ms of a 2.9 ms block over
+  five minutes (2.37 ms at most without), and the process 100 % of a core against REAPER's
+  200-280 % (see docs/verification.md).
 - **Window frame rate**: the window draws 30 frames a second while the transport plays, records
   or a meter still moves, whatever the display's refresh rate, and 4 a second otherwise (input,
   edits and control API commands redraw at once). `SCYTHE_UI_PROFILE=1` prints frames per second

@@ -944,6 +944,18 @@ pub struct Track {
 }
 
 impl Track {
+    /// REAPER's track performance flags (`PERF`, `I_PERFFLAGS`): 1 prevents media buffering,
+    /// 2 anticipative FX.
+    pub fn perf_flags(&self) -> u32 {
+        self.extra
+            .iter()
+            .find_map(|n| match n {
+                Node::Line(l) => l.trim().strip_prefix("PERF ")?.trim().parse().ok(),
+                _ => None,
+            })
+            .unwrap_or(0)
+    }
+
     /// A value from the track's extension data (`P_EXT:<key>`, the `<EXT` chunk), which REAPER
     /// keeps for extensions and scripts.
     pub fn ext(&self, key: &str) -> Option<String> {

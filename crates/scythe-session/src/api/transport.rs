@@ -226,6 +226,8 @@ pub fn execute(session: &mut Session, command: TransportCommand) -> Result<Value
             meter.rt_block_p99_ms = ms(blocks.p99);
             meter.rt_block_p999_ms = ms(blocks.p999);
             meter.rt_block_max_ms = ms(blocks.max);
+            let ahead = crate::api::audio::buffering(session);
+            (meter.ahead_ms, meter.ahead_misses, meter.live_tracks) = (ahead.ahead_ms, ahead.misses, ahead.live_tracks);
             return Ok(json(meter));
         }
         TransportCommand::State => {}

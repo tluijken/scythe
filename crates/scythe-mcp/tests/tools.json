@@ -14921,6 +14921,73 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "REAPER's Preferences > Audio > Buffering: anticipative FX (tracks that hear nothing live\nrender ahead of the playhead on worker threads, so heavy effects need not fit in one\nblock), its render-ahead and threads, and how it is doing.\n\nControl API command `audio.buffering`.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "audio_buffering",
+    "title": "Audio buffering"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Changes the buffering settings; fields left out keep their value. Kept in the\npreferences.\n\nControl API command `audio.set_buffering`.",
+    "inputSchema": {
+      "properties": {
+        "anticipative": {
+          "default": null,
+          "description": "\"Anticipative FX processing\": render the tracks without live input ahead.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "live_multiprocessing": {
+          "default": null,
+          "description": "\"Allow live FX multiprocessing\": the tracks rendered live spread over the track\nthreads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "render_ahead_ms": {
+          "default": null,
+          "description": "How far ahead, in milliseconds (10-2000, REAPER's default 200). Effect changes are\nheard within a few blocks whatever it is.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threads": {
+          "default": null,
+          "description": "Threads rendering ahead, 0 for one per performance core; applies at the next start.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "audio_set_buffering",
+    "title": "Audio set buffering"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Sets the channel map of the inputs or outputs (REAPER's channel alias/mapping window):\none entry per channel tracks see, each playing a hardware channel or none, with an\noptional name. Turns aliasing/remapping on for that side; an empty list resets the map.\n\nControl API command `audio.channel_map`.",
     "inputSchema": {
       "properties": {

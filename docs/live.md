@@ -87,6 +87,13 @@ unit asking for more than that does not start at all. To raise them, put the use
 @audio - memlock unlimited
 ```
 
+Anticipative FX (on by default, as in REAPER; the audio device window's Buffering section,
+`audio.set_buffering`) renders the backing tracks ahead of the playhead on worker threads, so
+only the armed and monitored tracks and the buses they feed have to fit the device block: a
+small block (64 or 128 frames) keeps monitoring latency low without the whole set having to fit
+it. ALSA's "Periods" (3 by default) is how many blocks the device ring holds: more ride out a
+late block at one block more of output latency each.
+
 On NixOS: `security.pam.loginLimits` with the same entries, or `musnix`. Run `--status` during
 a rehearsal: the CPU figure is the time spent rendering against the time a buffer lasts; above
 roughly 70 % the buffer is too small for the project, and xruns say the audio dropped out.

@@ -87,10 +87,13 @@ static STATUS: Mutex<Option<Realtime>> = Mutex::new(None);
 static PROMOTED: [AtomicI32; 64] = [const { AtomicI32::new(0) }; 64];
 static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
 static DEMOTED: AtomicBool = AtomicBool::new(false);
+/// Whether [`enable`] ran: offline renders and tests leave every thread as it is.
+static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Starts promoting the threads that [`request`] names. Without it (tests, offline renders)
 /// audio threads keep their normal priority.
 pub fn enable() {
+    ENABLED.store(true, Ordering::Relaxed);
     PROMOTER.get_or_init(|| {
         catch_cpu_limit();
         let (tx, rx) = sync_channel(PROMOTED.len());
@@ -137,6 +140,43 @@ pub fn request_helper() {
     if let Some(tx) = PROMOTER.get() {
         let _ = tx.try_send((current_tid(), false));
     }
+}
+
+/// Niceness the anticipative render threads ask RealtimeKit for.
+const WORKER_NICE: i32 = -10;
+
+/// For a thread that renders ahead of the playhead (anticipative FX): no real-time priority,
+/// which a thread working flat out would lose to the CPU-time limit, but a raised normal one
+/// on the performance cores, so the desktop does not starve it. Blocks while it asks; call it
+/// when the thread starts.
+pub fn request_worker() {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let tid = current_tid();
+    keep_on_fast_cpus(tid);
+    // SAFETY: setpriority only changes the niceness of thread `tid` of this process.
+    let direct = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as libc::id_t, WORKER_NICE) } == 0;
+    if !direct {
+        let _ = rtkit_nice(tid, WORKER_NICE);
+    }
+}
+
+fn rtkit_nice(tid: libc::pid_t, nice: i32) -> Result<(), String> {
+    let err = |e: zbus::Error| e.to_string();
+    let conn = zbus::blocking::Connection::system().map_err(err)?;
+    let kit = zbus::blocking::Proxy::new(
+        &conn,
+        "org.freedesktop.RealtimeKit1",
+        "/org/freedesktop/RealtimeKit1",
+        "org.freedesktop.RealtimeKit1",
+    )
+    .map_err(err)?;
+    let min: i32 = kit.get_property("MinNiceLevel").map_err(err)?;
+    // SAFETY: getpid has no preconditions.
+    let pid = unsafe { libc::getpid() } as u64;
+    kit.call_method("MakeThreadHighPriorityWithPID", &(pid, tid as u64, nice.max(min))).map_err(err)?;
+    Ok(())
 }
 
 /// How the last thread that asked is scheduled, once it has been looked at.

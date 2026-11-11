@@ -156,6 +156,22 @@ the per-track figures):
 |---|---|
 | JACK client xruns in 30 s at 128 / 256 / 512 frames | REAPER 0 / 0 / 0 (anticipative FX on); Scythe 0 / 0 / 0, before these changes 120 / 1 / 0 |
 | Process CPU while playing (percent of one core) at 128 / 256 / 512 | REAPER 185 / 162 / 145; Scythe 79 / 73 / 67, before 503 / 310 / 217 |
+
+Anticipative FX and ALSA periods, measured on the session's current version (25 Scythe EQs, which
+REAPER cannot load, removed for both) at 44.1 kHz on a private JACK dummy server whose threads
+and both programs' JACK client threads run at `SCHED_RR` 20 (RealtimeKit), back to back with the
+load average below 5; Scythe also through ALSA (the `alsa-plugins` JACK PCM, so ALSA's period
+count applies):
+
+| Area | Result |
+|---|---|
+| Process CPU over 30 s at 128 frames | REAPER 7.73 197-283 % with anticipative FX (`workrender=17`), 207-215 % without; Scythe 85-127 % with, 101 % without (JACK), 83 % (ALSA, 3 periods) |
+| Process CPU over 30 s at 64 frames | REAPER 267 %; Scythe 106 % (JACK), 92 % (ALSA, 3 periods) |
+| Xruns over 30 s at 128 frames | REAPER 0 with anticipative FX, 23-36 without; Scythe 0 either way |
+| Callback render time at 128 frames (2.9 ms budget), p50 / p99 / max | Scythe with anticipative FX 0.05 / 0.11 / 0.23 ms, without 0.87 / 1.41 / 2.37 ms; with one NAM guitar armed and monitored (it and its two folder buses live) 0.57 / 1.07 / 1.73 ms |
+| Five minutes of the full session (Scythe EQs included) through ALSA, 3 periods | 128 frames: 0 xruns, 0 late blocks, callback p99 0.15 ms, max 0.40 ms, 100 % CPU; 64 frames: 0 engine xruns, 0 late blocks, callback p99 0.11 ms, max 0.28 ms, 118 % CPU (the JACK server logged 15 xruns of the ALSA-to-JACK bridge thread not being woken in time) |
+| Round trip of a monitored input through the guitar rig (ReaGate, NAM, ReaVerb cab, two ReaEQs, ReaComp, ReaLimit), `jack_iodelay` at 128 frames | REAPER 659.6 frames, Scythe 775 frames; through an empty armed track both 128. The difference is the rig's effects (Scythe's NAM converts a 48 kHz model's rate itself), not the audio path |
+| Negotiated ALSA ring at 128 frames for 2 / 3 / 4 / 8 periods | 256 / 384 / 512 / 1024 frames, latency shown `~2.9/2.9ms`, `~2.9/5.8ms`, `~2.9/8.7ms`, `~2.9/20ms` (out = block × (periods - 1), REAPER's figure) |
 | One NAM instance (standard WaveNet, 48 kHz model in a 44.1 kHz project) | REAPER's LV2 plugin 15.6 % of a core (rendering with and without the six NAM slots: 69 against 13 CPU-seconds for 60 s); Scythe 7-8 %, before 22 % |
 
 `examples/null_check.rs` re-renders any project REAPER rendered with `-renderproject` and

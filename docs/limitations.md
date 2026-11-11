@@ -30,12 +30,18 @@ measured.
   its filters with a click if it plays. The instance list covers top-level slots on tracks and
   the master (not input, take or monitoring chains or containers). There is no undo history of
   the analyzer settings (they are stored with the instance but not automatable).
-- Audio performance: there is no anticipative FX processing (REAPER renders tracks that are
-  not monitored live up to ~200 ms ahead on worker threads, so a heavy chain only has to keep up
-  on average); every track renders inside the device callback, so the slowest chain of tracks
-  that feed each other (a track, its folder parents, send receivers) must finish within one
-  block. Tracks wait for a whole dependency level (all tracks at the same depth) rather than
-  only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
+- Audio performance: anticipative FX renders ahead only while a device plays (the silent
+  clock of `--null-audio` renders every track in the callback). After an edit or an effect
+  change the effects of the tracks rendered ahead hear the last few blocks of the render-ahead
+  again (their state is not rewound), which a delay or reverb can repeat audibly once; REAPER
+  re-renders the same way. The blocks right after a jump play the tracks rendered ahead only once
+  the worker has caught up, so a seek can drop them for a block or two. REAPER's per-track
+  options ("Allow on tracks without FX", "with open MIDI editors", "in touch/latch/write
+  automation mode"), the render-ahead for open FX windows and the media buffer settings are
+  not followed; "Allow live FX multiprocessing" is kept in Scythe's own key `scythe_livefxmp`
+  (REAPER's bit for it in `workrender` is not known) and is on by default, where REAPER's is
+  off. The thread count applies at the next start. Tracks wait for a whole dependency level
+  (all tracks at the same depth) rather than only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
   the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
   "prevent anticipative FX" flags; the NAM slot reports no separate model and resampling cost.
 - Audio device page: JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI

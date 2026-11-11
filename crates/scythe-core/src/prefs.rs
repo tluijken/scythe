@@ -135,7 +135,22 @@ pub struct AudioDevicePrefs {
     pub close_inactive: Option<u32>,
     /// `audioclosestop`: close the device whenever stopped, even while active.
     pub close_stopped: Option<bool>,
+    /// `workrender`, Preferences > Audio > Buffering: bit 1 is "Anticipative FX processing"
+    /// (REAPER's default 17 has it on).
+    pub work_render: Option<u32>,
+    /// `renderaheadlen`: the anticipative render-ahead in milliseconds (default 200).
+    pub render_ahead_ms: Option<u32>,
+    /// `workthreads`: threads rendering ahead, 0 or none for one per fast core.
+    pub work_threads: Option<u32>,
+    /// `scythe_livefxmp`: the tracks rendered in the audio callback spread over the track
+    /// threads ("Allow live FX multiprocessing"; on unless set to 0).
+    pub live_fx_multiprocessing: Option<bool>,
 }
+
+/// `workrender` bit: anticipative FX processing.
+pub const WORK_ANTICIPATIVE: u32 = 1;
+/// REAPER's `workrender` when the key is missing.
+pub const WORK_RENDER_DEFAULT: u32 = 17;
 
 /// `audiocloseinactive_linux` bit: close the device while stopped and Scythe is not the active
 /// application.
@@ -150,6 +165,17 @@ pub const JACK_NO_CONNECT: u32 = 2;
 impl AudioDevicePrefs {
     pub fn project_rate_override(&self) -> bool {
         self.project_rate_override.unwrap_or(true)
+    }
+
+    /// "Anticipative FX processing", on unless `workrender` clears it.
+    pub fn anticipative(&self) -> bool {
+        self.work_render.unwrap_or(WORK_RENDER_DEFAULT) & WORK_ANTICIPATIVE != 0
+    }
+
+    /// Turns anticipative FX on or off, keeping `workrender`'s other bits.
+    pub fn set_anticipative(&mut self, on: bool) {
+        let flags = self.work_render.unwrap_or(WORK_RENDER_DEFAULT);
+        self.work_render = Some(if on { flags | WORK_ANTICIPATIVE } else { flags & !WORK_ANTICIPATIVE });
     }
 
     /// Takes `key` when it is one of the device page's; false for any other key.
@@ -174,6 +200,10 @@ impl AudioDevicePrefs {
             "linux_mlockall" => self.lock_memory = number().map(|v| v != 0),
             "audiocloseinactive_linux" => self.close_inactive = number(),
             "audioclosestop" => self.close_stopped = number().map(|v| v != 0),
+            "workrender" => self.work_render = number(),
+            "renderaheadlen" => self.render_ahead_ms = number(),
+            "workthreads" => self.work_threads = number(),
+            "scythe_livefxmp" => self.live_fx_multiprocessing = number().map(|v| v != 0),
             _ => return false,
         }
         true
@@ -201,6 +231,10 @@ impl AudioDevicePrefs {
             ("linux_mlockall", self.lock_memory.map(u32::from)),
             ("audiocloseinactive_linux", self.close_inactive),
             ("audioclosestop", self.close_stopped.map(u32::from)),
+            ("workrender", self.work_render),
+            ("renderaheadlen", self.render_ahead_ms),
+            ("workthreads", self.work_threads),
+            ("scythe_livefxmp", self.live_fx_multiprocessing.map(u32::from)),
         ];
         out.extend(numbers.iter().filter_map(|(k, v)| v.map(|v| (k.to_string(), v.to_string()))));
         if let Some(cmd) = &self.jack_launch {
@@ -633,6 +667,19 @@ mod tests {
         assert_eq!(fresh, "[REAPER]\npreroll=0\nprerollmeas=2.00000000000000\nmetronome_defout=-1\n");
         assert_eq!(Preferences::parse(&fresh), Preferences::default());
         assert_eq!(Preferences::parse("[REAPER]\nprerollmeas=-2\npreroll=x\n"), Preferences::default());
+    }
+
+    #[test]
+    fn buffering_keys_read_as_reaper_writes_them() {
+        // REAPER 7.73 starts with workrender=17, workthreads=20 (one per CPU), renderaheadlen=200.
+        let p = Preferences::parse("[reaper]\nworkrender=17\nworkthreads=20\nrenderaheadlen=200\n");
+        let a = &p.audio;
+        assert!(a.anticipative());
+        assert_eq!((a.render_ahead_ms, a.work_threads), (Some(200), Some(20)));
+        let mut off = a.clone();
+        off.set_anticipative(false);
+        assert_eq!(off.work_render, Some(16));
+        assert!(!off.anticipative() && AudioDevicePrefs::default().anticipative());
     }
 
     #[test]
