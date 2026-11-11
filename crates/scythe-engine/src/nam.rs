@@ -3,7 +3,6 @@
 //! stacked layer arrays of dilated convolutions with a residual stream, a conditioning input
 //! (the dry signal) mixed into every layer and a summed head.
 
-use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -11,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 
 use crate::fx::{Effect, ProcessContext};
-use crate::media::StreamResampler;
 
 #[derive(Debug, Deserialize)]
 struct ModelFile {
@@ -601,43 +599,31 @@ impl NamInfo {
     }
 }
 
-/// A model running at the project's rate, through a rate bridge when the model has another.
+/// A model running at the project's rate whatever rate it was trained at, as the Neural Amp
+/// Modeler LV2 plugin does in REAPER: no rate conversion, so no delay. A 48 kHz model in a
+/// 44.1 kHz project shapes the signal as if it were 9 % slower, as there (REAPER 7.73 with the
+/// plugin's 0.1.4 at 44.1 kHz renders what running the model straight at 44.1 kHz gives, and
+/// the plugin adds no latency).
 pub struct NamVoice {
     model: NamModel,
-    bridge: Option<RateBridge>,
 }
 
 impl NamVoice {
-    pub fn new(model: NamModel, sample_rate: u32) -> Self {
-        let model_rate = model.sample_rate.map(|r| r.round() as u32).filter(|&r| r > 0 && r != sample_rate);
-        let bridge = model_rate.map(|r| RateBridge::new(sample_rate, r));
-        Self { model, bridge }
+    pub fn new(model: NamModel) -> Self {
+        Self { model }
     }
 
     fn process(&mut self, buf: &mut [f32]) {
-        match &mut self.bridge {
-            Some(bridge) => bridge.process(&mut self.model, buf),
-            None => self.model.process(buf),
-        }
+        self.model.process(buf);
     }
 
-    fn latency(&self) -> usize {
-        self.bridge.as_ref().map_or(0, |b| b.latency)
-    }
-
-    /// Frames of project-rate input after which the voice no longer hears the silence it
-    /// started from.
-    fn warmup(&self, sample_rate: u32) -> usize {
-        let field = self.model.receptive_field() as f64;
-        let scale = self.model.sample_rate.filter(|&r| r > 0.0).map_or(1.0, |r| sample_rate as f64 / r);
-        (field * scale).ceil() as usize + self.latency()
+    /// Frames of input after which the voice no longer hears the silence it started from.
+    fn warmup(&self) -> usize {
+        self.model.receptive_field()
     }
 
     fn reset(&mut self) {
         self.model.reset();
-        if let Some(bridge) = &mut self.bridge {
-            bridge.reset();
-        }
     }
 }
 
@@ -723,7 +709,6 @@ pub struct NamEffect {
     control: Arc<NamControl>,
     input_gain: f32,
     output_gain: f32,
-    sample_rate: u32,
     fade_len: usize,
     next_buf: Vec<f32>,
     old_buf: Vec<f32>,
@@ -741,7 +726,7 @@ impl NamEffect {
 
     pub fn with_model(model: NamModel, input_db: f64, output_db: f64, sample_rate: u32) -> Self {
         let mut fx = Self::empty(input_db, output_db, sample_rate);
-        fx.voice = Some(Box::new(NamVoice::new(model, sample_rate)));
+        fx.voice = Some(Box::new(NamVoice::new(model)));
         fx
     }
 
@@ -756,7 +741,6 @@ impl NamEffect {
             control,
             input_gain,
             output_gain,
-            sample_rate,
             fade_len: ((sample_rate as f64 * CROSSFADE_SECONDS).round() as usize).max(1),
             next_buf: vec![0.0; CHUNK],
             old_buf: vec![0.0; CHUNK],
@@ -774,7 +758,7 @@ impl NamEffect {
             Err(_) => None,
         };
         if let Some(voice) = incoming {
-            let warmup = voice.warmup(self.sample_rate);
+            let warmup = voice.warmup();
             if let Some(stale) = self.next.replace(Pending { voice, warmup }) {
                 self.retire(stale.voice);
             }
@@ -847,49 +831,6 @@ fn ramp_gain(buf: &mut [f32], current: &mut f32, target: f32) {
     *current = target;
 }
 
-/// Runs the model at its own sample rate inside a project at another, like the plugin does,
-/// with a fixed delay that covers both converters' lookahead.
-struct RateBridge {
-    up: StreamResampler,
-    down: StreamResampler,
-    at_model_rate: Vec<f32>,
-    converted: Vec<f32>,
-    out: VecDeque<f32>,
-    latency: usize,
-}
-
-impl RateBridge {
-    fn new(project_rate: u32, model_rate: u32) -> Self {
-        let up = StreamResampler::new(project_rate, model_rate);
-        let down = StreamResampler::new(model_rate, project_rate);
-        let ahead = up.lookahead() as f64 + down.lookahead() as f64 * project_rate as f64 / model_rate as f64;
-        let latency = ahead.ceil() as usize + 3;
-        let mut bridge =
-            Self { up, down, at_model_rate: Vec::new(), converted: Vec::new(), out: VecDeque::new(), latency };
-        bridge.reset();
-        bridge
-    }
-
-    fn process(&mut self, model: &mut NamModel, buf: &mut [f32]) {
-        self.at_model_rate.clear();
-        self.up.push(buf, &mut self.at_model_rate);
-        model.process(&mut self.at_model_rate);
-        self.converted.clear();
-        self.down.push(&self.at_model_rate, &mut self.converted);
-        self.out.extend(self.converted.iter().copied());
-        for s in buf.iter_mut() {
-            *s = self.out.pop_front().unwrap_or(0.0);
-        }
-    }
-
-    fn reset(&mut self) {
-        self.up.reset();
-        self.down.reset();
-        self.out.clear();
-        self.out.extend(std::iter::repeat_n(0.0, self.latency));
-    }
-}
-
 impl Effect for NamEffect {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], _ctx: &ProcessContext) {
         self.receive();
@@ -900,10 +841,6 @@ impl Effect for NamEffect {
         for (l, r) in left.iter().zip(right.iter_mut()) {
             *r = *l;
         }
-    }
-
-    fn latency(&mut self) -> usize {
-        self.voice.as_ref().map_or(0, |v| v.latency())
     }
 
     fn reset(&mut self) {
@@ -1035,10 +972,11 @@ mod tests {
         assert!(one.iter().any(|v| v.abs() > 1e-3));
     }
 
-    /// A 48 kHz model that passes its input through, in a 44.1 kHz project: the bridge to the
-    /// model's rate keeps the signal's level and pitch, delayed by the reported latency.
+    /// A 48 kHz model that passes its input through, in a 44.1 kHz project: it runs at the
+    /// project's rate, as the LV2 plugin does in REAPER, so the input comes out as it went in,
+    /// on the same frame.
     #[test]
-    fn model_runs_at_its_own_rate() {
+    fn a_model_of_another_rate_runs_at_the_projects_without_delay() {
         let json = br#"{"architecture": "WaveNet", "sample_rate": 48000,
             "config": {"layers": [{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
               "kernel_size": 2, "dilations": [1], "activation": "Hardtanh", "gated": false, "head_bias": true}],
@@ -1047,8 +985,7 @@ mod tests {
         let model = NamModel::from_json(json).unwrap();
         let rate = 44_100;
         let mut fx = NamEffect::with_model(model, 0.0, 0.0, rate);
-        let latency = fx.latency();
-        assert!(latency > 0);
+        assert_eq!(fx.latency(), 0);
         let sine = |t: usize| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * t as f32 / rate as f32).sin();
         let ctx = ProcessContext {
             sample_rate: rate,
@@ -1069,8 +1006,8 @@ mod tests {
             fx.process(&mut left, &mut right, &ctx);
             out.extend(left);
         }
-        for (t, &y) in out.iter().enumerate().skip(latency + 200) {
-            assert!((y - sine(t - latency)).abs() < 1e-3, "frame {t}: {y} vs {}", sine(t - latency));
+        for (t, &y) in out.iter().enumerate().skip(200) {
+            assert!((y - sine(t)).abs() < 1e-6, "frame {t}: {y} vs {}", sine(t));
         }
     }
 
@@ -1124,7 +1061,7 @@ mod tests {
         let switch_block = 10;
         for block in 0..60 {
             if block == switch_block {
-                control.load(NamVoice::new(scaled(-0.5), rate));
+                control.load(NamVoice::new(scaled(-0.5)));
             }
             let mut left: Vec<f32> = (block * 256..(block + 1) * 256).map(sine).collect();
             let mut right = vec![0.0; 256];

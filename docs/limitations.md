@@ -46,7 +46,11 @@ measured.
   off. The thread count applies at the next start. Tracks wait for a whole dependency level
   (all tracks at the same depth) rather than only for their own sources. The track thread count is set by `SCYTHE_TRACK_THREADS`, not in
   the preferences. The performance meter has no CPU graph, media (disk) columns or per-track
-  "prevent anticipative FX" flags; the NAM slot reports no separate model and resampling cost.
+  "prevent anticipative FX" flags; the NAM slot reports no separate model cost. NAM models trained at another rate than the
+  project's run at the project's, as REAPER's plugin runs them, so a 48 kHz model in a 44.1 kHz
+  project sounds a little different from the model at its own rate; the plugin's loudness
+  normalization (REAPER's output is the model's `loudness` metadata brought to -18 dB, 6.9 dB
+  lower for a model at -11.1 dB) is not applied.
 - Audio device page: JACK's MIDI port counts (`jack_midiins`, `jack_midiouts`) and "Auto-connect jack MIDI
   channels" are kept but not used: Scythe's MIDI goes through the ALSA sequencer, which JACK and
   PipeWire bridge. "Auto-suspend PulseAudio" (`linux_auto_pasuspend`, REAPER running its ALSA

@@ -656,74 +656,6 @@ fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// Converts a stream from `from` to `to` Hz block by block with the 192-point sinc. Output
-/// frame `m` reads the input at `m * from / to` and is produced once the input reaches
-/// 96 frames past that position.
-pub(crate) struct StreamResampler {
-    kernel: SincKernel,
-    phases: PhaseTable,
-    from: u64,
-    to: u64,
-    /// Input frames from absolute frame `start` on.
-    history: Vec<f32>,
-    start: u64,
-    next: u64,
-}
-
-impl StreamResampler {
-    pub(crate) fn new(from: u32, to: u32) -> Self {
-        let kernel = SincKernel::new(from as f64 / to as f64, 96, true);
-        let phases = PhaseTable::new(&kernel, from as u64, to as u64);
-        Self { kernel, phases, from: from as u64, to: to as u64, history: Vec::new(), start: 0, next: 0 }
-    }
-
-    /// Input frames that must follow a read position before its output frame is ready.
-    pub(crate) fn lookahead(&self) -> usize {
-        self.kernel.half
-    }
-
-    pub(crate) fn push(&mut self, input: &[f32], out: &mut Vec<f32>) {
-        self.history.extend_from_slice(input);
-        let half = self.kernel.half as u64;
-        let width = 2 * self.kernel.half;
-        let end = self.start + self.history.len() as u64;
-        loop {
-            let (base, rem) = (self.next * self.from / self.to, self.next * self.from % self.to);
-            if base + half >= end {
-                break;
-            }
-            let from = (base + 1).saturating_sub(half).max(self.start);
-            let mut acc = 0.0f64;
-            if self.phases.weights.is_empty() {
-                let frac = rem as f64 / self.to as f64;
-                for idx in from..=base + half {
-                    let x = self.history[(idx - self.start) as usize] as f64;
-                    acc += x * self.kernel.tap(base as f64 + frac - idx as f64);
-                }
-            } else {
-                // The row holds the weights of input frames `base + 1 - half ..= base + half`.
-                let row = &self.phases.weights[(rem / self.phases.unit) as usize * width..][..width];
-                let skip = (from + half - 1 - base) as usize;
-                let xs = &self.history[(from - self.start) as usize..][..width - skip];
-                for (&x, &w) in xs.iter().zip(&row[skip..]) {
-                    acc += x as f64 * w;
-                }
-            }
-            out.push(acc as f32);
-            self.next += 1;
-        }
-        let keep_from = (self.next * self.from / self.to + 1).saturating_sub(half).max(self.start);
-        self.history.drain(..(keep_from - self.start) as usize);
-        self.start = keep_from;
-    }
-
-    pub(crate) fn reset(&mut self) {
-        self.history.clear();
-        self.start = 0;
-        self.next = 0;
-    }
-}
-
 /// Reads `frames` output frames from `input`, `step` input frames apart (band-limited).
 pub(crate) fn resample_by_step(input: &[f32], step: f64, frames: usize) -> Vec<f32> {
     let kernel = SincKernel::new(step, 96, true);
@@ -1164,21 +1096,6 @@ mod tests {
         let data = AudioData { sample_rate: 2, channels: vec![vec![1.0, 2.0, 3.0, 4.0]] };
         let out = resample_with(&data, 3, ResampleMode::Point).unwrap();
         assert_eq!(out.channels[0], [1.0, 1.0, 2.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn streaming_matches_whole_file_conversion() {
-        let input: Vec<f32> = (0..5000).map(|i| ((i * 7919 % 1000) as f32 / 500.0) - 1.0).collect();
-        let whole = resample(&AudioData { sample_rate: 48000, channels: vec![input.clone()] }, 44100).unwrap();
-        let mut stream = StreamResampler::new(48000, 44100);
-        let mut out = Vec::new();
-        for block in input.chunks(333) {
-            stream.push(block, &mut out);
-        }
-        assert!(out.len() + 200 > whole.frames());
-        for (a, b) in out.iter().zip(&whole.channels[0]) {
-            assert!((a - b).abs() < 1e-6);
-        }
     }
 
     #[test]

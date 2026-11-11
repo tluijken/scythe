@@ -423,9 +423,11 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
 - **Neural Amp Modeler**: Neural Amp Modeler slots (the LV2 plugin) run their `.nam` WaveNet
   models natively, with the stored input and output levels (all 310 models in
   `~/music/Samples/NAM` load; a standard model runs at about 25× realtime on one core of a
-  2023 laptop CPU, with AVX2/FMA where the CPU has them), at the model's own sample rate: like
-  the plugin, a project at another rate is converted to the model's rate and back (192-point sinc,
-  reported as plugin latency). The NAM slot's **Edit** opens the NAM panel: the model's name,
+  2023 laptop CPU, with AVX2/FMA where the CPU has them), at the project's sample rate whatever
+  rate the model was trained at, as the plugin (0.1.4) does in REAPER: no conversion, so no
+  latency (measured in REAPER 7.73: a 48 kHz model adds 13.0 frames at 48 and at 44.1 kHz, the
+  model's own delay, and Scythe the same; renders at both rates match REAPER's to the same
+  residual). The NAM slot's **Edit** opens the NAM panel: the model's name,
   gear, author, architecture and rate, input and output knobs, previous/next model
   (Alt+Left/Right), four snapshots per slot to A/B models and levels (click to switch, Shift+click
   to store, Alt+1…4), and a two-pane browser (list beside the picked entry, stacked when the panel

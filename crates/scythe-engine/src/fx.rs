@@ -1245,7 +1245,7 @@ impl FxRegistry {
         if before.model != after.model {
             let Some(model) = &after.model else { return false };
             let Ok(model) = self.load_nam(&self.resolve_nam(model)) else { return false };
-            control.load(NamVoice::new(model, self.sample_rate));
+            control.load(NamVoice::new(model));
         }
         control.set_levels(after.input_db, after.output_db);
         let entry = self.entries.get_mut(key).unwrap();
