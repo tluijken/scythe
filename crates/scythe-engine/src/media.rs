@@ -736,6 +736,9 @@ pub struct Peaks {
     pub frames_per_peak: usize,
     pub min: Vec<f32>,
     pub max: Vec<f32>,
+    /// `min` and `max` over 2, 4, 8 … peaks, so a range spanning many peaks (a zoomed-out
+    /// waveform reads thousands per pixel column) takes a few reads rather than all of them.
+    coarser: Vec<(Vec<f32>, Vec<f32>)>,
 }
 
 impl Peaks {
@@ -757,7 +760,18 @@ impl Peaks {
             min.push(lo);
             max.push(hi);
         }
-        Self { frames_per_peak, min, max }
+        let mut coarser: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
+        loop {
+            let (lo, hi) = coarser.last().map_or((&min, &max), |(l, h)| (l, h));
+            if lo.len() <= 1 {
+                break;
+            }
+            let halve =
+                |v: &[f32], f: fn(f32, f32) -> f32| v.chunks(2).map(|p| p.iter().copied().fold(p[0], f)).collect();
+            let level = (halve(lo, f32::min), halve(hi, f32::max));
+            coarser.push(level);
+        }
+        Self { frames_per_peak, min, max, coarser }
     }
 
     /// Min/max over the frame range `[from, to)` of the source.
@@ -767,8 +781,39 @@ impl Peaks {
         if a >= b {
             return (0.0, 0.0);
         }
-        let lo = self.min[a..b].iter().copied().fold(0.0, f32::min);
-        let hi = self.max[a..b].iter().copied().fold(0.0, f32::max);
+        // Peaks at the ends of the range one by one, the whole pairs between them from the
+        // next level up.
+        let (mut a, mut b) = (a, b);
+        let (mut lo, mut hi) = (0f32, 0f32);
+        let mut level = 0;
+        while a < b {
+            let (mins, maxs) = if level == 0 {
+                (&self.min, &self.max)
+            } else {
+                (&self.coarser[level - 1].0, &self.coarser[level - 1].1)
+            };
+            if a % 2 == 1 {
+                lo = lo.min(mins[a]);
+                hi = hi.max(maxs[a]);
+                a += 1;
+            }
+            if b % 2 == 1 && a < b {
+                b -= 1;
+                lo = lo.min(mins[b]);
+                hi = hi.max(maxs[b]);
+            }
+            if a >= b {
+                break;
+            }
+            if level == self.coarser.len() {
+                lo = mins[a..b].iter().copied().fold(lo, f32::min);
+                hi = maxs[a..b].iter().copied().fold(hi, f32::max);
+                break;
+            }
+            a /= 2;
+            b /= 2;
+            level += 1;
+        }
         (lo, hi)
     }
 }
@@ -1189,5 +1234,20 @@ mod tests {
         assert_eq!(p.max, [0.5, 1.0, 0.0]);
         assert_eq!(p.min, [0.0, -0.25, 0.0]);
         assert_eq!(p.range(0.0, 4.0), (-0.25, 1.0));
+    }
+
+    #[test]
+    fn peak_ranges_read_from_coarser_levels_match_every_peak() {
+        let samples: Vec<f32> = (0..9973).map(|i| ((i * 7919 % 2003) as f32 / 1001.5) - 1.0).collect();
+        let data = AudioData { sample_rate: 1000, channels: vec![samples] };
+        let p = Peaks::compute(&data, 3);
+        let n = p.min.len();
+        for (a, b) in [(0, n), (1, n), (0, n - 1), (5, 6), (7, 300), (1000, 3001), (n - 2, n), (4, 4), (17, 1024)] {
+            let lo = p.min[a..b].iter().copied().fold(0.0, f32::min);
+            let hi = p.max[a..b].iter().copied().fold(0.0, f32::max);
+            let got = p.range((a * 3) as f64, (b * 3) as f64);
+            let want = if a < b { (lo, hi) } else { (0.0, 0.0) };
+            assert_eq!(got, want, "peaks {a}..{b}");
+        }
     }
 }
