@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Term {
     Iri(String),
     Blank(usize),
@@ -31,15 +31,48 @@ impl Term {
     }
 }
 
+/// Triples with an index by subject: an LV2 bundle such as LSP's merges hundreds of files
+/// into one graph, and finding each port's properties by going through every triple took
+/// hours.
 #[derive(Debug, Default)]
 pub struct Graph {
-    pub triples: Vec<(Term, String, Term)>,
+    triples: Vec<(Term, String, Term)>,
+    by_subject: HashMap<Term, Vec<usize>>,
+    blank_end: usize,
 }
 
 impl Graph {
+    pub fn triples(&self) -> &[(Term, String, Term)] {
+        &self.triples
+    }
+
+    pub fn push(&mut self, subject: Term, predicate: String, object: Term) {
+        for t in [&subject, &object] {
+            if let Term::Blank(b) = t {
+                self.blank_end = self.blank_end.max(b + 1);
+            }
+        }
+        self.by_subject.entry(subject.clone()).or_default().push(self.triples.len());
+        self.triples.push((subject, predicate, object));
+    }
+
+    /// Adds `other`'s triples, numbering its blank nodes after this graph's so the blank
+    /// nodes of different files stay apart.
+    pub fn merge(&mut self, other: Graph) {
+        let offset = self.blank_end;
+        let shift = |t: Term| match t {
+            Term::Blank(b) => Term::Blank(b + offset),
+            t => t,
+        };
+        for (s, p, o) in other.triples {
+            self.push(shift(s), p, shift(o));
+        }
+    }
+
     /// Objects of `subject` for `predicate`.
     pub fn objects<'a>(&'a self, subject: &'a Term, predicate: &'a str) -> impl Iterator<Item = &'a Term> + 'a {
-        self.triples.iter().filter(move |(s, p, _)| s == subject && p == predicate).map(|(_, _, o)| o)
+        let rows = self.by_subject.get(subject).map(Vec::as_slice).unwrap_or_default();
+        rows.iter().map(|&i| &self.triples[i]).filter(move |(_, p, _)| p == predicate).map(|(_, _, o)| o)
     }
 
     pub fn object<'a>(&'a self, subject: &'a Term, predicate: &'a str) -> Option<&'a Term> {
@@ -249,7 +282,7 @@ impl Parser<'_> {
             };
             loop {
                 let object = self.object()?;
-                self.graph.triples.push((subject.clone(), predicate.clone(), object));
+                self.graph.push(subject.clone(), predicate.clone(), object);
                 if !self.eat(b',') {
                     break;
                 }
@@ -292,8 +325,8 @@ impl Parser<'_> {
         for item in items.into_iter().rev() {
             let node = Term::Blank(self.blanks);
             self.blanks += 1;
-            self.graph.triples.push((node.clone(), FIRST.into(), item));
-            self.graph.triples.push((node.clone(), REST.into(), tail));
+            self.graph.push(node.clone(), FIRST.into(), item);
+            self.graph.push(node.clone(), REST.into(), tail);
             tail = node;
         }
         Ok(tail)

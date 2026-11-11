@@ -242,3 +242,42 @@ fn opens_the_x11_ui_and_takes_its_control_changes() {
     conn.flush().unwrap();
     std::fs::remove_dir_all(root).ok();
 }
+
+/// A bundle shaped like LSP's: a manifest pointing at one file per plugin, each with hundreds
+/// of ports as blank nodes. Reading LSP 1.2.29 (195 files) used to take hours.
+#[test]
+fn reads_large_bundles_quickly() {
+    let dir = std::env::temp_dir().join(format!("scythe-lv2-large-{}", std::process::id()));
+    let bundle = dir.join("big.lv2");
+    std::fs::create_dir_all(&bundle).unwrap();
+    let (plugins, ports) = (60, 400);
+    let mut manifest = String::from(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n",
+    );
+    for p in 0..plugins {
+        manifest += &format!("<urn:big:{p}> a lv2:Plugin ; lv2:binary <big.so> ; rdfs:seeAlso <p{p}.ttl> .\n");
+        let mut ttl = String::from(
+            "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n@prefix doap: <http://usefulinc.com/ns/doap#> .\n",
+        );
+        ttl += &format!("<urn:big:{p}> a lv2:Plugin ; doap:name \"Big {p}\" ; lv2:port ");
+        let list: Vec<String> = (0..ports)
+            .map(|i| {
+                format!(
+                    "[ a lv2:InputPort , lv2:ControlPort ; lv2:index {i} ; lv2:symbol \"p{i}\" ; lv2:name \"P {i}\" ; \
+                     lv2:default 0.5 ; lv2:minimum 0 ; lv2:maximum 1 ; lv2:scalePoint [ lv2:index 0 ] ]"
+                )
+            })
+            .collect();
+        ttl += &list.join(" , ");
+        ttl += " .\n";
+        std::fs::write(bundle.join(format!("p{p}.ttl")), ttl).unwrap();
+    }
+    std::fs::write(bundle.join("manifest.ttl"), manifest).unwrap();
+    let start = std::time::Instant::now();
+    let found = lv2::scan(std::slice::from_ref(&dir));
+    let took = start.elapsed();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(found.len(), plugins);
+    assert!(found.iter().all(|p| p.ports.len() == ports && p.ports[ports - 1].symbol == format!("p{}", ports - 1)));
+    assert!(took < std::time::Duration::from_secs(20), "took {took:?}");
+}

@@ -114,7 +114,7 @@ pub fn load_bundle(bundle: &Path) -> Result<Vec<Lv2Info>, String> {
     let text = std::fs::read_to_string(&manifest).map_err(|e| e.to_string())?;
     let mut graph = turtle::parse(&text, &file_iri(&manifest))?;
     let extra: Vec<String> = graph
-        .triples
+        .triples()
         .iter()
         .filter(|(_, p, _)| p == RDFS_SEE_ALSO)
         .filter_map(|(_, _, o)| o.iri().map(str::to_owned))
@@ -126,19 +126,7 @@ pub fn load_bundle(bundle: &Path) -> Result<Vec<Lv2Info>, String> {
         }
         let Some(path) = iri_path(&iri) else { continue };
         if let Ok(text) = std::fs::read_to_string(&path) {
-            let mut more = turtle::parse(&text, &iri)?;
-            // Blank nodes are numbered per file; shift them so files do not collide.
-            let offset = graph.triples.len() * 4 + 1_000_000;
-            let shift = |t: &mut Term| {
-                if let Term::Blank(b) = t {
-                    *b += offset;
-                }
-            };
-            for (s, _, o) in &mut more.triples {
-                shift(s);
-                shift(o);
-            }
-            graph.triples.append(&mut more.triples);
+            graph.merge(turtle::parse(&text, &iri)?);
         }
         seen.push(iri);
     }
