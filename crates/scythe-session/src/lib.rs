@@ -408,6 +408,7 @@ impl Session {
         }
         let out = inst.with(f);
         self.engine.wake_effects();
+        self.engine.touch_fx(inst);
         self.dirty = true;
         out
     }

@@ -207,6 +207,9 @@ pub struct BufferingState {
     pub ahead_ms: f64,
     /// Blocks the callback found nothing rendered ahead for, since the start.
     pub misses: u64,
+    /// Changes of the tracks rendered live (a track armed, effects tweaked) played through
+    /// without a gap, since the start.
+    pub switches: u64,
     /// Tracks rendered live, in the audio callback.
     pub live_tracks: u32,
 }
@@ -223,6 +226,7 @@ pub fn buffering(session: &Session) -> BufferingState {
         running: stats.running,
         ahead_ms: (stats.lead_frames as f64 / rate * 10_000.0).round() / 10.0,
         misses: stats.misses,
+        switches: stats.switches,
         live_tracks: stats.live_tracks,
     }
 }

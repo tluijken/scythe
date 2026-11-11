@@ -31,11 +31,14 @@ measured.
   the master (not input, take or monitoring chains or containers). There is no undo history of
   the analyzer settings (they are stored with the instance but not automatable).
 - Audio performance: anticipative FX renders ahead only while a device plays (the silent
-  clock of `--null-audio` renders every track in the callback). After an edit or an effect
-  change the effects of the tracks rendered ahead hear the last few blocks of the render-ahead
-  again (their state is not rewound), which a delay or reverb can repeat audibly once; REAPER
-  re-renders the same way. The blocks right after a jump play the tracks rendered ahead only once
-  the worker has caught up, so a seek can drop them for a block or two. REAPER's per-track
+  clock of `--null-audio` renders every track in the callback). The first change to an effect
+  on a track rendered ahead is heard a render-ahead later (200 ms by default), as in REAPER;
+  only then does the track render live. A change made inside a plugin's own editor counts only
+  while the editor is open in Scythe's window. A seek still lets the effects of the tracks
+  rendered ahead hear up to a render-ahead of audio before the jump that is never played, as in
+  REAPER. After a jump or a switch the callback waits up to one and a half blocks for the
+  worker (an ALSA ring of three periods absorbs that) before rendering every track itself.
+  REAPER's per-track
   options ("Allow on tracks without FX", "with open MIDI editors", "in touch/latch/write
   automation mode"), the render-ahead for open FX windows and the media buffer settings are
   not followed; "Allow live FX multiprocessing" is kept in Scythe's own key `scythe_livefxmp`

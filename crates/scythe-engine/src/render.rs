@@ -599,7 +599,7 @@ impl Default for LiveInput<'_> {
 impl<'a> LiveInput<'a> {
     pub const MAX_CHANNELS: usize = 64;
 
-    fn slice(&self, from: usize, len: usize) -> LiveInput<'a> {
+    pub(crate) fn slice(&self, from: usize, len: usize) -> LiveInput<'a> {
         LiveInput {
             channels: self.channels.map(|c| c.and_then(|s| s.get(from..(from + len).min(s.len())))),
             midi: if from == 0 { self.midi } else { &[] },
@@ -1086,7 +1086,8 @@ impl RenderGraph {
         let hw_bus = (track_outputs.is_some() || master_hw_outs.is_some() || metronome.end().is_some())
             .then(|| Arc::new(AuxChannels::new(device_channels)));
         let linked_fx = tracks.iter().any(|t| t.chain.links_effects());
-        let ahead = AheadPlan::new(&tracks, master_channels, hw_bus.is_some().then_some(device_channels)).map(Arc::new);
+        let ahead = AheadPlan::new(&tracks, master_channels, hw_bus.is_some().then_some(device_channels), &|_| false)
+            .map(Arc::new);
         Self {
             master_hw_outs,
             master_taps,
@@ -1189,7 +1190,7 @@ impl RenderGraph {
         scratch: &mut RenderScratch,
         input: &LiveInput,
     ) {
-        self.render_part(start, out_l, out_r, scratch, input, Part::All, track_threads(), true);
+        self.render_part(start, out_l, out_r, scratch, input, Part::All, track_threads(), true, &|| false);
     }
 
     /// Renders the tracks rendered in the callback, `sinks` holding what the tracks rendered
@@ -1207,12 +1208,14 @@ impl RenderGraph {
         sinks: Option<&[Vec<f32>]>,
         parallel: bool,
     ) {
-        self.render_part(start, out_l, out_r, scratch, input, Part::Live(sinks), track_threads(), parallel);
+        self.render_part(start, out_l, out_r, scratch, input, Part::Live(sinks), track_threads(), parallel, &|| false);
     }
 
     /// Renders the tracks [`AheadPlan`] puts ahead of the playhead over `n` frames from
     /// `start`, leaving what they feed the callback's tracks and the master in `sinks`
     /// (at least `plan.channels` buffers of `n` frames). At most `RenderScratch::MAX_BLOCK`.
+    /// Once `stop` says so the tracks not rendered yet are left out.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_ahead(
         &self,
         start: i64,
@@ -1221,11 +1224,12 @@ impl RenderGraph {
         input: &LiveInput,
         sinks: &mut [Vec<f32>],
         pool: &rayon::ThreadPool,
+        stop: &(dyn Fn() -> bool + Sync),
     ) {
         if self.ahead.is_none() {
             return;
         }
-        self.render_part(start, &mut [], &mut [], scratch, input, Part::Ahead(sinks, n), pool, true);
+        self.render_part(start, &mut [], &mut [], scratch, input, Part::Ahead(sinks, n), pool, true, stop);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1239,6 +1243,7 @@ impl RenderGraph {
         mut part: Part,
         pool: &rayon::ThreadPool,
         parallel: bool,
+        stop: &(dyn Fn() -> bool + Sync),
     ) {
         out_l.fill(0.0);
         out_r.fill(0.0);
@@ -1313,6 +1318,9 @@ impl RenderGraph {
                 pool.install(|| {
                     (0..order.len().min(pool.current_num_threads())).into_par_iter().with_max_len(1).for_each(|_| {
                         while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                            if stop() {
+                                continue;
+                            }
                             // SAFETY: `order` names each track once and every index is taken
                             // by one thread only, so no two threads reach the same buffers.
                             let (l, r) = unsafe { bufs.get(i) };
@@ -1323,7 +1331,7 @@ impl RenderGraph {
                     });
                 });
             } else {
-                for &i in level_order.iter() {
+                for &i in level_order.iter().filter(|_| !stop()) {
                     let (l, r) = &mut bufs[i];
                     let started = Instant::now();
                     self.process_track(i, start, &mut l[..n], &mut r[..n], input);
@@ -2289,11 +2297,17 @@ pub struct AheadPlan {
 impl AheadPlan {
     /// The plan for `tracks`, `None` when all of them render live. `hw` is the device bus's
     /// width when the graph has one.
-    pub fn new(tracks: &[RenderTrack], master_channels: usize, hw: Option<usize>) -> Option<Self> {
+    pub fn new(
+        tracks: &[RenderTrack],
+        master_channels: usize,
+        hw: Option<usize>,
+        forced: &dyn Fn(TrackId) -> bool,
+    ) -> Option<Self> {
         let mut live: Vec<bool> = tracks
             .iter()
             .map(|t| {
                 t.prevent_ahead
+                    || forced(t.id)
                     || t.monitor.is_some()
                     || t.midi_input.is_some()
                     || t.input_fx.is_some()
@@ -2348,6 +2362,7 @@ impl AheadPlan {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&live, &sink, master, hw, channels).hash(&mut h);
+        tracks.iter().for_each(|t| t.id.hash(&mut h));
         Some(Self { live, sink, master, hw, channels, key: h.finish() })
     }
 
@@ -2358,6 +2373,13 @@ impl AheadPlan {
 }
 
 impl RenderGraph {
+    /// This graph with the tracks `forced` names rendering live as well (effects being tweaked).
+    pub fn with_forced_live(&self, forced: &dyn Fn(TrackId) -> bool) -> Self {
+        let hw = self.hw_bus.is_some().then_some(self.device_channels);
+        let ahead = AheadPlan::new(&self.tracks, self.master_channels, hw, forced).map(Arc::new);
+        Self { ahead, ..self.clone() }
+    }
+
     /// Adds the sinks the tracks rendered ahead filled to the live tracks, the master and the
     /// device bus, before the callback renders those.
     fn take_sinks(

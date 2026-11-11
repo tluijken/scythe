@@ -1198,9 +1198,17 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   track too); they render in the callback at the device block, so monitored input, live MIDI
   and virtual instruments keep their latency, with what the tracks rendered ahead send into
   them added in. The master renders in the callback. A jump (seek, loop end, marker action),
-  start or stop hands every track back to the callback for that block; an edit or an effect
-  parameter change keeps four blocks (at least 10 ms) of what was rendered and renders the rest
-  again, and holds the render-ahead there for a second so a knob being turned is heard at once.
+  start or stop hands every track back to the callback for that block, and the callback waits
+  for the worker's first chunks after it rather than dropping the tracks rendered ahead. No
+  effect hears a block twice: an edit or a parameter change on a track rendered ahead applies
+  from where the worker is, a render-ahead later, as REAPER does (a ReaDelay change in REAPER
+  7.73 with anticipative FX on was heard 232-389 ms after `TrackFX_SetParam`, every echo once).
+  A track whose effects are being tweaked (an effect editor open, a parameter changed through
+  the window, the control API or a script in the last three seconds) then renders live, so
+  further changes are heard in the next block: the worker stops where it has rendered to, the
+  callback plays that out and continues every track from that frame, and the worker starts
+  again there with the new plan; arming or disarming a track while playing switches the same
+  way.
   Meters of tracks rendered ahead move when their audio is played. Playback is sample-identical
   to rendering every track in the callback: Song 2's effects (NAM, ReaVerb, ReaComp, ReaEQ,
   ReaGate, ReaLimit, Scythe EQ) give the same samples at 128, 384, 512 and 1024-frame blocks

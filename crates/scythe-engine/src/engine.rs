@@ -532,10 +532,13 @@ impl Processor {
         for segment in &mut segments[..n] {
             segment.1 += counted;
         }
-        let graph = self.graph.load();
-        if let Some(a) = self.ahead.as_mut() {
-            a.begin(&graph, frames);
-        }
+        let current = self.graph.load_full();
+        // While the tracks rendered ahead for an older plan play out, the block renders with
+        // the graph they were rendered for.
+        let graph = match self.ahead.as_mut() {
+            Some(a) => a.begin(&current, frames),
+            None => current.clone(),
+        };
         if counted == 0
             && let Some(&(pos, _, _)) = segments[..n].first()
         {
@@ -559,7 +562,8 @@ impl Processor {
         let heard = Instant::now() + Duration::from_secs_f64(self.transport.output_latency());
         let sr = self.transport.sample_rate as f64;
         // How long the callback waits for a late chunk rendered ahead before rendering itself.
-        let deadline = started + Duration::from_secs_f64(frames as f64 / sr * 0.5);
+        let budget = Duration::from_secs_f64(frames as f64 / sr);
+        let deadline = (started + budget.mul_f64(0.85), started + budget.mul_f64(1.5));
         let clock = |frame: i64, off: usize| {
             self.midi_out.as_deref().map(|queue| MidiOutClock {
                 queue,
@@ -659,10 +663,13 @@ impl Processor {
         }
         if let Some(a) = self.ahead.as_mut() {
             a.release_meters(&graph);
-            let want = n > 0 && ahead_ok && a.eligible(&graph);
+            let want = n > 0 && ahead_ok && a.eligible(&current);
             if want && !a.running() {
-                a.start(&graph, self.transport.position.load(Ordering::Relaxed));
-            } else if !want && a.running() {
+                a.start(&current, self.transport.position.load(Ordering::Relaxed));
+            } else if a.running() && (n == 0 || !ahead_ok) {
+                // Stopped or counting in: what was rendered ahead is not played. Still playing
+                // without a plan (every track live now, or anticipative FX switched off), the
+                // epoch plays out instead (see `AheadClient::begin`).
                 a.pause();
             }
         }
@@ -699,8 +706,10 @@ impl Processor {
 
 /// Renders one segment of a callback into `l` and `r`. With anticipative FX running and
 /// `ahead_ok`, the callback renders the live tracks over what the tracks rendered ahead left
-/// in their sinks; otherwise (or when that is late or does not fit) every track, once the
-/// worker has stopped, or the live tracks alone while it cannot be stopped in time.
+/// in their sinks; once an epoch rendered for an older plan has played out, every track from
+/// that frame on. Otherwise (or when nothing rendered ahead came by the first deadline, or it
+/// does not continue here) every track, once the worker has stopped; the live tracks alone
+/// only when it cannot be stopped by the second.
 #[allow(clippy::too_many_arguments)]
 fn render_segment(
     graph: &Arc<RenderGraph>,
@@ -711,24 +720,34 @@ fn render_segment(
     r: &mut [f32],
     live: &LiveInput,
     ahead_ok: bool,
-    deadline: Instant,
+    (deadline, last_resort): (Instant, Instant),
 ) {
+    use crate::ahead::Gather;
     let Some(a) = ahead else {
         graph.render_with(pos, l, r, scratch, live);
         return;
     };
     let mp = a.live_multiprocessing();
-    if ahead_ok
-        && a.running()
-        && let Some(plan) = graph.ahead.as_deref()
-    {
-        if a.take(plan, pos, l.len(), deadline) == crate::ahead::Gather::Ready {
-            graph.render_live(pos, l, r, scratch, live, Some(a.sinks()), mp);
-            return;
+    if ahead_ok && a.running() {
+        match a.take(pos, l.len(), deadline, last_resort) {
+            Gather::Ready => {
+                graph.render_live(pos, l, r, scratch, live, Some(a.sinks()), mp);
+                return;
+            }
+            Gather::Drained(k) => {
+                if k > 0 {
+                    graph.render_live(pos, &mut l[..k], &mut r[..k], scratch, &live.slice(0, k), Some(a.sinks()), mp);
+                }
+                // The worker has stopped where the epoch ends: every track continues from here.
+                a.finish();
+                let n = l.len();
+                graph.render_with(pos + k as i64, &mut l[k..], &mut r[k..], scratch, &live.slice(k, n - k));
+                return;
+            }
+            Gather::Late | Gather::Mismatch => a.miss(),
         }
-        a.miss();
     }
-    if a.exclusive(deadline) {
+    if a.exclusive(last_resort) {
         graph.render_with(pos, l, r, scratch, live);
     } else {
         graph.render_live(pos, l, r, scratch, live, None, mp);
@@ -949,6 +968,8 @@ pub enum DeviceEvent {
     Restored(String),
 }
 
+/// How long a track whose effects were tweaked keeps rendering live.
+const TOUCH_HOLD: Duration = Duration::from_secs(3);
 /// How often a missing device is looked for again.
 const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 /// A device that has not called back for this long has stopped.
@@ -1002,6 +1023,9 @@ pub struct Engine {
     /// Anticipative FX: settings and counters shared with the callback and the worker.
     ahead: Arc<crate::ahead::AheadShared>,
     _ahead_worker: crate::ahead::AheadWorker,
+    /// Tracks whose effects are being tweaked (an editor open, a parameter changed lately),
+    /// rendered live so the change is heard within a block, and until when.
+    touched: std::collections::HashMap<scythe_core::TrackId, Instant>,
 }
 
 impl Engine {
@@ -1181,6 +1205,7 @@ impl Engine {
     /// engine carries on with a silent clock, so the transport and the control API keep going,
     /// and the device is looked for again every few seconds. Call it regularly.
     pub fn maintain(&mut self) -> Option<DeviceEvent> {
+        self.expire_touches();
         let now = Instant::now();
         if let Output::Device(_) = &self.output {
             let calls = self.transport.callbacks.load(Ordering::Relaxed);
@@ -1260,6 +1285,51 @@ impl Engine {
         self.transport.block_times.read(restart)
     }
 
+    fn swap_graph(&mut self, graph: RenderGraph) {
+        let old = self.graph.swap(Arc::new(graph));
+        let now = Instant::now();
+        self.retired.push_back((now, old));
+        while self.retired.front().is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(2)) {
+            self.retired.pop_front();
+        }
+    }
+
+    /// The effects of track `id` are being tweaked (its editor is open, a parameter changed):
+    /// it renders live for a few seconds more, so further changes are heard within a block.
+    /// Rendered ahead until now, it switches once what was rendered ahead has played (a
+    /// render-ahead later), as REAPER applies a change on a track rendered ahead.
+    pub fn touch_track(&mut self, id: scythe_core::TrackId) {
+        let until = Instant::now() + TOUCH_HOLD;
+        if self.touched.insert(id, until).is_none() {
+            self.replan();
+        }
+    }
+
+    /// Like [`Engine::touch_track`] for the track whose chain holds `fx`.
+    pub fn touch_fx(&mut self, fx: &crate::fx::FxInstance) {
+        let graph = self.graph.load();
+        let holds = |t: &crate::render::RenderTrack| t.chain.effects().any(|e| std::ptr::eq(Arc::as_ptr(&e.fx), fx));
+        if let Some(id) = graph.tracks.iter().find(|t| holds(t)).map(|t| t.id) {
+            drop(graph);
+            self.touch_track(id);
+        }
+    }
+
+    fn expire_touches(&mut self) {
+        let now = Instant::now();
+        let before = self.touched.len();
+        self.touched.retain(|_, until| *until > now);
+        if self.touched.len() != before {
+            self.replan();
+        }
+    }
+
+    /// The current graph with the touched tracks live.
+    fn replan(&mut self) {
+        let graph = self.graph.load().with_forced_live(&|id| self.touched.contains_key(&id));
+        self.swap_graph(graph);
+    }
+
     /// Whether a device plays: anticipative FX renders ahead only for one.
     fn set_device_playing(&self, on: bool) {
         if let Ok(mut p) = self.proc.lock()
@@ -1327,6 +1397,7 @@ impl Engine {
         Self {
             ahead: ahead_shared,
             _ahead_worker: ahead_worker,
+            touched: Default::default(),
             graph,
             transport,
             pool,
@@ -1471,12 +1542,11 @@ impl Engine {
         if playing != self.info.outputs.len() && matches!(self.output, Output::Device(_)) {
             self.info.outputs = crate::devices::channel_names(&self.info.host, false, playing);
         }
-        let old = self.graph.swap(Arc::new(graph));
-        let now = Instant::now();
-        self.retired.push_back((now, old));
-        while self.retired.front().is_some_and(|(t, _)| now.duration_since(*t) > Duration::from_secs(2)) {
-            self.retired.pop_front();
-        }
+        let graph = match self.touched.is_empty() {
+            true => graph,
+            false => graph.with_forced_live(&|id| self.touched.contains_key(&id)),
+        };
+        self.swap_graph(graph);
         self.set_loop(project.loop_enabled, project.time_selection);
         self.sync_cues(project);
     }
@@ -1789,7 +1859,6 @@ impl Engine {
 
     /// Keeps effects running for a few seconds while stopped.
     pub fn wake_effects(&self) {
-        self.ahead.tweak();
         let frames = self.info.sample_rate as i64 * 3;
         self.transport.wake_frames.store(frames, Ordering::Relaxed);
     }
@@ -2361,6 +2430,177 @@ mod tests {
             assert!(direct.iter().any(|s| s.abs() > 0.1));
             assert!(direct == ahead, "first difference at {:?}", direct.iter().zip(&ahead).position(|(a, b)| a != b));
         }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Something that happens before a block of [`play_events`].
+    #[derive(Clone, Copy)]
+    enum Event {
+        /// The delay track renders live (its effects are being tweaked), or no longer.
+        Touch(bool),
+        Seek(i64),
+        /// The delay's dry level, in dB.
+        Dry(f64),
+    }
+
+    /// A 0.5 impulse every second (8 kHz) through a ReaDelay (one echo, half a second later)
+    /// on the first track, and a steady signal on a second one; the delay track's id.
+    fn delay_project(steady: bool) -> (Project, MediaPool, std::path::PathBuf, scythe_core::TrackId) {
+        use scythe_core::{Item, Take};
+        let (mut p, pool, dir) = ones_project(0.0);
+        if !steady {
+            p.tracks[0].items.clear();
+        }
+        let src = dir.join("impulses.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for i in 0..96_000 {
+            w.write_sample(if i % 8000 == 0 { 0.5f32 } else { 0.0 }).unwrap();
+        }
+        w.finalize().unwrap();
+        pool.load(&src, 8000).unwrap();
+        let delay = p.add_track("delay");
+        let t = p.track_mut(delay).unwrap();
+        let mut item = Item::new(0.0, 12.0, Take::from_file(src));
+        (item.fade_in, item.fade_out) = (scythe_core::Fade::default(), scythe_core::Fade::default());
+        t.items.push(item);
+        t.fx.push(crate::builtin::Builtin::Delay.slot());
+        p.tracks.swap(0, 1);
+        (p, pool, dir, delay)
+    }
+
+    /// Plays `p` from 0 in `block`-frame blocks for `blocks` blocks, with or without
+    /// anticipative FX, applying `events` before the blocks they name; the left channel and,
+    /// with anticipative FX, its counters at the end.
+    fn play_events(
+        p: &Project,
+        pool: &MediaPool,
+        delay: scythe_core::TrackId,
+        ahead: bool,
+        (block, blocks): (usize, usize),
+        events: &[(usize, Event)],
+    ) -> (Vec<f32>, crate::ahead::AheadStats) {
+        let transport = Arc::new(Transport::new(8000));
+        let graph = RenderGraph::build(p, pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let base = Arc::new(graph.clone());
+        let graph = Arc::new(ArcSwap::from_pointee(graph));
+        let (_senders, feeds) = feeds();
+        let mut proc = Processor::new(graph.clone(), transport.clone(), feeds);
+        proc.set_outputs(2);
+        let _worker = ahead.then(|| {
+            let (t, l) = (transport.clone(), transport.clone());
+            let (worker, mut client) = crate::ahead::start(
+                graph.clone(),
+                Arc::new(move || t.recording.load(Ordering::Relaxed)),
+                Arc::new(move || {
+                    l.loop_enabled
+                        .load(Ordering::Relaxed)
+                        .then(|| (l.loop_start.load(Ordering::Relaxed), l.loop_end.load(Ordering::Relaxed)))
+                }),
+            );
+            client.shared().configure(crate::ahead::Buffering::default(), 8000);
+            client.shared().set_patience(Duration::from_secs(5));
+            client.shared().set_chunk(4 * block);
+            client.set_device(true);
+            proc.ahead = Some(client);
+            worker
+        });
+        transport.playing.store(true, Ordering::Relaxed);
+        let ti = base.tracks.iter().position(|t| t.id == delay).unwrap();
+        let fx = base.tracks[ti].chain.effects().next().unwrap().fx.clone();
+        let mut out = Vec::new();
+        for b in 0..blocks {
+            for &(_, e) in events.iter().filter(|(at, _)| *at == b) {
+                match e {
+                    Event::Touch(on) => graph.store(Arc::new(base.with_forced_live(&|id| on && id == delay))),
+                    Event::Seek(frame) => transport.seek.store(frame, Ordering::Relaxed),
+                    Event::Dry(db) => {
+                        fx.with(|e| e.set_param(1, db));
+                    }
+                }
+            }
+            let mut buf = vec![0.0f32; block * 2];
+            proc.write_interleaved(&mut buf, 2);
+            out.extend(buf.chunks(2).map(|f| f[0]));
+        }
+        let stats = proc.ahead.as_ref().map(|a| a.shared().stats()).unwrap_or_default();
+        (out, stats)
+    }
+
+    #[test]
+    fn switching_live_tracks_plays_through_without_gaps() {
+        let (p, pool, dir, delay) = delay_project(true);
+        let events = [(40, Event::Touch(true)), (120, Event::Touch(false)), (200, Event::Touch(true))];
+        let (direct, _) = play_events(&p, &pool, delay, false, (128, 300), &events);
+        let (ahead, stats) = play_events(&p, &pool, delay, true, (128, 300), &events);
+        assert!(stats.switches >= 3, "{stats:?}");
+        let worst = direct.iter().zip(&ahead).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+        // Only the order the delay track and the steady one are summed in differs while live.
+        assert!(worst < 1e-6, "{worst} at {:?}", direct.iter().zip(&ahead).position(|(a, b)| (a - b).abs() >= 1e-6));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_last_track_rendered_ahead_going_live_plays_through() {
+        let (mut p, pool, dir, delay) = delay_project(false);
+        p.tracks.truncate(1);
+        let events = [(30, Event::Touch(true)), (90, Event::Touch(false))];
+        let (direct, _) = play_events(&p, &pool, delay, false, (128, 200), &events);
+        let (ahead, stats) = play_events(&p, &pool, delay, true, (128, 200), &events);
+        assert!(stats.switches >= 1 && stats.running, "{stats:?}");
+        assert!(direct == ahead, "first difference at {:?}", direct.iter().zip(&ahead).position(|(a, b)| a != b));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn nothing_drops_after_a_seek() {
+        let (p, pool, dir, delay) = delay_project(true);
+        let (out, stats) = play_events(&p, &pool, delay, true, (128, 120), &[(60, Event::Seek(30_000))]);
+        assert!(stats.running, "{stats:?}");
+        // The steady track (rendered ahead) sounds in every block, the ones right after the
+        // jump included, which the callback renders itself until the worker is ahead again.
+        let quiet = out.chunks(128).position(|b| b.iter().any(|s| *s < 0.99));
+        assert_eq!(quiet, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_edit_never_repeats_an_echo() {
+        let (p, pool, dir, delay) = delay_project(false);
+        // The dry impulses go away after a second, while rendered ahead; the echoes stay.
+        let (out, stats) = play_events(&p, &pool, delay, true, (128, 500), &[(60, Event::Dry(-150.0))]);
+        assert!(stats.running && stats.lead_frames > 0, "{stats:?}");
+        let peaks: Vec<(usize, f32)> =
+            out.iter().enumerate().filter(|(_, s)| s.abs() > 0.01).map(|(i, s)| (i, *s)).collect();
+        // One echo half a second after each impulse, and nothing anywhere else.
+        for &(at, _) in &peaks {
+            assert!(at % 4000 == 0, "a stray peak at frame {at}: {peaks:?}");
+        }
+        let echoes = peaks.iter().filter(|(at, _)| at % 8000 == 4000).count();
+        assert_eq!(echoes, out.len().div_ceil(8000).min(out.len() / 8000 + usize::from(out.len() % 8000 > 4000)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_knob_on_a_touched_track_is_heard_in_the_next_block() {
+        let (mut p, pool, dir, delay) = delay_project(true);
+        let steady = p.tracks[1].items.remove(0);
+        p.tracks[0].items.push(steady);
+        // Touched at block 20, the delay track is live once what was rendered ahead (200 ms,
+        // 25 blocks of 64 frames) has played; the dry signal is turned off at block 150.
+        let events = [(20, Event::Touch(true)), (150, Event::Dry(-150.0))];
+        let (out, stats) = play_events(&p, &pool, delay, true, (64, 200), &events);
+        assert!(stats.switches >= 1, "{stats:?}");
+        let before = out[149 * 64 + 63];
+        let after = out[150 * 64];
+        // The steady 1.0 reaches the master through the delay's dry path and its echo (0.5):
+        // without the dry path the level drops to the echo at once, within 8 ms.
+        assert!(before > 1.4 && after < 0.6, "{before} -> {after}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

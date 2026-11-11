@@ -829,6 +829,11 @@ impl ScytheApp {
     /// Drives open editors: their timers and descriptors, size requests and closing, also
     /// when their effect left the project.
     pub fn tick_editors(&mut self) {
+        let tweaked: Vec<TrackId> =
+            self.editors.iter().filter_map(|e| e.track).chain(self.gfx_views.iter().filter_map(|v| v.track)).collect();
+        for track in tweaked {
+            self.engine.touch_track(track);
+        }
         let mut at = 0;
         while at < self.editors.len() {
             let e = &mut self.editors[at];

@@ -1,20 +1,23 @@
 //! Anticipative FX, as REAPER's "Anticipative FX processing": the tracks that hear nothing
 //! live render ahead of the playhead on worker threads, a render-ahead (200 ms by default)
 //! before they are due, so heavy chains no longer have to fit in one device block. The audio
-//! callback renders only the live tracks (armed, monitoring, hardware MIDI out and whatever
-//! they feed, see [`AheadPlan`]) and the master, adding what the tracks rendered ahead left in
-//! their sinks.
+//! callback renders only the live tracks (armed, monitoring, hardware MIDI out, effects being
+//! tweaked and whatever they feed, see [`AheadPlan`]) and the master, adding what the tracks
+//! rendered ahead left in their sinks.
 //!
 //! The worker hands the callback chunks through a pair of lock-free queues; chunk buffers are
 //! allocated once, by the worker. The callback steers the worker by epochs: it starts one at a
 //! frame when playback starts or jumps, and pauses the worker whenever it needs every track to
-//! itself (stopped, counting in, after a miss). A chunk counts only in its epoch, so whatever
-//! the worker rendered for an old one is thrown away.
+//! itself (stopped, counting in, a jump). A chunk counts only in its epoch.
 //!
-//! An edit or a parameter change makes the callback keep only a short horizon of what was
-//! rendered and start a new epoch after it, and caps the render-ahead at that horizon for a
-//! second, so a knob being turned is heard within a few blocks, as REAPER renders less ahead
-//! while effects are tweaked.
+//! Every effect hears each block once: nothing rendered ahead is rendered again. An edit or a
+//! parameter change applies from where the worker is, a render-ahead after the playhead, as in
+//! REAPER. When the set of live tracks changes while playing (a track armed, or effects being
+//! tweaked, which REAPER's shorter render-ahead for open FX windows serves), the worker stops
+//! at the end of what it has rendered, the callback plays that out with the graph it was
+//! rendered for, and from that frame on renders every track itself until the worker, started
+//! there with the new plan, is ahead again; so no block is dropped or processed twice across
+//! the switch.
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -29,8 +32,6 @@ use crate::render::{AheadPlan, LiveInput, MAX_SINK_CHANNELS, RenderGraph, Render
 const CHUNKS: usize = 512;
 /// Most frames one chunk holds.
 pub const MAX_CHUNK: usize = RenderScratch::MAX_BLOCK;
-/// How long the render-ahead stays at the tweak horizon after an edit or parameter change.
-const HOLD: Duration = Duration::from_secs(1);
 
 /// REAPER's Preferences > Audio > Buffering, as far as Scythe follows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +62,6 @@ struct Chunk {
     serial: i64,
     pos: i64,
     len: usize,
-    /// The plan's key, so a chunk rendered for another set of live tracks is not used.
-    layout: u64,
     channels: Vec<Vec<f32>>,
 }
 
@@ -87,30 +86,25 @@ pub struct AheadShared {
     slots: Slots,
     /// The epoch the worker renders for, shifted left once, with bit 0 set while it may run.
     command: AtomicU64,
-    /// The frame the current epoch starts at.
+    /// The frame the current epoch starts at, and the plan it renders (its key).
     start: AtomicI64,
+    layout: AtomicU64,
     /// The worker is rendering a chunk (set before it reads `command`).
     busy: AtomicBool,
     parked: AtomicBool,
-    /// Frames the callback has taken in the current epoch, and old-epoch frames it still takes.
+    /// Frames rendered and frames taken in the current epoch.
+    produced: AtomicU64,
     consumed: AtomicU64,
-    old_left: AtomicU64,
     /// Frames of the first chunks after a start, and of chunks once the worker is ahead.
     first: AtomicUsize,
     block: AtomicUsize,
-    /// Render-ahead in frames, and while tweaking.
+    /// Render-ahead in frames.
     target: AtomicU64,
-    horizon: AtomicU64,
-    /// Bumped by the main thread on every parameter change.
-    tweaks: AtomicU64,
-    /// Until when (nanoseconds from `origin`) the render-ahead stays at the horizon.
-    hold_until: AtomicU64,
-    origin: Instant,
     enabled: AtomicBool,
     live_multiprocessing: AtomicBool,
     /// Chunk frames asked for instead of [`block_frames`]'s, 0 for none.
     chunk: AtomicUsize,
-    /// How long the callback waits for a late chunk, in nanoseconds.
+    /// How long the callback waits at least for a late chunk, in nanoseconds.
     patience: AtomicU64,
     /// Settings as last set, for reading back.
     settings: std::sync::Mutex<Buffering>,
@@ -118,6 +112,7 @@ pub struct AheadShared {
     thread: OnceLock<std::thread::Thread>,
     /// Counters for the performance meter.
     misses: AtomicU64,
+    switches: AtomicU64,
     lead: AtomicU64,
     live_tracks: AtomicU32,
     running: AtomicBool,
@@ -128,40 +123,32 @@ impl AheadShared {
         Self {
             slots: Slots(
                 (0..CHUNKS)
-                    .map(|_| {
-                        UnsafeCell::new(Chunk { epoch: 0, serial: 0, pos: 0, len: 0, layout: 0, channels: Vec::new() })
-                    })
+                    .map(|_| UnsafeCell::new(Chunk { epoch: 0, serial: 0, pos: 0, len: 0, channels: Vec::new() }))
                     .collect(),
             ),
             command: AtomicU64::new(0),
             start: AtomicI64::new(0),
+            layout: AtomicU64::new(0),
             busy: AtomicBool::new(false),
             parked: AtomicBool::new(false),
+            produced: AtomicU64::new(0),
             consumed: AtomicU64::new(0),
-            old_left: AtomicU64::new(0),
             first: AtomicUsize::new(128),
             block: AtomicUsize::new(512),
             target: AtomicU64::new(0),
-            horizon: AtomicU64::new(512),
-            tweaks: AtomicU64::new(0),
-            hold_until: AtomicU64::new(0),
-            origin: Instant::now(),
             enabled: AtomicBool::new(false),
             live_multiprocessing: AtomicBool::new(true),
-            patience: AtomicU64::new(0),
             chunk: AtomicUsize::new(0),
+            patience: AtomicU64::new(0),
             settings: std::sync::Mutex::new(Buffering { anticipative: false, ..Buffering::default() }),
             stop: AtomicBool::new(false),
             thread: OnceLock::new(),
             misses: AtomicU64::new(0),
+            switches: AtomicU64::new(0),
             lead: AtomicU64::new(0),
             live_tracks: AtomicU32::new(0),
             running: AtomicBool::new(false),
         }
-    }
-
-    fn now(&self) -> u64 {
-        self.origin.elapsed().as_nanos() as u64
     }
 
     fn wake(&self) {
@@ -189,15 +176,8 @@ impl AheadShared {
         self.settings.lock().map(|s| *s).unwrap_or_default()
     }
 
-    /// An effect parameter or the project changed: what is rendered ahead is rendered again
-    /// from a short horizon on, and the render-ahead stays short for a while.
-    pub fn tweak(&self) {
-        self.tweaks.fetch_add(1, Ordering::Relaxed);
-        self.hold_until.store(self.now() + HOLD.as_nanos() as u64, Ordering::Relaxed);
-        self.wake();
-    }
-
-    /// How long the callback waits for a chunk that is late; tests wait as long as it takes.
+    /// How long the callback waits at least for a chunk that is late; tests wait as long as
+    /// it takes.
     pub fn set_patience(&self, patience: Duration) {
         self.patience.store(patience.as_nanos() as u64, Ordering::Relaxed);
     }
@@ -212,6 +192,7 @@ impl AheadShared {
             running: self.running.load(Ordering::Relaxed),
             lead_frames: self.lead.load(Ordering::Relaxed),
             misses: self.misses.load(Ordering::Relaxed),
+            switches: self.switches.load(Ordering::Relaxed),
             live_tracks: self.live_tracks.load(Ordering::Relaxed),
         }
     }
@@ -224,9 +205,11 @@ pub struct AheadStats {
     pub running: bool,
     /// Frames rendered ahead of the playhead.
     pub lead_frames: u64,
-    /// Times the callback found no chunk ready and rendered the block itself (or without the
-    /// tracks rendered ahead), since the start.
+    /// Blocks for which no chunk came in time (the callback waited, then rendered every track
+    /// itself), since the start.
     pub misses: u64,
+    /// Changes of the live tracks played through without a gap, since the start.
+    pub switches: u64,
     /// Tracks the callback renders.
     pub live_tracks: u32,
 }
@@ -262,7 +245,6 @@ pub fn start(
         let _ = free_tx.push(i);
     }
     let s = shared.clone();
-    let lr = loop_range.clone();
     let thread = std::thread::Builder::new()
         .name("scythe-ahead".into())
         .spawn(move || {
@@ -271,7 +253,7 @@ pub fn start(
                 shared: s,
                 graph,
                 recording,
-                loop_range: lr,
+                loop_range,
                 filled: filled_tx,
                 free: free_rx,
                 scratch: RenderScratch::new(crate::engine::MAX_TRACKS),
@@ -284,16 +266,13 @@ pub fn start(
         shared: shared.clone(),
         filled: filled_rx,
         free: free_tx,
-        loop_range,
         epoch: 0,
         running: false,
-        old_left: 0,
+        draining: false,
+        graph: None,
         cur: None,
         sinks: (0..MAX_SINK_CHANNELS).map(|_| vec![0.0; MAX_CHUNK]).collect(),
         released: 0,
-        seen_graph: 0,
-        seen_tweaks: 0,
-        seen_layout: 0,
         device: false,
     };
     (AheadWorker { shared, thread: Some(thread) }, client)
@@ -344,20 +323,15 @@ impl Worker {
                 produced = 0;
                 next_len = first;
             }
-            let holding = s.now() < s.hold_until.load(Ordering::Relaxed);
-            let horizon = s.horizon.load(Ordering::Relaxed);
-            let target = if holding { horizon } else { s.target.load(Ordering::Relaxed).max(horizon) };
-            let lead =
-                (s.old_left.load(Ordering::Relaxed) + produced).saturating_sub(s.consumed.load(Ordering::Relaxed));
+            let lead = produced.saturating_sub(s.consumed.load(Ordering::Relaxed));
             s.lead.store(lead, Ordering::Relaxed);
-            if lead >= target {
-                let period = first as f64 / self.graph.load().sample_rate.max(1) as f64;
-                idle(&s, Duration::from_secs_f64(period.clamp(0.0005, 0.02)));
-                continue;
-            }
             let graph = self.graph.load();
-            let Some(plan) = graph.ahead.as_deref() else {
-                idle(&s, Duration::from_millis(5));
+            let rate = graph.sample_rate.max(1) as f64;
+            // A graph with other live tracks waits for the callback to play out this epoch and
+            // start the next one.
+            let plan = graph.ahead.as_deref().filter(|p| p.key == s.layout.load(Ordering::Relaxed));
+            let Some(plan) = plan.filter(|_| lead < s.target.load(Ordering::Relaxed)) else {
+                idle(&s, Duration::from_secs_f64((first as f64 / rate).clamp(0.0005, 0.02)));
                 continue;
             };
             let Ok(id) = self.free.pop() else {
@@ -365,7 +339,7 @@ impl Worker {
                 continue;
             };
             let block = s.block.load(Ordering::Relaxed).clamp(first, MAX_CHUNK);
-            let mut len = if holding { first } else { next_len.min(block) };
+            let mut len = next_len.min(block);
             let loop_range = (self.loop_range)();
             if let Some((ls, le)) = loop_range
                 && le > ls
@@ -380,6 +354,9 @@ impl Worker {
             }
             serial += 1;
             let input = LiveInput { recording: (self.recording)(), ahead: Some(serial), ..LiveInput::default() };
+            // A pause while rendering leaves the chunk's remaining tracks out (the callback is
+            // waiting to render every track itself, and drops the chunk); a drain does not.
+            let abort = || s.command.load(Ordering::Relaxed) >> 1 != epoch;
             graph.render_ahead(
                 pos,
                 len,
@@ -387,10 +364,12 @@ impl Worker {
                 &input,
                 &mut chunk.channels,
                 crate::render::ahead_threads(),
+                &abort,
             );
-            (chunk.epoch, chunk.serial, chunk.pos, chunk.len, chunk.layout) = (epoch, serial, pos, len, plan.key);
+            (chunk.epoch, chunk.serial, chunk.pos, chunk.len) = (epoch, serial, pos, len);
             let _ = self.filled.push(id);
             produced += len as u64;
+            s.produced.store(produced, Ordering::Release);
             pos = next_frame(pos, len, loop_range);
             next_len = (len * 2).min(block);
             s.busy.store(false, Ordering::SeqCst);
@@ -402,11 +381,14 @@ impl Worker {
 /// What gathering a block's sinks came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gather {
-    /// The sinks hold the block.
+    /// The sinks hold all the frames asked for.
     Ready,
+    /// The epoch being played out ended after this many frames (all gathered): the callback
+    /// renders the rest with every track.
+    Drained(usize),
     /// No chunk for these frames came in time.
     Late,
-    /// The chunks do not continue at these frames (a jump, another plan).
+    /// The chunks do not continue at these frames (a jump).
     Mismatch,
 }
 
@@ -415,20 +397,19 @@ pub struct AheadClient {
     shared: Arc<AheadShared>,
     filled: rtrb::Consumer<u16>,
     free: rtrb::Producer<u16>,
-    loop_range: Arc<dyn Fn() -> Option<(i64, i64)> + Send + Sync>,
     epoch: u64,
     running: bool,
-    /// Frames of older epochs still taken, after an edit kept a horizon of them.
-    old_left: u64,
+    /// The plan changed: the worker renders no more of this epoch and the callback plays out
+    /// what it has, then renders every track itself.
+    draining: bool,
+    /// The graph this epoch's chunks were rendered for (the latest one with its plan).
+    graph: Option<Arc<RenderGraph>>,
     /// The chunk being read and how far.
     cur: Option<(u16, usize)>,
     /// The sinks of the current block, gathered from the chunks.
     sinks: Vec<Vec<f32>>,
     /// The last chunk played or dropped, up to which the meters show.
     released: i64,
-    seen_graph: usize,
-    seen_tweaks: u64,
-    seen_layout: u64,
     /// A device plays: on the silent clock every track renders in the callback.
     device: bool,
 }
@@ -465,8 +446,10 @@ impl AheadClient {
         self.shared.misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Called at the start of every callback of `frames` frames, before anything renders.
-    pub fn begin(&mut self, graph: &Arc<RenderGraph>, frames: usize) {
+    /// Called at the start of every callback of `frames` frames with the graph the main thread
+    /// handed over; returns the graph the block renders with: while an epoch rendered for
+    /// another plan plays out, the one it was rendered for.
+    pub fn begin(&mut self, graph: &Arc<RenderGraph>, frames: usize) -> Arc<RenderGraph> {
         let s = &self.shared;
         let frames = frames.clamp(1, MAX_CHUNK);
         s.first.store(frames, Ordering::Relaxed);
@@ -476,36 +459,37 @@ impl AheadClient {
             n => (n.div_ceil(frames) * frames).min(MAX_CHUNK / frames * frames),
         };
         s.block.store(block, Ordering::Relaxed);
-        s.horizon.store((4 * frames).max(rate / 100) as u64, Ordering::Relaxed);
         let live = graph.ahead.as_deref().map_or(graph.tracks.len(), AheadPlan::live_tracks);
         s.live_tracks.store(live as u32, Ordering::Relaxed);
         if !self.running {
-            return;
+            return graph.clone();
         }
-        let ptr = Arc::as_ptr(graph) as usize;
-        let tweaks = s.tweaks.load(Ordering::Relaxed);
-        let layout = graph.ahead.as_deref().map_or(0, |p| p.key);
-        if layout != self.seen_layout || !self.eligible(graph) {
-            // Other live tracks: the worker stops before the callback takes them over.
-            self.pause();
-        } else if ptr != self.seen_graph || tweaks != self.seen_tweaks {
-            self.seen_graph = ptr;
-            self.seen_tweaks = tweaks;
-            match self.horizon_end(s.horizon.load(Ordering::Relaxed)) {
-                Some((pos, kept)) => self.restart(pos, kept),
-                None => self.pause(),
+        let layout = s.layout.load(Ordering::Relaxed);
+        if !self.draining && self.eligible(graph) && graph.ahead.as_deref().is_some_and(|p| p.key == layout) {
+            // Same plan: edits apply from where the worker is, as REAPER's do.
+            if !self.graph.as_ref().is_some_and(|g| Arc::ptr_eq(g, graph)) {
+                self.graph = Some(graph.clone());
             }
+            return graph.clone();
         }
+        if !self.draining {
+            self.draining = true;
+            s.command.store(self.epoch << 1, Ordering::SeqCst);
+        }
+        self.graph.clone().unwrap_or_else(|| graph.clone())
     }
 
-    /// Stops the worker after its current chunk and drops what it rendered.
+    /// Stops the worker after its current track and drops what it rendered: for a jump, a
+    /// stop or a count-in, where what follows does not continue what it rendered.
     pub fn pause(&mut self) {
         if self.running {
             self.running = false;
+            self.draining = false;
             self.shared.running.store(false, Ordering::Relaxed);
             self.epoch += 1;
             self.shared.command.store(self.epoch << 1, Ordering::SeqCst);
         }
+        self.graph = None;
         self.drain();
     }
 
@@ -526,22 +510,24 @@ impl AheadClient {
         }
     }
 
-    /// Starts rendering ahead from `pos`, the frame the next callback plays.
-    pub fn start(&mut self, graph: &Arc<RenderGraph>, pos: i64) {
-        self.drain();
-        self.seen_graph = Arc::as_ptr(graph) as usize;
-        self.seen_tweaks = self.shared.tweaks.load(Ordering::Relaxed);
-        self.seen_layout = graph.ahead.as_deref().map_or(0, |p| p.key);
-        self.restart(pos, 0);
+    /// Ends an epoch that has played out.
+    pub fn finish(&mut self) {
+        self.shared.switches.fetch_add(1, Ordering::Relaxed);
+        self.pause();
     }
 
-    fn restart(&mut self, pos: i64, old_left: u64) {
+    /// Starts rendering ahead from `pos`, the frame the next callback plays.
+    pub fn start(&mut self, graph: &Arc<RenderGraph>, pos: i64) {
+        let Some(plan) = graph.ahead.as_deref() else { return };
+        self.drain();
         let s = &self.shared;
         self.epoch += 1;
-        self.old_left = old_left;
+        self.draining = false;
+        self.graph = Some(graph.clone());
         s.start.store(pos, Ordering::Release);
+        s.layout.store(plan.key, Ordering::Relaxed);
         s.consumed.store(0, Ordering::Relaxed);
-        s.old_left.store(old_left, Ordering::Relaxed);
+        s.produced.store(0, Ordering::Relaxed);
         s.command.store(self.epoch << 1 | 1, Ordering::SeqCst);
         self.running = true;
         s.running.store(true, Ordering::Relaxed);
@@ -572,101 +558,58 @@ impl AheadClient {
         while let Ok(id) = self.filled.pop() {
             self.recycle(id);
         }
-        self.old_left = 0;
-    }
-
-    /// Whether the callback reads chunk `c`, with `budget` frames of older epochs left.
-    fn valid(&self, c: &Chunk, budget: u64) -> bool {
-        c.epoch == self.epoch || (c.epoch < self.epoch && budget > 0)
-    }
-
-    /// Where the frames `horizon` past the next one to play lie, along the chunks the callback
-    /// would read, and how many of those frames are rendered: the start of a new epoch that
-    /// keeps them. `None` when nothing is rendered.
-    fn horizon_end(&mut self, horizon: u64) -> Option<(i64, u64)> {
-        let mut walk = Walk {
-            epoch: self.epoch,
-            budget: self.old_left,
-            horizon,
-            kept: 0,
-            at: None,
-            loop_range: (self.loop_range)(),
-        };
-        let shared = self.shared.clone();
-        if let Some((id, off)) = self.cur {
-            // SAFETY: the callback holds the chunk it reads.
-            walk.step(unsafe { shared.slots.get(id) }, off);
-        }
-        if walk.kept < horizon
-            && let Ok(queued) = self.filled.read_chunk(self.filled.slots())
-        {
-            let (a, b) = queued.as_slices();
-            for &id in a.iter().chain(b) {
-                // SAFETY: a queued chunk is no longer the worker's; the callback only reads it.
-                let c = unsafe { shared.slots.get(id) };
-                if !walk.valid(c) {
-                    continue;
-                }
-                if !walk.step(c, 0) || walk.kept >= horizon {
-                    break;
-                }
-            }
-        }
-        let end = walk.at?;
-        (walk.kept > 0).then_some((end, walk.kept))
     }
 
     /// Fills the sinks with `len` frames from project frame `pos`, waiting for a late chunk
-    /// until `deadline`.
-    pub fn take(&mut self, plan: &AheadPlan, pos: i64, len: usize, deadline: Instant) -> Gather {
+    /// until `deadline` (or the patience), and for one the worker is rendering until
+    /// `last_resort`: playing late is better than dropping the tracks rendered ahead.
+    pub fn take(&mut self, pos: i64, len: usize, deadline: Instant, last_resort: Instant) -> Gather {
         let patience = Duration::from_nanos(self.shared.patience.load(Ordering::Relaxed));
         let deadline = deadline.max(Instant::now() + patience);
+        let last_resort = last_resort.max(deadline);
+        let channels = self.graph.as_deref().and_then(|g| g.ahead.as_deref()).map_or(0, |p| p.channels);
         let mut done = 0;
         while done < len {
             if self.cur.is_none() {
                 match self.filled.pop() {
                     Ok(id) => {
                         // SAFETY: popped from the filled queue, the chunk is the callback's.
-                        let c = unsafe { self.shared.slots.get(id) };
-                        if self.valid(c, self.old_left) {
+                        if unsafe { self.shared.slots.get(id) }.epoch == self.epoch {
                             self.cur = Some((id, 0));
                         } else {
                             self.recycle(id);
                         }
                         continue;
                     }
-                    Err(_) if Instant::now() < deadline => {
-                        self.shared.wake();
-                        std::hint::spin_loop();
-                        continue;
+                    Err(_) => {
+                        let rendering = self.shared.busy.load(Ordering::SeqCst);
+                        if self.draining && !rendering && self.filled.is_empty() {
+                            return Gather::Drained(done);
+                        }
+                        let now = Instant::now();
+                        if now < deadline || (rendering && now < last_resort) {
+                            self.shared.wake();
+                            std::hint::spin_loop();
+                            continue;
+                        }
+                        return Gather::Late;
                     }
-                    Err(_) => return Gather::Late,
                 }
             }
             let Some((id, off)) = self.cur else { continue };
             // SAFETY: the callback holds the chunk it reads.
             let c = unsafe { self.shared.slots.get(id) };
-            if c.layout != plan.key || c.pos + off as i64 != pos + done as i64 {
+            if c.pos + off as i64 != pos + done as i64 {
                 return Gather::Mismatch;
             }
-            let old = c.epoch < self.epoch;
-            let mut avail = c.len - off;
-            if old {
-                avail = avail.min(self.old_left as usize);
-            }
-            let t = avail.min(len - done);
-            for (dst, src) in self.sinks.iter_mut().zip(&c.channels).take(plan.channels) {
+            let t = (c.len - off).min(len - done);
+            for (dst, src) in self.sinks.iter_mut().zip(&c.channels).take(channels) {
                 dst[done..done + t].copy_from_slice(&src[off..off + t]);
             }
             done += t;
             let off = off + t;
-            if old {
-                self.old_left -= t as u64;
-                self.shared.old_left.store(self.old_left, Ordering::Relaxed);
-            } else {
-                self.shared.consumed.fetch_add(t as u64, Ordering::Relaxed);
-            }
-            if off == c.len || (old && self.old_left == 0) {
+            self.shared.consumed.fetch_add(t as u64, Ordering::Relaxed);
+            if off == c.len {
                 self.cur = None;
                 self.recycle(id);
             } else {
@@ -688,43 +631,4 @@ fn block_frames(frames: usize, rate: usize) -> usize {
         .get_or_init(|| std::env::var("SCYTHE_AHEAD_BLOCK").ok().and_then(|v| v.parse().ok()))
         .unwrap_or(512 * rate / 48_000);
     (wanted.max(frames).div_ceil(frames) * frames).min(MAX_CHUNK / frames * frames).max(frames)
-}
-
-/// Follows the chunks the callback would read, for [`AheadClient::horizon_end`].
-struct Walk {
-    epoch: u64,
-    budget: u64,
-    horizon: u64,
-    kept: u64,
-    at: Option<i64>,
-    loop_range: Option<(i64, i64)>,
-}
-
-impl Walk {
-    fn valid(&self, c: &Chunk) -> bool {
-        c.epoch == self.epoch || (c.epoch < self.epoch && self.budget > 0)
-    }
-
-    /// Takes chunk `c` from `off`, up to the horizon; false when it does not continue the
-    /// frames walked so far.
-    fn step(&mut self, c: &Chunk, off: usize) -> bool {
-        if !self.valid(c) || self.at.is_some_and(|p| p != c.pos + off as i64) {
-            return false;
-        }
-        let mut avail = (c.len - off) as u64;
-        if c.epoch < self.epoch {
-            avail = avail.min(self.budget);
-        }
-        let t = avail.min(self.horizon - self.kept);
-        if c.epoch < self.epoch {
-            self.budget -= t;
-        }
-        self.kept += t;
-        self.at = Some(if off as u64 + t == c.len as u64 {
-            next_frame(c.pos, c.len, self.loop_range)
-        } else {
-            c.pos + off as i64 + t as i64
-        });
-        true
-    }
 }
