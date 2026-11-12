@@ -2025,3 +2025,37 @@ fn a_send_to_channels_3_4_keys_a_dynamic_eq_band() {
     assert!(open.abs() < 0.3, "without the piano the band stays put: {open}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The workspace's `clap-test-gain` plugin; `None` until `cargo build -p clap-test-gain`.
+fn clap_test_gain() -> Option<Vec<scythe_engine::clap_host::ClapDescriptor>> {
+    let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let path = ["debug", "release"].iter().map(|p| target.join(p).join("libclap_test_gain.so")).find(|p| p.exists())?;
+    Some(scythe_engine::clap_host::ClapLibrary::load(&path).ok()?.descriptors())
+}
+
+#[test]
+fn one_clap_parameter_write_sticks_and_reaches_offline_renders() {
+    let Some(descs) = clap_test_gain() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let catalog = scythe_engine::plugin_scan::Catalog::fixed();
+    catalog.set_clap(descs.clone());
+    let mut s = session();
+    s.engine.set_plugin_catalog(catalog);
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+
+    let set = ok(&mut s, json!({"cmd": "fx.param", "track": t, "index": 0, "param": 7, "value": 0.2}));
+    assert!((set["value"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{set}");
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    assert!((params[0]["value"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{params}");
+
+    // An offline render sets its effects up anew from the project as it is now.
+    let project = s.project.clone();
+    let mut render = scythe_engine::fx::FxRegistry::new(48_000);
+    render.set_clap_plugins(descs);
+    let chain = render.chain(Some(project.tracks[0].id), &project.tracks[0].fx);
+    let value = chain[0].with(|e| e.param(7)).flatten().map(|(v, _)| v).unwrap();
+    assert!((value - 0.2).abs() < 1e-6, "the render instance plays {value}");
+}
