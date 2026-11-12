@@ -46,7 +46,7 @@ survive restarts and opening another project, and do not travel with a copied .R
 | Method | Path | |
 |---|---|---|
 | `GET` | `/api/health` | `{"ok": true, "name": "scythe", "protocol": 1, "token": true, "clients": 2}` (`token`: whether the others need one; `clients`: WebSockets connected), no token needed |
-| `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}` |
+| `POST` | `/api/command` | body: one command; answer: `{"ok": true, "result": …}`, plus `"ignored": […]` when the command had fields it does not read (see [Commands](#commands)) |
 | `GET` | `/api/snapshot` | the same as the `snapshot` command |
 | `GET` | `/api/peaks?item=…&width=…&from=…&to=…` | the same as `item.peaks` (`from` and `to` optional), for waveforms a browser can cache by address |
 | `GET` | `/api/files?path=…` | admin only: the folders (`--folder`, `folders = […]`; home by default) and, given a `path` inside one, its sub-folders and `.RPP` files: `{"roots", "path", "parent", "entries": [{"name", "path", "dir", "size", "modified"}]}`; a path resolving outside every folder (through `..` or a link) is `forbidden` |
@@ -88,8 +88,25 @@ arguments. Fields shown with `?` may be left out.
 track's exact name (a string), or `"master"` where the master makes sense (volume, pan, mute,
 effects). **Levels** are given as `volume` (gain, 1.0 = 0 dB, capped at +24 dB) or `db`. **Pan**
 runs from -1 (left) to 1 (right). Times are in seconds. Flags (`muted`, `solo`, `armed`,
-`monitor`, `bypassed`) toggle when left out. Fields a command does not know are ignored, so a
-misspelt flag toggles: read the answer to see the state.
+`monitor`, `bypassed`) toggle when left out.
+
+Fields a command does not read are no error, but the answer lists them beside `result` (and
+beside `error`) as `"ignored"`, so a misspelt field shows up instead of silently doing nothing:
+
+```json
+→ {"cmd": "track.pan", "track": "Vox", "pan": 0.2, "width": 1.0}
+← {"ok": true, "result": {…}, "ignored": ["width"]}
+```
+
+Aliases (`invert` for `track.phase`'s `phase`, `track.colour`) are read and not listed. Only
+the command's own top-level fields are checked, not those inside nested objects. A command that
+toggles when its value is left out (`track.mute`, `track.solo`, `track.solo_defeat`,
+`track.phase`, `track.arm`, `track.monitor`, `track.main_send`, `track.collapse`, `fx.bypass`,
+`fx.offline`, `item.mute`, `item.lock`, `send.mute`, `mix.mute`, `mix.own`, `mix.limiter`,
+`setlist.auto_advance`, `setlist.count_in`, `setlist.marker_actions`) is refused as `invalid`
+when it has a field it does not read and not its value: `{"cmd": "track.mute", "track":
+"Vox", "mute": true}` would toggle, which is the opposite of what was meant half the time. The
+same command with only its value, or with nothing at all, works as before.
 
 Continuous controls (track and send volume and pan, item volume) fold repeated changes of the
 same control within a second into one undo step, so a fader dragged on a tablet is undone in
@@ -899,7 +916,8 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 ```json
 {
   "revision": 42, "name": "monitors", "path": "/home/band/live/monitors.RPP", "dirty": false,
-  "sample_rate": 48000, "length": 213.5, "bpm": 120.0, "time_signature": [4, 4],
+  "sample_rate": 48000, "project_sample_rate": 44100, "render_sample_rate": 44100,
+  "length": 213.5, "bpm": 120.0, "time_signature": [4, 4],
   "bars": [0.0, 2.0, 4.0, …],
   "undo": "Track volume", "redo": null,
   "transport": {"playing": false, "recording": false, "position": 0.0, "bar_beat": "1.1.00", "cursor": 0.0,
@@ -927,6 +945,12 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
 ```
 
 `bars` holds where each bar starts (bar 1 first), following tempo and time signature changes, to
+Three sample rates: `sample_rate` is what the audio device (or the offline engine) runs at,
+which need not be the project's; `project_sample_rate` is the project's own (REAPER's
+`SAMPLERATE`, `null` when it sets none); `render_sample_rate` is what `render.project` and the
+measurements render at: the render settings' rate (`render.settings` `sample_rate`, REAPER's
+`RENDER_FMT`), else the project's, else 44100 Hz.
+
 a minute past the end of the project; `bar_beat` is the position as REAPER shows it. `level` is
 how deep in folders a track sits (0 at the top). Ids are stable while the session
 runs (also across undo) but not across opening the project again; names and GUIDs are.

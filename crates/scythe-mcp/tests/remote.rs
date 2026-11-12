@@ -49,6 +49,11 @@ fn stdio_against_a_running_scythe() {
         assert_eq!(init["result"]["serverInfo"]["name"], "scythe");
         let added = answer(call(2, "track_add", json!({"name": "Keys"})));
         assert_eq!(added["result"]["isError"], false, "{added}");
+        let panned = answer(call(5, "track_pan", json!({"track": "Keys", "pan": 0.5, "width": 1.0})));
+        let text = panned["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(panned["result"]["isError"] == false && text.contains("ignored") && text.contains("width"), "{panned}");
+        let muted = answer(call(6, "track_mute", json!({"track": "Keys", "mute": true})));
+        assert_eq!(muted["result"]["isError"], true, "{muted}");
         let missing = answer(call(3, "send_add", json!({"track": "Keys", "dest": "Nowhere"})));
         assert_eq!(missing["result"]["content"][0]["text"], "not_found: no track named \"Nowhere\"");
         let opened = answer(call(4, "project_new", json!({})));

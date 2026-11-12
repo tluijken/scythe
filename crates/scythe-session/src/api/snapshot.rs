@@ -2,6 +2,7 @@
 
 use scythe_core::metronome::{PREROLL_MID_MEASURE, PREROLL_PLAY, PREROLL_RECORD};
 use scythe_core::model::source_span;
+use scythe_core::render_settings::RenderSettings;
 use scythe_core::units::gain_to_db;
 use scythe_core::{Color, HwOut, Item, Marker, Project, SendMode, Track};
 use scythe_engine::fx::FxStatus;
@@ -16,7 +17,16 @@ pub struct ProjectSnapshot {
     pub name: String,
     pub path: Option<String>,
     pub dirty: bool,
+    /// The rate the audio device (or the offline engine) runs at, which need not be the
+    /// project's: see `project_sample_rate` and `render_sample_rate`.
     pub sample_rate: u32,
+    /// The project's own rate (REAPER's `SAMPLERATE`), `None` when the project sets none.
+    #[serde(default)]
+    pub project_sample_rate: Option<u32>,
+    /// The rate `render.project` renders at: the render settings' (`RENDER_FMT`), else the
+    /// project's, else 44100 Hz.
+    #[serde(default)]
+    pub render_sample_rate: u32,
     /// End of the last item, in seconds.
     pub length: f64,
     pub bpm: f64,
@@ -366,6 +376,8 @@ pub fn snapshot(session: &Session) -> ProjectSnapshot {
         path: p.path.as_ref().map(|p| p.display().to_string()),
         dirty: session.dirty,
         sample_rate: session.engine.sample_rate(),
+        project_sample_rate: p.sample_rate,
+        render_sample_rate: crate::render::render_rate(&RenderSettings::from_project(p), p),
         length: p.length(),
         bpm: p.tempo.bpm_at(0.0),
         time_signature: p.tempo.time_sig_at(0.0),

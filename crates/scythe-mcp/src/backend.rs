@@ -4,7 +4,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use scythe_session::api::{ApiError, Command, ErrorKind};
+use scythe_session::api::{self, ApiError, ErrorKind, Parsed};
 use scythe_session::control::ControlHandle;
 use serde_json::{Value, json};
 
@@ -16,27 +16,42 @@ pub const USER_AGENT: &str = concat!("scythe-mcp/", env!("CARGO_PKG_VERSION"));
 
 /// Runs one control API command (JSON with a `cmd` field) and answers with its result.
 pub trait Backend: Send + Sync {
-    fn command(&self, command: Value) -> Result<Value, ApiError>;
+    /// The command's result, with the fields of the command that were ignored.
+    fn answer(&self, command: Value) -> Result<Answer, ApiError>;
+
+    fn command(&self, command: Value) -> Result<Value, ApiError> {
+        self.answer(command).map(|a| a.result)
+    }
+}
+
+/// What a command answered, and the top-level fields of it that no command reads (the
+/// control API's `"ignored"`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answer {
+    pub result: Value,
+    pub ignored: Vec<String>,
 }
 
 /// A session on another thread of this process, reached through its control channel.
 pub struct Local(pub ControlHandle);
 
 impl Backend for Local {
-    fn command(&self, command: Value) -> Result<Value, ApiError> {
+    fn answer(&self, command: Value) -> Result<Answer, ApiError> {
         if command["cmd"].as_str().is_some_and(|c| c.starts_with("access.")) {
             return Err(ApiError::failed(
                 "access links are kept by scythe-server; this session has none (connect with --url or to /mcp)",
             ));
         }
-        let command: Command = serde_json::from_value(command).map_err(|e| ApiError::invalid(e.to_string()))?;
+        let Parsed { command, ignored } = api::parse(command)?;
         let (tx, rx) = mpsc::channel();
         if !self.0.send(command, move |answer| {
             let _ = tx.send(answer);
         }) {
             return Err(ApiError::failed("the session has ended"));
         }
-        rx.recv_timeout(TIMEOUT).unwrap_or_else(|_| Err(ApiError::failed("the session did not answer")))
+        let result =
+            rx.recv_timeout(TIMEOUT).unwrap_or_else(|_| Err(ApiError::failed("the session did not answer")))?;
+        Ok(Answer { result, ignored })
     }
 }
 
@@ -89,10 +104,14 @@ impl Remote {
 }
 
 impl Backend for Remote {
-    fn command(&self, command: Value) -> Result<Value, ApiError> {
+    fn answer(&self, command: Value) -> Result<Answer, ApiError> {
         let answer = self.request(Some(&command))?;
         if answer["ok"] == true {
-            return Ok(answer.get("result").cloned().unwrap_or(json!({})));
+            let ignored = answer["ignored"].as_array().into_iter().flatten();
+            return Ok(Answer {
+                result: answer.get("result").cloned().unwrap_or(json!({})),
+                ignored: ignored.filter_map(|f| f.as_str().map(str::to_owned)).collect(),
+            });
         }
         let error = &answer["error"];
         let message = error["message"].as_str().unwrap_or("Scythe refused the command").to_owned();

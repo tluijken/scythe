@@ -22,10 +22,10 @@ use axum::routing::{get, post};
 use axum::serve::ListenerExt;
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
-use scythe_mcp::{Backend, McpServer, Selection, Transport};
+use scythe_mcp::{Answer, Backend, McpServer, Selection, Transport};
 use scythe_session::Waker;
 use scythe_session::access::Scope;
-use scythe_session::api::{ApiError, Command, ErrorKind, Event};
+use scythe_session::api::{self, ApiError, Command, ErrorKind, Event, Parsed};
 use scythe_session::control::{self, ControlHandle, ControlPump, EventSink};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -245,8 +245,13 @@ async fn run(state: &AppState, scope: Scope, command: Command) -> Result<Value, 
 }
 
 fn respond(answer: Result<Value, ApiError>) -> Response {
+    respond_ignoring(answer, &[])
+}
+
+/// The answer, listing the fields of the command that were `ignored`.
+fn respond_ignoring(answer: Result<Value, ApiError>, ignored: &[String]) -> Response {
     match answer {
-        Ok(result) => Json(json!({"ok": true, "result": result})).into_response(),
+        Ok(result) => Json(listing(json!({"ok": true, "result": result}), ignored)).into_response(),
         Err(error) => {
             let status = match error.kind {
                 ErrorKind::Invalid => StatusCode::BAD_REQUEST,
@@ -254,13 +259,24 @@ fn respond(answer: Result<Value, ApiError>) -> Response {
                 ErrorKind::Failed => StatusCode::CONFLICT,
                 ErrorKind::Forbidden => StatusCode::FORBIDDEN,
             };
-            (status, Json(json!({"ok": false, "error": error}))).into_response()
+            (status, Json(listing(json!({"ok": false, "error": error}), ignored))).into_response()
         }
     }
 }
 
-fn parse(value: Value) -> Result<Command, ApiError> {
-    serde_json::from_value(value).map_err(|e| ApiError::invalid(e.to_string()))
+fn listing(mut answer: Value, ignored: &[String]) -> Value {
+    if !ignored.is_empty() {
+        answer["ignored"] = ignored.into();
+    }
+    answer
+}
+
+/// Runs a parsed command for a client with `scope` and answers it.
+async fn answer(state: &AppState, scope: Scope, parsed: Result<Parsed, ApiError>) -> Response {
+    match parsed {
+        Ok(Parsed { command, ignored }) => respond_ignoring(run(state, scope, command).await, &ignored),
+        Err(e) => respond(Err(e)),
+    }
 }
 
 fn is_access(value: &Value) -> bool {
@@ -321,11 +337,12 @@ struct McpBackend {
 }
 
 impl Backend for McpBackend {
-    fn command(&self, command: Value) -> Result<Value, ApiError> {
+    fn answer(&self, command: Value) -> Result<Answer, ApiError> {
         if is_access(&command) {
-            return access_answer(&self.access, self.addr, &Scope::Admin, command);
+            let result = access_answer(&self.access, self.addr, &Scope::Admin, command)?;
+            return Ok(Answer { result, ignored: Vec::new() });
         }
-        self.local.command(command)
+        self.local.answer(command)
     }
 }
 
@@ -337,17 +354,11 @@ async fn command(State(state): State<AppState>, Extension(scope): Extension<Scop
     if is_access(&value) {
         return respond(access_command(&state, &scope, value));
     }
-    match parse(value) {
-        Ok(command) => respond(run(&state, scope, command).await),
-        Err(e) => respond(Err(e)),
-    }
+    answer(&state, scope, api::parse(value)).await
 }
 
 async fn snapshot(State(state): State<AppState>, Extension(scope): Extension<Scope>) -> Response {
-    match parse(json!({"cmd": "snapshot"})) {
-        Ok(command) => respond(run(&state, scope, command).await),
-        Err(e) => respond(Err(e)),
-    }
+    answer(&state, scope, api::parse(json!({"cmd": "snapshot"}))).await
 }
 
 /// `item.peaks` as a GET, so a browser can cache waveforms by address.
@@ -369,10 +380,7 @@ async fn peaks(
             value[name] = t.into();
         }
     }
-    match parse(value) {
-        Ok(command) => respond(run(&state, scope, command).await),
-        Err(e) => respond(Err(e)),
-    }
+    answer(&state, scope, api::parse(value)).await
 }
 
 /// The file browser: folders and .RPP files under the configured folders, for the admin only.
@@ -568,11 +576,15 @@ async fn websocket(
 }
 
 fn ws_reply(id: &Value, answer: Result<Value, ApiError>) -> String {
-    match answer {
+    ws_reply_ignoring(id, answer, &[])
+}
+
+fn ws_reply_ignoring(id: &Value, answer: Result<Value, ApiError>, ignored: &[String]) -> String {
+    let reply = match answer {
         Ok(result) => json!({"type": "reply", "id": id, "ok": true, "result": result}),
         Err(error) => json!({"type": "reply", "id": id, "ok": false, "error": error}),
-    }
-    .to_string()
+    };
+    listing(reply, ignored).to_string()
 }
 
 /// Counts a WebSocket client for as long as it is connected.
@@ -612,12 +624,12 @@ async fn serve_socket(socket: WebSocket, state: AppState, scope: Scope) {
                         let _ = replies.send(ws_reply(&id, access_command(&state, &scope, value)));
                         continue;
                     }
-                    match parse(value) {
-                        Ok(command) => {
+                    match api::parse(value) {
+                        Ok(Parsed { command, ignored }) => {
                             let out = replies.clone();
                             let reply_id = id.clone();
                             let sent = state.control.send_as(scope.clone(), command, move |answer| {
-                                let _ = out.send(ws_reply(&reply_id, answer));
+                                let _ = out.send(ws_reply_ignoring(&reply_id, answer, &ignored));
                             });
                             if !sent {
                                 let _ = replies.send(ws_reply(&id, Err(ApiError::failed("the session has ended"))));

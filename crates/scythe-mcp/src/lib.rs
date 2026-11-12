@@ -11,6 +11,6 @@ pub mod stdio;
 pub mod summary;
 pub mod tools;
 
-pub use backend::{Backend, Local, Remote};
+pub use backend::{Answer, Backend, Local, Remote};
 pub use protocol::{McpServer, Notifier, PROTOCOL_VERSIONS, Transport};
 pub use tools::Selection;

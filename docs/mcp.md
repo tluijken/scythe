@@ -89,7 +89,12 @@ from the API. `crates/scythe-mcp/tests/tools.json` is a snapshot of the whole li
 Results are the command's JSON answer; answers that are a whole project (`project_open`,
 `project_new`) come back as the `get_project` overview. A command that fails (no such track,
 value out of range, nothing to undo) is a tool result with `isError` and a message starting
-with its kind (`invalid`, `not_found`, `failed`), so the agent can correct itself.
+with its kind (`invalid`, `not_found`, `failed`), so the agent can correct itself. A
+command given fields it does not read still runs, and its result ends with a line naming them
+(`ignored: "width" (not fields of this command, so they did nothing)`); a toggle given such a
+field instead of its value (`track_mute` with `"mute"` rather than `"muted"`) fails as
+`invalid`. The `get_project` overview tells the project's sample rate, the rate renders run at
+and the audio device's apart.
 
 Measuring tools (`analysis_*`, `media_probe`) start a job in Scythe and wait for it (up to 15
 minutes), then answer with the finished job: `{"job", "status": "done", "result", "seconds"}`.

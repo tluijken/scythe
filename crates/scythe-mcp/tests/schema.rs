@@ -19,3 +19,30 @@ fn tool_definitions_match_the_snapshot() {
         "the tool definitions changed; run `UPDATE_SNAPSHOTS=1 cargo test -p scythe-mcp --test schema` if that is intended"
     );
 }
+
+/// Every command documented as toggling when its value is left out is in `api::TOGGLES`, which
+/// refuses it an unknown field in place of that value, and every entry names fields the command
+/// has.
+#[test]
+fn every_toggle_is_known_to_the_api() {
+    let toggles = scythe_session::api::TOGGLES;
+    for tool in scythe_mcp::tools::all() {
+        let definition = &tool.definition;
+        let description = definition["description"].as_str().unwrap_or_default().to_lowercase();
+        let Some((_, cmd)) = description.split_once("control api command `") else { continue };
+        let cmd = cmd.split('`').next().unwrap();
+        let known = toggles.iter().find(|(name, _)| *name == cmd);
+        if description.contains("toggles") && description.contains("left out") {
+            assert!(known.is_some(), "{cmd} toggles but is not in api::TOGGLES");
+        }
+        if let Some((_, fields)) = known {
+            for field in *fields {
+                assert!(definition["inputSchema"]["properties"].get(field).is_some(), "{cmd} has no field {field}");
+            }
+        }
+    }
+    for (cmd, _) in toggles {
+        let parsed = scythe_session::api::parse(serde_json::json!({"cmd": cmd}));
+        assert!(parsed.as_ref().err().is_none_or(|e| !e.message.contains("unknown variant")), "{cmd} is no command");
+    }
+}

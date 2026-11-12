@@ -191,16 +191,20 @@ pub fn project(snapshot: &Value, items: bool) -> String {
         out.push_str(", unsaved changes");
     }
     let signature = &s["time_signature"];
-    writeln!(
-        out,
-        "\n{} Hz, {} BPM, {}/{}, length {}",
-        s["sample_rate"],
-        s["bpm"],
-        signature[0],
-        signature[1],
-        secs(&s["length"])
-    )
-    .ok();
+    writeln!(out, "\n{} BPM, {}/{}, length {}", s["bpm"], signature[0], signature[1], secs(&s["length"])).ok();
+    let project_rate = match &s["project_sample_rate"] {
+        Value::Null => "not set".to_owned(),
+        rate => format!("{rate} Hz"),
+    };
+    match &s["render_sample_rate"] {
+        Value::Null => writeln!(out, "Sample rates: audio device at {} Hz", s["sample_rate"]).ok(),
+        render => writeln!(
+            out,
+            "Sample rates: project {project_rate}, renders at {render} Hz, audio device at {} Hz",
+            s["sample_rate"]
+        )
+        .ok(),
+    };
 
     let t = &s["transport"];
     let state = if t["recording"] == true {
@@ -271,7 +275,7 @@ mod tests {
     fn summarises_tracks_routing_and_markers() {
         let snapshot = json!({
             "revision": 3, "name": "monitors", "path": "/live/monitors.RPP", "dirty": true,
-            "sample_rate": 48000, "length": 213.5, "bpm": 120.0, "time_signature": [4, 4],
+            "sample_rate": 48000, "project_sample_rate": null, "render_sample_rate": 44100, "length": 213.5, "bpm": 120.0, "time_signature": [4, 4],
             "undo": "Track volume", "redo": null,
             "transport": {"playing": false, "recording": false, "position": 0.0, "cursor": 12.25,
                           "loop_enabled": true, "loop_range": [10.0, 20.0], "metronome": false},
@@ -293,6 +297,10 @@ mod tests {
         let text = project(&snapshot, true);
         assert!(text.starts_with("Project \"monitors\" (/live/monitors.RPP), unsaved changes\n"), "{text}");
         assert!(text.contains("edit cursor 12.25s, repeat 10s to 20s"), "{text}");
+        assert!(
+            text.contains("\nSample rates: project not set, renders at 44100 Hz, audio device at 48000 Hz\n"),
+            "{text}"
+        );
         assert!(
             text.contains(
                 "#12 \"Vox\": -6.0 dB, pan 30%L, solo, armed (inputs 1/2, monitored); \

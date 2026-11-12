@@ -29,7 +29,7 @@ async fn websocket(addr: std::net::SocketAddr) -> Seen {
     let (mut ws, _) = tokio_tungstenite::connect_async(url).await.expect("websocket");
     let mut seen = Seen::default();
     for (id, cmd) in [
-        (1, json!({"cmd": "track.volume", "track": "Vox", "db": -6.0})),
+        (1, json!({"cmd": "track.volume", "track": "Vox", "db": -6.0, "gain": 2})),
         (2, json!({"cmd": "track.volume", "track": 404, "db": -6.0})),
         (3, json!({"cmd": "transport.play"})),
     ] {
@@ -76,6 +76,13 @@ fn commands_over_http_and_websocket() {
         let (status, body) = http(addr, "POST", "/api/command", Some(TOKEN), Some(&add));
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["result"]["name"], "Vox");
+        assert!(body.get("ignored").is_none(), "{body}");
+        let unknown = json!({"cmd": "track.pan", "track": "Vox", "pan": 0.0, "width": 1.0});
+        let (status, body) = http(addr, "POST", "/api/command", Some(TOKEN), Some(&unknown));
+        assert_eq!((status, body["ignored"].clone()), (200, json!(["width"])), "{body}");
+        let toggle = json!({"cmd": "track.mute", "track": "Vox", "mute": true});
+        let (status, body) = http(addr, "POST", "/api/command", Some(TOKEN), Some(&toggle));
+        assert_eq!((status, body["error"]["kind"].clone()), (400, json!("invalid")), "{body}");
         let (status, body) = http(addr, "POST", "/api/command", Some(TOKEN), Some(&json!({"cmd": "track.fly"})));
         assert_eq!(status, 400, "{body}");
         assert_eq!(body["error"]["kind"], "invalid");
@@ -89,6 +96,8 @@ fn commands_over_http_and_websocket() {
         let by_id = |id: u64| seen.replies.iter().find(|r| r["id"] == id).cloned().unwrap_or(Value::Null);
         assert_eq!(by_id(1)["ok"], true, "{:?}", seen.replies);
         assert!((by_id(1)["result"]["volume_db"].as_f64().unwrap() + 6.0).abs() < 1e-9);
+        assert_eq!(by_id(1)["ignored"], json!(["gain"]));
+        assert!(by_id(3).get("ignored").is_none(), "{:?}", seen.replies);
         assert_eq!(by_id(2)["ok"], false);
         assert_eq!(by_id(2)["error"]["kind"], "not_found");
         assert_eq!(by_id(3)["result"]["playing"], true);
