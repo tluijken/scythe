@@ -19,6 +19,8 @@ use crate::Session;
 pub const BUSY_WAIT: Duration = Duration::from_secs(7);
 /// How often a busy device is tried again while it is waited for.
 const BUSY_RETRY: Duration = Duration::from_millis(250);
+/// How often the device chosen at start is tried again once the quick retries are over.
+const START_RETRY: Duration = Duration::from_secs(5);
 
 /// Opens the devices a request names, for a session whose engine is the first argument.
 pub(crate) type Opener = fn(&Engine, &DeviceRequest) -> Result<Engine, String>;
@@ -37,6 +39,8 @@ pub(crate) struct Switch {
     save: bool,
     until: Instant,
     next: Instant,
+    /// The failure went to the error window already.
+    reported: bool,
 }
 
 /// The devices `prefs` choose (no choice is the system default).
@@ -162,7 +166,35 @@ impl Session {
         self.engine.close_device(&message);
         self.notify(message);
         let now = Instant::now();
-        self.switching = Some(Switch { request, previous, save, until: now + BUSY_WAIT, next: now + BUSY_RETRY });
+        self.switching =
+            Some(Switch { request, previous, save, until: now + BUSY_WAIT, next: now + BUSY_RETRY, reported: false });
+    }
+
+    /// Opens the devices chosen at start. As REAPER does, a device that is busy or missing is
+    /// never replaced by the system default: the audio stays closed, the error window says why,
+    /// and the device is tried again (every quarter second for a few seconds, then every five)
+    /// until it opens.
+    pub fn start_devices(&mut self, request: DeviceRequest) {
+        let rate = self.engine.sample_rate();
+        self.engine.set_devices(request.clone());
+        match (self.opener)(&self.engine, &request) {
+            Ok(engine) => self.install_engine(engine, rate, &request, false),
+            Err(e) if scythe_engine::devices::is_busy(&e) => self.wait_for_device(request, None, false),
+            Err(e) => {
+                self.engine.close_device(&e);
+                self.device_error = Some(e.clone());
+                self.notify(e);
+                let now = Instant::now();
+                self.switching = Some(Switch {
+                    request,
+                    previous: None,
+                    save: false,
+                    until: now,
+                    next: now + START_RETRY,
+                    reported: true,
+                });
+            }
+        }
     }
 
     /// Whether the system default device plays (through the sound server) because no device
@@ -202,16 +234,23 @@ impl Session {
             Err(e) => {
                 let busy = scythe_engine::devices::is_busy(&e);
                 let reason = if busy { scythe_engine::devices::busy_message(&switch.request) } else { e };
-                self.device_error = Some(reason.clone());
                 match switch.previous {
                     Some(previous) => {
+                        self.device_error = Some(reason.clone());
                         if let Err(again) = self.change_audio_device(previous, false) {
                             self.notify(format!("The previous audio device did not come back: {again}"));
                         }
+                        self.notify(reason);
                     }
-                    None => self.engine.retry_later(&reason),
+                    None => {
+                        self.engine.close_device(&reason);
+                        if !switch.reported {
+                            self.device_error = Some(reason.clone());
+                            self.notify(reason);
+                        }
+                        self.switching = Some(Switch { next: now + START_RETRY, reported: true, ..switch });
+                    }
                 }
-                self.notify(reason);
             }
         }
     }
@@ -428,6 +467,8 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use scythe_core::prefs::Preferences;
+
     use super::*;
 
     static SERIAL: Mutex<()> = Mutex::new(());
@@ -512,5 +553,98 @@ mod tests {
         let error = session.take_device_error().unwrap_or_default();
         assert!(error.starts_with("hw:CARD=1,DEV=0 is busy"), "{error}");
         assert!(error.contains("Apply again"));
+    }
+
+    static ASKED: Mutex<Vec<Option<String>>> = Mutex::new(Vec::new());
+    static MISSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn saved_device_opener(current: &Engine, request: &DeviceRequest) -> Result<Engine, String> {
+        ASKED.lock().unwrap().push(request.output.clone());
+        if MISSING.load(Ordering::SeqCst) {
+            return Err(format!("no output device named {}", request.output.clone().unwrap_or_default()));
+        }
+        if CALLS.fetch_add(1, Ordering::SeqCst) < BUSY_FOR.load(Ordering::SeqCst) {
+            return Err("hw:CARD=1,DEV=0: The requested device is temporarily busy.".into());
+        }
+        open_engine(current, &DeviceRequest { host: Some("Dummy".into()), ..Default::default() })
+    }
+
+    /// A session started the way the app starts it, with the preferences of a saved ALSA choice.
+    fn started_from_saved_prefs(busy_for: usize, missing: bool) -> Session {
+        BUSY_FOR.store(busy_for, Ordering::SeqCst);
+        CALLS.store(0, Ordering::SeqCst);
+        MISSING.store(missing, Ordering::SeqCst);
+        ASKED.lock().unwrap().clear();
+        let dir = std::env::temp_dir().join(format!("scythe-saved-device-{}-{busy_for}-{missing}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("preferences.ini");
+        std::fs::write(
+            &file,
+            "[REAPER]\nlinux_audio_mode=1\nalsa_indev=hw:QUADCAPTURE\nalsa_outdev=hw:QUADCAPTURE\n\
+             linux_audio_nch_in=2\nlinux_audio_nch_out=2\nlinux_audio_srate=44100\nlinux_audio_bsize=128\n\
+             linux_audio_bufs=3\nalsa_rtprio=40\n",
+        )
+        .unwrap();
+        let saved = Preferences::parse(&std::fs::read_to_string(&file).unwrap());
+        std::fs::remove_dir_all(&dir).ok();
+        let mut session = Session::new(Engine::start_offline(Arc::new(MediaPool::default()), 44_100));
+        session.opener = saved_device_opener;
+        session.start_devices(request_from_prefs(&saved.audio));
+        session
+    }
+
+    #[test]
+    fn the_saved_device_is_what_opens_at_start() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let session = started_from_saved_prefs(0, false);
+        assert!(!session.waiting_for_device());
+        assert_eq!(session.engine.info().host, scythe_engine::devices::DUMMY_HOST);
+        assert_eq!(*ASKED.lock().unwrap(), [Some("hw:QUADCAPTURE".to_owned())]);
+    }
+
+    #[test]
+    fn a_busy_saved_device_is_waited_for_and_never_swapped_for_the_default() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut session = started_from_saved_prefs(5, false);
+        assert!(session.waiting_for_device());
+        assert!(session.engine.health().silent);
+        let tip = session.engine.health().reason.unwrap_or_default();
+        assert!(tip.starts_with("Waiting for") && tip.contains("hw:QUADCAPTURE"), "{tip}");
+        for _ in 0..3 {
+            retry_now(&mut session);
+            assert!(session.waiting_for_device());
+            assert!(session.engine.health().silent);
+        }
+        if let Some(s) = session.switching.as_mut() {
+            s.until = Instant::now();
+        }
+        retry_now(&mut session);
+        assert!(session.waiting_for_device(), "keeps retrying after the quick wait");
+        let error = session.take_device_error().unwrap_or_default();
+        assert!(error.contains("hw:QUADCAPTURE") && error.contains("busy"), "{error}");
+        assert!(session.engine.health().silent);
+        retry_now(&mut session);
+        assert!(!session.waiting_for_device());
+        assert_eq!(session.engine.info().host, scythe_engine::devices::DUMMY_HOST);
+        assert!(ASKED.lock().unwrap().iter().all(|o| o.as_deref() == Some("hw:QUADCAPTURE")));
+        assert_eq!(session.take_device_error(), None);
+    }
+
+    #[test]
+    fn a_missing_saved_device_is_reported_once_and_looked_for_again() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let mut session = started_from_saved_prefs(0, true);
+        assert!(session.waiting_for_device());
+        assert!(session.engine.health().silent);
+        let error = session.take_device_error().unwrap_or_default();
+        assert!(error.contains("hw:QUADCAPTURE"), "{error}");
+        assert_eq!(session.engine.health().reason.as_deref(), Some(error.as_str()));
+        retry_now(&mut session);
+        assert!(session.waiting_for_device());
+        assert_eq!(session.take_device_error(), None, "the window is not raised again on every try");
+        MISSING.store(false, Ordering::SeqCst);
+        retry_now(&mut session);
+        assert!(!session.waiting_for_device());
+        assert_eq!(session.engine.info().host, scythe_engine::devices::DUMMY_HOST);
     }
 }

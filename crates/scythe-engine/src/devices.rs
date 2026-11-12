@@ -146,9 +146,14 @@ pub fn waiting_message(request: &DeviceRequest) -> String {
     let device = wanted_device(request);
     let asound = std::path::Path::new(crate::asound::PROC_ASOUND);
     let holder = crate::asound::holder(&device, false, asound, std::path::Path::new("/proc"));
-    match holder.filter(|h| h.program.starts_with("pipewire") || h.program == "wireplumber") {
-        Some(_) => format!("Waiting for PipeWire to release {device}…"),
-        None => format!("Waiting for {device} to be released…"),
+    match holder {
+        Some(h) if h.program.starts_with("pipewire") || h.program == "wireplumber" => {
+            format!("Waiting for PipeWire to release {device}…")
+        }
+        Some(h) if h.program.starts_with("scythe") && h.pid != std::process::id() => {
+            format!("Waiting for another Scythe process ({}, process {}) to release {device}…", h.program, h.pid)
+        }
+        _ => format!("Waiting for {device} to be released…"),
     }
 }
 

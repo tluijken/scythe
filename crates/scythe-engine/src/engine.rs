@@ -1454,6 +1454,11 @@ impl Engine {
         engine
     }
 
+    /// Records the devices this engine is to open, for its tooltip and a reopen.
+    pub fn set_devices(&mut self, request: DeviceRequest) {
+        self.devices = request;
+    }
+
     /// The devices this engine was asked to use.
     pub fn devices(&self) -> &DeviceRequest {
         &self.devices

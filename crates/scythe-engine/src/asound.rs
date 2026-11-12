@@ -129,6 +129,8 @@ pub struct Holder {
     pub pid: u32,
     /// Its process name (`pipewire`).
     pub program: String,
+    /// Its command line, arguments separated by spaces.
+    pub args: String,
 }
 
 /// Who holds the device `name` opens (playback, or with `input` capture), from the substreams'
@@ -146,7 +148,9 @@ pub fn holder(name: &str, input: bool, asound: &Path, proc: &Path) -> Option<Hol
             .lines()
             .find_map(|l| l.strip_prefix("owner_pid")?.trim_start_matches([' ', ':']).trim().parse().ok())?;
         let program = std::fs::read_to_string(proc.join(format!("{pid}/comm"))).unwrap_or_default().trim().to_owned();
-        Some(Holder { pid, program })
+        let args = std::fs::read(proc.join(format!("{pid}/cmdline"))).unwrap_or_default();
+        let args = String::from_utf8_lossy(&args).trim_end_matches('\0').replace('\0', " ");
+        Some(Holder { pid, program, args })
     })
 }
 
@@ -172,6 +176,11 @@ fn busy_text(name: &str, holder: Option<&Holder>, own_pid: u32) -> String {
         Some(h) if h.program == "pulseaudio" => {
             format!("{name} is busy: PulseAudio holds the interface (process {}). {free}", h.pid)
         }
+        Some(h) if h.program.starts_with("scythe") => format!(
+            "{name} is busy: another Scythe process holds it ({} {}, process {}). Quit it (a headless scythe-server or \
+             scythe-mcp opens the saved device too), then Apply again.",
+            h.program, h.args, h.pid
+        ),
         Some(h) => format!("{name} is busy: {} (process {}) holds it. {free}", h.program, h.pid),
         None => format!("{name} is busy: another program or the sound server (PipeWire) has it open. {free}"),
     }
@@ -335,13 +344,16 @@ mod tests {
         let caps = proc_capabilities("hw:QUADCAPTURE", false, &asound).unwrap();
         assert_eq!(caps.channels, [4]);
         let held = holder("hw:CARD=1,DEV=0", false, &asound, &dir.join("proc"));
-        assert_eq!(held, Some(Holder { pid: 4242, program: "pipewire".into() }));
+        assert_eq!(held, Some(Holder { pid: 4242, program: "pipewire".into(), args: String::new() }));
         assert_eq!(holder("hw:CARD=1,DEV=0", true, &asound, &dir.join("proc")), None);
         let text = busy_text("hw:QUADCAPTURE", held.as_ref(), 1);
         assert!(text.starts_with("hw:QUADCAPTURE is busy: PipeWire holds the interface (process pipewire 4242)"));
         assert!(text.contains("PipeWire or JACK"));
         assert!(busy_text("hw:X", held.as_ref(), 4242).contains("Scythe itself"));
         assert!(busy_text("hw:X", None, 1).contains("another program or the sound server"));
+        let other = Holder { pid: 9, program: "scythe-server".into(), args: "scythe-server --control :8771".into() };
+        let text = busy_text("hw:X", Some(&other), 1);
+        assert!(text.contains("another Scythe process") && text.contains("--control :8771"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
