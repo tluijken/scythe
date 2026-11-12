@@ -2172,3 +2172,41 @@ fn auto_crossfades_go_when_the_overlap_goes() {
     assert_eq!(f["auto_length"], 0.5);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn a_file_overwritten_in_place_is_read_again() {
+    let dir = std::env::temp_dir().join(format!("scythe-overwrite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("take.wav");
+    write_wav(&wav, 48_000, &vec![0.5; 48_000]);
+    let mut s = session();
+    let first = ok(&mut s, json!({"cmd": "media.import", "paths": [wav]}));
+    let item = first["items"][0]["item"].as_u64().unwrap();
+    let peak = |s: &mut Session| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            s.poll();
+            let p = ok(s, json!({"cmd": "item.peaks", "item": item, "width": 1}));
+            if p["state"] == "ready" || std::time::Instant::now() > deadline {
+                return p["max"][0].as_f64().unwrap_or(0.0);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    assert!((peak(&mut s) - 0.5).abs() < 0.01);
+
+    let overwrite = |level: f32, ahead: u64| {
+        write_wav(&wav, 48_000, &vec![level; 48_000]);
+        let later = std::time::SystemTime::now() + Duration::from_secs(ahead);
+        std::fs::File::options().write(true).open(&wav).unwrap().set_modified(later).unwrap();
+    };
+    overwrite(0.25, 5);
+    ok(&mut s, json!({"cmd": "media.import", "paths": [wav], "track": "take"}));
+    assert!((peak(&mut s) - 0.25).abs() < 0.01, "the item plays the new file");
+
+    overwrite(0.125, 10);
+    let rate = s.engine.sample_rate();
+    let reloaded = s.engine.pool().load(&wav, rate).unwrap();
+    assert!((reloaded.peaks.range(0.0, 1000.0).1 - 0.125).abs() < 0.01, "a load reads the new file");
+    std::fs::remove_dir_all(&dir).ok();
+}

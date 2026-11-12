@@ -722,6 +722,9 @@ in `origins`: the payload of the link's QR code.
 ### Media
 
 Admin only: paths name files on the machine running Scythe, anything its process may read.
+A file written anew under the same name (its modification time or size changed) is read again
+on the next edit, `media.import` of it or analysis, and renders read every file afresh; the
+items already playing it then play the new audio.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|

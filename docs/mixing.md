@@ -170,5 +170,3 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 - Recalling a rig snapshot replaces unsaved changes to the live rig: store first.
 - `track.add` with an `index` inside a folder puts the new track in that folder; place it with
   `track.move` and `parent`, and check that muting a bus changes the master.
-- Overwriting a media file under the same name can leave Scythe playing the cached old one:
-  write a new name.
