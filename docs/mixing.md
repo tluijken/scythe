@@ -41,7 +41,8 @@ again, and let the band judge by ear. Numbers find problems; they do not decide 
 `analysis.mix` spectra are normalised: compare shapes and use LUFS for level. A measurement
 renders from the start of its range, without the tails of what played before it. Renders and
 measurements run at the render settings' rate (`render.settings` `sample_rate`), else the
-project's (44.1 kHz when it sets none), whatever rate the audio device runs at.
+project's (44.1 kHz when it sets none), whatever rate the audio device runs at; the snapshot's
+`render_sample_rate` tells which.
 
 ## Master and loudness
 
@@ -159,8 +160,11 @@ project's (44.1 kHz when it sets none), whatever rate the audio device runs at.
   do not stack muted alternatives on an active item, put them on another track. A
   crossfade ends when the overlap does; `item.fade` with `"auto_length": 0` clears one by hand.
   Check a project with `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
-- `track.phase` toggles unless given `"phase"` (or `"invert"`) `true|false`; like most
-  commands it ignores fields it does not know, so a misspelt field toggles too. Read the answer.
+- `track.phase`, `track.mute` and the other flags toggle when their value is left out. A
+  misspelt value field is refused for them; for other commands a field that is not read is only
+  listed in the answer's `"ignored"` (MCP: an `ignored:` line), so check for it.
+- The snapshot's `sample_rate` is the audio device's rate, not the project's: read
+  `project_sample_rate` and `render_sample_rate` (what renders and measurements use).
 - Many LSP parameters are normalised 0..1 (find values by bisecting on the answer's text);
   gains and thresholds use real units.
 - LSP Filter's "APO" filter mode ignores width and slope.

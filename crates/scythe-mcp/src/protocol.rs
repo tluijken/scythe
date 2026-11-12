@@ -14,7 +14,7 @@ use scythe_session::api::{ApiError, ErrorKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::backend::Backend;
+use crate::backend::{Answer, Backend};
 use crate::summary;
 use crate::tools::{self, Action, CommandArgs, ProjectArgs, ProjectFormat, Selection, StatusArgs, ToolsArgs};
 
@@ -388,7 +388,7 @@ impl McpServer {
                 Err(e) => Err(format!("invalid arguments: {e}")),
             },
             Action::Passthrough => match CommandArgs::deserialize(&arguments) {
-                Ok(args) => self.run(call, Value::Object(args.command)).map(|v| render(&v)).map_err(|e| describe(&e)),
+                Ok(args) => self.run(call, Value::Object(args.command)).map(|a| render(&a)).map_err(|e| describe(&e)),
                 Err(e) => Err(format!("invalid arguments: {e}")),
             },
             Action::Tools => match ToolsArgs::deserialize(&arguments) {
@@ -398,7 +398,7 @@ impl McpServer {
             Action::Command(cmd) => {
                 let mut command = arguments;
                 command["cmd"] = cmd.as_str().into();
-                self.run(call, command).map(|v| render(&v)).map_err(|e| describe(&e))
+                self.run(call, command).map(|a| render(&a)).map_err(|e| describe(&e))
             }
             Action::Status => unreachable!("answered above"),
         };
@@ -445,35 +445,35 @@ impl McpServer {
 
     /// Runs one command of a tool call. The server keeps `access.*` itself, so those are
     /// checked against the pause here instead of in the session.
-    fn exec(&self, call: Call, command: Value) -> Result<Value, ApiError> {
+    fn exec(&self, call: Call, command: Value) -> Result<Answer, ApiError> {
         let cmd = command["cmd"].as_str().unwrap_or_default();
         match call.id {
             Some(_) if cmd.starts_with("access.") => {
                 if call.paused && !reads_only(cmd) {
                     return Err(ApiError::failed(PAUSED));
                 }
-                self.backend().command(command)
+                self.backend().answer(command)
             }
-            Some(id) => self.backend().command(json!({"cmd": "agents.run", "call": id, "command": command})),
-            None => self.backend().command(command),
+            Some(id) => self.backend().answer(json!({"cmd": "agents.run", "call": id, "command": command})),
+            None => self.backend().answer(command),
         }
     }
 
     /// Runs a command; a measuring job it starts is waited for, so the tool answers with the
     /// result.
-    fn run(&self, call: Call, command: Value) -> Result<Value, ApiError> {
-        let answer = self.exec(call, command)?;
-        let Some(job) = answer["job"].as_u64().filter(|_| answer["status"] == "running") else {
-            return finished(answer);
+    fn run(&self, call: Call, command: Value) -> Result<Answer, ApiError> {
+        let Answer { result, ignored } = self.exec(call, command)?;
+        let Some(job) = result["job"].as_u64().filter(|_| result["status"] == "running") else {
+            return Ok(Answer { result: finished(result)?, ignored });
         };
         let deadline = Instant::now() + JOB_TIMEOUT;
         let mut pause = Duration::from_millis(20);
         loop {
             std::thread::sleep(pause);
             pause = (pause * 2).min(Duration::from_millis(250));
-            let state = self.exec(call, json!({"cmd": "analysis.job", "job": job}))?;
+            let state = self.exec(call, json!({"cmd": "analysis.job", "job": job}))?.result;
             if state["status"] != "running" {
-                return finished(state);
+                return Ok(Answer { result: finished(state)?, ignored });
             }
             if Instant::now() > deadline {
                 return Err(ApiError::failed(format!(
@@ -504,7 +504,7 @@ impl McpServer {
     }
 
     fn project(&self, call: Call, args: &ProjectArgs) -> Result<String, ApiError> {
-        let snapshot = self.exec(call, json!({"cmd": "snapshot"}))?;
+        let snapshot = self.exec(call, json!({"cmd": "snapshot"}))?.result;
         Ok(match args.format {
             ProjectFormat::Summary => summary::project(&snapshot, args.items),
             ProjectFormat::Json => snapshot.to_string(),
@@ -651,8 +651,15 @@ fn initialize(params: &Value) -> Value {
 }
 
 /// A command's answer as tool output: snapshots as the readable overview, the rest as JSON.
-fn render(value: &Value) -> String {
-    if summary::is_snapshot(value) { summary::project(value, false) } else { value.to_string() }
+/// The tool result text: the answer, then the fields of the command that nothing read.
+fn render(answer: &Answer) -> String {
+    let value = &answer.result;
+    let mut text = if summary::is_snapshot(value) { summary::project(value, false) } else { value.to_string() };
+    if !answer.ignored.is_empty() {
+        let fields: Vec<String> = answer.ignored.iter().map(|f| format!("\"{f}\"")).collect();
+        text.push_str(&format!("\n\nignored: {} (not fields of this command, so they did nothing)", fields.join(", ")));
+    }
+    text
 }
 
 fn describe(error: &ApiError) -> String {

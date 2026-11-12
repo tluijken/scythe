@@ -17,6 +17,7 @@ pub mod explorer;
 pub mod feed;
 pub mod fx;
 pub mod groups;
+mod ignored;
 pub mod items;
 pub mod markers;
 pub mod media;
@@ -50,6 +51,7 @@ use serde_json::Value;
 use crate::Session;
 
 pub use events::Event;
+pub use ignored::TOGGLES;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
@@ -200,10 +202,27 @@ pub fn execute(session: &mut Session, command: Command) -> Result<Value, ApiErro
     }
 }
 
+/// A command parsed from JSON, with the fields it ignored.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parsed {
+    pub command: Command,
+    /// Top-level fields the command does not read (an alias is read), in key order. Answers
+    /// list them as `"ignored"` beside `"result"`.
+    pub ignored: Vec<String>,
+}
+
+/// Parses a command given as JSON. A field it does not know is no error but is listed in
+/// [`Parsed::ignored`]; a toggle given one while missing its value is refused instead, as it
+/// would flip whatever the caller meant to set.
+pub fn parse(json: Value) -> Result<Parsed, ApiError> {
+    let command: Command = serde_json::from_value(json.clone()).map_err(|e| ApiError::invalid(e.to_string()))?;
+    let ignored = ignored::ignored(&json, &command)?;
+    Ok(Parsed { command, ignored })
+}
+
 /// Parses and runs one command given as JSON.
 pub fn execute_json(session: &mut Session, json: Value) -> Result<Value, ApiError> {
-    let command: Command = serde_json::from_value(json).map_err(|e| ApiError::invalid(e.to_string()))?;
-    execute(session, command)
+    execute(session, parse(json)?.command)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

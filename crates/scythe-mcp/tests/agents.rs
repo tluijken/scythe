@@ -143,6 +143,10 @@ fn compact_tools_by_default_and_more_on_request() {
     std::thread::sleep(Duration::from_millis(400));
     let (error, _) = client.call("track_add", json!({"name": "Bass"}));
     assert!(!error);
+    let (error, text) = client.call("track_pan", json!({"track": "Bass", "pan": 0.5, "width": 1.0}));
+    assert!(!error && text.contains("ignored") && text.contains("\"width\""), "{text}");
+    let (error, text) = client.call("track_mute", json!({"track": "Bass", "mute": true}));
+    assert!(error && text.starts_with("invalid") && text.contains("\"muted\""), "{text}");
     let updated = client.notified("notifications/resources/updated");
     assert_eq!(updated["params"]["uri"], "scythe://project");
     let bad = client.request("resources/subscribe", json!({"uri": "scythe://docs/mcp"}));

@@ -5,7 +5,7 @@ use scythe_core::render_settings::ResampleMode;
 use scythe_core::{Item, Take};
 use scythe_engine::{Engine, MediaPool};
 use scythe_session::Session;
-use scythe_session::api::{ErrorKind, Event, execute_json};
+use scythe_session::api::{self, ErrorKind, Event, execute_json};
 use scythe_session::control;
 use serde_json::{Value, json};
 
@@ -2243,4 +2243,65 @@ fn one_clap_parameter_write_sticks_and_reaches_offline_renders() {
     let chain = render.chain(Some(project.tracks[0].id), &project.tracks[0].fx);
     let value = chain[0].with(|e| e.param(7)).flatten().map(|(v, _)| v).unwrap();
     assert!((value - 0.2).abs() < 1e-6, "the render instance plays {value}");
+}
+
+#[test]
+fn unknown_fields_are_reported_as_ignored() {
+    let ignored = |command: Value| api::parse(command.clone()).unwrap_or_else(|e| panic!("{command}: {e}")).ignored;
+    assert_eq!(ignored(json!({"cmd": "track.volume", "track": "Vox", "db": -6.0, "gain": 2})), ["gain"]);
+    assert_eq!(ignored(json!({"cmd": "track.volume", "track": "Vox", "db": -6.0})), Vec::<String>::new());
+    assert!(ignored(json!({"cmd": "track.phase", "track": "Vox", "invert": false})).is_empty(), "an alias is read");
+    assert!(ignored(json!({"cmd": "track.colour", "track": "Vox", "color": null})).is_empty());
+    assert!(ignored(json!({"cmd": "track.add", "name": null, "index": null})).is_empty(), "defaults are read");
+    assert!(
+        ignored(
+            json!({"cmd": "fx.bypass", "track": "Vox", "index": 0, "bypassed": true, "chain": "input", "inside": []})
+        )
+        .is_empty(),
+        "flattened fields are read"
+    );
+    assert_eq!(
+        ignored(json!({"cmd": "fx.bypass", "track": "Vox", "index": 0, "bypassed": true, "slot": 2, "chain": "track"})),
+        ["slot"]
+    );
+    let run =
+        json!({"cmd": "agents.run", "call": 1, "command": {"cmd": "track.pan", "track": "Vox", "pan": 0, "width": 1}});
+    assert_eq!(ignored(run), ["width"], "the command an agent's call runs");
+}
+
+#[test]
+fn a_toggle_with_an_unknown_field_instead_of_its_value_is_refused() {
+    let mut s = session();
+    add_track(&mut s, "Vox");
+    let e = execute_json(&mut s, json!({"cmd": "track.mute", "track": "Vox", "mute": true})).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Invalid);
+    assert!(e.message.contains("\"mute\"") && e.message.contains("\"muted\""), "{}", e.message);
+    assert!(!s.project.tracks[0].muted);
+    let e = api::parse(json!({"cmd": "track.phase", "track": "Vox", "inverted": false})).unwrap_err();
+    assert!(e.message.contains("\"inverted\"") && e.message.contains("\"phase\""), "{}", e.message);
+    let run = json!({"cmd": "agents.run", "call": 1, "command": {"cmd": "fx.offline", "track": "Vox", "index": 0, "on": false}});
+    assert!(api::parse(run).is_err(), "the command an agent's call runs");
+
+    ok(&mut s, json!({"cmd": "track.mute", "track": "Vox"}));
+    assert!(s.project.tracks[0].muted, "a plain toggle still toggles");
+    let parsed = api::parse(json!({"cmd": "track.mute", "track": "Vox", "muted": false, "note": "x"})).unwrap();
+    assert_eq!(parsed.ignored, ["note"]);
+    api::execute(&mut s, parsed.command).unwrap();
+    assert!(!s.project.tracks[0].muted);
+    ok(&mut s, json!({"cmd": "track.phase", "track": "Vox", "invert": true}));
+    assert!(s.project.tracks[0].phase);
+}
+
+#[test]
+fn the_snapshot_tells_the_device_project_and_render_rates_apart() {
+    let mut s = session();
+    let rates = |s: &mut Session| {
+        let snap = ok(s, json!({"cmd": "project.snapshot"}));
+        (snap["sample_rate"].clone(), snap["project_sample_rate"].clone(), snap["render_sample_rate"].clone())
+    };
+    assert_eq!(rates(&mut s), (json!(48_000), Value::Null, json!(44_100)));
+    s.project.sample_rate = Some(44_100);
+    assert_eq!(rates(&mut s), (json!(48_000), json!(44_100), json!(44_100)));
+    ok(&mut s, json!({"cmd": "render.settings", "sample_rate": 96_000}));
+    assert_eq!(rates(&mut s), (json!(48_000), json!(44_100), json!(96_000)));
 }
