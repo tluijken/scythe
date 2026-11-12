@@ -133,6 +133,7 @@ with their sizes). `default` is the compact set, `all` everything.
 | `scythe://project` | the full snapshot as JSON |
 | `scythe://docs/control-api` | the control API reference |
 | `scythe://docs/mcp` | this page |
+| `scythe://docs/mixing` | [field notes on mixing](mixing.md): measuring against a reference, low end, drums, NAM guitars, vocals, character effects, pitfalls |
 
 The server sends notifications on stdio between answers, and over HTTP on `GET /mcp` (a stream
 of server-sent events for as long as the client holds it open):
