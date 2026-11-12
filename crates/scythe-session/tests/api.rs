@@ -1905,3 +1905,123 @@ fn the_catalog_answers_while_plugins_are_scanned() {
     assert_eq!(done["failed"], json!([]));
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Amplitude of the `freq` component of `x`, which holds a whole number of its cycles.
+fn amplitude_at(x: &[f32], freq: f64, rate: f64) -> f64 {
+    let (mut re, mut im) = (0.0, 0.0);
+    for (n, s) in x.iter().enumerate() {
+        let w = std::f64::consts::TAU * freq * n as f64 / rate;
+        re += *s as f64 * w.cos();
+        im -= *s as f64 * w.sin();
+    }
+    2.0 * re.hypot(im) / x.len() as f64
+}
+
+/// A piano sent into a guitar bus's channels 3/4 keys a Scythe EQ dynamic band there: the
+/// guitar dips while the piano plays and the piano itself never reaches channels 1/2.
+#[test]
+fn a_send_to_channels_3_4_keys_a_dynamic_eq_band() {
+    let dir = std::env::temp_dir().join(format!("scythe-sidechain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 48_000u32;
+    let sine = |amp: f32| -> Vec<f32> {
+        (0..rate).map(|n| amp * (std::f32::consts::TAU * 1000.0 * n as f32 / rate as f32).sin()).collect()
+    };
+    let (guitar_wav, piano_wav) = (dir.join("guitar.wav"), dir.join("piano.wav"));
+    write_wav(&guitar_wav, rate, &sine(0.05));
+    write_wav(&piano_wav, rate, &sine(0.5));
+
+    let mut s = session();
+    let guitar = add_track(&mut s, "Guitar");
+    let piano = add_track(&mut s, "Piano");
+    s.project.tracks[0].items.push(Item::new(0.0, 1.0, Take::from_file(guitar_wav.clone())));
+    s.project.tracks[1].items.push(Item::new(0.0, 1.0, Take::from_file(piano_wav.clone())));
+    ok(&mut s, json!({"cmd": "track.main_send", "track": piano, "on": false}));
+
+    let t = ok(&mut s, json!({"cmd": "track.channels", "track": guitar, "channels": 4}));
+    assert_eq!(t["channels"], 4);
+    for bad in [3, 0, 130] {
+        let err = execute_json(&mut s, json!({"cmd": "track.channels", "track": guitar, "channels": bad}));
+        assert_eq!(err.unwrap_err().kind, ErrorKind::Invalid, "{bad}");
+    }
+    let send = ok(&mut s, json!({"cmd": "send.add", "track": piano, "dest": guitar}));
+    assert_eq!((send["src"].as_u64(), send["src_count"].as_u64(), send["dst"].as_u64()), (Some(1), Some(2), Some(1)));
+    let send = ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 3}));
+    assert_eq!(
+        (send["src"].as_u64(), send["dst"].as_u64(), send["dst_mono"].as_bool()),
+        (Some(1), Some(3), Some(false))
+    );
+    assert_eq!((s.project.tracks[1].sends[0].src_channels, s.project.tracks[1].sends[0].dst_channels), (0, 2));
+    let listed = ok(&mut s, json!({"cmd": "track.get", "track": piano}));
+    assert_eq!(listed["sends"][0]["dst"], 3);
+
+    // The piano has two channels and the guitar bus four.
+    for bad in [
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src": 2}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 4}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 3}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 4}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 0}),
+        json!({"cmd": "send.channels", "track": piano, "send": 1, "dst": 3}),
+    ] {
+        assert!(execute_json(&mut s, bad.clone()).is_err(), "{bad}");
+    }
+    let mono = ok(
+        &mut s,
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 1, "dst": 4, "dst_mono": true}),
+    );
+    assert_eq!(
+        (mono["src_count"].as_u64(), mono["dst"].as_u64(), mono["dst_mono"].as_bool()),
+        (Some(1), Some(4), Some(true))
+    );
+    assert_eq!(
+        (s.project.tracks[1].sends[0].src_channels, s.project.tracks[1].sends[0].dst_channels),
+        (1024, 1024 + 3)
+    );
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    assert_eq!(s.project.tracks[1].sends[0].dst_channels, 2);
+
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    let back = scythe_core::rpp::project_from_rpp(&text).unwrap();
+    assert_eq!(back.tracks[0].channels, 4);
+    let saved = &back.tracks[1].sends[0];
+    assert_eq!((saved.dest, saved.src_channels, saved.dst_channels), (back.tracks[0].id, 0, 2));
+    assert!(text.contains("NCHAN 4"), "{text}");
+
+    let pool = scythe_engine::MediaPool::default();
+    pool.load(&guitar_wav, rate).unwrap();
+    pool.load(&piano_wav, rate).unwrap();
+    let guitar_level = |s: &Session| {
+        let mut l = Vec::new();
+        let range = scythe_core::TimeRange::new(0.0, 1.0);
+        scythe_engine::bounce::render_blocks(&s.project, &pool, range, rate, |b, _| l.extend_from_slice(b), |_| {})
+            .unwrap();
+        amplitude_at(&l[19_200..43_200], 1000.0, rate as f64)
+    };
+    let db = |a: f64, b: f64| 20.0 * (a / b).log10();
+
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": true}));
+    let alone = guitar_level(&s);
+    assert!(alone > 0.01, "{alone}");
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": false}));
+    let keyed = guitar_level(&s);
+    assert!(db(keyed, alone).abs() < 0.1, "the piano on 3/4 leaks into the mix: {alone} {keyed}");
+    ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 1}));
+    assert!(db(guitar_level(&s), alone) > 6.0, "on 1/2 the piano plays");
+    ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 3}));
+
+    ok(&mut s, json!({"cmd": "fx.add", "track": guitar, "plugin": "builtin:scythe-eq"}));
+    let band = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": guitar, "index": 0, "shape": "bell", "freq": 1000.0, "gain_db": 0.0,
+               "q": 1.0, "dynamic": "dynamic", "range_db": -12.0, "threshold_db": -30.0,
+               "external_sidechain": true}),
+    );
+    assert_eq!(band["external_sidechain"], true);
+    let ducked = db(guitar_level(&s), alone);
+    assert!((ducked + 12.0).abs() < 1.0, "the piano dips the guitar by the band's range: {ducked}");
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": true}));
+    let open = db(guitar_level(&s), alone);
+    assert!(open.abs() < 0.3, "without the piano the band stays put: {open}");
+    std::fs::remove_dir_all(&dir).ok();
+}

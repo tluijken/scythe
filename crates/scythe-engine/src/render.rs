@@ -3129,6 +3129,32 @@ mod tests {
         assert!((l[5] - 0.1).abs() < 1e-6 && (r[5] - 0.2).abs() < 1e-6, "{} {}", l[5], r[5]);
     }
 
+    #[test]
+    fn sends_land_on_their_destination_channels() {
+        // A sends into channels 3/4 of a 4-channel bus, whose own 1/2 stay silent; the bus
+        // sends its 3/4 on to a stereo track.
+        let mut p = project_with_item(0.0, 1.0);
+        let (a, bus, out) = (p.tracks[0].id, p.add_track("bus"), p.add_track("out"));
+        let t = p.track_mut(a).unwrap();
+        t.main_send = false;
+        t.sends.push(Send { dst_channels: 2, ..Send::new(bus) });
+        let b = p.track_mut(bus).unwrap();
+        b.channels = 4;
+        b.sends.push(Send { src_channels: 2, ..Send::new(out) });
+        let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(close(l[5], 0.4) && close(r[5], 0.2), "{l:?} {r:?}");
+
+        p.track_mut(out).unwrap().muted = true;
+        let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(l.iter().chain(&r).all(|s| *s == 0.0), "{l:?} {r:?}");
+
+        // Mixed down to mono, only channel 4 gets it.
+        p.track_mut(out).unwrap().muted = false;
+        p.track_mut(a).unwrap().sends[0].dst_channels = 1024 + 3;
+        let (l, r) = render(&graph_with(&p, stereo()), 0, 10);
+        assert!(l[5] == 0.0 && r[5] > 0.0, "{l:?} {r:?}");
+    }
+
     fn stereo() -> AudioData {
         AudioData { sample_rate: 100, channels: vec![vec![0.4; 100], vec![0.2; 100]] }
     }

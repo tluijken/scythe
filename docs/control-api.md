@@ -220,6 +220,7 @@ or `none`, with `reason` saying why.
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
 | `track.new_folder` | `tracks`, `name?` | the new folder: REAPER's "Move tracks to new folder" puts it where the first track was and the tracks (with their children) inside |
 | `track.collapse` | `track`, `compact?` (0 normal, 1 small, 2 collapsed: `I_FOLDERCOMPACT`), `mixer?` (hide the children in the mixer) | the track; with neither it cycles 0, 1, 2 as "Track: Cycle folder collapsed state". Not an undo step, as in REAPER |
+| `track.channels` | `track` (or `"master"`), `channels` (even, 2-128) | the track: its channel count, REAPER's `NCHAN`. Channels 3/4 are the sidechain (auxiliary) input of its effects |
 
 ### Recording and lanes
 
@@ -267,6 +268,7 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 | `send.mute` | `track`, `send`, `muted?` | the send |
 | `send.mode` | `track`, `send`, `mode?` (`post_fader`, `pre_fx`, `post_fx`), `mono?`, `phase?` | the send |
 | `send.midi` | `track`, `send`, any of `enabled`, `audio` (false makes a MIDI-only send), `src_channel`, `dst_channel`, `src_bus`, `dst_bus` (1-16; 0 is all for sources and unchanged for destinations), `faders` | the send; its `midi` field (null without MIDI) and `audio` show the same, stored as REAPER's `I_MIDIFLAGS` |
+| `send.channels` | `track`, `send`, any of `src` (first source channel, from 1), `src_count` (1, 2 or an even number up to 64), `dst` (first destination channel on the receiving track, from 1), `dst_mono` (mix down to the one channel `dst`) | the send; stored as REAPER's `I_SRCCHAN` / `I_DSTCHAN`. Both ends must fit the tracks' channel counts (`track.channels` adds more) |
 | `send.hw_list` | `track` (or `"master"`) | the hardware outputs |
 | `send.hw_add` | `track`, `output?` (device output from 0; the next free one when left out), `mono?` | the new output |
 | `send.hw_remove` | `track`, `hw` | the remaining outputs |
@@ -274,6 +276,18 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 
 `track.main_send` (`track`, `on?`) turns a track's feed to its parent or the master on or off;
 a bus that only plays through hardware outputs has it off.
+
+Send entries (in `send.list` and track snapshots) carry the audio routing as `src`, `src_count`, `dst`
+and `dst_mono` (channels from 1; `src` is null for a MIDI-only send). A sidechain: give the
+receiving track four channels and send into 3/4, where its effects (a Scythe EQ band with
+`external_sidechain`, a compressor's detector) listen without the key reaching the track's own
+1/2:
+
+```json
+{"cmd": "track.channels", "track": "Guitar bus", "channels": 4}
+{"cmd": "send.add", "track": "Piano", "dest": "Guitar bus"}
+{"cmd": "send.channels", "track": "Piano", "send": 0, "dst": 3}
+```
 
 ### Monitor mixes
 
@@ -890,7 +904,8 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
     "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "folder_compact": 0, "mixer_collapsed": false, "channels": 2,
     "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
     "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
-               "mode": "post_fader", "mono": false, "phase": false}],
+               "mode": "post_fader", "mono": false, "phase": false, "audio": true,
+               "src": 1, "src_count": 2, "dst": 1, "dst_mono": false, "midi": null}],
     "main_send": true,
     "hw_outs": [{"index": 0, "output": 2, "mono": false, "label": "Out 3/4", "mode": "post_fader",
                  "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false, "phase": false}],
