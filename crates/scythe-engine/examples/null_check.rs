@@ -44,7 +44,7 @@ fn main() {
             }
         };
         let settings = RenderSettings::from_project(&project);
-        let rate = settings.sample_rate.or(project.sample_rate).unwrap_or(48_000);
+        let rate = settings.render_rate(&project);
         let Ok(jobs) = settings.jobs(&project, &RenderSelection::saved(&project), 0) else { continue };
         let several = jobs.len() > 1;
         let pool = MediaPool::with_resample(settings.resample);

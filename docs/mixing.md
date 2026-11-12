@@ -39,8 +39,9 @@ again, and let the band judge by ear. Numbers find problems; they do not decide 
 | Masking | solo-render each instrument group, then per 100 ms and third-octave band the share of time a group's important bands lie more than 3 dB under another group's | Shows who buries whom, and where (bass over guitars in 160-400 Hz, snare crack under guitars and cymbals in 2.5-4 kHz). Frame averages understate short transients like a snare hit |
 
 `analysis.mix` spectra are normalised: compare shapes and use LUFS for level. A measurement
-renders from the start of its range, without the tails of what played before it. Read a
-render's sample rate from the file header before indexing samples by time.
+renders from the start of its range, without the tails of what played before it. Renders and
+measurements run at the render settings' rate (`render.settings` `sample_rate`), else the
+project's (44.1 kHz when it sets none), whatever rate the audio device runs at.
 
 ## Master and loudness
 

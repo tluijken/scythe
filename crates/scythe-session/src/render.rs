@@ -28,7 +28,7 @@ pub fn render_project(project: &Project, selection: &RenderSelection) -> Result<
         eprintln!("note: the project renders to the {id} format; writing 24-bit WAV instead");
     }
     let encoding = Encoding::from_format(&settings.format);
-    let rate = encoding.sample_rate().or(settings.sample_rate).or(project.sample_rate).unwrap_or(48_000);
+    let rate = render_rate(&settings, project);
     let pool = load_media(project, rate, settings.resample);
     let mut written = Vec::new();
     for job in jobs {
@@ -53,6 +53,12 @@ pub fn render_project(project: &Project, selection: &RenderSelection) -> Result<
         written.push(job.path);
     }
     Ok(written)
+}
+
+/// The rate `settings` render `project` at: the format's fixed rate (CD images), else the render
+/// settings' or the project's, never the audio device's.
+pub fn render_rate(settings: &RenderSettings, project: &Project) -> u32 {
+    Encoding::from_format(&settings.format).sample_rate().unwrap_or_else(|| settings.render_rate(project))
 }
 
 /// Loads every file the project's items play, at `rate`.

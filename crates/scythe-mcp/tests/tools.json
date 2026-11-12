@@ -9992,7 +9992,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "The files the project's render settings write now, with their time spans and what each\nplays; nothing is rendered.\n\nControl API command `render.jobs`.",
+    "description": "The files the project's render settings write now, with their time spans, what each\nplays and the sample rate; nothing is rendered.\n\nControl API command `render.jobs`.",
     "inputSchema": {
       "properties": {},
       "type": "object"
@@ -10038,6 +10038,16 @@
           "description": "File name pattern with wildcards such as `$project`, `$track`, `$region`,\n`$regionnumber`, `$item`.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "sample_rate": {
+          "default": null,
+          "description": "Sample rate in Hz (REAPER's `RENDER_SRATE`); 0 renders at the project's rate.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
