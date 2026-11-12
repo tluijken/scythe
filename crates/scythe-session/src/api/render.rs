@@ -192,6 +192,7 @@ pub fn execute(session: &mut Session, command: RenderCommand) -> Result<Value, A
             Ok(super::done())
         }
         RenderCommand::Project => {
+            session.store_plugin_states();
             let project = session.project.clone();
             let selection = session.render_selection();
             let tx = session.loader_tx.clone();

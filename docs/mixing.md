@@ -161,10 +161,8 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
   item; re-import instead. Check a project with
   `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
 - `track.phase` toggles unless given `"phase": true|false`.
-- The first `fx.param` write to a CLAP plugin after a pause can be ignored: write until the
-  answer shows the value. Many LSP parameters are normalised 0..1 (find values by bisecting on
-  the answer's text); gains and thresholds use real units. Save before rendering after plugin
-  changes.
+- Many LSP parameters are normalised 0..1 (find values by bisecting on the answer's text);
+  gains and thresholds use real units.
 - LSP Filter's "APO" filter mode ignores width and slope.
 - NAM rigs give a short burst at the start of every render; keep the guitar and bass buses
   muted for the first few tenths of a second with a volume envelope.

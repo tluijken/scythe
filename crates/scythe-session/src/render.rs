@@ -114,7 +114,8 @@ impl Session {
 
     /// Adds the project, as it is now, to the render queue in `dir` (REAPER's `QueuedRenders`
     /// when left out), with the file names `selection` gives it. Returns the queued copy.
-    pub fn queue_render(&self, dir: Option<&Path>, selection: &RenderSelection) -> Result<PathBuf, String> {
+    pub fn queue_render(&mut self, dir: Option<&Path>, selection: &RenderSelection) -> Result<PathBuf, String> {
+        self.store_plugin_states();
         let dir = dir.map(Path::to_owned).or_else(render_queue::default_dir).ok_or("no folder for the render queue")?;
         let settings = RenderSettings::from_project(&self.project);
         let jobs = settings.jobs(&self.project, selection, unix_now())?;
