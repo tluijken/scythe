@@ -1190,11 +1190,12 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` is left out.\n\nControl API command `track.phase`.",
+    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` (or `invert`) is left out.\n\nControl API command `track.phase`.",
     "inputSchema": {
       "properties": {
         "phase": {
           "default": null,
+          "description": "True inverts, false restores the polarity.",
           "type": [
             "boolean",
             "null"

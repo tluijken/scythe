@@ -158,7 +158,8 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
   muted, and keep them after the overlap is gone. Do not stack muted alternatives on an active
   item; re-import instead. Check a project with
   `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
-- `track.phase` toggles unless given `"phase": true|false`.
+- `track.phase` toggles unless given `"phase"` (or `"invert"`) `true|false`; like most
+  commands it ignores fields it does not know, so a misspelt field toggles too. Read the answer.
 - The first `fx.param` write to a CLAP plugin after a pause can be ignored: write until the
   answer shows the value. Many LSP parameters are normalised 0..1 (find values by bisecting on
   the answer's text); gains and thresholds use real units. Save before rendering after plugin

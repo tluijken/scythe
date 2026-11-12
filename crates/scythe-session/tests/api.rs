@@ -2051,3 +2051,19 @@ fn eq_band_with_a_free_band_number_adds_that_band() {
     assert_eq!(err.kind, ErrorKind::Invalid);
     assert!(err.to_string().contains("0, 5"), "{err}");
 }
+
+#[test]
+fn track_phase_sets_with_invert_too() {
+    let mut s = session();
+    let t = add_track(&mut s, "Bass");
+    for _ in 0..2 {
+        let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "invert": false}));
+        assert_eq!(info["phase"], false);
+    }
+    for _ in 0..2 {
+        let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "invert": true}));
+        assert_eq!(info["phase"], true);
+    }
+    let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "phase": false}));
+    assert_eq!(info["phase"], false);
+}

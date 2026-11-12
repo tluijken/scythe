@@ -88,7 +88,8 @@ arguments. Fields shown with `?` may be left out.
 track's exact name (a string), or `"master"` where the master makes sense (volume, pan, mute,
 effects). **Levels** are given as `volume` (gain, 1.0 = 0 dB, capped at +24 dB) or `db`. **Pan**
 runs from -1 (left) to 1 (right). Times are in seconds. Flags (`muted`, `solo`, `armed`,
-`monitor`, `bypassed`) toggle when left out.
+`monitor`, `bypassed`) toggle when left out. Fields a command does not know are ignored, so a
+misspelt flag toggles: read the answer to see the state.
 
 Continuous controls (track and send volume and pan, item volume) fold repeated changes of the
 same control within a second into one undo step, so a fader dragged on a tablet is undone in
@@ -208,7 +209,7 @@ or `none`, with `reason` saying why.
 | `track.mute` | `track`, `muted?` | the track; mute groups follow |
 | `track.solo` | `track`, `solo?`, `mode?` (`"in_place"`, the default, or `"ignore_routing"`) | the track; solo groups follow |
 | `track.solo_defeat` | `track`, `on?` | solo defeat: the track stays heard while others are soloed (monitor mixes have it) |
-| `track.phase` | `track`, `phase?` | polarity, inverted at the fader (post-fader sends follow, pre-fader and pre-FX sends do not); polarity groups follow |
+| `track.phase` | `track`, `phase?` (or `invert?`; toggles when both are left out) | polarity, inverted at the fader (post-fader sends follow, pre-fader and pre-FX sends do not); polarity groups follow |
 | `track.pan_mode` | `track`, `mode` (`"balance"`, `"classic"`, `"stereo"`, `"dual"` or `null` for the project default) | the track |
 | `track.width` | `track`, `width` (-1 to 1) | the track; width groups follow |
 | `track.dual_pan` | `track`, `left`, `right` (-1 to 1) | the track: where dual pan puts each channel |
