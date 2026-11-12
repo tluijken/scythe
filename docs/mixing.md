@@ -154,10 +154,10 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 
 ## Pitfalls in Scythe (as of November 2026)
 
-- Items that overlap on one track get auto-crossfades over the whole overlap, even when one is
-  muted, and keep them after the overlap is gone. Do not stack muted alternatives on an active
-  item; re-import instead. Check a project with
-  `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
+- Items that overlap on one track crossfade over the whole overlap, even when one is muted:
+  do not stack muted alternatives on an active item, put them on another track. A
+  crossfade ends when the overlap does; `item.fade` with `"auto_length": 0` clears one by hand.
+  Check a project with `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
 - `track.phase` toggles unless given `"phase"` (or `"invert"`) `true|false`; like most
   commands it ignores fields it does not know, so a misspelt field toggles too. Read the answer.
 - The first `fx.param` write to a CLAP plugin after a pause can be ignored: write until the

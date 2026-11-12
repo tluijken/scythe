@@ -1400,26 +1400,29 @@ impl Project {
     /// Sets the automatic fade lengths on a track from item overlaps, while auto-crossfade is
     /// on: overlapping neighbours crossfade over the overlap, other items lose their automatic
     /// fades. A new crossfade takes REAPER's default crossfade shape (equal power) and a fade
-    /// that stops crossfading goes back to the default fade shape, as REAPER 7.73 does.
+    /// that stops crossfading goes back to the default fade shape, as REAPER 7.73 does. With
+    /// auto-crossfade off no crossfade is made, but one whose overlap is gone still ends.
     pub fn auto_crossfade(&mut self, track: TrackId) {
-        if !self.editing.auto_crossfade {
-            return;
-        }
+        let on = self.editing.auto_crossfade;
         let Some(t) = self.track_mut(track) else { return };
         let mut order: Vec<usize> = (0..t.items.len()).collect();
         order.sort_by(|&a, &b| t.items[a].position.total_cmp(&t.items[b].position));
         let before: Vec<(bool, bool)> =
             t.items.iter().map(|it| (it.fade_in.auto_length > 0.0, it.fade_out.auto_length > 0.0)).collect();
-        for it in &mut t.items {
-            it.fade_in.auto_length = 0.0;
-            it.fade_out.auto_length = 0.0;
-        }
+        let mut overlaps = vec![(0.0, 0.0); t.items.len()];
         for w in order.windows(2) {
             let (a, b) = (w[0], w[1]);
             let overlap = t.items[a].end().min(t.items[b].end()) - t.items[b].position;
             if overlap > 0.0 && t.items[a].ypos == t.items[b].ypos {
-                t.items[a].fade_out.auto_length = overlap;
-                t.items[b].fade_in.auto_length = overlap;
+                overlaps[a].1 = overlap;
+                overlaps[b].0 = overlap;
+            }
+        }
+        for (it, (over_in, over_out)) in t.items.iter_mut().zip(overlaps) {
+            for (fade, overlap) in [(&mut it.fade_in, over_in), (&mut it.fade_out, over_out)] {
+                if on || overlap <= 0.0 {
+                    fade.auto_length = overlap;
+                }
             }
         }
         for (it, (had_in, had_out)) in t.items.iter_mut().zip(before) {
@@ -1525,7 +1528,8 @@ impl Project {
         }
     }
 
-    /// Moves an item to another track, keeping its id.
+    /// Moves an item to another track, keeping its id; both tracks' automatic crossfades
+    /// follow.
     pub fn move_item_to_track(&mut self, item: ItemId, dest: TrackId) -> bool {
         let Some(src_idx) = self.tracks.iter().position(|t| t.item(item).is_some()) else {
             return false;
@@ -1539,6 +1543,9 @@ impl Project {
         let pos = self.tracks[src_idx].items.iter().position(|i| i.id == item).unwrap();
         let it = self.tracks[src_idx].items.remove(pos);
         self.tracks[dest_idx].items.push(it);
+        let src = self.tracks[src_idx].id;
+        self.auto_crossfade(src);
+        self.auto_crossfade(dest);
         true
     }
 
@@ -1704,6 +1711,15 @@ mod tests {
         let items = &p.track(t).unwrap().items;
         assert_eq!((items[0].fade_out.auto_length, items[1].fade_in.auto_length), (0.5, 0.5));
         assert_eq!((items[1].fade_out.auto_length, items[2].fade_in.auto_length), (0.0, 0.0));
+
+        p.editing.auto_crossfade = false;
+        let b = p.track(t).unwrap().items[1].id;
+        let other = p.add_track("other");
+        p.move_item_to_track(b, other);
+        let a = &p.track(t).unwrap().items[0];
+        assert_eq!((a.fade_out.auto_length, a.fade_out.api_shape()), (0.0, 1));
+        p.move_item_to_track(b, t);
+        assert_eq!(p.track(t).unwrap().items[0].fade_out.auto_length, 0.0, "auto-crossfade off makes none");
     }
 
     #[test]

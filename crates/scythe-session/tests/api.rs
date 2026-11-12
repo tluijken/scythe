@@ -2108,3 +2108,67 @@ fn deleting_a_track_keeps_the_folders_around_it() {
     assert_eq!(parents(&s), named(&[("Lead", None), ("FX", None)]));
     assert!(s.project.tracks.iter().all(|t| t.folder_depth == 0));
 }
+
+/// Peak of the mix between `from` and `to` seconds.
+fn mix_peak(s: &Session, pool: &MediaPool, from: f64, to: f64) -> f32 {
+    let mut peak = 0.0f32;
+    let range = scythe_core::TimeRange::new(from, to);
+    scythe_engine::bounce::render_blocks(
+        &s.project,
+        pool,
+        range,
+        48_000,
+        |l, _| peak = l.iter().fold(peak, |m, v| m.max(v.abs())),
+        |_| {},
+    )
+    .unwrap();
+    peak
+}
+
+#[test]
+fn auto_crossfades_go_when_the_overlap_goes() {
+    let dir = std::env::temp_dir().join(format!("scythe-xfade-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("dc.wav");
+    write_wav(&wav, 48_000, &vec![0.5; 4 * 48_000]);
+    let pool = MediaPool::default();
+    pool.load(&wav, 48_000).unwrap();
+
+    let mut s = session();
+    let vox = add_track(&mut s, "Vox");
+    let alt = add_track(&mut s, "Alt");
+    let item = |s: &mut Session, track: usize| {
+        let it = Item::new(0.0, 4.0, Take::from_file(wav.clone()));
+        let id = it.id.0;
+        s.project.tracks[track].items.push(it);
+        id
+    };
+    let fades = |s: &Session, id: u64| {
+        let (_, it) = s.project.find_item(scythe_core::ItemId(id)).unwrap();
+        (it.fade_in.auto_length, it.fade_out.auto_length)
+    };
+
+    let keep = item(&mut s, 0);
+    let muted = item(&mut s, 0);
+    ok(&mut s, json!({"cmd": "item.mute", "item": muted, "muted": true}));
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "position": 1.0}));
+    assert_eq!(fades(&s, keep).1, 3.0);
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "track": alt}));
+    assert_eq!(fades(&s, keep), (0.0, 0.0), "moving the item away ends the crossfade");
+    assert!(mix_peak(&s, &pool, 3.5, 3.9) > 0.49);
+
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "track": vox}));
+    assert_eq!(fades(&s, keep).1, 3.0);
+    ok(&mut s, json!({"cmd": "project.editing", "auto_crossfade": false}));
+    ok(&mut s, json!({"cmd": "item.delete", "item": muted}));
+    assert_eq!(fades(&s, keep), (0.0, 0.0), "deleting the item ends the crossfade, auto-crossfade off too");
+    assert!(mix_peak(&s, &pool, 3.5, 3.9) > 0.49);
+
+    s.project.tracks[0].items[0].fade_out.auto_length = 2.0;
+    let f = ok(&mut s, json!({"cmd": "item.fade", "item": keep, "fade": "out", "auto_length": 0.0}));
+    assert_eq!(f["auto_length"], 0.0);
+    assert_eq!(fades(&s, keep), (0.0, 0.0));
+    let f = ok(&mut s, json!({"cmd": "item.fade", "item": keep, "fade": "in", "auto_length": 0.5}));
+    assert_eq!(f["auto_length"], 0.5);
+    std::fs::remove_dir_all(&dir).ok();
+}

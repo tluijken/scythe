@@ -417,7 +417,9 @@ Items are named by their `id` from a snapshot or `item.list`.
 ### Editing
 
 These follow the project's editing settings as REAPER's actions do: ripple mode, item groups,
-locks and auto-crossfade. Items are lists of ids.
+locks and auto-crossfade. Items are lists of ids. Items that overlap on a track crossfade over
+the overlap while auto-crossfade is on, muted items too; an edit that ends the overlap (moving,
+deleting, trimming an item) ends the crossfade, also with auto-crossfade off.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
@@ -430,7 +432,7 @@ locks and auto-crossfade. Items are lists of ids.
 | `item.group` / `item.ungroup` | `items` | `{"group"}` / the items |
 | `item.select_groups` | `items` | the ids with their group mates |
 | `item.nudge` | `items`, `value`, `what?` (`position`, `left_trim`, `left_edge`, `right_edge`, `contents`, `duplicate`, `edit_cursor`), `unit?` (REAPER's nudge units 0-21: ms, seconds, grid, notes 1/256 to whole, measures.beats, samples, frames, pixels, item lengths, item selections), `set?`, `snap?`, `reverse?`, `copies?` | the items to select afterwards (`{"cursor"}` for the edit cursor) |
-| `item.fade` | `item`, `fade` (`in`/`out`), `length?`, `shape?` (0-7, 7 equal power), `curve?`, `kind?` (REAPER's fade types 1-7) | the fade |
+| `item.fade` | `item`, `fade` (`in`/`out`), `length?`, `auto_length?` (the crossfade length, which overrides `length` while above 0; 0 clears it), `shape?` (0-7, 7 equal power), `curve?`, `kind?` (REAPER's fade types 1-7) | the fade |
 | `item.crossfade` | `items`, `start?` and `end?` (crossfade neighbours over that range, extending them), `kind?` (crossfade type 1-7 for items that already crossfade) | the items |
 | `item.transients` | `item`, `sensitivity?` (0-1, 0.5), `threshold_db?` (-24) | `{"transients"}` in project time |
 | `item.dynamic_split` | `items`, `sensitivity?`, `threshold_db?`, `min_length?` | the pieces |
