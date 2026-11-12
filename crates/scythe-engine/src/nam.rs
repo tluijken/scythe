@@ -383,7 +383,7 @@ impl NamModel {
             .map(|a| a.config.channels.max(a.config.head_size).max(a.config.input_size))
             .max()
             .unwrap_or(1);
-        Ok(Self {
+        let mut model = Self {
             arrays,
             head_scale,
             input: vec![0.0; widest * BLOCK],
@@ -392,15 +392,39 @@ impl NamModel {
             head_out: vec![0.0; widest * BLOCK],
             sample_rate: file.sample_rate,
             loudness: file.metadata.and_then(|m| m.loudness),
-        })
+        };
+        model.reset();
+        Ok(model)
     }
 
+    /// Forgets the input heard so far, leaving the state a long silence leaves, as NAM's
+    /// prewarm does: a model fed silence answers with its silent output from the first frame,
+    /// where empty layer histories would give a burst as long as its receptive field.
     pub fn reset(&mut self) {
         for a in &mut self.arrays {
             for b in &mut a.inbufs {
                 b.fill(0.0);
             }
             a.heads.clone_from(&a.backs);
+        }
+        // Silence keeps every layer's input constant, and a layer settles one frame after the
+        // one before it has: a frame per layer, each history then filled with its layer's
+        // newest input, gets there without running a receptive field of silence.
+        let layers = self.arrays.iter().map(|a| a.layers.len()).sum::<usize>();
+        for _ in 0..layers {
+            self.process_block(&mut [0.0]);
+            for a in &mut self.arrays {
+                let ch = a.config.channels;
+                for (li, buf) in a.inbufs.iter_mut().enumerate() {
+                    let (back, newest) = (a.backs[li], a.heads[li] - 1);
+                    let stride = back + ROOM;
+                    for c in 0..ch {
+                        let settled = buf[c * stride + newest];
+                        buf[c * stride..c * stride + back].fill(settled);
+                    }
+                    a.heads[li] = back;
+                }
+            }
         }
     }
 
@@ -877,7 +901,7 @@ impl Effect for NamEffect {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1040,6 +1064,41 @@ mod tests {
         for (t, &y) in out.iter().enumerate().skip(200) {
             assert!((y - sine(t)).abs() < 1e-6, "frame {t}: {y} vs {}", sine(t));
         }
+    }
+
+    /// A model that answers silence with silence once its layers have heard it, but whose
+    /// second layer starts from an empty history that differs from the silent state: unwarmed,
+    /// it gives -0.5 for the first 2000 frames of silence.
+    pub(crate) const SETTLING_MODEL: &str = r#"{"architecture": "WaveNet",
+        "config": {"layers": [{"input_size": 1, "condition_size": 1, "head_size": 1, "channels": 1,
+          "kernel_size": 2, "dilations": [1, 2000], "activation": "Hardtanh", "gated": false, "head_bias": false}],
+          "head_scale": 1.0},
+        "weights": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]}"#;
+
+    /// As NAM prewarms a model on load and reset, silence comes out silent from the first
+    /// frame, after a reset too.
+    #[test]
+    fn silence_stays_silent_from_the_first_frame() {
+        let rate = 48_000;
+        let model = NamModel::from_json(SETTLING_MODEL.as_bytes()).unwrap();
+        let mut fx = NamEffect::with_model(model, 0.0, 0.0, rate);
+        let ctx = context(rate);
+        let peak = |fx: &mut NamEffect| {
+            let mut peak = 0.0f32;
+            for _ in 0..8 {
+                let (mut left, mut right) = (vec![0.0f32; 512], vec![0.0f32; 512]);
+                fx.process(&mut left, &mut right, &ctx);
+                peak = left.iter().chain(&right).fold(peak, |m, s| m.max(s.abs()));
+            }
+            peak
+        };
+        let from_load = peak(&mut fx);
+        assert!(from_load < 1e-6, "from load: {from_load}");
+        let (mut left, mut right) = (vec![0.3f32; 4096], vec![0.3f32; 4096]);
+        fx.process(&mut left, &mut right, &ctx);
+        fx.reset();
+        let after_reset = peak(&mut fx);
+        assert!(after_reset < 1e-6, "after a reset: {after_reset}");
     }
 
     #[test]

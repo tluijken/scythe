@@ -39,8 +39,8 @@ again, and let the band judge by ear. Numbers find problems; they do not decide 
 | Masking | solo-render each instrument group, then per 100 ms and third-octave band the share of time a group's important bands lie more than 3 dB under another group's | Shows who buries whom, and where (bass over guitars in 160-400 Hz, snare crack under guitars and cymbals in 2.5-4 kHz). Frame averages understate short transients like a snare hit |
 
 `analysis.mix` spectra are normalised: compare shapes and use LUFS for level. A measurement
-renders from the start of its range, so whatever happens at render start lands in it (see
-pitfalls). Read a render's sample rate from the file header before indexing samples by time.
+renders from the start of its range, without the tails of what played before it. Read a
+render's sample rate from the file header before indexing samples by time.
 
 ## Master and loudness
 
@@ -166,8 +166,6 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
   the answer's text); gains and thresholds use real units. Save before rendering after plugin
   changes.
 - LSP Filter's "APO" filter mode ignores width and slope.
-- NAM rigs give a short burst at the start of every render; keep the guitar and bass buses
-  muted for the first few tenths of a second with a volume envelope.
 - Recalling a rig snapshot replaces unsaved changes to the live rig: store first.
 - Deleting or adding tracks can shift folder depths and pull returns into a folder (a send from
   a folder to its own child): check the tree, and check that muting a bus changes the master.
