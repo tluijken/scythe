@@ -331,6 +331,7 @@ pub const CURATED: &[&str] = &[
     "analysis_mix",
     "analysis_compare",
     "analysis_match_eq",
+    "analysis_masking",
     "analysis_segments",
     "events_since",
     "events_meters",

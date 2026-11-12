@@ -127,10 +127,10 @@ pub fn activity(session: &Session, calls: usize) -> Activity {
 /// sensible answer too. MCP tools are annotated read-only by it, and the pause lets these
 /// through.
 pub fn reads_only(cmd: &str) -> bool {
-    const READS: [&str; 25] = [
+    const READS: [&str; 26] = [
         "list", "get", "state", "status", "catalog", "params", "snapshot", "search", "info", "songs", "export", "show",
         "peaks", "health", "devices", "evaluate", "since", "meters", "probe", "job", "compare", "file", "mix",
-        "whoami", "activity",
+        "whoami", "activity", "masking",
     ];
     if cmd == "script.run" {
         return false;

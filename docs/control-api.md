@@ -817,6 +817,7 @@ range, so a reference is measured once; nothing leaves the machine.
 | `analysis.compare` | `reference`, `mix`: each a subject | `{"reference", "mix"}` (the measurements without bands) and `comparison` |
 | `analysis.match_eq` | `reference`, `mix`, `apply?` (track or `"master"`), `max_bands?` (6, at most 12), `max_gain_db?` (6, at most 12), `min_hz?`, `max_hz?` (30 to 16000) | `{"bands": [{"kind", "freq", "gain_db", "bandwidth"}], "max_error_before_db", "max_error_after_db", "rms_error_before_db", "rms_error_after_db", "curve": [{"hz", "target_db", "eq_db"}], "dynamics", "loudness_lufs", "true_peak_dbtp"}` |
 | `analysis.apply_eq` | `track`, `bands` (as `match_eq` gives them; gains within ±12 dB) | not a job: adds a ReaEQ with these bands at the end of the chain, one undo step (`Match EQ`): `{"track", "fx_index", "bands"}` |
+| `analysis.masking` | `groups?` (name to a list of tracks by id or name; a listed folder or bus brings what feeds it; by default every track with items is grouped under the top-level track, folder or bus, through which it reaches the master), `start?`, `end?` (project time; the whole project by default), `margin_db?` (3), `importance_db?` (12), `frame_ms?` (100) | `{"frame_ms", "margin_db", "importance_db", "duration", "bands_hz", "pairs": [{"buried", "by", "region", "from_hz", "to_hz", "share_pct", "together_seconds", "buried_seconds", "longest": {"start", "end"}}], "pairs_left_out", "groups": [{"name", "tracks", "plays_seconds", "level_db"}], "summary"}`; see below |
 | `analysis.segments` | `path` or `item` (its active take's file, in project time), `threshold_db?` (-50), `min_silence?` (2 s), `min_length?` (5 s), `markers?`, `name?` ("Song") | `{"duration", "segments": [{"start", "end", "length", "peak_db", "loudness_lufs", "onsets", "bpm"}], "ignored", "markers": [{"position", "name"}], "added"}`; the proposed markers are a song marker at each start and a `!1016` stop marker just after each end; with `markers` they are added as one undo step (`Song markers`) at once, without a job |
 
 A subject is `{"job": n}` (a finished `analysis.file` or `analysis.mix`), `{"file": path,
@@ -845,6 +846,36 @@ same design) greedily, then refines their gains together, stopping when what is 
 `loudness_gap_lu`, `limiter_drive_db` (at most 6 dB per step), `limiter_ceiling_db` (-1 to -2
 dBTP), a `compressor` (`ratio`, `attack_ms`, `release_ms`, `target_reduction_db`) when the mix's
 peak-to-loudness ratio is more than 3 dB above the reference's, and `notes`.
+
+`masking` renders each group offline on its own, soloed in place as REAPER does it: through
+the group's folders, sends and buses and the master chain, with the other tracks' material
+silent and the project's own solos set aside. Each render is cut into frames of `frame_ms` and
+measured in third octaves from 40 Hz to 10 kHz (both channels' mean power). In a frame where
+both play (loudest band above -60 dBFS and no more than 24 dB under the group's loud frames, its
+95th percentile, so bleed through a closed gate or a tail does not count), a group's important
+bands in a region are those no more than `importance_db` under its own loudest band; it is
+buried there when the other group is more than `margin_db` louder in at least half of them.
+Regions: low (40-125 Hz), low mids (160-400 Hz), mids (500 Hz-2 kHz), presence (2.5-5 kHz),
+highs (6.3-10 kHz). Each pair and region reports `share_pct`, the share of the frames where
+both play and the buried group has important bands there (`together_seconds`), and the longest
+unbroken buried stretch; pairs together under a second or buried under 5% of that time are left
+out, and the rest come most significant first (share weighted by the square root of the time
+together), at most 50 of them (`pairs_left_out` counts the rest). `groups` gives each group's
+tracks, how long it plays and its average level per band of `bands_hz` while it plays (dBFS). `summary` names the buryings above 25%. Groups render in parallel on up to half
+the processor cores. Frame averages understate short transients (a snare hit is mostly a
+frame of its own decay), and a master compressor or limiter reacts to each group alone, not to
+the full mix.
+
+```json
+{"cmd": "analysis.masking", "groups": {"snare": ["Snare Top", "Snare Bottom"], "guitars": ["Gtr Bus"], "bass": ["Bass Bus"]}}
+```
+
+answers (once the job is done) a `result` such as `{"duration": 301.7, "pairs": [{"buried": "snare",
+"by": "guitars", "region": "presence (2.5-5 kHz)", "from_hz": 2500, "to_hz": 5000, "share_pct":
+94.49, "together_seconds": 94.4, "buried_seconds": 89.2, "longest": {"start": 290.7, "end":
+291.4}}, …], "groups": [{"name": "bass", "tracks": ["Bass Bus"], "plays_seconds": 253.3,
+"level_db": [-31.2, …]}, …], "summary": ["guitars buries snare in the presence (2.5-5 kHz) 94%
+of the 94 s they play together (longest 290.7-291.4 s)", …]}`.
 
 ### Events for polling
 

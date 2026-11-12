@@ -533,6 +533,7 @@ pub fn summarize(project: &Project, tool: &str, cmd: Option<&str>, arguments: &V
         "analysis.mix" => Some("Measure the mix".into()),
         "analysis.compare" => Some("Compare the mix with a reference".into()),
         "analysis.match_eq" => Some(format!("Match EQ on {t}")),
+        "analysis.masking" => Some("Find which groups mask each other".into()),
         _ => None,
     };
     text.unwrap_or_else(|| compact(project, &cmd, args))

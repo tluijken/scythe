@@ -5,8 +5,9 @@
 //! this machine only, and their measurements kept (`analysis-cache` in Scythe's data folder),
 //! so measuring the same file again is instant.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ use scythe_core::render_settings::{RenderSettings, RenderSource, ResampleMode};
 use scythe_core::{Project, TimeRange};
 use scythe_engine::MediaPool;
 use scythe_engine::analysis::eq::{self, EqBand, EqKind, MatchOptions};
+use scythe_engine::analysis::masking::{self, Levels, MaskingOptions, Spectrogram};
 use scythe_engine::analysis::segments::{self, SegmentOptions};
 use scythe_engine::analysis::{self, Analysis, Analyzer};
 use serde::{Deserialize, Serialize};
@@ -169,6 +171,39 @@ pub enum AnalysisCommand {
     /// Adds a ReaEQ with these bands to a track's (or the master's) effects, as one undo step.
     #[serde(rename = "analysis.apply_eq")]
     ApplyEq { track: TrackRef, bands: Vec<Band> },
+    /// Finds which instrument groups bury each other, where in the spectrum and how often.
+    /// Renders each group offline on its own (soloed in place, so through its folders, sends,
+    /// buses and the master; nothing is heard), then per frame and third octave from 40 Hz to
+    /// 10 kHz counts a group as buried in a region when, in its important bands there (no
+    /// more than `importance_db` under its own loudest band), another group is more than
+    /// `margin_db` louder in at least half of them. Answers per pair and region the share of
+    /// the time they play together that one is buried (most significant first), each group's
+    /// average third-octave spectrum while it plays, and a summary in plain words.
+    #[serde(rename = "analysis.masking")]
+    Masking {
+        /// Group name to its tracks (ids or names), such as {"bass": ["Bass DI", "Bass Amp"],
+        /// "guitars": ["Gtr Bus"]}. A listed folder or bus brings what feeds it. When left
+        /// out, every track with items is grouped under the top-level track (folder or bus)
+        /// through which it reaches the master.
+        #[serde(default)]
+        groups: Option<BTreeMap<String, Vec<TrackRef>>>,
+        /// Project time to start at, in seconds; 0 when left out.
+        #[serde(default)]
+        start: Option<f64>,
+        /// Project time to end at; the project's end when left out.
+        #[serde(default)]
+        end: Option<f64>,
+        /// How much louder another group must be in a band to bury it (default 3 dB).
+        #[serde(default)]
+        margin_db: Option<f64>,
+        /// Bands within this many dB of a group's loudest band in a frame are important to it
+        /// (default 12).
+        #[serde(default)]
+        importance_db: Option<f64>,
+        /// Frame length in milliseconds (default 100).
+        #[serde(default)]
+        frame_ms: Option<f64>,
+    },
     /// Finds the songs in a backing-track or click file (or an item's file): sound between
     /// silences, with start and end, loudness and, for a click, the tempo. Proposes a song
     /// marker at each start and a `!1016` stop marker after each end; with `markers` it adds
@@ -358,21 +393,24 @@ impl Source {
 }
 
 impl Render {
-    fn measure(self) -> Result<Analysis, String> {
+    fn prepare(&self) -> Result<(), String> {
         for file in &self.files {
             self.pool.load(file, self.rate).map_err(|e| e.to_string())?;
         }
         self.pool.prepare_project(&self.project);
+        Ok(())
+    }
+
+    /// Renders `project`, the prepared one or a copy of it with other solos, into `sink`.
+    fn render(&self, project: &Project, sink: impl FnMut(&[f32], &[f32])) -> Result<(), String> {
+        scythe_engine::bounce::render_blocks(project, &self.pool, self.range, self.rate, sink, |_| {})
+            .map_err(|e| e.to_string())
+    }
+
+    fn measure(self) -> Result<Analysis, String> {
+        self.prepare()?;
         let mut analyzer = Analyzer::new(self.rate, 2);
-        scythe_engine::bounce::render_blocks(
-            &self.project,
-            &self.pool,
-            self.range,
-            self.rate,
-            |l, r| analyzer.push(l, r),
-            |_| {},
-        )
-        .map_err(|e| e.to_string())?;
+        self.render(&self.project, |l, r| analyzer.push(l, r))?;
         Ok(analyzer.finish())
     }
 }
@@ -408,6 +446,13 @@ fn mix_source(
             copy
         }
     };
+    render_setup(session, project, start, end).map(|r| Source::Render(Box::new(r)))
+}
+
+/// A render of `project` (derived from the session's) over `start` to `end`, the project's
+/// end by default, at the render settings' rate.
+fn render_setup(session: &Session, project: Project, start: Option<f64>, end: Option<f64>) -> Result<Render, ApiError> {
+    let p = &session.project;
     let start = start.unwrap_or(0.0).max(0.0);
     let end = end.unwrap_or_else(|| p.length());
     if end - start < 0.1 {
@@ -429,7 +474,176 @@ fn mix_source(
     } else {
         render_pool(rate, settings.resample)
     };
-    Ok(Source::Render(Box::new(Render { project, pool, rate, range: TimeRange::new(start, end), files })))
+    Ok(Render { project, pool, rate, range: TimeRange::new(start, end), files })
+}
+
+/// The groups `analysis.masking` compares, by name with their tracks' indices.
+type Groups = Vec<(String, Vec<usize>)>;
+
+fn named_groups(p: &Project, groups: &BTreeMap<String, Vec<TrackRef>>) -> Result<Groups, ApiError> {
+    let mut out = Vec::new();
+    for (name, tracks) in groups {
+        if tracks.is_empty() {
+            return Err(ApiError::invalid(format!("group \"{name}\" names no tracks")));
+        }
+        let mut members = Vec::new();
+        for t in tracks {
+            let id = t.track(p)?;
+            members.extend(p.tracks.iter().position(|t| t.id == id));
+        }
+        members.sort_unstable();
+        members.dedup();
+        out.push((name.clone(), members));
+    }
+    Ok(out)
+}
+
+/// Groups from the project's layout: every track with items belongs to the top-level track
+/// (a folder, a bus or itself) through which its signal reaches the master, following folder
+/// parents and, where a track does not send to its parent or the master, its first send.
+fn derived_groups(p: &Project) -> Groups {
+    let parents = p.folder_parents();
+    let index: HashMap<_, _> = p.tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
+    let outlet = |mut i: usize| -> Option<usize> {
+        let mut seen = vec![false; p.tracks.len()];
+        loop {
+            if std::mem::replace(&mut seen[i], true) {
+                return None;
+            }
+            let t = &p.tracks[i];
+            if t.main_send {
+                match parents[i] {
+                    Some(parent) => i = parent,
+                    None => return Some(i),
+                }
+            } else {
+                i = *t.sends.iter().filter(|s| !s.muted).find_map(|s| index.get(&s.dest))?;
+            }
+        }
+    };
+    let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (i, t) in p.tracks.iter().enumerate() {
+        if t.items.is_empty() {
+            continue;
+        }
+        let Some(top) = outlet(i) else { continue };
+        match groups.iter_mut().find(|(o, _)| *o == top) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((top, vec![i])),
+        }
+    }
+    groups.sort_by_key(|(top, _)| *top);
+    let mut named: Groups = Vec::new();
+    for (top, members) in groups {
+        let base = p.tracks[top].name.clone();
+        let mut name = if base.trim().is_empty() { format!("Track {}", top + 1) } else { base };
+        if named.iter().any(|(n, _)| *n == name) {
+            name = format!("{name} ({})", top + 1);
+        }
+        named.push((name, members));
+    }
+    named
+}
+
+/// Each group rendered on its own, soloed in place, and compared.
+struct MaskingJob {
+    render: Render,
+    groups: Groups,
+    options: MaskingOptions,
+}
+
+impl MaskingJob {
+    fn run(self) -> Result<Value, String> {
+        self.render.prepare()?;
+        let mut base = self.render.project.clone();
+        for t in &mut base.tracks {
+            (t.solo, t.solo_defeat) = (false, false);
+        }
+        // Half the cores at most, so live playback keeps its share.
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let workers = (cores / 2).clamp(1, self.groups.len());
+        let next = AtomicUsize::new(0);
+        let levels: Vec<Mutex<Option<Result<Levels, String>>>> = self.groups.iter().map(|_| Mutex::new(None)).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| {
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((_, members)) = self.groups.get(i) else { break };
+                        let mut project = base.clone();
+                        for &m in members {
+                            let t = &mut project.tracks[m];
+                            (t.solo, t.solo_mode) = (true, SoloMode::InPlace);
+                        }
+                        let mut spectrogram = Spectrogram::new(self.render.rate, self.options.frame_ms);
+                        let done = self.render.render(&project, |l, r| spectrogram.push(l, r));
+                        *levels[i].lock().unwrap() = Some(done.map(|_| spectrogram.finish()));
+                    }
+                });
+            }
+        });
+        let mut measured = Vec::new();
+        for ((name, _), l) in self.groups.iter().zip(levels) {
+            let l = l.into_inner().unwrap().ok_or("a group was not rendered")?;
+            measured.push((name.clone(), l.map_err(|e| format!("rendering {name}: {e}"))?));
+        }
+        let result = masking::analyse(&measured, self.render.range.start, self.options);
+        let mut answer = json(&result);
+        if let Some(groups) = answer["groups"].as_array_mut() {
+            for (g, (_, members)) in groups.iter_mut().zip(&self.groups) {
+                g["tracks"] = members.iter().map(|&m| self.render.project.tracks[m].name.clone()).collect();
+            }
+        }
+        Ok(answer)
+    }
+}
+
+fn masking_options(
+    margin_db: Option<f64>,
+    importance_db: Option<f64>,
+    frame_ms: Option<f64>,
+) -> Result<MaskingOptions, ApiError> {
+    let defaults = MaskingOptions::default();
+    let options = MaskingOptions {
+        margin_db: margin_db.unwrap_or(defaults.margin_db),
+        importance_db: importance_db.unwrap_or(defaults.importance_db),
+        frame_ms: frame_ms.unwrap_or(defaults.frame_ms),
+    };
+    if !(0.0..=40.0).contains(&options.margin_db) {
+        return Err(ApiError::invalid("margin_db runs from 0 to 40"));
+    }
+    if !(1.0..=60.0).contains(&options.importance_db) {
+        return Err(ApiError::invalid("importance_db runs from 1 to 60"));
+    }
+    if !(20.0..=1000.0).contains(&options.frame_ms) {
+        return Err(ApiError::invalid("frame_ms runs from 20 to 1000"));
+    }
+    Ok(options)
+}
+
+fn masking_job(
+    session: &mut Session,
+    groups: Option<&BTreeMap<String, Vec<TrackRef>>>,
+    start: Option<f64>,
+    end: Option<f64>,
+    options: MaskingOptions,
+) -> Result<MaskingJob, ApiError> {
+    session.store_plugin_states();
+    let groups = match groups {
+        Some(g) => named_groups(&session.project, g)?,
+        None => derived_groups(&session.project),
+    };
+    if groups.len() < 2 {
+        return Err(ApiError::invalid(match groups.first() {
+            None => "no groups to compare: give \"groups\", or add items first".to_owned(),
+            Some((name, _)) => format!("only one group ({name}): give at least two in \"groups\""),
+        }));
+    }
+    let render = render_setup(session, session.project.clone(), start, end)?;
+    if render.range.length() < 2.0 * options.frame_ms / 1000.0 {
+        return Err(ApiError::invalid("the range is shorter than two frames"));
+    }
+    Ok(MaskingJob { render, groups, options })
 }
 
 /// Media decoded at `rate` for measurements that do not run at the engine's rate, whose pool
@@ -670,6 +884,11 @@ pub fn execute(session: &mut Session, command: AnalysisCommand) -> Result<Value,
         AnalysisCommand::ApplyEq { track, bands } => {
             let bands: Vec<EqBand> = bands.into_iter().map(EqBand::from).collect();
             apply_bands(session, &track, &bands)
+        }
+        AnalysisCommand::Masking { groups, start, end, margin_db, importance_db, frame_ms } => {
+            let options = masking_options(margin_db, importance_db, frame_ms)?;
+            let job = masking_job(session, groups.as_ref(), start, end, options)?;
+            Ok(spawn_job("masking", None, Box::new(move || job.run().map(|v| (v, None)))))
         }
         AnalysisCommand::Segments { path, item, threshold_db, min_silence, min_length, markers, name } => {
             let defaults = SegmentOptions::default();

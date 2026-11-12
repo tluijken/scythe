@@ -5,6 +5,7 @@
 //! is measured as it is made without being kept.
 
 pub mod eq;
+pub mod masking;
 pub mod probe;
 pub mod segments;
 
@@ -691,6 +692,41 @@ pub mod signals {
     pub fn sine(freq: f64, amplitude: f32, seconds: f64, rate: u32) -> Vec<f32> {
         (0..(seconds * rate as f64) as usize)
             .map(|i| amplitude * (std::f64::consts::TAU * freq * i as f64 / rate as f64).sin() as f32)
+            .collect()
+    }
+
+    /// A tone of `freq` with its first `harmonics` partials, the n-th at `amplitude / n`.
+    pub fn harmonic(freq: f64, harmonics: usize, amplitude: f32, seconds: f64, rate: u32) -> Vec<f32> {
+        let mut out = vec![0.0f32; (seconds * rate as f64) as usize];
+        for n in 1..=harmonics {
+            for (o, s) in out.iter_mut().zip(sine(freq * n as f64, amplitude / n as f32, seconds, rate)) {
+                *o += s;
+            }
+        }
+        out
+    }
+
+    /// White noise through four one-pole high-passes at `lo` and four one-pole low-passes at
+    /// `hi`.
+    pub fn band_noise(lo: f64, hi: f64, amplitude: f32, seconds: f64, rate: u32, seed: u64) -> Vec<f32> {
+        let mut n = Noise::new(seed);
+        let a_hi = (-std::f64::consts::TAU * lo / rate as f64).exp() as f32;
+        let a_lo = (-std::f64::consts::TAU * hi / rate as f64).exp() as f32;
+        let (mut hp, mut lp) = ([(0.0f32, 0.0f32); 4], [0.0f32; 4]);
+        (0..(seconds * rate as f64) as usize)
+            .map(|_| {
+                let mut x = n.white();
+                for (prev_in, prev_out) in &mut hp {
+                    let y = a_hi * (*prev_out + x - *prev_in);
+                    (*prev_in, *prev_out) = (x, y);
+                    x = y;
+                }
+                for s in &mut lp {
+                    *s = (1.0 - a_lo) * x + a_lo * *s;
+                    x = *s;
+                }
+                x * amplitude
+            })
             .collect()
     }
 }

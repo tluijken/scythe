@@ -36,7 +36,7 @@ again, and let the band judge by ear. Numbers find problems; they do not decide 
 | Guitar tone | the side channel's spectrum against the reference's | Hard-panned double-tracked guitars dominate the side channel, so it compares guitars without the drums and vocals in the way |
 | Kick punch | per 10 ms: level under 120 Hz (90th percentile) minus level above 1 kHz (median) | The reference measured about +6.7 dB. More sub raises it too, so read it together with the sub region |
 | Pumping | correlation between the under-120 Hz and the over-1 kHz envelopes per 10 ms | Strongly negative means the low end ducks everything else (a limiter or clipper reacting to the kick). The reference stayed between -0.12 and +0.08 |
-| Masking | solo-render each instrument group, then per 100 ms and third-octave band the share of time a group's important bands lie more than 3 dB under another group's | Shows who buries whom, and where (bass over guitars in 160-400 Hz, snare crack under guitars and cymbals in 2.5-4 kHz). Frame averages understate short transients like a snare hit |
+| Masking | `analysis.masking` with `groups` (or the top-level folders and buses): each group rendered soloed in place, then per 100 ms and third-octave band the share of time a group's important bands lie more than 3 dB under another group's | Shows who buries whom, and where (bass over guitars in 160-400 Hz, snare crack under guitars and cymbals in 2.5-4 kHz). Frame averages understate short transients like a snare hit |
 
 `analysis.mix` spectra are normalised: compare shapes and use LUFS for level. A measurement
 renders from the start of its range, without the tails of what played before it. Renders and

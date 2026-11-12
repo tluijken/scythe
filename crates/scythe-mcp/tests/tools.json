@@ -13851,6 +13851,89 @@
   },
   {
     "annotations": {
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Finds which instrument groups bury each other, where in the spectrum and how often.\nRenders each group offline on its own (soloed in place, so through its folders, sends,\nbuses and the master; nothing is heard), then per frame and third octave from 40 Hz to\n10 kHz counts a group as buried in a region when, in its important bands there (no\nmore than `importance_db` under its own loudest band), another group is more than\n`margin_db` louder in at least half of them. Answers per pair and region the share of\nthe time they play together that one is buried (most significant first), each group's\naverage third-octave spectrum while it plays, and a summary in plain words.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.masking`.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "default": null,
+          "description": "Project time to end at; the project's end when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "frame_ms": {
+          "default": null,
+          "description": "Frame length in milliseconds (default 100).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "groups": {
+          "additionalProperties": {
+            "items": {
+              "anyOf": [
+                {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+            },
+            "type": "array"
+          },
+          "default": null,
+          "description": "Group name to its tracks (ids or names), such as {\"bass\": [\"Bass DI\", \"Bass Amp\"],\n\"guitars\": [\"Gtr Bus\"]}. A listed folder or bus brings what feeds it. When left\nout, every track with items is grouped under the top-level track (folder or bus)\nthrough which it reaches the master.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "importance_db": {
+          "default": null,
+          "description": "Bands within this many dB of a group's loudest band in a frame are important to it\n(default 12).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "margin_db": {
+          "default": null,
+          "description": "How much louder another group must be in a band to bury it (default 3 dB).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "start": {
+          "default": null,
+          "description": "Project time to start at, in seconds; 0 when left out.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "name": "analysis_masking",
+    "title": "Analysis masking"
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,

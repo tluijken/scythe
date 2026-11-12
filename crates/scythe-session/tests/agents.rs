@@ -286,6 +286,78 @@ fn renders_and_measurements_run_at_the_project_rate() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// A bass-like tone, guitar-like noise overlapping it in the low mids and hi-hat-like noise far
+/// above them: rendered group by group through their buses, the bass buries the guitars in the
+/// low mids and the hats meet nobody.
+#[test]
+fn masking_finds_the_bass_burying_the_guitars_through_their_buses() {
+    use scythe_engine::analysis::signals::{band_noise, harmonic};
+    let dir = scratch("masking");
+    let mut s = session();
+    for (name, signal) in [
+        ("Guitar", band_noise(150.0, 1500.0, 0.3, 8.0, RATE, 7)),
+        ("Bass", harmonic(80.0, 6, 0.5, 8.0, RATE)),
+        ("Hats", band_noise(8000.0, 16_000.0, 0.3, 8.0, RATE, 8)),
+    ] {
+        let path = dir.join(format!("{name}.wav"));
+        write_wav(&path, &signal, &signal);
+        ok(&mut s, json!({"cmd": "media.import", "paths": [path], "name": name}));
+    }
+    for (source, bus) in [("Guitar", "Gtr Bus"), ("Bass", "Low Bus")] {
+        ok(&mut s, json!({"cmd": "track.add", "name": bus}));
+        ok(&mut s, json!({"cmd": "send.add", "track": source, "dest": bus}));
+        ok(&mut s, json!({"cmd": "track.main_send", "track": source, "on": false}));
+    }
+    let hats = s.project.tracks[2].id.0;
+    let pairs = |answer: &Value| answer["result"]["pairs"].as_array().unwrap().clone();
+
+    let named = job(
+        &mut s,
+        json!({"cmd": "analysis.masking", "groups": {"bass": ["Low Bus"], "guitars": ["Gtr Bus"], "hats": [hats]}}),
+    );
+    let r = &named["result"];
+    let top = &pairs(&named)[0];
+    assert_eq!(
+        (&top["buried"], &top["by"], &top["region"]),
+        (&json!("guitars"), &json!("bass"), &json!("low mids (160-400 Hz)")),
+        "{r}"
+    );
+    assert!(top["share_pct"].as_f64().unwrap() > 80.0, "{top}");
+    assert!((top["together_seconds"].as_f64().unwrap() - 8.0).abs() < 0.3, "{top}");
+    assert!(pairs(&named).iter().all(|p| p["buried"] != "hats" && p["by"] != "hats"), "{r}");
+    assert!(!pairs(&named).iter().any(|p| p["buried"] == "bass" && p["by"] == "guitars"), "{r}");
+    assert!(r["summary"][0].as_str().unwrap().starts_with("bass buries guitars in the low mids"), "{r}");
+    let groups: Vec<&str> = r["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
+    assert_eq!(groups, ["bass", "guitars", "hats"]);
+    assert_eq!(r["groups"][1]["tracks"], json!(["Gtr Bus"]));
+    assert_eq!(r["bands_hz"].as_array().unwrap().len(), r["groups"][0]["level_db"].as_array().unwrap().len());
+    assert!(s.project.tracks.iter().all(|t| !t.solo), "the project's solos are left alone");
+
+    let derived = job(&mut s, json!({"cmd": "analysis.masking", "start": 1.0, "end": 7.0}));
+    let r = &derived["result"];
+    let groups: Vec<(&str, &Value)> =
+        r["groups"].as_array().unwrap().iter().map(|g| (g["name"].as_str().unwrap(), &g["tracks"])).collect();
+    assert_eq!(groups, [("Hats", &json!(["Hats"])), ("Gtr Bus", &json!(["Guitar"])), ("Low Bus", &json!(["Bass"]))]);
+    let top = &pairs(&derived)[0];
+    assert_eq!((&top["buried"], &top["by"]), (&json!("Gtr Bus"), &json!("Low Bus")), "{r}");
+    assert!(top["longest"]["start"].as_f64().unwrap() >= 1.0 && top["longest"]["end"].as_f64().unwrap() <= 7.0);
+
+    ok(&mut s, json!({"cmd": "track.volume", "track": "Low Bus", "db": -40.0}));
+    let quiet = job(&mut s, json!({"cmd": "analysis.masking"}));
+    assert!(
+        !pairs(&quiet).iter().any(|p| p["buried"] == "Gtr Bus" && p["by"] == "Low Bus"),
+        "the bass is heard through its bus: {quiet}"
+    );
+
+    let one = execute_json(&mut s, json!({"cmd": "analysis.masking", "groups": {"all": ["Bass", "Guitar"]}}));
+    assert_eq!(one.unwrap_err().kind, ErrorKind::Invalid);
+    let missing = execute_json(&mut s, json!({"cmd": "analysis.masking", "groups": {"a": ["Bass"], "b": ["Nope"]}}));
+    assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
+    let margin = execute_json(&mut s, json!({"cmd": "analysis.masking", "margin_db": -1}));
+    assert_eq!(margin.unwrap_err().kind, ErrorKind::Invalid);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn events_can_be_polled_and_meters_read() {
     let mut s = session();
