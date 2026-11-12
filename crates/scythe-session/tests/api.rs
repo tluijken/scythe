@@ -2025,3 +2025,29 @@ fn a_send_to_channels_3_4_keys_a_dynamic_eq_band() {
     assert!(open.abs() < 0.3, "without the piano the band stays put: {open}");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn eq_band_with_a_free_band_number_adds_that_band() {
+    let mut s = session();
+    let t = add_track(&mut s, "Vox");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    let band = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": t, "index": 0, "band": 0, "shape": "low_shelf", "freq": 120.0,
+               "gain_db": -3.0}),
+    );
+    assert_eq!((band["band"].as_u64(), band["shape"].as_str()), (Some(0), Some("low_shelf")));
+    ok(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 5, "freq": 3000.0}));
+    let eq = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    let bands = eq["bands"].as_array().unwrap();
+    assert_eq!(bands.iter().map(|b| b["band"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 5]);
+    assert_eq!((bands[0]["freq"].as_f64(), bands[0]["gain_db"].as_f64()), (Some(120.0), Some(-3.0)));
+    assert_eq!((bands[1]["shape"].as_str(), bands[1]["freq"].as_f64()), (Some("bell"), Some(3000.0)));
+
+    let changed = ok(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 0, "gain_db": -6.0}));
+    assert_eq!((changed["freq"].as_f64(), changed["gain_db"].as_f64()), (Some(120.0), Some(-6.0)));
+    let err = execute_json(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 3, "remove": true}));
+    let err = err.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(err.to_string().contains("0, 5"), "{err}");
+}

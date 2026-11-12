@@ -154,8 +154,6 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 
 ## Pitfalls in Scythe (as of November 2026)
 
-- `eq.band` with a `band` index on an EQ without bands answers ok and adds nothing; leave out
-  `band` to add one, then check with `eq.get`.
 - Items that overlap on one track get auto-crossfades over the whole overlap, even when one is
   muted, and keep them after the overlap is gone. Do not stack muted alternatives on an active
   item; re-import instead. Check a project with

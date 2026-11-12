@@ -348,6 +348,7 @@ itself).
 | `fx.param` | `track`, `index`, `param` (an id from `fx.params`), `value` (clamped to the range) | the parameter |
 | `fx.meters` | `track`, `index` | `{"input_db", "output_db", "reduction_db", "detector_db", "gate_open", "band_reduction_db"}`; measuring runs for about two seconds after each call, so the first can read nothing |
 | `fx.eq_band` | `track`, `index`, `action` (`add`, `remove`, `set`), `band`, `kind` (`low_shelf`, `high_shelf`, `band`, `notch`, `low_pass`, `high_pass`, `band_pass`, `all_pass`), `freq`, `gain_db`, `width` | `{"bands"}`; one undo step |
+| `eq.band` | `track`, `index` (a Scythe EQ), `band?` (0-23), `remove?`, `shape?`, `freq?`, `gain_db?`, `q?`, `slope?`, `stereo?`, `enabled?`, `dynamic?`, `range_db?`, `threshold_db?`, `auto_threshold?`, `attack_ms?`, `release_ms?`, `external_sidechain?` | the band; one undo step. Bands are 24 fixed slots: without `band` a new band goes into the first free slot, a `band` that is free is added there (from the defaults, then the fields given), a `band` in use is changed. `remove` of a band not in use answers `invalid` naming the bands in use |
 | `fx.delay_tap` | `track`, `index`, `action`, `tap`, `time_ms`, `musical`, `feedback_db`, `volume_db`, `pan`, `lowpass`, `highpass`, `enabled` | `{"taps"}`; one undo step |
 | `fx.fir_points` | `track`, `index`, `points` (`[[hz, db], …]`) | `{"points"}`; one undo step |
 | `fx.wet` | `track`, `index`, `wet?` (0-1), `delta?` (play only the difference the effect makes) | the chain |
