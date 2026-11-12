@@ -168,7 +168,7 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 - NAM rigs give a short burst at the start of every render; keep the guitar and bass buses
   muted for the first few tenths of a second with a volume envelope.
 - Recalling a rig snapshot replaces unsaved changes to the live rig: store first.
-- Deleting or adding tracks can shift folder depths and pull returns into a folder (a send from
-  a folder to its own child): check the tree, and check that muting a bus changes the master.
+- `track.add` with an `index` inside a folder puts the new track in that folder; place it with
+  `track.move` and `parent`, and check that muting a bus changes the master.
 - Overwriting a media file under the same name can leave Scythe playing the cached old one:
   write a new name.

@@ -199,7 +199,7 @@ or `none`, with `reason` saying why.
 | `track.list` | | every track |
 | `track.get` | `track` | the track |
 | `track.add` | `name?`, `index?` (end when left out) | the new track |
-| `track.delete` | `track` | `{}` |
+| `track.delete` | `track` | `{}`; only that track goes and the folders around it stay as they were: a folder's children move up a level in its place, and a track that closed folders hands that on to the track before it |
 | `track.rename` | `track`, `name` | the track |
 | `track.freeze` | `track` | `{"file", "levels"}`: renders the items through the effects (pre-fader, one second of tail) beside the saved project and plays that instead; again stacks a level |
 | `track.unfreeze` | `track` | `{"levels"}`: the last level's effects and items are back |

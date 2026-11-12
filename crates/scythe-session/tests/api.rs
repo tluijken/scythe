@@ -2067,3 +2067,44 @@ fn track_phase_sets_with_invert_too() {
     let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "phase": false}));
     assert_eq!(info["phase"], false);
 }
+
+#[test]
+fn deleting_a_track_keeps_the_folders_around_it() {
+    let mut s = session();
+    for name in ["Vox", "Lead", "Double", "Returns", "Reverb"] {
+        add_track(&mut s, name);
+    }
+    ok(&mut s, json!({"cmd": "track.new_folder", "tracks": ["Lead", "Double"], "name": "VoxBus"}));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Vox"}));
+    ok(&mut s, json!({"cmd": "track.new_folder", "tracks": ["Reverb"], "name": "FX"}));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Returns"}));
+    let parents = |s: &Session| -> Vec<(String, Option<String>)> {
+        let p = &s.project;
+        p.folder_parents()
+            .iter()
+            .enumerate()
+            .map(|(i, par)| (p.tracks[i].name.clone(), par.map(|k| p.tracks[k].name.clone())))
+            .collect()
+    };
+    let named = |v: &[(&str, Option<&str>)]| -> Vec<(String, Option<String>)> {
+        v.iter().map(|(n, p)| (n.to_string(), p.map(str::to_owned))).collect()
+    };
+    assert_eq!(
+        parents(&s),
+        named(&[
+            ("VoxBus", None),
+            ("Lead", Some("VoxBus")),
+            ("Double", Some("VoxBus")),
+            ("FX", None),
+            ("Reverb", Some("FX"))
+        ])
+    );
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Double"}));
+    assert_eq!(parents(&s), named(&[("VoxBus", None), ("Lead", Some("VoxBus")), ("FX", None), ("Reverb", Some("FX"))]));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Reverb"}));
+    assert_eq!(parents(&s), named(&[("VoxBus", None), ("Lead", Some("VoxBus")), ("FX", None)]));
+    assert_eq!(s.project.tracks[2].folder_depth, 0);
+    ok(&mut s, json!({"cmd": "track.delete", "track": "VoxBus"}));
+    assert_eq!(parents(&s), named(&[("Lead", None), ("FX", None)]));
+    assert!(s.project.tracks.iter().all(|t| t.folder_depth == 0));
+}

@@ -1298,12 +1298,22 @@ impl Project {
         matches!(self.master.hw_outs.as_slice(), [o] if HwOut { raw: None, trailing: Vec::new(), ..o.clone() } == HwOut::default())
     }
 
+    /// Removes one track and keeps the folders around it: a folder's children move up a level
+    /// in its place, and a track closing folders hands that on to the track before it.
     pub fn remove_track(&mut self, id: TrackId) -> Option<Track> {
         let idx = self.track_index(id)?;
+        let end = self.folder_end(idx);
+        let mut levels = self.folder_levels();
+        for l in &mut levels[idx + 1..=end] {
+            *l -= 1;
+        }
+        levels.remove(idx);
         for t in &mut self.tracks {
             t.sends.retain(|s| s.dest != id);
         }
-        Some(self.tracks.remove(idx))
+        let removed = self.tracks.remove(idx);
+        self.set_folder_levels(&levels);
+        Some(removed)
     }
 
     /// Parent folder of every track, derived from the folder depth deltas.
