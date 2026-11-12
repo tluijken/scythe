@@ -111,7 +111,11 @@ impl Session {
             .collect();
         paths.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
         for (_, _, path) in paths {
-            if self.engine.pool().get(&path).is_none() && !self.pending.contains(&path) {
+            if self.pending.contains(&path) {
+                continue;
+            }
+            self.engine.pool().refresh(&path);
+            if self.engine.pool().get(&path).is_none() {
                 self.spawn_load(path, None);
             }
         }

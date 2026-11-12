@@ -123,11 +123,12 @@ pub enum TrackCommand {
         on: Option<bool>,
     },
     /// Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles
-    /// when `phase` is left out.
+    /// when `phase` (or `invert`) is left out.
     #[serde(rename = "track.phase")]
     Phase {
         track: TrackRef,
-        #[serde(default)]
+        /// True inverts, false restores the polarity.
+        #[serde(default, alias = "invert")]
         phase: Option<bool>,
     },
     /// The track's pan mode.

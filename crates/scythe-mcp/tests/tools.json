@@ -1190,11 +1190,12 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` is left out.\n\nControl API command `track.phase`.",
+    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` (or `invert`) is left out.\n\nControl API command `track.phase`.",
     "inputSchema": {
       "properties": {
         "phase": {
           "default": null,
+          "description": "True inverts, false restores the polarity.",
           "type": [
             "boolean",
             "null"
@@ -15292,7 +15293,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds a band (when `band` is left out: the first free one) or changes one; fields left\nout stay as they are. `remove` takes the band out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
+    "description": "Adds a band (with `band` left out in the first free slot, with `band` naming a free\nslot in that one) or changes a band in use; fields left out stay as they are, and a new\nband starts from the defaults. `remove` takes a band in use out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
     "inputSchema": {
       "properties": {
         "attack_ms": {
@@ -15313,7 +15314,7 @@
         },
         "band": {
           "default": null,
-          "description": "The band, 0-23; left out to add a band.",
+          "description": "The band, 0-23; a free one is added. Left out to add a band in the first free slot.",
           "format": "uint",
           "minimum": 0,
           "type": [

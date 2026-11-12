@@ -154,13 +154,12 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 
 ## Pitfalls in Scythe (as of November 2026)
 
-- `eq.band` with a `band` index on an EQ without bands answers ok and adds nothing; leave out
-  `band` to add one, then check with `eq.get`.
-- Items that overlap on one track get auto-crossfades over the whole overlap, even when one is
-  muted, and keep them after the overlap is gone. Do not stack muted alternatives on an active
-  item; re-import instead. Check a project with
-  `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
-- `track.phase` toggles unless given `"phase": true|false`.
+- Items that overlap on one track crossfade over the whole overlap, even when one is muted:
+  do not stack muted alternatives on an active item, put them on another track. A
+  crossfade ends when the overlap does; `item.fade` with `"auto_length": 0` clears one by hand.
+  Check a project with `grep 'FADE\(IN\|OUT\) [0-9.]* [0-9.]* [1-9]'` on the RPP.
+- `track.phase` toggles unless given `"phase"` (or `"invert"`) `true|false`; like most
+  commands it ignores fields it does not know, so a misspelt field toggles too. Read the answer.
 - The first `fx.param` write to a CLAP plugin after a pause can be ignored: write until the
   answer shows the value. Many LSP parameters are normalised 0..1 (find values by bisecting on
   the answer's text); gains and thresholds use real units. Save before rendering after plugin
@@ -169,7 +168,5 @@ pitfalls). Read a render's sample rate from the file header before indexing samp
 - NAM rigs give a short burst at the start of every render; keep the guitar and bass buses
   muted for the first few tenths of a second with a volume envelope.
 - Recalling a rig snapshot replaces unsaved changes to the live rig: store first.
-- Deleting or adding tracks can shift folder depths and pull returns into a folder (a send from
-  a folder to its own child): check the tree, and check that muting a bus changes the master.
-- Overwriting a media file under the same name can leave Scythe playing the cached old one:
-  write a new name.
+- `track.add` with an `index` inside a folder puts the new track in that folder; place it with
+  `track.move` and `parent`, and check that muting a bus changes the master.

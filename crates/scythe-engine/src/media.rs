@@ -797,6 +797,8 @@ fn media_threads() -> &'static rayon::ThreadPool {
 #[derive(Debug, Default)]
 pub struct MediaPool {
     entries: Mutex<HashMap<PathBuf, MediaState>>,
+    /// Each entry's file as it was when read, to notice it written anew under the same name.
+    stamps: Mutex<HashMap<PathBuf, Stamp>>,
     /// Stretched, pitch-shifted or rate-changed copies, keyed by file and `Processing::key`.
     processed: Mutex<HashMap<ProcessedKey, Arc<AudioData>>>,
     /// Takes with stretch markers or a pitch envelope, rendered for their item, keyed by file
@@ -808,6 +810,14 @@ pub struct MediaPool {
 }
 
 type ProcessedKey = (PathBuf, (u64, u64, u64, i32));
+
+/// A file's modification time and size; `None` while it does not exist.
+type Stamp = Option<(std::time::SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len()))
+}
 
 impl MediaPool {
     /// A pool converting media with `mode`: the project's render mode for renders, the playback
@@ -901,10 +911,14 @@ impl MediaPool {
         }
     }
 
+    /// Decodes `path` (slow; for worker threads), or answers the audio read before when the file
+    /// has not changed since.
     pub fn load(&self, path: &Path, engine_rate: u32) -> Result<Arc<Media>, MediaError> {
+        self.refresh(path);
         if let Some(m) = self.ready(path) {
             return Ok(m);
         }
+        let stamp = stamp(path);
         let result = media_threads().install(|| -> Result<_, MediaError> {
             let raw = decode_file(path)?;
             let audio = resample_with(&raw, engine_rate, self.resample)?;
@@ -916,19 +930,34 @@ impl MediaPool {
             Err(e) => MediaState::Failed(e.to_string()),
         };
         self.entries.lock().unwrap().insert(path.to_owned(), state);
+        self.stamps.lock().unwrap().insert(path.to_owned(), stamp);
         result
+    }
+
+    /// Forgets a file whose modification time or size changed since it was read (written anew
+    /// under the same name, or appeared or vanished), so the next load reads it again. Answers
+    /// whether it did.
+    pub fn refresh(&self, path: &Path) -> bool {
+        let Some(read) = self.stamps.lock().unwrap().get(path).copied() else { return false };
+        if read == stamp(path) {
+            return false;
+        }
+        self.forget(path);
+        true
     }
 
     /// Drops a file's decoded audio and its processed copies, so the next load reads it again
     /// (a subproject whose proxy was rendered anew).
     pub fn forget(&self, path: &Path) {
         self.entries.lock().unwrap().remove(path);
+        self.stamps.lock().unwrap().remove(path);
         self.processed.lock().unwrap().retain(|k, _| k.0 != path);
         self.warped.lock().unwrap().retain(|k, _| k.0 != path);
     }
 
     pub fn clear(&self) {
         self.entries.lock().unwrap().clear();
+        self.stamps.lock().unwrap().clear();
         self.processed.lock().unwrap().clear();
         self.warped.lock().unwrap().clear();
     }
