@@ -614,19 +614,20 @@ impl ScytheApp {
             let Some(path) = dialog.save_file() else { return };
             vec![(self.project.clone(), path)]
         };
+        let rate = encoding.sample_rate().unwrap_or_else(|| {
+            scythe_core::render_settings::RenderSettings::from_project(&self.project).render_rate(&self.project)
+        });
+        let engine_rate = self.engine.sample_rate();
         let mut pool = self.engine.pool().clone();
-        let mut rate = self.engine.sample_rate();
         let tx = self.loader_tx.clone();
         let ctx = self.ctx.clone();
         self.busy = Some("Rendering…".into());
         std::thread::spawn(move || {
-            // The engine's media is at its own rate and converted for playback; CD images and DDP
-            // are written at 44.1 kHz, and another resample mode needs media of its own.
-            let fixed = encoding.sample_rate().filter(|r| *r != rate);
-            if (fixed.is_some() || resample != pool.resample_mode())
+            // The engine's media is at the device's rate and converted for playback; a render at
+            // another rate or with another resample mode needs media of its own.
+            if (rate != engine_rate || resample != pool.resample_mode())
                 && let Some((project, _)) = jobs.first()
             {
-                rate = fixed.unwrap_or(rate);
                 pool = Arc::new(scythe_session::render::load_media(project, rate, resample));
             }
             let mut last = Ok(PathBuf::new());

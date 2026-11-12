@@ -464,8 +464,8 @@ admin-only.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
-| `render.jobs` | | the files a render writes now: `path`, `start`, `end`, `source` (`kind`: `master`, `stem`, `track_via_master`, `item`, `item_via_master`; `track`) |
-| `render.settings` | `source?` (`master`, `master_and_stems`, `stems`, `tracks_via_master`, `items`, `items_via_master`, `matrix`), `bounds?` (`project`, `time_selection`, `regions`, `selected_items`), `pattern?`, `file?` | the jobs, as `render.jobs` |
+| `render.jobs` | | the files a render writes now: `path`, `start`, `end`, `source` (`kind`: `master`, `stem`, `track_via_master`, `item`, `item_via_master`; `track`), `sample_rate` |
+| `render.settings` | `source?` (`master`, `master_and_stems`, `stems`, `tracks_via_master`, `items`, `items_via_master`, `matrix`), `bounds?` (`project`, `time_selection`, `regions`, `selected_items`), `pattern?`, `file?`, `sample_rate?` (Hz; 0 renders at the project's rate) | the jobs, as `render.jobs` |
 | `render.matrix` | `region`, `track` (id, name or `"master"`), `on` | `{}`: ticks the track for the region in the region render matrix |
 | `render.project` | | `{}`; renders in the background, a notice says when it is done |
 | `render.queue` | `dir?` (REAPER's `QueuedRenders`) | `{"queued"}`: the queued copy |
