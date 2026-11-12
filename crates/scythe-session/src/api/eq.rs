@@ -32,14 +32,15 @@ pub enum EqCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// Adds a band (when `band` is left out: the first free one) or changes one; fields left
-    /// out stay as they are. `remove` takes the band out. One undo step.
+    /// Adds a band (with `band` left out in the first free slot, with `band` naming a free
+    /// slot in that one) or changes a band in use; fields left out stay as they are, and a new
+    /// band starts from the defaults. `remove` takes a band in use out. One undo step.
     #[serde(rename = "eq.band")]
     Band {
         track: TrackRef,
         /// Position in the chain, from 0.
         index: usize,
-        /// The band, 0-23; left out to add a band.
+        /// The band, 0-23; a free one is added. Left out to add a band in the first free slot.
         #[serde(default)]
         band: Option<usize>,
         #[serde(default)]
@@ -558,9 +559,24 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
             if which.is_some_and(|b| b >= BANDS) {
                 return Err(ApiError::invalid(format!("bands are 0-{}", BANDS - 1)));
             }
+            let in_use: Vec<usize> = inst
+                .with(|e| {
+                    let eq = e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>())?;
+                    Some((0..BANDS).filter(|b| eq.value(p::band_param(*b, band::USED)) >= 0.5).collect())
+                })
+                .flatten()
+                .unwrap_or_default();
+            let adding = which.is_none_or(|b| !in_use.contains(&b));
+            if remove && adding {
+                let list: Vec<String> = in_use.iter().map(usize::to_string).collect();
+                return Err(ApiError::invalid(match which {
+                    Some(b) => format!("band {b} is not in use; bands in use: [{}]", list.join(", ")),
+                    None => "give the `band` to remove".to_owned(),
+                }));
+            }
             let label = if remove {
                 "Remove EQ band"
-            } else if which.is_none() {
+            } else if adding {
                 "Add EQ band"
             } else {
                 "Change EQ band"
@@ -577,7 +593,7 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
                     eq.set(id(band::USED), 0.0);
                     return Ok(json!({ "band": b, "removed": true }));
                 }
-                if which.is_none() {
+                if adding {
                     for o in 0..band::COUNT {
                         eq.set(id(o), p::default(id(o)));
                     }

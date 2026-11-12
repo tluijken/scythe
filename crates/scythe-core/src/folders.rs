@@ -505,6 +505,23 @@ mod tests {
     }
 
     #[test]
+    fn removing_one_track_keeps_the_tree_around_it() {
+        let f6 = &[("T1", 1), ("T2", 1), ("T3", 0), ("T4", -2), ("T5", 1), ("T6", -1)];
+        let mut p = project(f6);
+        p.remove_track(ids(&p, &["T4"])[0]);
+        expect(&p, &[("T1", 1), ("T2", 1), ("T3", -2), ("T5", 1), ("T6", -1)]);
+        let mut p = project(f6);
+        p.remove_track(ids(&p, &["T2"])[0]);
+        expect(&p, &[("T1", 1), ("T3", 0), ("T4", -1), ("T5", 1), ("T6", -1)]);
+        let mut p = project(f6);
+        p.remove_track(ids(&p, &["T6"])[0]);
+        expect(&p, &[("T1", 1), ("T2", 1), ("T3", 0), ("T4", -2), ("T5", 0)]);
+        let mut p = project(f6);
+        p.remove_track(ids(&p, &["T1"])[0]);
+        expect(&p, &[("T2", 1), ("T3", 0), ("T4", -1), ("T5", 1), ("T6", -1)]);
+    }
+
+    #[test]
     fn collapsed_folders_hide_and_shrink() {
         let mut p = project(&[("F", 1), ("G", 1), ("A", -1), ("B", -1), ("C", 0)]);
         assert!(p.row_shows().iter().all(|s| *s == RowShow::Normal));

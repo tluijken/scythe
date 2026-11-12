@@ -552,6 +552,7 @@ impl ScytheApp {
     /// Renders to 24-bit WAV in the background: the whole project, the time selection, or one
     /// file per track (each soloed, so folder and master processing stay in the stem).
     pub fn render(&mut self, kind: RenderKind) {
+        self.store_plugin_states();
         let range = match kind {
             RenderKind::Selection => match self.project.time_selection.filter(|r| !r.is_empty()) {
                 Some(r) => r,
@@ -613,19 +614,20 @@ impl ScytheApp {
             let Some(path) = dialog.save_file() else { return };
             vec![(self.project.clone(), path)]
         };
+        let rate = encoding.sample_rate().unwrap_or_else(|| {
+            scythe_core::render_settings::RenderSettings::from_project(&self.project).render_rate(&self.project)
+        });
+        let engine_rate = self.engine.sample_rate();
         let mut pool = self.engine.pool().clone();
-        let mut rate = self.engine.sample_rate();
         let tx = self.loader_tx.clone();
         let ctx = self.ctx.clone();
         self.busy = Some("Rendering…".into());
         std::thread::spawn(move || {
-            // The engine's media is at its own rate and converted for playback; CD images and DDP
-            // are written at 44.1 kHz, and another resample mode needs media of its own.
-            let fixed = encoding.sample_rate().filter(|r| *r != rate);
-            if (fixed.is_some() || resample != pool.resample_mode())
+            // The engine's media is at the device's rate and converted for playback; a render at
+            // another rate or with another resample mode needs media of its own.
+            if (rate != engine_rate || resample != pool.resample_mode())
                 && let Some((project, _)) = jobs.first()
             {
-                rate = fixed.unwrap_or(rate);
                 pool = Arc::new(scythe_session::render::load_media(project, rate, resample));
             }
             let mut last = Ok(PathBuf::new());
@@ -652,7 +654,8 @@ impl ScytheApp {
 
     /// Adds the project, as it is now, to REAPER's render queue.
     pub fn queue_render(&mut self) {
-        match self.session.queue_render(None, &self.render_selection()) {
+        let selection = self.render_selection();
+        match self.session.queue_render(None, &selection) {
             Ok(path) => self.notify(format!("Queued {}", path.file_name().unwrap_or_default().to_string_lossy())),
             Err(e) => self.notify(format!("Cannot queue the render: {e}")),
         }
@@ -674,6 +677,7 @@ impl ScytheApp {
     }
 
     fn render_selected_items(&mut self, with_fx: bool) {
+        self.store_plugin_states();
         let selected = self.selected_items();
         if selected.is_empty() {
             self.notify("Select items first");

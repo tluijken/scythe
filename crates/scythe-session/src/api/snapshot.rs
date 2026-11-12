@@ -1,6 +1,7 @@
 //! The project as clients see it: plain JSON-friendly copies of what the model holds.
 
 use scythe_core::metronome::{PREROLL_MID_MEASURE, PREROLL_PLAY, PREROLL_RECORD};
+use scythe_core::model::source_span;
 use scythe_core::units::gain_to_db;
 use scythe_core::{Color, HwOut, Item, Marker, Project, SendMode, Track};
 use scythe_engine::fx::FxStatus;
@@ -239,6 +240,19 @@ pub struct SendInfo {
     pub phase: bool,
     /// Carries audio (false for a MIDI-only send).
     pub audio: bool,
+    /// The first source channel, from 1; `None` for a MIDI-only send.
+    #[serde(default)]
+    pub src: Option<usize>,
+    /// How many source channels it carries: 1, 2 or an even number.
+    #[serde(default)]
+    pub src_count: usize,
+    /// The first channel it arrives on at the receiving track, from 1 (3 for the sidechain
+    /// input on 3/4).
+    #[serde(default)]
+    pub dst: usize,
+    /// Mixed down to the one destination channel `dst`.
+    #[serde(default)]
+    pub dst_mono: bool,
     /// The MIDI it carries, when any.
     pub midi: Option<SendMidiInfo>,
 }
@@ -530,6 +544,10 @@ pub fn send_list(t: &Track) -> Vec<SendInfo> {
             mono: s.mono,
             phase: s.phase,
             audio: s.src_channels >= 0,
+            src: source_span(s.src_channels).map(|(first, _)| first + 1),
+            src_count: source_span(s.src_channels).map_or(0, |(_, count)| count),
+            dst: (s.dst_channels & 1023) as usize + 1,
+            dst_mono: s.dst_channels & 1024 != 0,
             midi: Some(s.midi()).filter(|m| m.enabled).map(|m| {
                 let n = |v: Option<u8>| v.map_or(0, |v| v + 1);
                 SendMidiInfo {

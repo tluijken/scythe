@@ -1,4 +1,5 @@
 use schemars::JsonSchema;
+use scythe_core::model::source_span;
 use scythe_core::{HwOut, Send, SendMode, Track, TrackId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -72,6 +73,28 @@ pub enum SendCommand {
         /// Invert the polarity.
         #[serde(default)]
         phase: Option<bool>,
+    },
+    /// Which of the track's audio channels the send carries and where they arrive on the
+    /// receiving track (REAPER's `I_SRCCHAN` / `I_DSTCHAN`); fields left out stay. Channels
+    /// count from 1: `dst` 3 lands a pair on channels 3/4, the sidechain input of the
+    /// receiving track's effects.
+    #[serde(rename = "send.channels")]
+    Channels {
+        track: TrackRef,
+        /// The send's index in `send.list`, from 0.
+        send: usize,
+        /// The first source channel, from 1.
+        #[serde(default)]
+        src: Option<u32>,
+        /// How many source channels: 1 (mono), 2 (a pair) or an even number up to 64.
+        #[serde(default)]
+        src_count: Option<u32>,
+        /// The first destination channel, from 1.
+        #[serde(default)]
+        dst: Option<u32>,
+        /// Mix the source down to the one destination channel `dst`.
+        #[serde(default)]
+        dst_mono: Option<bool>,
     },
     /// What MIDI the send carries (REAPER's `I_MIDIFLAGS`); fields left out stay. Channels and
     /// buses count from 1; 0 means all (for sources) or unchanged (for destinations).
@@ -155,6 +178,9 @@ pub enum SendCommand {
 /// Device outputs a hardware output may start at.
 const MAX_OUTPUT: usize = 511;
 
+/// REAPER's track channel limit.
+const MAX_CHANNELS: u32 = 128;
+
 fn hw_outs(session: &Session, target: Target) -> Value {
     target.get(&session.project).map_or(Value::Null, |t| json(snapshot::hw_out_list(t)))
 }
@@ -193,6 +219,24 @@ fn existing(session: &Session, track: &TrackRef, send: usize) -> Result<TrackId,
         return Err(ApiError::not_found(format!("the track has {count} send(s); there is no send {send}")));
     }
     Ok(id)
+}
+
+/// A channel counted from 1 as the 0-based index REAPER stores.
+fn from_one(channel: u32, field: &str) -> Result<usize, ApiError> {
+    if !(1..=MAX_CHANNELS).contains(&channel) {
+        return Err(ApiError::invalid(format!("{field} runs from 1 to {MAX_CHANNELS}")));
+    }
+    Ok(channel as usize - 1)
+}
+
+/// `I_SRCCHAN` for `count` channels from `first` (see `scythe_core::model::source_span`).
+fn source_code(first: usize, count: usize) -> i64 {
+    let width = match count {
+        2 => 0,
+        1 => 1,
+        n => n / 2,
+    };
+    (width << 10 | first) as i64
 }
 
 fn with_send(t: Option<&mut Track>, send: usize, f: impl FnOnce(&mut Send)) {
@@ -260,6 +304,48 @@ pub fn execute(session: &mut Session, command: SendCommand) -> Result<Value, Api
                     s.mode = mode.map_or(s.mode, SendMode::from);
                     s.mono = mono.unwrap_or(s.mono);
                     s.phase = phase.unwrap_or(s.phase);
+                });
+            });
+            Ok(send_info(session, id, send))
+        }
+        SendCommand::Channels { track, send, src, src_count, dst, dst_mono } => {
+            let id = existing(session, &track, send)?;
+            let p = &session.project;
+            let t = p.track(id).unwrap();
+            let s = &t.sends[send];
+            let (old_first, old_count) = source_span(s.src_channels).unwrap_or((0, 2));
+            let first = src.map_or(Ok(old_first), |c| from_one(c, "src"))?;
+            let count = src_count.map_or(old_count, |c| c as usize);
+            if !(count == 1 || (count % 2 == 0 && (2..=64).contains(&count))) {
+                return Err(ApiError::invalid("src_count is 1, 2 or an even number up to 64"));
+            }
+            let have = t.channels.max(2) as usize;
+            if first + count > have {
+                return Err(ApiError::invalid(format!(
+                    "the track has {have} channels; source channels {}-{} do not fit (track.channels adds more)",
+                    first + 1,
+                    first + count
+                )));
+            }
+            let dst_first = dst.map_or(Ok((s.dst_channels & 1023) as usize), |c| from_one(c, "dst"))?;
+            let mono = dst_mono.unwrap_or(s.dst_channels & 1024 != 0);
+            let width = if mono { 1 } else { count.max(2) };
+            let room = p.track(s.dest).map_or(2, |d| d.channels.max(2) as usize);
+            if dst_first + width > room {
+                return Err(ApiError::invalid(format!(
+                    "the receiving track has {room} channels; destination channels {}-{} do not fit \
+                     (track.channels adds more)",
+                    dst_first + 1,
+                    dst_first + width
+                )));
+            }
+            let keep_midi_only = src.is_none() && src_count.is_none() && s.src_channels < 0;
+            let src_channels = if keep_midi_only { s.src_channels } else { source_code(first, count) };
+            let dst_channels = (s.dst_channels & !2047) | dst_first as i64 | if mono { 1024 } else { 0 };
+            session.edit("Set send channels", |p| {
+                with_send(p.track_mut(id), send, |s| {
+                    s.src_channels = src_channels;
+                    s.dst_channels = dst_channels;
                 });
             });
             Ok(send_info(session, id, send))

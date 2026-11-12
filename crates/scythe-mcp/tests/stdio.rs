@@ -108,9 +108,15 @@ fn stdio_against_an_in_process_session() {
     let resources = client.request("resources/list", json!({}));
     let uris: Vec<&str> =
         resources["result"]["resources"].as_array().unwrap().iter().filter_map(|r| r["uri"].as_str()).collect();
-    assert!(uris.contains(&"scythe://project") && uris.contains(&"scythe://docs/control-api"));
+    assert!(
+        uris.contains(&"scythe://project")
+            && uris.contains(&"scythe://docs/control-api")
+            && uris.contains(&"scythe://docs/mixing")
+    );
     let docs = client.request("resources/read", json!({"uri": "scythe://docs/control-api"}));
     assert!(docs["result"]["contents"][0]["text"].as_str().unwrap().starts_with("# Control API"));
+    let mixing = client.request("resources/read", json!({"uri": "scythe://docs/mixing"}));
+    assert!(mixing["result"]["contents"][0]["text"].as_str().unwrap().starts_with("# Mixing with Scythe"));
     let summary = client.request("resources/read", json!({"uri": "scythe://project/summary"}));
     assert!(summary["result"]["contents"][0]["text"].as_str().unwrap().contains("-3.0 dB"));
     let missing = client.request("resources/read", json!({"uri": "scythe://nothing"}));

@@ -23,6 +23,7 @@ pub const PROTOCOL_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-2
 
 const CONTROL_API_DOC: &str = include_str!("../../../docs/control-api.md");
 const MCP_DOC: &str = include_str!("../../../docs/mcp.md");
+const MIXING_DOC: &str = include_str!("../../../docs/mixing.md");
 
 const INSTRUCTIONS: &str = "Scythe is a REAPER-compatible DAW. Call get_project first: it shows the \
     tracks with the ids and names other tools take as `track` (\"master\" names the master). Times \
@@ -523,6 +524,7 @@ impl McpServer {
             ),
             "scythe://docs/control-api" => ("text/markdown", CONTROL_API_DOC.to_owned()),
             "scythe://docs/mcp" => ("text/markdown", MCP_DOC.to_owned()),
+            "scythe://docs/mixing" => ("text/markdown", MIXING_DOC.to_owned()),
             _ => return Err(RpcError::new(RESOURCE_NOT_FOUND, format!("no resource {uri}"))),
         };
         Ok(json!({"contents": [{"uri": uri, "mimeType": mime, "text": text}]}))
@@ -675,5 +677,8 @@ fn resources() -> Value {
          "mimeType": "text/markdown"},
         {"uri": "scythe://docs/mcp", "name": "mcp", "title": "Scythe MCP server",
          "description": "How this server is set up and what its tools do.", "mimeType": "text/markdown"},
+        {"uri": "scythe://docs/mixing", "name": "mixing", "title": "Mixing field notes",
+         "description": "How to measure a mix against a reference and fix what the measurements show: loudness, low end, drums, NAM guitars, vocals, character effects, and Scythe pitfalls.",
+         "mimeType": "text/markdown"},
     ])
 }

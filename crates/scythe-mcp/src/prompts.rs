@@ -48,7 +48,8 @@ pub fn get(params: &Value) -> Result<(String, String), String> {
         Some("mix_check") => {
             let focus = argument("focus").map(|f| format!(", paying most attention to {f}")).unwrap_or_default();
             let text = format!(
-                "Check the mix of the open Scythe project{focus}. Start with get_project; use fx_list, \
+                "Check the mix of the open Scythe project{focus}. Read the resource scythe://docs/mixing first: \
+                 field notes on what to measure and what usually goes wrong. Start with get_project; use fx_list, \
                  fx_params and send_list where you need more detail. Look for: tracks muted or soloed by \
                  accident; faders far above 0 dB or at -inf; pan at the extremes; sends to muted tracks or \
                  at odd levels; effects bypassed or not running; tracks left armed or monitoring their \
@@ -158,7 +159,8 @@ pub fn get(params: &Value) -> Result<(String, String), String> {
             let text = format!(
                 "Bring the mix closer to the reference {reference}, changing {target}{range}. Nothing \
                  plays while you work: every measurement is an offline render. The reference is \
-                 measured on this machine only.\n\
+                 measured on this machine only. The resource scythe://docs/mixing has field notes on \
+                 measuring and fixing a mix in Scythe; read it first.\n\
                  1. analysis_file on the reference (its job number lets you reuse it as {{\"job\": n}}).\n\
                  2. analysis_mix of {target} over the same musical part, then analysis_compare (reference \
                  against mix). Read the summary: loudness, peak-to-loudness ratio, tonal regions, width, \

@@ -548,6 +548,9 @@ impl Normalize {
     }
 }
 
+/// The rate of a project that sets none (no `SAMPLERATE` line), as REAPER opens it.
+pub const DEFAULT_PROJECT_RATE: u32 = 44_100;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderSettings {
     pub file: String,
@@ -673,6 +676,12 @@ impl RenderSettings {
             s.metadata.clear();
         }
         s
+    }
+
+    /// The rate a render runs at: the render settings' own (`RENDER_FMT`, REAPER's
+    /// `RENDER_SRATE`), else the project's. As in REAPER, the audio device's rate plays no part.
+    pub fn render_rate(&self, p: &Project) -> u32 {
+        self.sample_rate.or(p.sample_rate).unwrap_or(DEFAULT_PROJECT_RATE)
     }
 
     /// The files to render, in REAPER's order, for the project saved selection (see

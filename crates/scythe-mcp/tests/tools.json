@@ -1190,11 +1190,12 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` is left out.\n\nControl API command `track.phase`.",
+    "description": "Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles\nwhen `phase` (or `invert`) is left out.\n\nControl API command `track.phase`.",
     "inputSchema": {
       "properties": {
         "phase": {
           "default": null,
+          "description": "True inverts, false restores the polarity.",
           "type": [
             "boolean",
             "null"
@@ -1612,6 +1613,44 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "The track's (or the master's) audio channels (REAPER's `NCHAN`): an even number from 2\nto 128. Channels 3/4 are the sidechain input of its effects.\n\nControl API command `track.channels`.",
+    "inputSchema": {
+      "properties": {
+        "channels": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "channels"
+      ],
+      "type": "object"
+    },
+    "name": "track_channels",
+    "title": "Track channels"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Whether the track feeds its parent or the master; off for a bus that only plays through\nits hardware outputs. Toggles when `on` is left out.\n\nControl API command `track.main_send`.",
     "inputSchema": {
       "properties": {
@@ -1989,6 +2028,83 @@
     },
     "name": "send_mode",
     "title": "Send mode"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
+    "description": "Which of the track's audio channels the send carries and where they arrive on the\nreceiving track (REAPER's `I_SRCCHAN` / `I_DSTCHAN`); fields left out stay. Channels\ncount from 1: `dst` 3 lands a pair on channels 3/4, the sidechain input of the\nreceiving track's effects.\n\nControl API command `send.channels`.",
+    "inputSchema": {
+      "properties": {
+        "dst": {
+          "default": null,
+          "description": "The first destination channel, from 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dst_mono": {
+          "default": null,
+          "description": "Mix the source down to the one destination channel `dst`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "send": {
+          "description": "The send's index in `send.list`, from 0.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "src": {
+          "default": null,
+          "description": "The first source channel, from 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "src_count": {
+          "default": null,
+          "description": "How many source channels: 1 (mono), 2 (a pair) or an even number up to 64.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "track": {
+          "anyOf": [
+            {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "A track by id (a number from a snapshot), by exact name, or `\"master\"`."
+        }
+      },
+      "required": [
+        "track",
+        "send"
+      ],
+      "type": "object"
+    },
+    "name": "send_channels",
+    "title": "Send channels"
   },
   {
     "annotations": {
@@ -9877,7 +9993,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "The files the project's render settings write now, with their time spans and what each\nplays; nothing is rendered.\n\nControl API command `render.jobs`.",
+    "description": "The files the project's render settings write now, with their time spans, what each\nplays and the sample rate; nothing is rendered.\n\nControl API command `render.jobs`.",
     "inputSchema": {
       "properties": {},
       "type": "object"
@@ -9923,6 +10039,16 @@
           "description": "File name pattern with wildcards such as `$project`, `$track`, `$region`,\n`$regionnumber`, `$item`.",
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "sample_rate": {
+          "default": null,
+          "description": "Sample rate in Hz (REAPER's `RENDER_SRATE`); 0 renders at the project's rate.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
             "null"
           ]
         },
@@ -15177,7 +15303,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds a band (when `band` is left out: the first free one) or changes one; fields left\nout stay as they are. `remove` takes the band out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
+    "description": "Adds a band (with `band` left out in the first free slot, with `band` naming a free\nslot in that one) or changes a band in use; fields left out stay as they are, and a new\nband starts from the defaults. `remove` takes a band in use out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
     "inputSchema": {
       "properties": {
         "attack_ms": {
@@ -15198,7 +15324,7 @@
         },
         "band": {
           "default": null,
-          "description": "The band, 0-23; left out to add a band.",
+          "description": "The band, 0-23; a free one is added. Left out to add a band in the first free slot.",
           "format": "uint",
           "minimum": 0,
           "type": [

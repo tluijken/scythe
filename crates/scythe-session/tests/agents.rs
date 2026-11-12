@@ -240,6 +240,52 @@ fn matching_a_mix_to_a_reference_converges() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Renders and measurements run at the project's rate (REAPER's 44.1 kHz for a project that
+/// sets none) or the rate the render settings give, whatever rate the audio device runs at,
+/// and nothing after the master chain touches the samples: a limiter's ceiling holds.
+#[test]
+fn renders_and_measurements_run_at_the_project_rate() {
+    let dir = scratch("project-rate");
+    let tone = dir.join("tone.wav");
+    let sine: Vec<f32> =
+        (0..2 * RATE).map(|i| 0.99 * (2.0 * std::f32::consts::PI * 997.0 * i as f32 / RATE as f32).sin()).collect();
+    write_wav(&tone, &sine, &sine);
+    let mut s = session();
+    assert_eq!(s.engine.sample_rate(), 48_000);
+    ok(&mut s, json!({"cmd": "media.import", "paths": [tone], "name": "Tone"}));
+    let limiter = scythe_engine::builtin::Builtin::Limiter;
+    let mut state = limiter.default_state();
+    state[8..16].copy_from_slice(&(-1.0f64).to_le_bytes());
+    state[16..24].copy_from_slice(&(-1.0f64).to_le_bytes());
+    s.edit("Limiter", |p| p.master.fx.push(limiter.slot_with(&state)));
+    assert_eq!(s.project.sample_rate, None);
+    let jobs = ok(&mut s, json!({"cmd": "render.settings", "file": dir.join("out"), "pattern": "mix"}));
+    assert_eq!(jobs[0]["sample_rate"], 44_100, "{jobs}");
+
+    let ceiling = 10f64.powf(-1.0 / 20.0);
+    let render = |s: &Session| {
+        let files = scythe_session::render::render_project(&s.project, &s.render_selection()).unwrap();
+        let mut reader = hound::WavReader::open(&files[0]).unwrap();
+        let full_scale = (1i64 << (reader.spec().bits_per_sample - 1)) as f64;
+        let peak = reader.samples::<i32>().map(|v| (v.unwrap() as f64 / full_scale).abs()).fold(0.0, f64::max);
+        (reader.spec().sample_rate, peak)
+    };
+    let (rate, peak) = render(&s);
+    assert_eq!(rate, 44_100);
+    assert!(peak > 0.5 && peak <= ceiling, "peak {} dBFS", 20.0 * peak.log10());
+
+    let measured = job(&mut s, json!({"cmd": "analysis.mix", "target": "master"}));
+    let m = &measured["result"];
+    assert_eq!(m["sample_rate"], 44_100, "{m}");
+    assert!(m["sample_peak_dbfs"].as_f64().unwrap() <= -1.0, "{m}");
+    assert!((m["centroid_hz"].as_f64().unwrap() - 997.0).abs() < 20.0, "played at the wrong speed: {m}");
+
+    let jobs = ok(&mut s, json!({"cmd": "render.settings", "sample_rate": 48_000}));
+    assert_eq!(jobs[0]["sample_rate"], 48_000, "{jobs}");
+    assert_eq!(render(&s).0, 48_000);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn events_can_be_polled_and_meters_read() {
     let mut s = session();

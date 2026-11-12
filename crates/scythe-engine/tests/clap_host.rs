@@ -276,3 +276,95 @@ fn sidechain_port_takes_channels_three_and_four() {
     plugin.process(&mut l, &mut r);
     assert_eq!(l[0], 0.5);
 }
+
+#[test]
+fn a_parameter_set_while_idle_reads_back_and_saves_at_once() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut plugin = ClapPlugin::create(lib, "org.scythe.test-gain", 48000.0, 512).unwrap();
+    plugin.set_param(7, 0.75);
+    assert_eq!(plugin.param_value(7), Some(0.75));
+    assert_eq!(plugin.save_state().unwrap(), 0.75f32.to_le_bytes());
+    let (mut l, mut r) = (vec![1.0f32; 4], vec![1.0f32; 4]);
+    plugin.process(&mut l, &mut r);
+    assert_eq!(l[0], 0.75);
+
+    plugin.set_param(7, 0.25);
+    assert_eq!(plugin.param_value(7), Some(0.25), "a running instance between blocks takes it at once too");
+}
+
+#[test]
+fn a_render_after_a_parameter_change_plays_the_new_value_without_a_save() {
+    use scythe_core::{Project, Track};
+    use scythe_engine::fx::{FxRegistry, clap_slot};
+
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let descs = ClapLibrary::load(&path).unwrap().descriptors();
+    let mut project = Project::default();
+    let mut track = Track::new("t");
+    track.fx.push(clap_slot(&descs[0]));
+    let id = track.id;
+    project.tracks.push(track);
+
+    let mut live = FxRegistry::new(48000);
+    live.set_clap_plugins(descs.clone());
+    let chain = live.chain(Some(id), &project.tracks[0].fx);
+    chain[0].with(|e| e.set_param(7, 0.3));
+    live.store_states(&mut project);
+
+    let mut render = FxRegistry::new(48000);
+    render.set_clap_plugins(descs);
+    let chain = render.chain(Some(id), &project.tracks[0].fx);
+    let (mut l, mut r) = (vec![1.0f32; 8], vec![1.0f32; 8]);
+    let ctx = scythe_engine::fx::ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    chain[0].process(&mut l, &mut r, &ctx);
+    assert!((l[0] - 0.3).abs() < 1e-6, "{}", l[0]);
+}
+
+/// LSP's plugins, when installed: one write to an idle instance reads back.
+#[test]
+fn lsp_parameters_take_the_first_write() {
+    let Some(path) = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".clap/lsp-plugins.clap")) else { return };
+    if !path.exists() {
+        eprintln!("LSP plugins not installed; skipping");
+        return;
+    }
+    let lib = ClapLibrary::load(&path).unwrap();
+    let ids = ["in.lsp-plug.limiter_stereo", "in.lsp-plug.clipper_stereo", "in.lsp-plug.filter_stereo"];
+    let descs: Vec<_> = lib.descriptors().into_iter().filter(|d| ids.contains(&d.id.as_str())).collect();
+    assert_eq!(descs.len(), ids.len());
+    for desc in descs {
+        let mut plugin = ClapPlugin::create(lib.clone(), &desc.id, 48000.0, 512).unwrap();
+        let p = plugin.params().into_iter().find(|p| p.max > p.min && p.name.contains("put gain")).unwrap();
+        let wanted = p.min + (p.max - p.min) * 0.25;
+        for _ in 0..3 {
+            let (mut l, mut r) = (vec![0.0f32; 64], vec![0.0f32; 64]);
+            plugin.process(&mut l, &mut r);
+        }
+        plugin.set_param(p.id, wanted);
+        let got = plugin.param_value(p.id).unwrap();
+        assert!((got - wanted).abs() < 1e-4, "{} {}: {got}, wanted {wanted}", desc.id, p.name);
+        let saved = plugin.save_state().unwrap();
+        let mut fresh = ClapPlugin::create(lib.clone(), &desc.id, 48000.0, 512).unwrap();
+        assert!(fresh.load_state(&saved));
+        let restored = fresh.param_value(p.id).unwrap();
+        assert!((restored - wanted).abs() < 1e-4, "{} {} restored: {restored}", desc.id, p.name);
+    }
+}

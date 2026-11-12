@@ -12,7 +12,7 @@ use std::time::{Instant, UNIX_EPOCH};
 
 use schemars::JsonSchema;
 use scythe_core::model::SoloMode;
-use scythe_core::render_settings::RenderSource;
+use scythe_core::render_settings::{RenderSettings, RenderSource, ResampleMode};
 use scythe_core::{Project, TimeRange};
 use scythe_engine::MediaPool;
 use scythe_engine::analysis::eq::{self, EqBand, EqKind, MatchOptions};
@@ -377,7 +377,13 @@ impl Render {
     }
 }
 
-fn mix_source(session: &Session, target: &MixTarget, start: Option<f64>, end: Option<f64>) -> Result<Source, ApiError> {
+fn mix_source(
+    session: &mut Session,
+    target: &MixTarget,
+    start: Option<f64>,
+    end: Option<f64>,
+) -> Result<Source, ApiError> {
+    session.store_plugin_states();
     let p = &session.project;
     let project = match target {
         MixTarget::Track(t) => match t.resolve(p)? {
@@ -416,16 +422,32 @@ fn mix_source(session: &Session, target: &MixTarget, start: Option<f64>, end: Op
         .collect();
     files.sort();
     files.dedup();
-    Ok(Source::Render(Box::new(Render {
-        project,
-        pool: session.engine.pool().clone(),
-        rate: session.engine.sample_rate(),
-        range: TimeRange::new(start, end),
-        files,
-    })))
+    let settings = RenderSettings::from_project(p);
+    let rate = settings.render_rate(p);
+    let pool = if rate == session.engine.sample_rate() {
+        session.engine.pool().clone()
+    } else {
+        render_pool(rate, settings.resample)
+    };
+    Ok(Source::Render(Box::new(Render { project, pool, rate, range: TimeRange::new(start, end), files })))
 }
 
-fn subject_source(session: &Session, subject: &Subject) -> Result<Source, ApiError> {
+/// Media decoded at `rate` for measurements that do not run at the engine's rate, whose pool
+/// holds it at the device's; kept for the next measurement at the same rate.
+fn render_pool(rate: u32, resample: ResampleMode) -> Arc<MediaPool> {
+    static POOL: Mutex<Option<(u32, ResampleMode, Arc<MediaPool>)>> = Mutex::new(None);
+    let mut kept = POOL.lock().unwrap();
+    match &*kept {
+        Some((r, m, pool)) if (*r, *m) == (rate, resample) => pool.clone(),
+        _ => {
+            let pool = Arc::new(MediaPool::with_resample(resample));
+            *kept = Some((rate, resample, pool.clone()));
+            pool
+        }
+    }
+}
+
+fn subject_source(session: &mut Session, subject: &Subject) -> Result<Source, ApiError> {
     match subject {
         Subject::Job { job } => finished_analysis(*job).map(Source::Ready),
         Subject::File { file, start, end } => {

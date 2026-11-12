@@ -1905,3 +1905,342 @@ fn the_catalog_answers_while_plugins_are_scanned() {
     assert_eq!(done["failed"], json!([]));
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Amplitude of the `freq` component of `x`, which holds a whole number of its cycles.
+fn amplitude_at(x: &[f32], freq: f64, rate: f64) -> f64 {
+    let (mut re, mut im) = (0.0, 0.0);
+    for (n, s) in x.iter().enumerate() {
+        let w = std::f64::consts::TAU * freq * n as f64 / rate;
+        re += *s as f64 * w.cos();
+        im -= *s as f64 * w.sin();
+    }
+    2.0 * re.hypot(im) / x.len() as f64
+}
+
+/// A piano sent into a guitar bus's channels 3/4 keys a Scythe EQ dynamic band there: the
+/// guitar dips while the piano plays and the piano itself never reaches channels 1/2.
+#[test]
+fn a_send_to_channels_3_4_keys_a_dynamic_eq_band() {
+    let dir = std::env::temp_dir().join(format!("scythe-sidechain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rate = 48_000u32;
+    let sine = |amp: f32| -> Vec<f32> {
+        (0..rate).map(|n| amp * (std::f32::consts::TAU * 1000.0 * n as f32 / rate as f32).sin()).collect()
+    };
+    let (guitar_wav, piano_wav) = (dir.join("guitar.wav"), dir.join("piano.wav"));
+    write_wav(&guitar_wav, rate, &sine(0.05));
+    write_wav(&piano_wav, rate, &sine(0.5));
+
+    let mut s = session();
+    let guitar = add_track(&mut s, "Guitar");
+    let piano = add_track(&mut s, "Piano");
+    s.project.tracks[0].items.push(Item::new(0.0, 1.0, Take::from_file(guitar_wav.clone())));
+    s.project.tracks[1].items.push(Item::new(0.0, 1.0, Take::from_file(piano_wav.clone())));
+    ok(&mut s, json!({"cmd": "track.main_send", "track": piano, "on": false}));
+
+    let t = ok(&mut s, json!({"cmd": "track.channels", "track": guitar, "channels": 4}));
+    assert_eq!(t["channels"], 4);
+    for bad in [3, 0, 130] {
+        let err = execute_json(&mut s, json!({"cmd": "track.channels", "track": guitar, "channels": bad}));
+        assert_eq!(err.unwrap_err().kind, ErrorKind::Invalid, "{bad}");
+    }
+    let send = ok(&mut s, json!({"cmd": "send.add", "track": piano, "dest": guitar}));
+    assert_eq!((send["src"].as_u64(), send["src_count"].as_u64(), send["dst"].as_u64()), (Some(1), Some(2), Some(1)));
+    let send = ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 3}));
+    assert_eq!(
+        (send["src"].as_u64(), send["dst"].as_u64(), send["dst_mono"].as_bool()),
+        (Some(1), Some(3), Some(false))
+    );
+    assert_eq!((s.project.tracks[1].sends[0].src_channels, s.project.tracks[1].sends[0].dst_channels), (0, 2));
+    let listed = ok(&mut s, json!({"cmd": "track.get", "track": piano}));
+    assert_eq!(listed["sends"][0]["dst"], 3);
+
+    // The piano has two channels and the guitar bus four.
+    for bad in [
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src": 2}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 4}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 3}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 4}),
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 0}),
+        json!({"cmd": "send.channels", "track": piano, "send": 1, "dst": 3}),
+    ] {
+        assert!(execute_json(&mut s, bad.clone()).is_err(), "{bad}");
+    }
+    let mono = ok(
+        &mut s,
+        json!({"cmd": "send.channels", "track": piano, "send": 0, "src_count": 1, "dst": 4, "dst_mono": true}),
+    );
+    assert_eq!(
+        (mono["src_count"].as_u64(), mono["dst"].as_u64(), mono["dst_mono"].as_bool()),
+        (Some(1), Some(4), Some(true))
+    );
+    assert_eq!(
+        (s.project.tracks[1].sends[0].src_channels, s.project.tracks[1].sends[0].dst_channels),
+        (1024, 1024 + 3)
+    );
+    ok(&mut s, json!({"cmd": "project.undo"}));
+    assert_eq!(s.project.tracks[1].sends[0].dst_channels, 2);
+
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    let back = scythe_core::rpp::project_from_rpp(&text).unwrap();
+    assert_eq!(back.tracks[0].channels, 4);
+    let saved = &back.tracks[1].sends[0];
+    assert_eq!((saved.dest, saved.src_channels, saved.dst_channels), (back.tracks[0].id, 0, 2));
+    assert!(text.contains("NCHAN 4"), "{text}");
+
+    let pool = scythe_engine::MediaPool::default();
+    pool.load(&guitar_wav, rate).unwrap();
+    pool.load(&piano_wav, rate).unwrap();
+    let guitar_level = |s: &Session| {
+        let mut l = Vec::new();
+        let range = scythe_core::TimeRange::new(0.0, 1.0);
+        scythe_engine::bounce::render_blocks(&s.project, &pool, range, rate, |b, _| l.extend_from_slice(b), |_| {})
+            .unwrap();
+        amplitude_at(&l[19_200..43_200], 1000.0, rate as f64)
+    };
+    let db = |a: f64, b: f64| 20.0 * (a / b).log10();
+
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": true}));
+    let alone = guitar_level(&s);
+    assert!(alone > 0.01, "{alone}");
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": false}));
+    let keyed = guitar_level(&s);
+    assert!(db(keyed, alone).abs() < 0.1, "the piano on 3/4 leaks into the mix: {alone} {keyed}");
+    ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 1}));
+    assert!(db(guitar_level(&s), alone) > 6.0, "on 1/2 the piano plays");
+    ok(&mut s, json!({"cmd": "send.channels", "track": piano, "send": 0, "dst": 3}));
+
+    ok(&mut s, json!({"cmd": "fx.add", "track": guitar, "plugin": "builtin:scythe-eq"}));
+    let band = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": guitar, "index": 0, "shape": "bell", "freq": 1000.0, "gain_db": 0.0,
+               "q": 1.0, "dynamic": "dynamic", "range_db": -12.0, "threshold_db": -30.0,
+               "external_sidechain": true}),
+    );
+    assert_eq!(band["external_sidechain"], true);
+    let ducked = db(guitar_level(&s), alone);
+    assert!((ducked + 12.0).abs() < 1.0, "the piano dips the guitar by the band's range: {ducked}");
+    ok(&mut s, json!({"cmd": "track.mute", "track": piano, "muted": true}));
+    let open = db(guitar_level(&s), alone);
+    assert!(open.abs() < 0.3, "without the piano the band stays put: {open}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn eq_band_with_a_free_band_number_adds_that_band() {
+    let mut s = session();
+    let t = add_track(&mut s, "Vox");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    let band = ok(
+        &mut s,
+        json!({"cmd": "eq.band", "track": t, "index": 0, "band": 0, "shape": "low_shelf", "freq": 120.0,
+               "gain_db": -3.0}),
+    );
+    assert_eq!((band["band"].as_u64(), band["shape"].as_str()), (Some(0), Some("low_shelf")));
+    ok(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 5, "freq": 3000.0}));
+    let eq = ok(&mut s, json!({"cmd": "eq.get", "track": t, "index": 0}));
+    let bands = eq["bands"].as_array().unwrap();
+    assert_eq!(bands.iter().map(|b| b["band"].as_u64().unwrap()).collect::<Vec<_>>(), [0, 5]);
+    assert_eq!((bands[0]["freq"].as_f64(), bands[0]["gain_db"].as_f64()), (Some(120.0), Some(-3.0)));
+    assert_eq!((bands[1]["shape"].as_str(), bands[1]["freq"].as_f64()), (Some("bell"), Some(3000.0)));
+
+    let changed = ok(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 0, "gain_db": -6.0}));
+    assert_eq!((changed["freq"].as_f64(), changed["gain_db"].as_f64()), (Some(120.0), Some(-6.0)));
+    let err = execute_json(&mut s, json!({"cmd": "eq.band", "track": t, "index": 0, "band": 3, "remove": true}));
+    let err = err.unwrap_err();
+    assert_eq!(err.kind, ErrorKind::Invalid);
+    assert!(err.to_string().contains("0, 5"), "{err}");
+}
+
+#[test]
+fn track_phase_sets_with_invert_too() {
+    let mut s = session();
+    let t = add_track(&mut s, "Bass");
+    for _ in 0..2 {
+        let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "invert": false}));
+        assert_eq!(info["phase"], false);
+    }
+    for _ in 0..2 {
+        let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "invert": true}));
+        assert_eq!(info["phase"], true);
+    }
+    let info = ok(&mut s, json!({"cmd": "track.phase", "track": t, "phase": false}));
+    assert_eq!(info["phase"], false);
+}
+
+#[test]
+fn deleting_a_track_keeps_the_folders_around_it() {
+    let mut s = session();
+    for name in ["Vox", "Lead", "Double", "Returns", "Reverb"] {
+        add_track(&mut s, name);
+    }
+    ok(&mut s, json!({"cmd": "track.new_folder", "tracks": ["Lead", "Double"], "name": "VoxBus"}));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Vox"}));
+    ok(&mut s, json!({"cmd": "track.new_folder", "tracks": ["Reverb"], "name": "FX"}));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Returns"}));
+    let parents = |s: &Session| -> Vec<(String, Option<String>)> {
+        let p = &s.project;
+        p.folder_parents()
+            .iter()
+            .enumerate()
+            .map(|(i, par)| (p.tracks[i].name.clone(), par.map(|k| p.tracks[k].name.clone())))
+            .collect()
+    };
+    let named = |v: &[(&str, Option<&str>)]| -> Vec<(String, Option<String>)> {
+        v.iter().map(|(n, p)| (n.to_string(), p.map(str::to_owned))).collect()
+    };
+    assert_eq!(
+        parents(&s),
+        named(&[
+            ("VoxBus", None),
+            ("Lead", Some("VoxBus")),
+            ("Double", Some("VoxBus")),
+            ("FX", None),
+            ("Reverb", Some("FX"))
+        ])
+    );
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Double"}));
+    assert_eq!(parents(&s), named(&[("VoxBus", None), ("Lead", Some("VoxBus")), ("FX", None), ("Reverb", Some("FX"))]));
+    ok(&mut s, json!({"cmd": "track.delete", "track": "Reverb"}));
+    assert_eq!(parents(&s), named(&[("VoxBus", None), ("Lead", Some("VoxBus")), ("FX", None)]));
+    assert_eq!(s.project.tracks[2].folder_depth, 0);
+    ok(&mut s, json!({"cmd": "track.delete", "track": "VoxBus"}));
+    assert_eq!(parents(&s), named(&[("Lead", None), ("FX", None)]));
+    assert!(s.project.tracks.iter().all(|t| t.folder_depth == 0));
+}
+
+/// Peak of the mix between `from` and `to` seconds.
+fn mix_peak(s: &Session, pool: &MediaPool, from: f64, to: f64) -> f32 {
+    let mut peak = 0.0f32;
+    let range = scythe_core::TimeRange::new(from, to);
+    scythe_engine::bounce::render_blocks(
+        &s.project,
+        pool,
+        range,
+        48_000,
+        |l, _| peak = l.iter().fold(peak, |m, v| m.max(v.abs())),
+        |_| {},
+    )
+    .unwrap();
+    peak
+}
+
+#[test]
+fn auto_crossfades_go_when_the_overlap_goes() {
+    let dir = std::env::temp_dir().join(format!("scythe-xfade-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("dc.wav");
+    write_wav(&wav, 48_000, &vec![0.5; 4 * 48_000]);
+    let pool = MediaPool::default();
+    pool.load(&wav, 48_000).unwrap();
+
+    let mut s = session();
+    let vox = add_track(&mut s, "Vox");
+    let alt = add_track(&mut s, "Alt");
+    let item = |s: &mut Session, track: usize| {
+        let it = Item::new(0.0, 4.0, Take::from_file(wav.clone()));
+        let id = it.id.0;
+        s.project.tracks[track].items.push(it);
+        id
+    };
+    let fades = |s: &Session, id: u64| {
+        let (_, it) = s.project.find_item(scythe_core::ItemId(id)).unwrap();
+        (it.fade_in.auto_length, it.fade_out.auto_length)
+    };
+
+    let keep = item(&mut s, 0);
+    let muted = item(&mut s, 0);
+    ok(&mut s, json!({"cmd": "item.mute", "item": muted, "muted": true}));
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "position": 1.0}));
+    assert_eq!(fades(&s, keep).1, 3.0);
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "track": alt}));
+    assert_eq!(fades(&s, keep), (0.0, 0.0), "moving the item away ends the crossfade");
+    assert!(mix_peak(&s, &pool, 3.5, 3.9) > 0.49);
+
+    ok(&mut s, json!({"cmd": "item.move", "item": muted, "track": vox}));
+    assert_eq!(fades(&s, keep).1, 3.0);
+    ok(&mut s, json!({"cmd": "project.editing", "auto_crossfade": false}));
+    ok(&mut s, json!({"cmd": "item.delete", "item": muted}));
+    assert_eq!(fades(&s, keep), (0.0, 0.0), "deleting the item ends the crossfade, auto-crossfade off too");
+    assert!(mix_peak(&s, &pool, 3.5, 3.9) > 0.49);
+
+    s.project.tracks[0].items[0].fade_out.auto_length = 2.0;
+    let f = ok(&mut s, json!({"cmd": "item.fade", "item": keep, "fade": "out", "auto_length": 0.0}));
+    assert_eq!(f["auto_length"], 0.0);
+    assert_eq!(fades(&s, keep), (0.0, 0.0));
+    let f = ok(&mut s, json!({"cmd": "item.fade", "item": keep, "fade": "in", "auto_length": 0.5}));
+    assert_eq!(f["auto_length"], 0.5);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_file_overwritten_in_place_is_read_again() {
+    let dir = std::env::temp_dir().join(format!("scythe-overwrite-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let wav = dir.join("take.wav");
+    write_wav(&wav, 48_000, &vec![0.5; 48_000]);
+    let mut s = session();
+    let first = ok(&mut s, json!({"cmd": "media.import", "paths": [wav]}));
+    let item = first["items"][0]["item"].as_u64().unwrap();
+    let peak = |s: &mut Session| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            s.poll();
+            let p = ok(s, json!({"cmd": "item.peaks", "item": item, "width": 1}));
+            if p["state"] == "ready" || std::time::Instant::now() > deadline {
+                return p["max"][0].as_f64().unwrap_or(0.0);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    assert!((peak(&mut s) - 0.5).abs() < 0.01);
+
+    let overwrite = |level: f32, ahead: u64| {
+        write_wav(&wav, 48_000, &vec![level; 48_000]);
+        let later = std::time::SystemTime::now() + Duration::from_secs(ahead);
+        std::fs::File::options().write(true).open(&wav).unwrap().set_modified(later).unwrap();
+    };
+    overwrite(0.25, 5);
+    ok(&mut s, json!({"cmd": "media.import", "paths": [wav], "track": "take"}));
+    assert!((peak(&mut s) - 0.25).abs() < 0.01, "the item plays the new file");
+
+    overwrite(0.125, 10);
+    let rate = s.engine.sample_rate();
+    let reloaded = s.engine.pool().load(&wav, rate).unwrap();
+    assert!((reloaded.peaks.range(0.0, 1000.0).1 - 0.125).abs() < 0.01, "a load reads the new file");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The workspace's `clap-test-gain` plugin; `None` until `cargo build -p clap-test-gain`.
+fn clap_test_gain() -> Option<Vec<scythe_engine::clap_host::ClapDescriptor>> {
+    let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let path = ["debug", "release"].iter().map(|p| target.join(p).join("libclap_test_gain.so")).find(|p| p.exists())?;
+    Some(scythe_engine::clap_host::ClapLibrary::load(&path).ok()?.descriptors())
+}
+
+#[test]
+fn one_clap_parameter_write_sticks_and_reaches_offline_renders() {
+    let Some(descs) = clap_test_gain() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let catalog = scythe_engine::plugin_scan::Catalog::fixed();
+    catalog.set_clap(descs.clone());
+    let mut s = session();
+    s.engine.set_plugin_catalog(catalog);
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+
+    let set = ok(&mut s, json!({"cmd": "fx.param", "track": t, "index": 0, "param": 7, "value": 0.2}));
+    assert!((set["value"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{set}");
+    let params = ok(&mut s, json!({"cmd": "fx.params", "track": t, "index": 0}));
+    assert!((params[0]["value"].as_f64().unwrap() - 0.2).abs() < 1e-6, "{params}");
+
+    // An offline render sets its effects up anew from the project as it is now.
+    let project = s.project.clone();
+    let mut render = scythe_engine::fx::FxRegistry::new(48_000);
+    render.set_clap_plugins(descs);
+    let chain = render.chain(Some(project.tracks[0].id), &project.tracks[0].fx);
+    let value = chain[0].with(|e| e.param(7)).flatten().map(|(v, _)| v).unwrap();
+    assert!((value - 0.2).abs() < 1e-6, "the render instance plays {value}");
+}

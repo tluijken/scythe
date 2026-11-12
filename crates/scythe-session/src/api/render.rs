@@ -55,8 +55,8 @@ pub enum Bounds {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum RenderCommand {
-    /// The files the project's render settings write now, with their time spans and what each
-    /// plays; nothing is rendered.
+    /// The files the project's render settings write now, with their time spans, what each
+    /// plays and the sample rate; nothing is rendered.
     #[serde(rename = "render.jobs")]
     Jobs,
     /// Changes the project's render settings; what is left out stays.
@@ -73,6 +73,9 @@ pub enum RenderCommand {
         /// Output folder (or file); relative to the project's folder.
         #[serde(default)]
         file: Option<String>,
+        /// Sample rate in Hz (REAPER's `RENDER_SRATE`); 0 renders at the project's rate.
+        #[serde(default)]
+        sample_rate: Option<u32>,
     },
     /// Ticks (or unticks) a track, or the master, for a region in the region render matrix.
     #[serde(rename = "render.matrix")]
@@ -130,6 +133,7 @@ pub fn execute(session: &mut Session, command: RenderCommand) -> Result<Value, A
         RenderCommand::Jobs => {
             let settings = RenderSettings::from_project(&session.project);
             let jobs = settings.jobs(&session.project, &session.render_selection(), 0).map_err(ApiError::failed)?;
+            let rate = crate::render::render_rate(&settings, &session.project);
             Ok(Value::Array(
                 jobs.iter()
                     .map(|j| {
@@ -138,12 +142,16 @@ pub fn execute(session: &mut Session, command: RenderCommand) -> Result<Value, A
                             "start": j.range.start,
                             "end": j.range.end,
                             "source": source_json(session, j.source),
+                            "sample_rate": rate,
                         })
                     })
                     .collect(),
             ))
         }
-        RenderCommand::Settings { source, bounds, pattern, file } => {
+        RenderCommand::Settings { source, bounds, pattern, file, sample_rate } => {
+            if sample_rate.is_some_and(|r| r != 0 && !(8_000..=768_000).contains(&r)) {
+                return Err(ApiError::invalid("render sample rates run from 8000 to 768000 Hz (0 for the project's)"));
+            }
             session.edit("Render settings", |p| {
                 if let Some(s) = source {
                     let keep = RenderSettings::from_project(p).source.0 & !(1 | 2 | 8 | 32 | 64 | 128);
@@ -163,6 +171,9 @@ pub fn execute(session: &mut Session, command: RenderCommand) -> Result<Value, A
                 }
                 if let Some(f) = &file {
                     set_project_field(p, "RENDER_FILE", &[""], 1, f);
+                }
+                if let Some(rate) = sample_rate {
+                    set_project_field(p, "RENDER_FMT", &["0", "2", "0"], 3, &rate.to_string());
                 }
             });
             execute(session, RenderCommand::Jobs).or(Ok(super::done()))
@@ -192,6 +203,7 @@ pub fn execute(session: &mut Session, command: RenderCommand) -> Result<Value, A
             Ok(super::done())
         }
         RenderCommand::Project => {
+            session.store_plugin_states();
             let project = session.project.clone();
             let selection = session.render_selection();
             let tx = session.loader_tx.clone();

@@ -697,7 +697,9 @@ impl ClapPlugin {
             .collect()
     }
 
-    pub fn param_value(&self, id: u32) -> Option<f64> {
+    /// The parameter's value, with queued changes applied first.
+    pub fn param_value(&mut self, id: u32) -> Option<f64> {
+        self.flush_params();
         let get = self.params_ext()?.get_value?;
         let mut v = 0.0;
         // SAFETY: as above.
@@ -711,7 +713,8 @@ impl ClapPlugin {
         unsafe { to_text(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) }.then(|| cstr(buf.as_ptr()))
     }
 
-    /// Queues a parameter change for the next processed block.
+    /// Queues a parameter change for the next processed block, or for the next read of a value
+    /// or the state, whichever comes first.
     pub fn set_param(&mut self, id: u32, value: f64) {
         self.pending_params.retain(|e| e.param_id != id);
         self.pending_params.push(clap_event_param_value {
@@ -732,7 +735,32 @@ impl ClapPlugin {
         });
     }
 
-    pub fn save_state(&self) -> Option<Vec<u8>> {
+    /// Hands queued parameter changes to the plugin through `clap_plugin_params.flush`, as
+    /// CLAP wants when no `process` call will carry them: an idle instance would otherwise
+    /// report and save the old values until its next block. Never concurrent with `process`,
+    /// as every call on the instance is. Without `flush` they wait for the next block.
+    pub fn flush_params(&mut self) {
+        if self.pending_params.is_empty() {
+            return;
+        }
+        let Some(flush) = self.params_ext().and_then(|p| p.flush) else { return };
+        self.order.clear();
+        self.order.extend(self.pending_params.iter().map(|e| &e.header as *const clap_event_header));
+        let in_events = clap_input_events {
+            ctx: &self.order as *const Vec<*const clap_event_header> as *mut c_void,
+            size: Some(events_size),
+            get: Some(events_get),
+        };
+        let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(drop_event) };
+        // SAFETY: the event lists and the events they point at outlive the call.
+        unsafe { flush(self.plugin, &in_events, &out_events) };
+        self.pending_params.clear();
+        self.order.clear();
+    }
+
+    /// The plugin's state, with queued parameter changes applied first.
+    pub fn save_state(&mut self) -> Option<Vec<u8>> {
+        self.flush_params();
         let save = self.state_ext()?.save?;
         let mut out = Vec::new();
         let stream = clap_ostream { ctx: &mut out as *mut Vec<u8> as *mut c_void, write: Some(write_vec) };
@@ -762,6 +790,8 @@ impl ClapPlugin {
     }
 
     pub fn load_state(&mut self, data: &[u8]) -> bool {
+        // Changes queued before the state would otherwise land on top of it in the next block.
+        self.pending_params.clear();
         let Some(load) = self.state_ext().and_then(|s| s.load) else { return false };
         let mut ctx: (&[u8], usize) = (data, 0);
         let stream = clap_istream { ctx: &mut ctx as *mut (&[u8], usize) as *mut c_void, read: Some(read_slice) };

@@ -737,6 +737,29 @@ mod tests {
     use scythe_core::render_settings::CdTracks;
     use scythe_core::{Item, Take};
 
+    /// A guitar rig on a track without items renders silence from the first frame, wherever
+    /// the render starts.
+    #[test]
+    fn a_rig_fed_silence_renders_silence_from_the_start() {
+        let dir = std::env::temp_dir().join(format!("scythe-bounce-rig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model = dir.join("amp.nam");
+        std::fs::write(&model, crate::nam::tests::SETTLING_MODEL).unwrap();
+        let mut settings = crate::rig::RigSettings::default();
+        settings.amp.model = Some(model.to_string_lossy().into_owned());
+        let mut p = Project::default();
+        let t = p.add_track("Guitar");
+        p.track_mut(t).unwrap().fx.push(crate::rig::new_rig(&settings));
+        let pool = MediaPool::default();
+        for start in [0.0, 12.5] {
+            let mut peak = 0.0f32;
+            let sink = |l: &[f32], r: &[f32]| peak = l.iter().chain(r).fold(peak, |m, s| m.max(s.abs()));
+            render_blocks(&p, &pool, TimeRange::new(start, start + 0.2), 48_000, sink, |_| {}).unwrap();
+            assert!(peak < 10f32.powf(-90.0 / 20.0), "from {start} s: {} dBFS", 20.0 * peak.log10());
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn bounce_renders_project_audio() {
         let dir = std::env::temp_dir().join(format!("scythe-bounce-{}", std::process::id()));

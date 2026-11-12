@@ -212,10 +212,10 @@ unsafe extern "C" fn start(_p: *const clap_plugin) -> bool {
     true
 }
 
-unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
-    // SAFETY: the host passes valid buffers for `frames_count` frames.
+unsafe fn apply_params(p: *const clap_plugin, events: *const clap_sys::events::clap_input_events) {
+    // SAFETY: the host passes a valid event list for the call.
     unsafe {
-        let events = &*(*process).in_events;
+        let events = &*events;
         for i in 0..(events.size.unwrap())(events) {
             let e = &*(events.get.unwrap())(events, i);
             if e.type_ == clap_sys::events::CLAP_EVENT_PARAM_VALUE {
@@ -225,6 +225,13 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
                 }
             }
         }
+    }
+}
+
+unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process) -> clap_process_status {
+    // SAFETY: the host passes valid buffers for `frames_count` frames.
+    unsafe {
+        apply_params(p, (*process).in_events);
         let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed));
         let pr = &*process;
         let (input, output) = (&*pr.audio_inputs, &*pr.audio_outputs);
@@ -348,13 +355,22 @@ unsafe extern "C" fn params_text(_p: *const clap_plugin, _id: u32, value: f64, o
     true
 }
 
+unsafe extern "C" fn params_flush(
+    p: *const clap_plugin,
+    events: *const clap_sys::events::clap_input_events,
+    _out: *const clap_sys::events::clap_output_events,
+) {
+    // SAFETY: the host passes a valid plugin and event list.
+    unsafe { apply_params(p, events) };
+}
+
 static PARAMS: clap_sys::ext::params::clap_plugin_params = clap_sys::ext::params::clap_plugin_params {
     count: Some(params_count),
     get_info: Some(params_info),
     get_value: Some(params_value),
     value_to_text: Some(params_text),
     text_to_value: None,
-    flush: None,
+    flush: Some(params_flush),
 };
 
 /// The editor: a coloured child window in the host's X11 window, and a host timer.

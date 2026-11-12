@@ -123,11 +123,12 @@ pub enum TrackCommand {
         on: Option<bool>,
     },
     /// Inverts the track's polarity at its fader (pre-fader sends keep the original). Toggles
-    /// when `phase` is left out.
+    /// when `phase` (or `invert`) is left out.
     #[serde(rename = "track.phase")]
     Phase {
         track: TrackRef,
-        #[serde(default)]
+        /// True inverts, false restores the polarity.
+        #[serde(default, alias = "invert")]
         phase: Option<bool>,
     },
     /// The track's pan mode.
@@ -201,6 +202,10 @@ pub enum TrackCommand {
     /// tracks below it, -n makes it the last track of n folders, 0 a plain track.
     #[serde(rename = "track.folder")]
     Folder { track: TrackRef, depth: i32 },
+    /// The track's (or the master's) audio channels (REAPER's `NCHAN`): an even number from 2
+    /// to 128. Channels 3/4 are the sidechain input of its effects.
+    #[serde(rename = "track.channels")]
+    Channels { track: TrackRef, channels: u32 },
     /// Whether the track feeds its parent or the master; off for a bus that only plays through
     /// its hardware outputs. Toggles when `on` is left out.
     #[serde(rename = "track.main_send")]
@@ -506,6 +511,12 @@ pub fn execute(session: &mut Session, command: TrackCommand) -> Result<Value, Ap
         TrackCommand::Folder { track, depth } => {
             track.track(&session.project)?;
             set(session, &track, "Set folder depth", |t| t.folder_depth = depth)
+        }
+        TrackCommand::Channels { track, channels } => {
+            if channels % 2 != 0 || !(2..=128).contains(&channels) {
+                return Err(ApiError::invalid("channels is an even number from 2 to 128"));
+            }
+            set(session, &track, "Set track channels", |t| t.channels = channels)
         }
         TrackCommand::MainSend { track, on } => {
             track.track(&session.project)?;

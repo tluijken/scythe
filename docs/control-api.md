@@ -88,7 +88,8 @@ arguments. Fields shown with `?` may be left out.
 track's exact name (a string), or `"master"` where the master makes sense (volume, pan, mute,
 effects). **Levels** are given as `volume` (gain, 1.0 = 0 dB, capped at +24 dB) or `db`. **Pan**
 runs from -1 (left) to 1 (right). Times are in seconds. Flags (`muted`, `solo`, `armed`,
-`monitor`, `bypassed`) toggle when left out.
+`monitor`, `bypassed`) toggle when left out. Fields a command does not know are ignored, so a
+misspelt flag toggles: read the answer to see the state.
 
 Continuous controls (track and send volume and pan, item volume) fold repeated changes of the
 same control within a second into one undo step, so a fader dragged on a tablet is undone in
@@ -198,7 +199,7 @@ or `none`, with `reason` saying why.
 | `track.list` | | every track |
 | `track.get` | `track` | the track |
 | `track.add` | `name?`, `index?` (end when left out) | the new track |
-| `track.delete` | `track` | `{}` |
+| `track.delete` | `track` | `{}`; only that track goes and the folders around it stay as they were: a folder's children move up a level in its place, and a track that closed folders hands that on to the track before it |
 | `track.rename` | `track`, `name` | the track |
 | `track.freeze` | `track` | `{"file", "levels"}`: renders the items through the effects (pre-fader, one second of tail) beside the saved project and plays that instead; again stacks a level |
 | `track.unfreeze` | `track` | `{"levels"}`: the last level's effects and items are back |
@@ -208,7 +209,7 @@ or `none`, with `reason` saying why.
 | `track.mute` | `track`, `muted?` | the track; mute groups follow |
 | `track.solo` | `track`, `solo?`, `mode?` (`"in_place"`, the default, or `"ignore_routing"`) | the track; solo groups follow |
 | `track.solo_defeat` | `track`, `on?` | solo defeat: the track stays heard while others are soloed (monitor mixes have it) |
-| `track.phase` | `track`, `phase?` | polarity, inverted at the fader (post-fader sends follow, pre-fader and pre-FX sends do not); polarity groups follow |
+| `track.phase` | `track`, `phase?` (or `invert?`; toggles when both are left out) | polarity, inverted at the fader (post-fader sends follow, pre-fader and pre-FX sends do not); polarity groups follow |
 | `track.pan_mode` | `track`, `mode` (`"balance"`, `"classic"`, `"stereo"`, `"dual"` or `null` for the project default) | the track |
 | `track.width` | `track`, `width` (-1 to 1) | the track; width groups follow |
 | `track.dual_pan` | `track`, `left`, `right` (-1 to 1) | the track: where dual pan puts each channel |
@@ -220,6 +221,7 @@ or `none`, with `reason` saying why.
 | `track.folder` | `track`, `depth` | REAPER's `I_FOLDERDEPTH`: 1 starts a folder holding the tracks below, -*n* closes *n* folders after this track, 0 is a plain track |
 | `track.new_folder` | `tracks`, `name?` | the new folder: REAPER's "Move tracks to new folder" puts it where the first track was and the tracks (with their children) inside |
 | `track.collapse` | `track`, `compact?` (0 normal, 1 small, 2 collapsed: `I_FOLDERCOMPACT`), `mixer?` (hide the children in the mixer) | the track; with neither it cycles 0, 1, 2 as "Track: Cycle folder collapsed state". Not an undo step, as in REAPER |
+| `track.channels` | `track` (or `"master"`), `channels` (even, 2-128) | the track: its channel count, REAPER's `NCHAN`. Channels 3/4 are the sidechain (auxiliary) input of its effects |
 
 ### Recording and lanes
 
@@ -267,6 +269,7 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 | `send.mute` | `track`, `send`, `muted?` | the send |
 | `send.mode` | `track`, `send`, `mode?` (`post_fader`, `pre_fx`, `post_fx`), `mono?`, `phase?` | the send |
 | `send.midi` | `track`, `send`, any of `enabled`, `audio` (false makes a MIDI-only send), `src_channel`, `dst_channel`, `src_bus`, `dst_bus` (1-16; 0 is all for sources and unchanged for destinations), `faders` | the send; its `midi` field (null without MIDI) and `audio` show the same, stored as REAPER's `I_MIDIFLAGS` |
+| `send.channels` | `track`, `send`, any of `src` (first source channel, from 1), `src_count` (1, 2 or an even number up to 64), `dst` (first destination channel on the receiving track, from 1), `dst_mono` (mix down to the one channel `dst`) | the send; stored as REAPER's `I_SRCCHAN` / `I_DSTCHAN`. Both ends must fit the tracks' channel counts (`track.channels` adds more) |
 | `send.hw_list` | `track` (or `"master"`) | the hardware outputs |
 | `send.hw_add` | `track`, `output?` (device output from 0; the next free one when left out), `mono?` | the new output |
 | `send.hw_remove` | `track`, `hw` | the remaining outputs |
@@ -274,6 +277,18 @@ Sends are numbered from 0 per sending track, in the order `send.list` gives.
 
 `track.main_send` (`track`, `on?`) turns a track's feed to its parent or the master on or off;
 a bus that only plays through hardware outputs has it off.
+
+Send entries (in `send.list` and track snapshots) carry the audio routing as `src`, `src_count`, `dst`
+and `dst_mono` (channels from 1; `src` is null for a MIDI-only send). A sidechain: give the
+receiving track four channels and send into 3/4, where its effects (a Scythe EQ band with
+`external_sidechain`, a compressor's detector) listen without the key reaching the track's own
+1/2:
+
+```json
+{"cmd": "track.channels", "track": "Guitar bus", "channels": 4}
+{"cmd": "send.add", "track": "Piano", "dest": "Guitar bus"}
+{"cmd": "send.channels", "track": "Piano", "send": 0, "dst": 3}
+```
 
 ### Monitor mixes
 
@@ -334,6 +349,7 @@ itself).
 | `fx.param` | `track`, `index`, `param` (an id from `fx.params`), `value` (clamped to the range) | the parameter |
 | `fx.meters` | `track`, `index` | `{"input_db", "output_db", "reduction_db", "detector_db", "gate_open", "band_reduction_db"}`; measuring runs for about two seconds after each call, so the first can read nothing |
 | `fx.eq_band` | `track`, `index`, `action` (`add`, `remove`, `set`), `band`, `kind` (`low_shelf`, `high_shelf`, `band`, `notch`, `low_pass`, `high_pass`, `band_pass`, `all_pass`), `freq`, `gain_db`, `width` | `{"bands"}`; one undo step |
+| `eq.band` | `track`, `index` (a Scythe EQ), `band?` (0-23), `remove?`, `shape?`, `freq?`, `gain_db?`, `q?`, `slope?`, `stereo?`, `enabled?`, `dynamic?`, `range_db?`, `threshold_db?`, `auto_threshold?`, `attack_ms?`, `release_ms?`, `external_sidechain?` | the band; one undo step. Bands are 24 fixed slots: without `band` a new band goes into the first free slot, a `band` that is free is added there (from the defaults, then the fields given), a `band` in use is changed. `remove` of a band not in use answers `invalid` naming the bands in use |
 | `fx.delay_tap` | `track`, `index`, `action`, `tap`, `time_ms`, `musical`, `feedback_db`, `volume_db`, `pan`, `lowpass`, `highpass`, `enabled` | `{"taps"}`; one undo step |
 | `fx.fir_points` | `track`, `index`, `points` (`[[hz, db], …]`) | `{"points"}`; one undo step |
 | `fx.wet` | `track`, `index`, `wet?` (0-1), `delta?` (play only the difference the effect makes) | the chain |
@@ -401,7 +417,9 @@ Items are named by their `id` from a snapshot or `item.list`.
 ### Editing
 
 These follow the project's editing settings as REAPER's actions do: ripple mode, item groups,
-locks and auto-crossfade. Items are lists of ids.
+locks and auto-crossfade. Items are lists of ids. Items that overlap on a track crossfade over
+the overlap while auto-crossfade is on, muted items too; an edit that ends the overlap (moving,
+deleting, trimming an item) ends the crossfade, also with auto-crossfade off.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
@@ -414,7 +432,7 @@ locks and auto-crossfade. Items are lists of ids.
 | `item.group` / `item.ungroup` | `items` | `{"group"}` / the items |
 | `item.select_groups` | `items` | the ids with their group mates |
 | `item.nudge` | `items`, `value`, `what?` (`position`, `left_trim`, `left_edge`, `right_edge`, `contents`, `duplicate`, `edit_cursor`), `unit?` (REAPER's nudge units 0-21: ms, seconds, grid, notes 1/256 to whole, measures.beats, samples, frames, pixels, item lengths, item selections), `set?`, `snap?`, `reverse?`, `copies?` | the items to select afterwards (`{"cursor"}` for the edit cursor) |
-| `item.fade` | `item`, `fade` (`in`/`out`), `length?`, `shape?` (0-7, 7 equal power), `curve?`, `kind?` (REAPER's fade types 1-7) | the fade |
+| `item.fade` | `item`, `fade` (`in`/`out`), `length?`, `auto_length?` (the crossfade length, which overrides `length` while above 0; 0 clears it), `shape?` (0-7, 7 equal power), `curve?`, `kind?` (REAPER's fade types 1-7) | the fade |
 | `item.crossfade` | `items`, `start?` and `end?` (crossfade neighbours over that range, extending them), `kind?` (crossfade type 1-7 for items that already crossfade) | the items |
 | `item.transients` | `item`, `sensitivity?` (0-1, 0.5), `threshold_db?` (-24) | `{"transients"}` in project time |
 | `item.dynamic_split` | `items`, `sensitivity?`, `threshold_db?`, `min_length?` | the pieces |
@@ -446,8 +464,8 @@ admin-only.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
-| `render.jobs` | | the files a render writes now: `path`, `start`, `end`, `source` (`kind`: `master`, `stem`, `track_via_master`, `item`, `item_via_master`; `track`) |
-| `render.settings` | `source?` (`master`, `master_and_stems`, `stems`, `tracks_via_master`, `items`, `items_via_master`, `matrix`), `bounds?` (`project`, `time_selection`, `regions`, `selected_items`), `pattern?`, `file?` | the jobs, as `render.jobs` |
+| `render.jobs` | | the files a render writes now: `path`, `start`, `end`, `source` (`kind`: `master`, `stem`, `track_via_master`, `item`, `item_via_master`; `track`), `sample_rate` |
+| `render.settings` | `source?` (`master`, `master_and_stems`, `stems`, `tracks_via_master`, `items`, `items_via_master`, `matrix`), `bounds?` (`project`, `time_selection`, `regions`, `selected_items`), `pattern?`, `file?`, `sample_rate?` (Hz; 0 renders at the project's rate) | the jobs, as `render.jobs` |
 | `render.matrix` | `region`, `track` (id, name or `"master"`), `on` | `{}`: ticks the track for the region in the region render matrix |
 | `render.project` | | `{}`; renders in the background, a notice says when it is done |
 | `render.queue` | `dir?` (REAPER's `QueuedRenders`) | `{"queued"}`: the queued copy |
@@ -704,6 +722,9 @@ in `origins`: the payload of the link's QR code.
 ### Media
 
 Admin only: paths name files on the machine running Scythe, anything its process may read.
+A file written anew under the same name (its modification time or size changed) is read again
+on the next edit, `media.import` of it or analysis, and renders read every file afresh; the
+items already playing it then play the new audio.
 
 | `cmd` | Arguments | Answer |
 |---|---|---|
@@ -890,7 +911,8 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
     "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "folder_compact": 0, "mixer_collapsed": false, "channels": 2,
     "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
     "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
-               "mode": "post_fader", "mono": false, "phase": false}],
+               "mode": "post_fader", "mono": false, "phase": false, "audio": true,
+               "src": 1, "src_count": 2, "dst": 1, "dst_mono": false, "midi": null}],
     "main_send": true,
     "hw_outs": [{"index": 0, "output": 2, "mono": false, "label": "Out 3/4", "mode": "post_fader",
                  "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false, "phase": false}],

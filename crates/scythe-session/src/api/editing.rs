@@ -248,9 +248,12 @@ pub enum EditingCommand {
         item: u64,
         /// "in" or "out".
         fade: Which,
-        /// Length in seconds.
+        /// Length in seconds; an automatic length above 0 overrides it.
         #[serde(default)]
         length: Option<f64>,
+        /// The automatic (crossfade) length in seconds (`D_FADEINLEN_AUTO`); 0 clears it.
+        #[serde(default)]
+        auto_length: Option<f64>,
         /// REAPER's shape number (`C_FADEINSHAPE`): 0 linear, 1 fast start, 2 fast end, 3
         /// fast start steep, 4 fast end steep, 5 slow start/end, 6 slow start/end steep, 7
         /// equal power.
@@ -597,7 +600,7 @@ pub fn execute(session: &mut Session, command: EditingCommand) -> Result<Value, 
             }
             Ok(infos(&session.project, &selected))
         }
-        EditingCommand::Fade { item, fade, length, shape, curve, kind } => {
+        EditingCommand::Fade { item, fade, length, auto_length, shape, curve, kind } => {
             let ids = ids(session, &[item])?;
             if shape.is_some_and(|s| s > 7) {
                 return Err(ApiError::invalid("shape runs from 0 to 7"));
@@ -606,6 +609,7 @@ pub fn execute(session: &mut Session, command: EditingCommand) -> Result<Value, 
                 return Err(ApiError::invalid("kind runs from 1 to 7"));
             }
             let length = length.map(|l| time(l, "length")).transpose()?;
+            let auto_length = auto_length.map(|l| time(l, "auto_length")).transpose()?;
             session.edit("Item fade", |p| {
                 let Some(it) = p.item_mut_anywhere(ids[0]) else { return };
                 let item_len = it.length;
@@ -613,6 +617,9 @@ pub fn execute(session: &mut Session, command: EditingCommand) -> Result<Value, 
                 let f = if out { &mut it.fade_out } else { &mut it.fade_in };
                 if let Some(l) = length {
                     f.length = l.min(item_len);
+                }
+                if let Some(l) = auto_length {
+                    f.auto_length = l.min(item_len);
                 }
                 if let Some(k) = kind {
                     f.set_type(k - 1, out, false);
