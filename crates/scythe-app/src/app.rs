@@ -552,6 +552,7 @@ impl ScytheApp {
     /// Renders to 24-bit WAV in the background: the whole project, the time selection, or one
     /// file per track (each soloed, so folder and master processing stay in the stem).
     pub fn render(&mut self, kind: RenderKind) {
+        self.store_plugin_states();
         let range = match kind {
             RenderKind::Selection => match self.project.time_selection.filter(|r| !r.is_empty()) {
                 Some(r) => r,
@@ -652,7 +653,8 @@ impl ScytheApp {
 
     /// Adds the project, as it is now, to REAPER's render queue.
     pub fn queue_render(&mut self) {
-        match self.session.queue_render(None, &self.render_selection()) {
+        let selection = self.render_selection();
+        match self.session.queue_render(None, &selection) {
             Ok(path) => self.notify(format!("Queued {}", path.file_name().unwrap_or_default().to_string_lossy())),
             Err(e) => self.notify(format!("Cannot queue the render: {e}")),
         }
@@ -674,6 +676,7 @@ impl ScytheApp {
     }
 
     fn render_selected_items(&mut self, with_fx: bool) {
+        self.store_plugin_states();
         let selected = self.selected_items();
         if selected.is_empty() {
             self.notify("Select items first");

@@ -426,6 +426,13 @@ impl Session {
         out
     }
 
+    /// Writes what the hosted plugins hold now into the project, for a render that sets up
+    /// its own instances from it: changes made in a plugin's editor reach the project only
+    /// on a save otherwise.
+    pub fn store_plugin_states(&mut self) {
+        self.engine.store_plugin_states(&mut self.project);
+    }
+
     /// Ends the gesture; item moves and trims end with automatic crossfades on `tracks`, the
     /// tracks they touched.
     pub fn end_gesture_crossfading(&mut self, tracks: impl IntoIterator<Item = TrackId>) {
@@ -539,6 +546,7 @@ impl Session {
     /// "Freeze to stereo" does. Freezing a frozen track stacks another level.
     pub fn freeze_track(&mut self, track: TrackId) -> Result<PathBuf, String> {
         const TAIL: f64 = 1.0;
+        self.store_plugin_states();
         let t = self.project.track(track).ok_or("the track is gone")?;
         let ids: Vec<_> = t.items.iter().filter(|i| !i.muted).map(|i| i.id).collect();
         let (mut isolated, range) =

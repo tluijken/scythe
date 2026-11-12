@@ -377,7 +377,13 @@ impl Render {
     }
 }
 
-fn mix_source(session: &Session, target: &MixTarget, start: Option<f64>, end: Option<f64>) -> Result<Source, ApiError> {
+fn mix_source(
+    session: &mut Session,
+    target: &MixTarget,
+    start: Option<f64>,
+    end: Option<f64>,
+) -> Result<Source, ApiError> {
+    session.store_plugin_states();
     let p = &session.project;
     let project = match target {
         MixTarget::Track(t) => match t.resolve(p)? {
@@ -425,7 +431,7 @@ fn mix_source(session: &Session, target: &MixTarget, start: Option<f64>, end: Op
     })))
 }
 
-fn subject_source(session: &Session, subject: &Subject) -> Result<Source, ApiError> {
+fn subject_source(session: &mut Session, subject: &Subject) -> Result<Source, ApiError> {
     match subject {
         Subject::Job { job } => finished_analysis(*job).map(Source::Ready),
         Subject::File { file, start, end } => {
