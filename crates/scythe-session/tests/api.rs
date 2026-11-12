@@ -2209,6 +2209,7 @@ fn a_file_overwritten_in_place_is_read_again() {
     let reloaded = s.engine.pool().load(&wav, rate).unwrap();
     assert!((reloaded.peaks.range(0.0, 1000.0).1 - 0.125).abs() < 0.01, "a load reads the new file");
     std::fs::remove_dir_all(&dir).ok();
+}
 
 /// The workspace's `clap-test-gain` plugin; `None` until `cargo build -p clap-test-gain`.
 fn clap_test_gain() -> Option<Vec<scythe_engine::clap_host::ClapDescriptor>> {
