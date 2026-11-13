@@ -123,10 +123,7 @@ pub fn service_args(args: &[String], cwd: &Path) -> Vec<String> {
 
 /// `$XDG_CONFIG_HOME/systemd/user`.
 fn unit_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("systemd").join("user"))
+    scythe_core::paths::config_home().map(|c| c.join("systemd").join("user"))
 }
 
 /// Writes the user unit for `args` and says how to enable it.

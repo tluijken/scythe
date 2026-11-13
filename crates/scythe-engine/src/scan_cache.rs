@@ -11,9 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// `$XDG_CACHE_HOME/scythe/<name>.json`.
 pub fn default_path(name: &str) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    let base = scythe_core::paths::cache_home()?;
     Some(base.join("scythe").join(format!("{name}.json")))
 }
 

@@ -11,10 +11,7 @@ use crate::rpp::{Node, tokenize};
 
 /// `QueuedRenders` in REAPER's resource directory (`~/.config/REAPER` on Linux).
 pub fn default_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("REAPER").join("QueuedRenders"))
+    crate::paths::config_home().map(|c| c.join("REAPER").join("QueuedRenders"))
 }
 
 /// The queued projects in `dir`, oldest first (their names start with the time they were

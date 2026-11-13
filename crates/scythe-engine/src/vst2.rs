@@ -601,9 +601,9 @@ impl Vst2Editor {
 }
 
 impl crate::editor::Editor for Vst2Editor {
-    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+    fn open(&mut self, parent: usize) -> Result<(u32, u32), String> {
         let before = self.rect();
-        if self.dispatch(EFF_EDIT_OPEN, 0, parent as usize as *mut c_void) == 0 && before.is_none() {
+        if self.dispatch(EFF_EDIT_OPEN, 0, parent as *mut c_void) == 0 && before.is_none() {
             return Err("the editor could not be opened".into());
         }
         self.open = true;

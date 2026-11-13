@@ -41,7 +41,8 @@ impl Session {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let new = self.midi_devices.write_cache(&text);
         if new != text
-            && let Err(e) = std::fs::write(&path, new)
+            && let Err(e) =
+                path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, new))
         {
             self.notify(format!("Cannot save {}: {e}", path.display()));
         }

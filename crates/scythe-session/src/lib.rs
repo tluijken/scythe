@@ -773,20 +773,12 @@ impl Session {
 
 /// `$XDG_CONFIG_HOME/scythe/preferences.ini`: the preferences REAPER keeps in reaper.ini.
 pub fn preferences_path() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("scythe")
-        .join("preferences.ini")
+    scythe_core::paths::config_home().unwrap_or_else(std::env::temp_dir).join("scythe").join("preferences.ini")
 }
 
 /// Where Scythe keeps its own files: the demo song, recordings of unsaved projects, presets.
 pub fn data_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .unwrap_or_else(std::env::temp_dir);
+    let base = scythe_core::paths::data_home().unwrap_or_else(std::env::temp_dir);
     base.join("scythe")
 }
 

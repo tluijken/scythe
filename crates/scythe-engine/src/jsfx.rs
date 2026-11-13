@@ -243,9 +243,7 @@ fn preprocess(text: &str) -> Result<String, String> {
 pub fn search_paths() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> =
         std::env::var_os("SCYTHE_JSFX_PATH").map(|v| std::env::split_paths(&v).collect()).unwrap_or_default();
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    let config = scythe_core::paths::config_home();
     if let Some(c) = config {
         dirs.push(c.join("REAPER").join("Effects"));
     }

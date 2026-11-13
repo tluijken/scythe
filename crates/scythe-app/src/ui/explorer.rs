@@ -30,7 +30,7 @@ impl ExplorerWindow {
 }
 
 fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+    scythe_core::paths::home().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn refresh(app: &mut ScytheApp, w: &mut ExplorerWindow) {

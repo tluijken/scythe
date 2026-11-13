@@ -195,13 +195,11 @@ impl DerefMut for ScytheApp {
     }
 }
 
-/// A plugin editor in its window. The instance is held so the plugin outlives its editor.
+/// A plugin editor open in its window on the plugin thread ([`crate::editor_host`]).
 pub struct OpenEditor {
     pub track: Option<TrackId>,
     pub index: usize,
-    instance: Arc<scythe_engine::fx::FxInstance>,
-    editor: Box<dyn scythe_engine::editor::Editor>,
-    window: crate::plugin_window::PluginWindow,
+    id: u64,
 }
 
 /// A JSFX's own view: what its `@gfx` drew last and the mouse it has not seen yet.
@@ -774,23 +772,10 @@ impl ScytheApp {
             });
             return;
         }
-        let Some(mut editor) = instance.with(|e| e.editor()).flatten() else {
-            self.notify(format!("{} has no editor", slot.name));
-            return;
-        };
-        let window = match crate::plugin_window::PluginWindow::new(&slot.name, 640, 480) {
-            Ok(w) => w,
-            Err(e) => {
-                self.notify(format!("Cannot open a plugin window: {e}"));
-                return;
-            }
-        };
-        match editor.open(window.window) {
-            Ok((w, h)) => {
-                window.resize(w, h);
-                self.editors.push(OpenEditor { track, index, instance, editor, window });
-            }
-            Err(e) => self.notify(format!("{}: {e}", slot.name)),
+        match crate::editor_host::open(instance, slot.name.clone()) {
+            Ok(id) => self.editors.push(OpenEditor { track, index, id }),
+            Err(crate::editor_host::OpenError::NoEditor) => self.notify(format!("{} has no editor", slot.name)),
+            Err(crate::editor_host::OpenError::Failed(e)) => self.notify(e),
         }
     }
 
@@ -822,31 +807,18 @@ impl ScytheApp {
     }
 
     fn close_editor(&mut self, at: usize) {
-        let mut open = self.editors.remove(at);
-        open.editor.close();
+        crate::editor_host::close(self.editors.remove(at).id);
     }
 
-    /// Drives open editors: their timers and descriptors, size requests and closing, also
-    /// when their effect left the project.
+    /// Keeps the tracks of open editors live and forgets the editors that closed by themselves.
     pub fn tick_editors(&mut self) {
         let tweaked: Vec<TrackId> =
             self.editors.iter().filter_map(|e| e.track).chain(self.gfx_views.iter().filter_map(|v| v.track)).collect();
         for track in tweaked {
             self.engine.touch_track(track);
         }
-        let mut at = 0;
-        while at < self.editors.len() {
-            let e = &mut self.editors[at];
-            if let Some((w, h)) = e.editor.idle() {
-                e.window.resize(w, h);
-            }
-            let orphaned = std::sync::Arc::strong_count(&e.instance) <= 1;
-            if e.window.close_requested() || e.editor.closed() || orphaned {
-                self.close_editor(at);
-            } else {
-                at += 1;
-            }
-        }
+        let closed = crate::editor_host::take_closed();
+        self.editors.retain(|e| !closed.contains(&e.id));
         self.gfx_views.retain(|v| Arc::strong_count(&v.instance) > 1);
     }
 
@@ -1095,9 +1067,9 @@ impl ScytheApp {
             out.extend(file.presets.into_iter().map(|p| (p.name.clone(), PresetSource::Reaper(path.clone(), p.name))));
         }
         if let Some((_, vendor, name)) = crate::fx_preset::vst3_identity(slot)
-            && let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+            && let Some(home) = scythe_core::paths::home()
         {
-            let root = home.join(".vst3/presets").join(&vendor).join(&name);
+            let root = crate::fx_preset::vst3_presets_dir(&home).join(&vendor).join(&name);
             out.extend(crate::fx_preset::vst3_preset_files(&home, &vendor, &name).into_iter().map(|p| {
                 let shown = p.strip_prefix(&root).unwrap_or(&p).with_extension("");
                 (shown.to_string_lossy().into_owned(), PresetSource::Vst3File(p))
@@ -1616,11 +1588,7 @@ pub enum PresetSource {
 
 /// REAPER's resource folder, when REAPER has been run here.
 pub(crate) fn reaper_resource_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("REAPER"))
-        .filter(|d| d.is_dir())
+    scythe_core::paths::config_home().map(|c| c.join("REAPER")).filter(|d| d.is_dir())
 }
 
 /// A file dialog starting in REAPER's resource folder `sub` (`FXChains`, `TrackTemplates`)

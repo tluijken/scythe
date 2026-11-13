@@ -375,7 +375,7 @@ fn project_file(p: &Project) -> String {
 /// The project's folder, or where an unsaved project's media goes.
 fn project_path(p: &Project) -> String {
     let dir = p.path.as_ref().and_then(|p| p.parent().map(PathBuf::from));
-    let dir = dir.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Documents").join("REAPER Media")));
+    let dir = dir.or_else(|| scythe_core::paths::home().map(|h| h.join("Documents").join("REAPER Media")));
     dir.map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
 }
 

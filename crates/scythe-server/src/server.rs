@@ -122,11 +122,8 @@ impl ControlServer {
         mcp.set_notifier(Arc::new(move |message: &Value| {
             let _ = notify.send(message.to_string().into());
         }));
-        let folders = if config.folders.is_empty() {
-            std::env::var_os("HOME").map(PathBuf::from).into_iter().collect()
-        } else {
-            config.folders
-        };
+        let folders =
+            if config.folders.is_empty() { scythe_core::paths::home().into_iter().collect() } else { config.folders };
         let state = AppState {
             control: handle,
             events,
