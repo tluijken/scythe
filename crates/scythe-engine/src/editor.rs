@@ -52,7 +52,23 @@ impl Timers {
     }
 }
 
+#[cfg(unix)]
+pub(crate) const POLL_READ: i16 = libc::POLLIN | libc::POLLPRI;
+#[cfg(unix)]
+pub(crate) const POLL_ERROR: i16 = libc::POLLERR | libc::POLLHUP;
+#[cfg(windows)]
+pub(crate) const POLL_READ: i16 = 1;
+#[cfg(windows)]
+pub(crate) const POLL_ERROR: i16 = 2;
+
+/// Plugins register descriptors only through CLAP's POSIX extension, which Windows lacks.
+#[cfg(windows)]
+pub fn ready_fds(_fds: &[i32]) -> Vec<(i32, i16)> {
+    Vec::new()
+}
+
 /// File descriptors that are readable (or in error) right now, without blocking.
+#[cfg(unix)]
 pub fn ready_fds(fds: &[i32]) -> Vec<(i32, i16)> {
     if fds.is_empty() {
         return Vec::new();

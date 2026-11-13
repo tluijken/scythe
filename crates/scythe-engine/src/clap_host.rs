@@ -30,7 +30,7 @@ use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
 
-use crate::editor::{Editor, Timers, ready_fds};
+use crate::editor::{Editor, POLL_ERROR, POLL_READ, Timers, ready_fds};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClapError {
@@ -89,7 +89,7 @@ static LOADED: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, Arc<
 
 impl ClapLibrary {
     pub fn load(path: &Path) -> Result<Arc<Self>, ClapError> {
-        let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let key = scythe_core::paths::canonical(path).unwrap_or_else(|_| path.to_path_buf());
         let mut loaded = LOADED.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(lib) = loaded.get(&key) {
             return Ok(lib.clone());
@@ -363,10 +363,10 @@ impl Editor for ClapEditor {
         {
             for (fd, events) in ready {
                 let mut flags = 0;
-                if events & (libc::POLLIN | libc::POLLPRI) != 0 {
+                if events & POLL_READ != 0 {
                     flags |= CLAP_POSIX_FD_READ;
                 }
-                if events & (libc::POLLERR | libc::POLLHUP) != 0 {
+                if events & POLL_ERROR != 0 {
                     flags |= CLAP_POSIX_FD_ERROR;
                 }
                 // SAFETY: a main-thread callback for a descriptor the plugin registered.

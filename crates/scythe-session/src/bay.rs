@@ -64,7 +64,7 @@ pub fn move_to_trash(path: &Path) -> Result<(), String> {
         .map(|n| if n == 0 { name.clone() } else { format!("{name}.{n}") })
         .find(|n| !files.join(n).exists() && !info.join(format!("{n}.trashinfo")).exists())
         .unwrap_or(name);
-    let absolute = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let absolute = scythe_core::paths::canonical(path).unwrap_or_else(|_| path.to_owned());
     let date = time_stamp();
     std::fs::write(
         info.join(format!("{target}.trashinfo")),

@@ -33,6 +33,9 @@ ab_glyph.workspace = true
 image.workspace = true
 zbus.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 jack.workspace = true
 

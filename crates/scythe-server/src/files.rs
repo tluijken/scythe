@@ -46,7 +46,7 @@ fn is_project(path: &Path) -> bool {
 
 /// The roots that exist, resolved, so a path can be checked against them.
 fn resolved(roots: &[PathBuf]) -> Vec<PathBuf> {
-    roots.iter().filter_map(|r| r.canonicalize().ok()).filter(|r| r.is_dir()).collect()
+    roots.iter().filter_map(|r| scythe_core::paths::canonical(r).ok()).filter(|r| r.is_dir()).collect()
 }
 
 /// Lists `path` (the roots when `None`). A path that resolves outside every root, through `..`
@@ -61,7 +61,7 @@ pub fn list(roots: &[PathBuf], path: Option<&Path>) -> Result<Listing, ApiError>
         return Ok(Listing { entries: root_entries.clone(), roots: root_entries, path: None, parent: None });
     };
     let outside = || ApiError::forbidden("that folder is outside the folders this server offers");
-    let dir = path.canonicalize().map_err(|_| outside())?;
+    let dir = scythe_core::paths::canonical(path).map_err(|_| outside())?;
     let Some(root) = roots.iter().find(|r| dir.starts_with(r)) else { return Err(outside()) };
     if !dir.is_dir() {
         return Err(ApiError::invalid("that is not a folder"));
@@ -75,7 +75,7 @@ pub fn list(roots: &[PathBuf], path: Option<&Path>) -> Result<Listing, ApiError>
                 return None;
             }
             let path = d.path();
-            let inside = path.canonicalize().ok().is_some_and(|p| p.starts_with(root));
+            let inside = scythe_core::paths::canonical(&path).ok().is_some_and(|p| p.starts_with(root));
             let wanted = path.is_dir() || is_project(&path);
             (inside && wanted).then(|| entry(&path, name)).flatten()
         })
@@ -115,7 +115,7 @@ mod tests {
         assert_eq!(live.parent, None);
         let set = list(&roots, Some(&root.join("set"))).unwrap();
         assert_eq!(set.entries[0].name, "Set.RPP");
-        assert_eq!(set.parent.as_deref(), Some(root.canonicalize().unwrap().to_str().unwrap()));
+        assert_eq!(set.parent.as_deref(), Some(scythe_core::paths::canonical(&root).unwrap().to_str().unwrap()));
 
         for path in
             [outside.clone(), root.join(".."), root.join("set/../../private"), root.join("escape"), PathBuf::from("/")]

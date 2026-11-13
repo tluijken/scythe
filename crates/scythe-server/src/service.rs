@@ -22,6 +22,7 @@ pub struct Limits {
 }
 
 impl Limits {
+    #[cfg(unix)]
     pub fn current() -> Self {
         let hard = |resource| {
             let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
@@ -32,6 +33,12 @@ impl Limits {
         let rtprio = hard(libc::RLIMIT_RTPRIO).unwrap_or(0);
         let memlock = hard(libc::RLIMIT_MEMLOCK).filter(|&m| m != libc::RLIM_INFINITY);
         Self { rtprio: if rtprio == libc::RLIM_INFINITY { 99 } else { rtprio }, memlock }
+    }
+
+    /// Windows has neither limit: MMCSS grants real-time priority without one.
+    #[cfg(windows)]
+    pub fn current() -> Self {
+        Self { rtprio: 99, memlock: None }
     }
 }
 
@@ -282,6 +289,7 @@ mod tests {
         assert!(!plain.contains("WorkingDirectory"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn service_arguments_are_absolute() {
         let args: Vec<String> = [

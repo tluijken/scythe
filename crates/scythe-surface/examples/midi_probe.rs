@@ -3,13 +3,24 @@
 //! per line, `<seconds> <hex bytes>`; everything received is logged as `<seconds> <hex bytes>`.
 //! `midi_probe --list` prints the MIDI devices as surfaces number them.
 
+#[cfg(unix)]
 use std::io::Write;
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use midir::os::unix::{VirtualInput, VirtualOutput};
+#[cfg(unix)]
 use midir::{MidiInput, MidiOutput};
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("midi_probe needs ALSA virtual MIDI ports");
+}
+
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--list") {

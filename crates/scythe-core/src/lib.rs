@@ -24,6 +24,7 @@ pub mod model;
 pub mod modulation;
 pub mod monitor;
 pub mod mousemap;
+pub mod paths;
 pub mod prefs;
 pub mod recording;
 pub mod render_queue;

@@ -862,8 +862,8 @@ FXID {6F1D255F-BF34-9605-72AD-C41836EC6C7B}
             std::fs::write(dir.join(f), b"").unwrap();
         }
         let found: Vec<_> = vst3_preset_files(&home, "Scythe", "Test Gain");
-        let rel: Vec<_> = found.iter().map(|p| p.strip_prefix(&dir).unwrap().to_string_lossy().into_owned()).collect();
-        assert_eq!(rel, ["User A.vstpreset", "Z.vstpreset", "Sub/User B.vstpreset"]);
+        let rel: Vec<_> = found.iter().map(|p| p.strip_prefix(&dir).unwrap().to_path_buf()).collect();
+        assert_eq!(rel, ["User A.vstpreset", "Z.vstpreset", "Sub/User B.vstpreset"].map(std::path::PathBuf::from));
         std::fs::remove_dir_all(home).ok();
     }
 

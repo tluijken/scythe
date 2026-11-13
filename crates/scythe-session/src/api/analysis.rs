@@ -688,7 +688,7 @@ fn cache_dir() -> PathBuf {
 const CACHE_VERSION: u32 = 1;
 
 fn cache_key(path: &Path, start: Option<f64>, end: Option<f64>) -> Option<String> {
-    let path = path.canonicalize().ok()?;
+    let path = scythe_core::paths::canonical(path).ok()?;
     let meta = std::fs::metadata(&path).ok()?;
     let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
     let text = format!("{CACHE_VERSION}|{}|{}|{modified}|{start:?}|{end:?}", path.display(), meta.len());

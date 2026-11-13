@@ -124,8 +124,11 @@ impl Proc {
 impl Drop for Proc {
     fn drop(&mut self) {
         // SIGTERM first: a killed Xvfb leaves its socket and lock file behind in /tmp.
-        let pid = self.child.id() as libc::pid_t;
-        unsafe { libc::kill(pid, libc::SIGTERM) };
+        #[cfg(unix)]
+        // SAFETY: kill only signals the child this Proc owns.
+        unsafe {
+            libc::kill(self.child.id() as libc::pid_t, libc::SIGTERM)
+        };
         let start = Instant::now();
         while matches!(self.child.try_wait(), Ok(None)) && start.elapsed() < Duration::from_secs(3) {
             std::thread::sleep(Duration::from_millis(20));
@@ -438,6 +441,7 @@ impl Xvfb {
 
 /// Just enough of the X11 protocol to hide and show the top-level windows of an X server, so
 /// a test can see what a window does while it gets no frames.
+#[cfg(unix)]
 pub mod x11 {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;

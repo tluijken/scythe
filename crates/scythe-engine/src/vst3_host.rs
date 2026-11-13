@@ -13,6 +13,11 @@ use vst3::Steinberg::Vst::*;
 use vst3::Steinberg::*;
 use vst3::{Class, ComPtr, ComRef, ComWrapper, Interface};
 
+#[cfg(unix)]
+use libloading::os::unix::Library as OsLibrary;
+#[cfg(windows)]
+use libloading::os::windows::Library as OsLibrary;
+
 fn to_wide(s: &str, dst: &mut [TChar]) {
     let mut n = 0;
     for (d, c) in dst.iter_mut().zip(s.encode_utf16()) {
@@ -244,9 +249,9 @@ impl IBStreamTrait for Stream {
     unsafe fn seek(&self, pos: int64, mode: int32, result: *mut int64) -> tresult {
         let len = self.data.borrow().len() as i64;
         let mut at = self.at.borrow_mut();
-        let base = match mode as u32 {
-            IBStream_::IStreamSeekMode_::kIBSeekCur => *at as i64,
-            IBStream_::IStreamSeekMode_::kIBSeekEnd => len,
+        let base = match mode {
+            m if m as i64 == IBStream_::IStreamSeekMode_::kIBSeekCur as i64 => *at as i64,
+            m if m as i64 == IBStream_::IStreamSeekMode_::kIBSeekEnd as i64 => len,
             _ => 0,
         };
         *at = (base + pos).clamp(0, len) as usize;
@@ -454,7 +459,7 @@ pub struct Vst3Info {
 
 pub struct Vst3Module {
     factory: Option<ComPtr<IPluginFactory>>,
-    lib: Option<libloading::os::unix::Library>,
+    lib: Option<OsLibrary>,
     exit: Option<unsafe extern "system" fn() -> bool>,
     pub path: PathBuf,
 }
@@ -466,18 +471,26 @@ unsafe impl Sync for Vst3Module {}
 impl Vst3Module {
     pub fn load(path: &Path) -> Result<Arc<Self>, String> {
         // SAFETY: loading a plugin runs its initialisers; that is inherent to hosting plugins.
-        let lib = unsafe { libloading::os::unix::Library::new(path) }.map_err(|e| e.to_string())?;
+        let lib = unsafe { OsLibrary::new(path) }.map_err(|e| e.to_string())?;
         let raw = lib.into_raw();
         // SAFETY: `raw` came from `into_raw` just above.
-        let lib = unsafe { libloading::os::unix::Library::from_raw(raw) };
+        let lib = unsafe { OsLibrary::from_raw(raw) };
         // SAFETY: these entry points have these signatures in every VST 3 module.
         unsafe {
-            if let Ok(entry) = lib.get::<unsafe extern "system" fn(*mut c_void) -> bool>(b"ModuleEntry")
-                && !entry(raw)
-            {
+            #[cfg(unix)]
+            let (entered, exit) = (
+                lib.get::<unsafe extern "system" fn(*mut c_void) -> bool>(b"ModuleEntry")
+                    .map_or(true, |entry| entry(raw)),
+                lib.get::<unsafe extern "system" fn() -> bool>(b"ModuleExit").ok().map(|s| *s),
+            );
+            #[cfg(windows)]
+            let (entered, exit) = (
+                lib.get::<unsafe extern "system" fn() -> bool>(b"InitDll").map_or(true, |init| init()),
+                lib.get::<unsafe extern "system" fn() -> bool>(b"ExitDll").ok().map(|s| *s),
+            );
+            if !entered {
                 return Err("the module refused to initialise".into());
             }
-            let exit = lib.get::<unsafe extern "system" fn() -> bool>(b"ModuleExit").ok().map(|s| *s);
             let get = lib
                 .get::<unsafe extern "system" fn() -> *mut IPluginFactory>(b"GetPluginFactory")
                 .map_err(|e| e.to_string())?;

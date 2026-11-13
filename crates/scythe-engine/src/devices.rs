@@ -104,14 +104,20 @@ pub fn periods(request: &DeviceRequest) -> u32 {
 
 /// Makes ALSA streams opened from now on use the periods `request` asks for.
 pub fn apply_periods(request: &DeviceRequest) {
+    #[cfg(target_os = "linux")]
     if host_name(request).eq_ignore_ascii_case("ALSA") {
         cpal::set_alsa_periods(periods(request));
     }
+    #[cfg(not(target_os = "linux"))]
+    let _ = request;
 }
 
 /// The period and ring size, in frames, the ALSA output opened last got from the driver.
 pub fn alsa_ring() -> Option<(u64, u64)> {
-    cpal::alsa_negotiated()
+    #[cfg(target_os = "linux")]
+    return cpal::alsa_negotiated();
+    #[cfg(not(target_os = "linux"))]
+    None
 }
 
 /// The input and output latency REAPER shows for `block` frames in `periods` periods at `rate`,

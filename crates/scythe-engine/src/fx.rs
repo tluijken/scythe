@@ -1525,7 +1525,7 @@ fn reaper_plugin_dirs() -> Vec<PathBuf> {
     roots = roots
         .into_iter()
         .flat_map(|r| {
-            let real = r.canonicalize().unwrap_or(r.clone());
+            let real = scythe_core::paths::canonical(&r).unwrap_or(r.clone());
             [r.parent().map(|d| d.join("../opt/REAPER")), real.parent().map(PathBuf::from)]
         })
         .flatten()

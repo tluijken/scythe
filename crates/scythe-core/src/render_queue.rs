@@ -129,7 +129,8 @@ mod tests {
         let jobs = settings.jobs(&p, &RenderSelection::saved(&p), 0).unwrap();
         assert_eq!(jobs[0].path, PathBuf::from("/out/Kick-1970.wav"));
         let text = queued_text(&p, &project_to_rpp(&p), &jobs);
-        assert!(text.lines().nth(1).unwrap().starts_with("  QUEUED_RENDER_OUTFILE /out/Kick-1970.wav 4 {AB}"));
+        let outfile = format!("  QUEUED_RENDER_OUTFILE {} 4 {{AB}}", jobs[0].path.display());
+        assert!(text.lines().nth(1).unwrap().starts_with(&outfile));
         assert_eq!(file_name(&p, "261109_095101"), "qrender_261109_095101_a.RPP");
 
         let q = project_from_rpp(&text).unwrap();

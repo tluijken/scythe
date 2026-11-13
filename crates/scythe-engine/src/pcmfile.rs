@@ -991,10 +991,13 @@ fn synchsafe(n: u32) -> [u8; 4] {
 pub fn local_date_time() -> (String, String) {
     let now =
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
-    // SAFETY: localtime_r fills the zeroed struct from a valid time value.
+    // SAFETY: localtime_r and localtime_s fill the zeroed struct from a valid time value.
     let tm = unsafe {
         let mut tm: libc::tm = std::mem::zeroed();
+        #[cfg(unix)]
         libc::localtime_r(&now, &mut tm);
+        #[cfg(windows)]
+        libc::localtime_s(&mut tm, &now);
         tm
     };
     (

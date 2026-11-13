@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! MIDI clock out and MTC chase through ALSA virtual ports. Skipped where there is no ALSA
 //! sequencer.
 
