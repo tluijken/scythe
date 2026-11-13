@@ -20,6 +20,8 @@ struct Hosted {
     editor: Box<dyn Editor>,
     window: PluginWindow,
     instance: Arc<FxInstance>,
+    /// The scale the editor was last told.
+    scale: f64,
 }
 
 thread_local! {
@@ -43,10 +45,12 @@ pub fn open(instance: Arc<FxInstance>, title: String) -> Result<u64, OpenError> 
         let mut editor = instance.with(|e| e.editor()).flatten().ok_or(OpenError::NoEditor)?;
         let window = PluginWindow::new(&title, 640, 480)
             .map_err(|e| OpenError::Failed(format!("Cannot open a plugin window: {e}")))?;
+        let scale = window.scale();
+        editor.set_scale(scale);
         let (w, h) = editor.open(window.handle()).map_err(|e| OpenError::Failed(format!("{title}: {e}")))?;
         window.resize(w, h);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        OPEN.with(|o| o.borrow_mut().push(Hosted { id, editor, window, instance }));
+        OPEN.with(|o| o.borrow_mut().push(Hosted { id, editor, window, instance, scale }));
         if !TICKING.with(|t| t.replace(true)) {
             plugin_thread::add_ticker(tick);
         }
@@ -72,12 +76,18 @@ pub fn take_closed() -> Vec<u64> {
     std::mem::take(&mut *CLOSED.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Runs the editors' timers and descriptors, follows their size requests and closes those
-/// whose window or plugin went away. Stops ticking once none is open.
+/// Runs the editors' timers and descriptors, tells them when their window moved to a screen
+/// of another scale, follows their size requests and closes those whose window or plugin went
+/// away. Stops ticking once none is open.
 fn tick() -> bool {
     let gone: Vec<Hosted> = OPEN.with(|o| {
         let mut o = o.borrow_mut();
         for hosted in o.iter_mut() {
+            let scale = hosted.window.scale();
+            if scale != hosted.scale {
+                hosted.scale = scale;
+                hosted.editor.set_scale(scale);
+            }
             if let Some((width, height)) = hosted.editor.idle() {
                 hosted.window.resize(width, height);
             }

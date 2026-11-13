@@ -1,6 +1,7 @@
 //! Top-level windows that host plugin editors. Plugins embed into a native window: on Linux an
 //! X11 window, with its own X connection (XWayland under Wayland) next to the egui window; on
-//! Windows a Win32 window on the UI thread, whose messages the egui event loop dispatches.
+//! Windows a Win32 window, sized for its monitor's DPI. They live on the plugin thread
+//! ([`scythe_engine::plugin_thread`]), whose message loop serves them on Windows.
 
 #[cfg(not(windows))]
 pub use x11::PluginWindow;
@@ -71,6 +72,11 @@ mod x11 {
             self.window as usize
         }
 
+        /// X11 editors scale themselves; their window is sized as they ask.
+        pub fn scale(&self) -> f64 {
+            1.0
+        }
+
         pub fn resize(&self, width: u32, height: u32) {
             let aux = ConfigureWindowAux::new().width(width.clamp(1, 8192)).height(height.clamp(1, 8192));
             let _ = self.conn.configure_window(self.window, &aux);
@@ -107,11 +113,12 @@ mod win32 {
     use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::CreateSolidBrush;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AdjustWindowRectEx, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-        GWLP_USERDATA, GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX,
-        WS_OVERLAPPED, WS_SYSMENU,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA,
+        GetWindowLongPtrW, IDC_ARROW, LoadCursorW, RegisterClassW, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CLOSE, WNDCLASSW, WS_CAPTION, WS_MINIMIZEBOX, WS_OVERLAPPED,
+        WS_SYSMENU,
     };
 
     const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
@@ -165,12 +172,12 @@ mod win32 {
         })
     }
 
-    /// The outer size of a window whose client area is `width` x `height`.
-    fn outer(width: u32, height: u32) -> (i32, i32) {
+    /// The outer size of a window whose client area is `width` x `height` at `dpi`.
+    fn outer(width: u32, height: u32, dpi: u32) -> (i32, i32) {
         let mut rect =
             RECT { left: 0, top: 0, right: width.clamp(1, 8192) as i32, bottom: height.clamp(1, 8192) as i32 };
         // SAFETY: only fills `rect`.
-        unsafe { AdjustWindowRectEx(&mut rect, STYLE, 0, 0) };
+        unsafe { AdjustWindowRectExForDpi(&mut rect, STYLE, 0, 0, dpi) };
         (rect.right - rect.left, rect.bottom - rect.top)
     }
 
@@ -178,7 +185,7 @@ mod win32 {
         pub fn new(title: &str, width: u32, height: u32) -> Result<Self, String> {
             let class = class();
             let title = wide(title);
-            let (w, h) = outer(width, height);
+            let (w, h) = outer(width, height, 96);
             let close = Box::new(AtomicBool::new(false));
             // SAFETY: creates a top-level window of the registered class on this thread.
             let hwnd = unsafe {
@@ -205,7 +212,9 @@ mod win32 {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, &*close as *const AtomicBool as isize);
                 ShowWindow(hwnd, SW_SHOW);
             }
-            Ok(Self { hwnd, close })
+            let window = Self { hwnd, close };
+            window.resize(width, height);
+            Ok(window)
         }
 
         /// The `HWND` editors embed into.
@@ -213,16 +222,26 @@ mod win32 {
             self.hwnd as usize
         }
 
+        /// The scale of the monitor the window is on, 1.0 at 96 dpi.
+        pub fn scale(&self) -> f64 {
+            // SAFETY: a plain query on this window.
+            let dpi = unsafe { GetDpiForWindow(self.hwnd) };
+            if dpi == 0 { 1.0 } else { f64::from(dpi) / 96.0 }
+        }
+
+        /// Gives the window a client area of `width` x `height` physical pixels.
         pub fn resize(&self, width: u32, height: u32) {
-            let (w, h) = outer(width, height);
+            // SAFETY: a plain query on this window.
+            let dpi = unsafe { GetDpiForWindow(self.hwnd) }.max(96);
+            let (w, h) = outer(width, height, dpi);
             // SAFETY: resizes this window only.
             unsafe {
                 SetWindowPos(self.hwnd, std::ptr::null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)
             };
         }
 
-        /// True once the user asked the window to close. Its messages arrive through the egui
-        /// event loop, which runs on this thread.
+        /// True once the user asked the window to close. Its messages arrive through the plugin
+        /// thread's message loop.
         pub fn close_requested(&self) -> bool {
             self.close.load(Ordering::Relaxed)
         }
