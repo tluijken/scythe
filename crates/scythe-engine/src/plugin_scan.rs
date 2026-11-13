@@ -355,19 +355,63 @@ fn run_helper(helper: &Path, args: &[&str], path: &Path, timeout: Duration) -> H
         (_, true, Some(json)) => Helper::Answered(json.to_owned()),
         (None, _, _) => Helper::Failed(format!("timed out after {} s", timeout.as_secs_f32())),
         (Some(status), true, None) => Helper::Failed(describe(status)),
-        (Some(status), false, _) if std::os::unix::process::ExitStatusExt::signal(&status).is_some() => {
-            Helper::Failed(describe(status))
-        }
+        (Some(status), false, _) if crash(status).is_some() => Helper::Failed(describe(status)),
         (Some(_), false, _) => Helper::Unsupported,
     }
 }
 
-fn describe(status: std::process::ExitStatus) -> String {
+#[cfg(unix)]
+fn crash(status: std::process::ExitStatus) -> Option<String> {
     use std::os::unix::process::ExitStatusExt;
-    match (status.signal(), status.code()) {
-        (Some(signal), _) => format!("crashed (signal {signal})"),
+    status.signal().map(|signal| format!("crashed (signal {signal})"))
+}
+
+/// A process that dies of an unhandled exception exits with its NTSTATUS code, 0xC0000000 and up.
+#[cfg(windows)]
+fn crash(status: std::process::ExitStatus) -> Option<String> {
+    status.code().map(|c| c as u32).filter(|&c| c >= 0xC000_0000).map(|c| format!("crashed (exception {c:#010X})"))
+}
+
+fn describe(status: std::process::ExitStatus) -> String {
+    match (crash(status), status.code()) {
+        (Some(crash), _) => crash,
         (_, Some(code)) => format!("exited with status {code} while scanning"),
         _ => "ended while scanning".into(),
+    }
+}
+
+/// The original stdout, after pointing stdout at stderr.
+#[cfg(unix)]
+fn answer_stream() -> Option<std::fs::File> {
+    // SAFETY: plain descriptor duplication on this process's own standard streams.
+    let answer = unsafe {
+        let fd = libc::dup(1);
+        libc::dup2(2, 1);
+        fd
+    };
+    if answer < 0 {
+        return None;
+    }
+    // SAFETY: `answer` is a descriptor this function owns.
+    Some(unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(answer) })
+}
+
+/// The original stdout, after pointing stdout at stderr. Both the process's standard handle
+/// and the C runtime's descriptor 1 are redirected: plugins print through either.
+#[cfg(windows)]
+fn answer_stream() -> Option<std::fs::File> {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+    // SAFETY: only this process's standard handles and descriptors change.
+    unsafe {
+        let original = GetStdHandle(STD_OUTPUT_HANDLE);
+        if original.is_null() || original as isize == -1 {
+            return None;
+        }
+        // Redirecting descriptor 1 closes `original`, so the answer goes through a duplicate.
+        let answer = std::os::windows::io::BorrowedHandle::borrow_raw(original).try_clone_to_owned().ok()?;
+        SetStdHandle(STD_OUTPUT_HANDLE, GetStdHandle(STD_ERROR_HANDLE));
+        libc::dup2(2, 1);
+        Some(std::fs::File::from(answer))
     }
 }
 
@@ -381,17 +425,7 @@ pub fn helper_main(args: &[String]) -> Option<i32> {
     let (Some(format), Some(path)) = (args.get(2), args.get(3).map(PathBuf::from)) else { return Some(2) };
     // Plugins print to stdout; the answer goes to the original stdout, everything else to
     // stderr.
-    // SAFETY: plain descriptor duplication on this process's own standard streams.
-    let answer = unsafe {
-        let fd = libc::dup(1);
-        libc::dup2(2, 1);
-        fd
-    };
-    if answer < 0 {
-        return Some(2);
-    }
-    // SAFETY: `answer` is a descriptor this function owns.
-    let mut out = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(answer) };
+    let Some(mut out) = answer_stream() else { return Some(2) };
     let _ = writeln!(out, "{MAGIC}");
     let _ = out.flush();
     let json = match format.as_str() {
@@ -424,7 +458,7 @@ pub fn helper_main(args: &[String]) -> Option<i32> {
     unsafe { libc::_exit(0) }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) mod tests {
     use super::*;
 

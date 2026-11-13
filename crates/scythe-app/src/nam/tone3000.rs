@@ -117,7 +117,7 @@ impl TokenStore {
         Self::new(config_dir().join("tone3000-session.json"))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }

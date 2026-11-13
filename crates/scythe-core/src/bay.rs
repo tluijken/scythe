@@ -201,7 +201,7 @@ pub fn used_files(project: &Project) -> HashSet<PathBuf> {
 }
 
 fn normalize(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_owned())
+    crate::paths::canonical(p).unwrap_or_else(|_| p.to_owned())
 }
 
 /// The folder "clean project directory" looks in: where recordings go.
@@ -316,7 +316,10 @@ mod tests {
             "Media/used_in_media.wav",
             "Media/unused2.wav",
         ];
-        for n in names {
+        // A case-insensitive file system keeps one of the two proxy names.
+        let case_twin = |n: &&str| cfg!(target_os = "linux") || *n != "z.RPP-PROX";
+        let names: Vec<&str> = names.into_iter().filter(case_twin).collect();
+        for &n in &names {
             std::fs::write(dir.join(n), b"x").unwrap();
         }
         let p = project_in(&dir);
@@ -341,6 +344,9 @@ mod tests {
                 "z.txt.reapeaks",
                 "z.wv",
             ]
+            .into_iter()
+            .filter(case_twin)
+            .collect::<Vec<_>>()
         );
         assert_eq!(unused.total, names.len() - 2);
         let media = unused_files(&p, &dir.join("Media")).unwrap();

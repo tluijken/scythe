@@ -1,3 +1,4 @@
+#![cfg(unix)]
 //! A Mackie Control on ALSA sequencer virtual ports, end to end through the surface host.
 //! Skipped where there is no sequencer (no /dev/snd/seq).
 

@@ -57,7 +57,7 @@ fn absolute(path: &Path) -> Result<PathBuf, ApiError> {
     if !path.is_file() {
         return Err(ApiError::not_found(format!("no file {}", path.display())));
     }
-    Ok(path.canonicalize().unwrap_or_else(|_| path.to_owned()))
+    Ok(scythe_core::paths::canonical(path).unwrap_or_else(|_| path.to_owned()))
 }
 
 /// The length an item of `path` gets: from the header for PCM and FLAC, else from decoding it

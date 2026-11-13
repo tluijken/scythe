@@ -1319,7 +1319,7 @@ fn render_matrix_settings_and_queue() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|j| j["path"].as_str().unwrap().rsplit('/').next().unwrap().to_owned())
+        .map(|j| std::path::Path::new(j["path"].as_str().unwrap()).file_name().unwrap().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, ["Intro-Master.wav", "Intro-Kick.wav"]);
     assert_eq!(jobs[1]["source"]["kind"], "stem");
@@ -1863,6 +1863,7 @@ fn the_performance_meter_reads_tracks_and_effects() {
 
 /// `fx.catalog` answers from what is known while a slow plugin scan runs, and lists the
 /// plugins once it is done; `fx.add` of a plugin not found yet says the scan is running.
+#[cfg(unix)]
 #[test]
 fn the_catalog_answers_while_plugins_are_scanned() {
     use std::os::unix::fs::PermissionsExt;

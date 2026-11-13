@@ -241,12 +241,13 @@ mod tests {
         assert!(crate::actions::run(&mut s, "40001").is_err());
         s.host_actions = true;
         crate::actions::run(&mut s, "40001").unwrap();
-        let script = s.add_script_action("/x/y.lua", 0);
+        let lua = std::env::temp_dir().join("y.lua");
+        let script = s.add_script_action(&lua.to_string_lossy(), 0);
         crate::actions::run(&mut s, &script).unwrap();
         let mixed = s.define_custom_action(None, "mixed", vec!["40001".into(), "1068".into()], true);
         crate::actions::run(&mut s, &mixed).unwrap();
         assert_eq!(s.take_host_commands(), vec!["40001".to_owned(), script.clone(), mixed]);
-        assert_eq!(s.script_path(&script), Some(PathBuf::from("/x/y.lua")));
+        assert_eq!(s.script_path(&script), Some(lua));
         assert!(s.remove_named_action(&script));
         assert!(s.script_path(&script).is_none());
     }

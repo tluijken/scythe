@@ -37,6 +37,10 @@ pub mod preview;
 pub mod probe;
 mod r8brain;
 pub mod reaeq;
+#[cfg(unix)]
+pub mod realtime;
+#[cfg(windows)]
+#[path = "realtime_windows.rs"]
 pub mod realtime;
 pub mod reaverb;
 pub mod record;

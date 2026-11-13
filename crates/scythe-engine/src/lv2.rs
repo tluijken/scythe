@@ -110,12 +110,16 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<Lv2Info> {
     out
 }
 
+/// A Windows path becomes `file:///C:/dir/file`: relative references resolve only against
+/// forward slashes.
 fn file_iri(path: &Path) -> String {
-    format!("file://{}", path.display().to_string().replace(' ', "%20"))
+    let path = path.display().to_string().replace(' ', "%20");
+    if cfg!(windows) { format!("file:///{}", path.replace('\\', "/")) } else { format!("file://{path}") }
 }
 
 fn iri_path(iri: &str) -> Option<PathBuf> {
-    Some(PathBuf::from(iri.strip_prefix("file://")?.replace("%20", " ")))
+    let path = iri.strip_prefix("file://")?.replace("%20", " ");
+    Some(PathBuf::from(if cfg!(windows) { path.strip_prefix('/').unwrap_or(&path) } else { &path }))
 }
 
 /// Reads a bundle's manifest and the files it points to.

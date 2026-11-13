@@ -78,6 +78,27 @@ fn protocol_output() -> io::Result<File> {
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
+/// Like the Unix one: the process's stdout handle and the C runtime's descriptor 1 both go to
+/// stderr, plugins print through either.
+#[cfg(windows)]
+fn protocol_output() -> io::Result<File> {
+    use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+    // SAFETY: only this process's standard handles and descriptors change.
+    unsafe {
+        let original = GetStdHandle(STD_OUTPUT_HANDLE);
+        if original.is_null() || original as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // Redirecting descriptor 1 closes `original`, so the protocol goes through a duplicate.
+        let protocol = std::os::windows::io::BorrowedHandle::borrow_raw(original).try_clone_to_owned()?;
+        if SetStdHandle(STD_OUTPUT_HANDLE, GetStdHandle(STD_ERROR_HANDLE)) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        libc::dup2(2, 1);
+        Ok(File::from(protocol))
+    }
+}
+
 fn run(options: Options) -> Result<(), String> {
     let stdin = io::stdin().lock();
     if options.headless {

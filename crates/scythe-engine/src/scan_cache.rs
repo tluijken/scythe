@@ -34,7 +34,7 @@ fn file_stamp(meta: &std::fs::Metadata) -> (u64, u64) {
 /// The stamp of a file, or of a folder from the files directly inside it (an LV2 bundle).
 pub fn stamp(path: &Path) -> Option<Stamp> {
     let meta = std::fs::metadata(path).ok()?;
-    let target = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let target = scythe_core::paths::canonical(path).unwrap_or_else(|_| path.to_owned());
     let (mut modified, mut size) = file_stamp(&meta);
     if meta.is_dir() {
         for entry in std::fs::read_dir(path).ok()?.flatten() {
