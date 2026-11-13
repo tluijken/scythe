@@ -594,9 +594,7 @@ pub fn pattern_dirs() -> Vec<PathBuf> {
     if let Some(dir) = scythe_session::preferences_path().parent() {
         dirs.push(dir.join("OSC"));
     }
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")));
+    let config = scythe_core::paths::config_home();
     if let Some(config) = config {
         dirs.push(config.join("REAPER").join("OSC"));
     }

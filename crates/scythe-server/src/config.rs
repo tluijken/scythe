@@ -81,10 +81,7 @@ pub struct Options {
 
 /// `$XDG_CONFIG_HOME/scythe/headless.toml`.
 pub fn default_path() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("scythe").join("headless.toml"))
+    scythe_core::paths::config_home().map(|c| c.join("scythe").join("headless.toml"))
 }
 
 pub fn read(path: &Path) -> Result<Config, String> {

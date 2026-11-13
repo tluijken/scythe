@@ -1390,8 +1390,9 @@ impl FxRegistry {
                     }
                 }
                 let path = self.find_vst(&file).ok_or_else(|| format!("{file} not found in the VST paths"))?;
-                if !file.ends_with(".so") {
-                    return Err(format!("{file} is not a Linux VST 2 plugin"));
+                let native = if cfg!(windows) { ".dll" } else { ".so" };
+                if !file.to_ascii_lowercase().ends_with(native) {
+                    return Err(format!("{file} is not a VST 2 plugin for this system"));
                 }
                 let mut plugin =
                     Vst2Plugin::load(&path, self.sample_rate as f32, crate::render::RenderScratch::MAX_BLOCK as i32)
@@ -1531,13 +1532,18 @@ fn reaper_plugin_dirs() -> Vec<PathBuf> {
         .flatten()
         .collect();
     roots.push(PathBuf::from("/opt/REAPER"));
-    if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join("opt/REAPER"));
+    if let Some(home) = scythe_core::paths::home() {
+        roots.push(home.join("opt/REAPER"));
+    }
+    if cfg!(windows)
+        && let Some(programs) = std::env::var_os("ProgramFiles").map(PathBuf::from)
+    {
+        roots.extend([programs.join("REAPER (x64)"), programs.join("REAPER")]);
     }
     roots.into_iter().map(|r| r.join("Plugins/FX")).filter(|d| d.is_dir()).collect()
 }
 
-/// `SCYTHE_VST_PATH` and `VST_PATH` (colon separated), then the usual Linux locations.
+/// `SCYTHE_VST_PATH` and `VST_PATH`, then the usual Linux or Windows locations.
 fn vst_search_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = ["SCYTHE_VST_PATH", "VST_PATH"]
         .iter()
@@ -1547,12 +1553,18 @@ fn vst_search_paths() -> Vec<PathBuf> {
     if !crate::plugin_scan::system_paths() {
         return paths;
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = scythe_core::paths::home() {
         paths.extend([home.join(".vst"), home.join(".lxvst"), home.join(".nix-profile/lib/vst")]);
     }
     paths.extend(
         ["/usr/lib/vst", "/usr/local/lib/vst", "/usr/lib/lxvst", "/run/current-system/sw/lib/vst"].map(PathBuf::from),
     );
+    if cfg!(windows) {
+        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
+        paths.extend(program_files.iter().flat_map(|p| [p.join("VSTPlugins"), p.join("Steinberg").join("VSTPlugins")]));
+        paths.extend(scythe_core::paths::windows_plugin_dirs("VST2"));
+        paths.extend(scythe_core::paths::windows_plugin_dirs("Steinberg/VST2"));
+    }
     paths
 }
 

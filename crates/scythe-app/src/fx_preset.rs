@@ -261,8 +261,13 @@ pub fn vst3_identity(slot: &FxSlot) -> Option<(String, String, String)> {
     Some((cid, vendor.to_owned(), name.to_owned()))
 }
 
+/// Where VST 3 presets live: `~/.vst3/presets`, on Windows `Documents\VST3 Presets`.
+pub fn vst3_presets_dir(home: &std::path::Path) -> std::path::PathBuf {
+    if cfg!(windows) { home.join("Documents").join("VST3 Presets") } else { home.join(".vst3/presets") }
+}
+
 /// The `.vstpreset` files REAPER lists for a VST 3 plugin: those under
-/// `~/.vst3/presets/<vendor>/<plugin>/`, each folder's files before its subfolders.
+/// `<presets>/<vendor>/<plugin>/`, each folder's files before its subfolders.
 pub fn vst3_preset_files(home: &std::path::Path, vendor: &str, name: &str) -> Vec<std::path::PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -275,7 +280,7 @@ pub fn vst3_preset_files(home: &std::path::Path, vendor: &str, name: &str) -> Ve
         }
     }
     let mut out = Vec::new();
-    walk(&home.join(".vst3/presets").join(vendor).join(name), &mut out);
+    walk(&vst3_presets_dir(home).join(vendor).join(name), &mut out);
     out
 }
 
@@ -856,7 +861,7 @@ FXID {6F1D255F-BF34-9605-72AD-C41836EC6C7B}
     #[test]
     fn vstpreset_files_come_folder_by_folder() {
         let home = std::env::temp_dir().join(format!("scythe-vstpreset-{}", std::process::id()));
-        let dir = home.join(".vst3/presets/Scythe/Test Gain");
+        let dir = vst3_presets_dir(&home).join("Scythe/Test Gain");
         std::fs::create_dir_all(dir.join("Sub")).unwrap();
         for f in ["User A.vstpreset", "Sub/User B.vstpreset", "notes.txt", "Z.vstpreset"] {
             std::fs::write(dir.join(f), b"").unwrap();

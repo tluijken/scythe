@@ -564,21 +564,25 @@ pub fn search_paths() -> Vec<PathBuf> {
     if !crate::plugin_scan::system_paths() {
         return dirs;
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = scythe_core::paths::home() {
         dirs.extend([home.join(".vst3"), home.join(".nix-profile/lib/vst3")]);
     }
     if let Some(user) = std::env::var_os("USER") {
         dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/vst3"));
     }
     dirs.extend(["/usr/lib/vst3", "/usr/local/lib/vst3", "/run/current-system/sw/lib/vst3"].map(PathBuf::from));
+    dirs.extend(scythe_core::paths::windows_plugin_dirs("VST3"));
     dirs
 }
 
-/// The shared library of a `.vst3` entry: the bundle's Linux binary, or the file itself.
+/// The shared library of a `.vst3` entry: the bundle's binary for this system
+/// (`Contents/x86_64-linux/<name>.so`, `Contents/x86_64-win/<name>.vst3`), or the file itself.
 fn module_binary(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
         let stem = entry.file_stem()?.to_string_lossy().into_owned();
-        let so = entry.join("Contents").join(format!("{}-linux", std::env::consts::ARCH)).join(format!("{stem}.so"));
+        let (system, ext) = if cfg!(windows) { ("win", "vst3") } else { ("linux", "so") };
+        let so =
+            entry.join("Contents").join(format!("{}-{system}", std::env::consts::ARCH)).join(format!("{stem}.{ext}"));
         so.is_file().then_some(so)
     } else {
         entry.is_file().then(|| entry.to_owned())

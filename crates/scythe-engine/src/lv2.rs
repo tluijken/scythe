@@ -75,13 +75,17 @@ pub fn search_paths() -> Vec<PathBuf> {
     if !crate::plugin_scan::system_paths() {
         return dirs;
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = scythe_core::paths::home() {
         dirs.extend([home.join(".lv2"), home.join(".nix-profile/lib/lv2")]);
     }
     if let Some(user) = std::env::var_os("USER") {
         dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/lv2"));
     }
     dirs.extend(["/usr/lib/lv2", "/usr/local/lib/lv2", "/run/current-system/sw/lib/lv2"].map(PathBuf::from));
+    dirs.extend(scythe_core::paths::windows_plugin_dirs("LV2"));
+    if let Some(appdata) = std::env::var_os("APPDATA").filter(|_| cfg!(windows)) {
+        dirs.push(PathBuf::from(appdata).join("LV2"));
+    }
     dirs
 }
 

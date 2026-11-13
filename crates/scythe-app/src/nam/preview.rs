@@ -143,12 +143,7 @@ pub fn cache_file(dir: &Path, model: &Model, ir: bool) -> PathBuf {
 
 /// `$XDG_CACHE_HOME/scythe/nam-preview`.
 pub fn default_cache_dir() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("scythe")
-        .join("nam-preview")
+    scythe_core::paths::cache_home().unwrap_or_else(std::env::temp_dir).join("scythe").join("nam-preview")
 }
 
 /// Keeps the newest `keep` files of the cache.

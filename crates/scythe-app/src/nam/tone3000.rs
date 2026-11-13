@@ -18,11 +18,7 @@ pub const DEFAULT_BASE_URL: &str = "https://www.tone3000.com/api/v1";
 
 /// Where Scythe keeps its own settings (`$XDG_CONFIG_HOME/scythe`).
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(std::env::temp_dir)
-        .join("scythe")
+    scythe_core::paths::config_home().unwrap_or_else(std::env::temp_dir).join("scythe")
 }
 
 /// How Scythe reaches TONE3000: `tone3000.json` in the config folder, overridden by

@@ -52,11 +52,7 @@ impl Session {
 /// Moves a file into the freedesktop trash (`$XDG_DATA_HOME/Trash`), with the `.trashinfo`
 /// file managers use to put it back.
 pub fn move_to_trash(path: &Path) -> Result<(), String> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-        .ok_or("no home folder for the trash")?
-        .join("Trash");
+    let base = scythe_core::paths::data_home().ok_or("no home folder for the trash")?.join("Trash");
     let (files, info) = (base.join("files"), base.join("info"));
     std::fs::create_dir_all(&files).and_then(|_| std::fs::create_dir_all(&info)).map_err(|e| e.to_string())?;
     let name = path.file_name().ok_or("not a file")?.to_string_lossy().into_owned();

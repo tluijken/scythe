@@ -1095,9 +1095,9 @@ impl ScytheApp {
             out.extend(file.presets.into_iter().map(|p| (p.name.clone(), PresetSource::Reaper(path.clone(), p.name))));
         }
         if let Some((_, vendor, name)) = crate::fx_preset::vst3_identity(slot)
-            && let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+            && let Some(home) = scythe_core::paths::home()
         {
-            let root = home.join(".vst3/presets").join(&vendor).join(&name);
+            let root = crate::fx_preset::vst3_presets_dir(&home).join(&vendor).join(&name);
             out.extend(crate::fx_preset::vst3_preset_files(&home, &vendor, &name).into_iter().map(|p| {
                 let shown = p.strip_prefix(&root).unwrap_or(&p).with_extension("");
                 (shown.to_string_lossy().into_owned(), PresetSource::Vst3File(p))
@@ -1616,11 +1616,7 @@ pub enum PresetSource {
 
 /// REAPER's resource folder, when REAPER has been run here.
 pub(crate) fn reaper_resource_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .map(|c| c.join("REAPER"))
-        .filter(|d| d.is_dir())
+    scythe_core::paths::config_home().map(|c| c.join("REAPER")).filter(|d| d.is_dir())
 }
 
 /// A file dialog starting in REAPER's resource folder `sub` (`FXChains`, `TrackTemplates`)
