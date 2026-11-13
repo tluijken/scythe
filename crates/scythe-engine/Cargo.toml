@@ -7,6 +7,9 @@ license.workspace = true
 [features]
 # Rubber Band (GPL-2.0-or-later) as a pitch shifter, loaded from the system library at run time.
 rubberband = []
+# ASIO audio on Windows. Needs LLVM (libclang) to build; asio-sys fetches Steinberg's ASIO SDK,
+# whose license binds whoever distributes the result.
+asio = ["cpal/asio"]
 
 [dependencies]
 scythe-core.workspace = true
