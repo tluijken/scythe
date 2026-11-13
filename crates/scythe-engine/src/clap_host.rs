@@ -319,6 +319,7 @@ pub struct ClapEditor {
     plugin: *const clap_plugin,
     data: Arc<HostData>,
     created: bool,
+    scale: f64,
 }
 
 impl ClapEditor {
@@ -344,6 +345,11 @@ impl Editor for ClapEditor {
                 return Err("the editor could not be created".into());
             }
             self.created = true;
+            if self.scale != 1.0
+                && let Some(set) = gui.set_scale
+            {
+                set(self.plugin, self.scale);
+            }
             let (mut w, mut h) = (640u32, 480u32);
             if let Some(get) = gui.get_size {
                 get(self.plugin, &mut w, &mut h);
@@ -410,6 +416,16 @@ impl Editor for ClapEditor {
 
     fn closed(&self) -> bool {
         self.data.closed.load(Ordering::Relaxed)
+    }
+
+    fn set_scale(&mut self, scale: f64) {
+        self.scale = scale;
+        if self.created
+            && let Some(set) = self.ext::<clap_plugin_gui>(CLAP_EXT_GUI).and_then(|g| g.set_scale)
+        {
+            // SAFETY: a main-thread gui call on a created editor.
+            unsafe { set(self.plugin, scale) };
+        }
     }
 }
 
@@ -666,7 +682,7 @@ impl ClapPlugin {
         let get = self.raw().get_extension?;
         // SAFETY: the gui extension id is a C string; the result is null or the extension.
         let has_gui = !unsafe { get(self.plugin, CLAP_EXT_GUI.as_ptr()) }.is_null();
-        has_gui.then(|| ClapEditor { plugin: self.plugin, data: self.host_data.clone(), created: false })
+        has_gui.then(|| ClapEditor { plugin: self.plugin, data: self.host_data.clone(), created: false, scale: 1.0 })
     }
 
     /// Frames the plugin delays its output by.

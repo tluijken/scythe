@@ -402,8 +402,7 @@ impl ScytheEq {
             }
         }
         if let Some(fir) = &mut self.fir {
-            for b in 0..BANDS {
-                let s = &self.settings[b];
+            for (b, s) in self.settings.iter().enumerate().take(BANDS) {
                 fir.engine.ensure_dynamic(b, s.active() && s.dynamic == 1);
             }
             fir.dirty = true;

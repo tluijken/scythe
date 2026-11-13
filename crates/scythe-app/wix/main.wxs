@@ -1,0 +1,153 @@
+<?xml version='1.0' encoding='windows-1252'?>
+<!--
+  The Windows installer, built with cargo-wix (WiX 3); the README says how. Based on
+  cargo-wix's template, (C) 2017 Christopher R. Field, Apache License 2.0.
+-->
+
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Scythe'
+        UpgradeCode='9601C2E1-0668-4387-8690-019544872805'
+        Manufacturer='Thomas Luijken'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='A digital audio workstation that opens REAPER projects'
+            Manufacturer='Thomas Luijken'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'
+            />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
+        <Property Id='DiskPrompt' Value='Scythe Installation'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/tluijken/scythe'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Scythe'>
+                    <Directory Id='Bin' Name='bin'>
+                        <Component Id='Path' Guid='5A504B66-BF2A-488D-A4E8-761FA17793BE' KeyPath='yes'>
+                            <Environment
+                                Id='PATH'
+                                Name='PATH'
+                                Value='[Bin]'
+                                Permanent='no'
+                                Part='last'
+                                Action='set'
+                                System='yes'/>
+                        </Component>
+                        <Component Id='App' Guid='*'>
+                            <File
+                                Id='AppExe'
+                                Name='scythe-app.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\scythe-app.exe'
+                                KeyPath='yes'>
+                                <Shortcut
+                                    Id='StartMenuShortcut'
+                                    Directory='ProgramMenuFolder'
+                                    Name='Scythe'
+                                    WorkingDirectory='Bin'
+                                    Advertise='yes'/>
+                            </File>
+                        </Component>
+                        <Component Id='Server' Guid='*'>
+                            <File
+                                Id='ServerExe'
+                                Name='scythe-server.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\scythe-server.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                        <Component Id='Mcp' Guid='*'>
+                            <File
+                                Id='McpExe'
+                                Name='scythe-mcp.exe'
+                                DiskId='1'
+                                Source='$(var.CargoTargetBinDir)\scythe-mcp.exe'
+                                KeyPath='yes'/>
+                        </Component>
+                        <Component Id='RppAssociation' Guid='2D1B6E8A-4C77-4E0B-9F3A-6B1E2F5D9C41'>
+                            <RegistryValue
+                                Root='HKLM'
+                                Key='Software\Scythe'
+                                Name='RppAssociation'
+                                Type='integer'
+                                Value='1'
+                                KeyPath='yes'/>
+                            <RegistryValue Root='HKLM' Key='Software\Classes\.rpp' Type='string' Value='Scythe.RPP'/>
+                            <RegistryValue Root='HKLM' Key='Software\Classes\Scythe.RPP' Type='string' Value='REAPER project'/>
+                            <RegistryValue
+                                Root='HKLM'
+                                Key='Software\Classes\Scythe.RPP\shell\open\command'
+                                Type='string'
+                                Value='"[Bin]scythe-app.exe" "%1"'/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+            <Directory Id='ProgramMenuFolder'/>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Scythe'
+            Description='The Scythe application, the headless server and the MCP server.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+            <ComponentRef Id='App'/>
+            <ComponentRef Id='Server'/>
+            <ComponentRef Id='Mcp'/>
+
+            <Feature
+                Id='Environment'
+                Title='PATH Environment Variable'
+                Description='Add the install location of the [ProductName] programs to the PATH system environment variable, so scythe-server and scythe-mcp run from any location.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='Path'/>
+            </Feature>
+
+            <!-- Off by default (level 1000): REAPER usually owns .RPP files. -->
+            <Feature
+                Id='Association'
+                Title='Open .RPP files with Scythe'
+                Description='Makes Scythe the program that opens REAPER project files (.RPP).'
+                Level='1000'
+                Absent='allow'>
+                <ComponentRef Id='RppAssociation'/>
+            </Feature>
+        </Feature>
+
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+
+        <UI>
+            <UIRef Id='WixUI_FeatureTree'/>
+            <Publish Dialog='WelcomeDlg' Control='Next' Event='NewDialog' Value='CustomizeDlg' Order='99'>1</Publish>
+            <Publish Dialog='CustomizeDlg' Control='Back' Event='NewDialog' Value='WelcomeDlg' Order='99'>1</Publish>
+        </UI>
+
+    </Product>
+
+</Wix>

@@ -1380,6 +1380,13 @@ impl crate::editor::Editor for Vst3Editor {
         self.frame.resize.borrow_mut().take()
     }
 
+    fn set_scale(&mut self, scale: f64) {
+        if let Some(support) = self.view.cast::<IPlugViewContentScaleSupport>() {
+            // SAFETY: a plain call on a valid view.
+            unsafe { support.setContentScaleFactor(scale as f32) };
+        }
+    }
+
     fn close(&mut self) {
         if std::mem::take(&mut self.attached) {
             // SAFETY: detaching the view attached in `open`.

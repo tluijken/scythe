@@ -72,6 +72,23 @@ Every flag is described under [Command line](docs/features.md#command-line) and
 [Remote control](docs/features.md#remote-control); [docs/live.md](docs/live.md) walks through a
 whole stage setup.
 
+### Windows
+
+On Windows Scythe builds with rustup's MSVC toolchain and the Visual Studio Build Tools; ASIO
+needs LLVM as well (see [Licensing notes](#licensing-notes)). It plays through WASAPI, or ASIO
+with `--audio-host ASIO`. The installer is an MSI made with
+[cargo-wix](https://github.com/volks73/cargo-wix) and WiX 3:
+
+```powershell
+cargo build --release -p scythe-app -p scythe-server -p scythe-mcp --features scythe-app/asio
+cargo wix -p scythe-app --no-build --nocapture   # target\wix\scythe-app-<version>-x86_64.msi
+```
+
+It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry;
+adding them to `PATH` and opening `.RPP` files with Scythe are features to pick in the setup (the
+file association is off by default). The installer is not signed, so SmartScreen warns before it
+runs.
+
 ## Features
 
 A summary; [docs/features.md](docs/features.md) has the full description of each area.

@@ -16,6 +16,9 @@ pub trait Editor {
     fn closed(&self) -> bool {
         false
     }
+    /// The scale of the screen the window shows on (1.0 at 96 dpi), where windows are sized in
+    /// physical pixels (Windows); before `open` and whenever it changes.
+    fn set_scale(&mut self, _scale: f64) {}
 }
 
 /// Timers a plugin registered with the host, fired from `due`.
