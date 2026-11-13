@@ -13,8 +13,10 @@ itest = []
 [dependencies]
 serde_json.workspace = true
 hound.workspace = true
-libc.workspace = true
 tungstenite = "0.29.0"
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [[test]]
 name = "server"

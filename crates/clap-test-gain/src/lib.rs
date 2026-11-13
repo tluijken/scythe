@@ -454,6 +454,7 @@ unsafe extern "C" fn gui_set_parent(p: *const clap_plugin, window: *const clap_s
     let guard = gain.gui.lock().unwrap();
     let Some(gui) = guard.as_ref() else { return false };
     // SAFETY: the host passes an X11 window.
+    #[allow(clippy::unnecessary_cast, reason = "clap_xwnd is a C unsigned long: 64 bits on Linux, 32 on Windows")]
     let parent = unsafe { (*window).specific.x11 } as u32;
     let aux = CreateWindowAux::new().background_pixel(0x2a9d8f);
     let created = gui.conn.create_window(
