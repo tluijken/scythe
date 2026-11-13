@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 rubberband = ["scythe-engine/rubberband"]
+asio = ["scythe-engine/asio", "scythe-server/asio"]
 itest = ["dep:egui_kittest"]
 
 [dependencies]

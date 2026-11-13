@@ -6,6 +6,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+use windows_sys::Win32::Foundation::ERROR_THREAD_ALREADY_IN_TASK;
 use windows_sys::Win32::System::Threading::{
     AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread, SetThreadPriority,
     THREAD_PRIORITY_ABOVE_NORMAL,
@@ -44,11 +45,13 @@ pub fn hold_cpu_awake() -> Result<std::fs::File, String> {
 /// How the thread rendering audio is scheduled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Realtime {
-    /// `MMCSS Pro Audio` or `normal`.
+    /// `MMCSS Pro Audio`, `MMCSS` (a task the audio driver chose) or `normal`.
     pub policy: &'static str,
-    /// MMCSS's thread priority (`AVRT_PRIORITY_CRITICAL` is 2), 0 when not in MMCSS.
+    /// MMCSS's thread priority (`AVRT_PRIORITY_CRITICAL` is 2; 1 for the driver's own task,
+    /// whose priority is not known), 0 when not in MMCSS.
     pub priority: i32,
-    /// `mmcss` or `none`.
+    /// `mmcss`, `driver` (the audio driver's thread already was in MMCSS, as ASIO drivers do)
+    /// or `none`.
     pub via: &'static str,
     /// Why there is no real-time priority.
     pub reason: Option<String>,
@@ -127,7 +130,11 @@ fn mmcss() -> Realtime {
     // returned handle stays open for the thread's lifetime, which is how MMCSS keeps it.
     let handle = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
     if handle.is_null() {
-        let reason = format!("MMCSS Pro Audio: {}", std::io::Error::last_os_error());
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_THREAD_ALREADY_IN_TASK as i32) {
+            return Realtime { policy: "MMCSS", priority: 1, via: "driver", reason: None };
+        }
+        let reason = format!("MMCSS Pro Audio: {error}");
         return Realtime { policy: "normal", priority: 0, via: "none", reason: Some(reason) };
     }
     // SAFETY: `handle` was just returned by AvSetMmThreadCharacteristicsW.

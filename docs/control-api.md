@@ -192,7 +192,9 @@ setlist and clients carry on, and looks for the device every five seconds; when 
 also come as `notice` events. `realtime` says how the thread rendering the audio is scheduled
 once it has run: `via` is `direct` (`SCHED_FIFO` within the user's rtprio limit), `rtkit`
 (RealtimeKit granted it over D-Bus), `host` (the audio system's thread already was real-time)
-or `none`, with `reason` saying why.
+or `none`, with `reason` saying why. On Windows `via` is `mmcss` (the thread joined the MMCSS
+task "Pro Audio") or `driver` (the audio driver's thread already was in MMCSS, as ASIO drivers
+do).
 
 ### Project
 

@@ -1992,6 +1992,7 @@ fn build<T: SizedSample + FromSample<f32> + Send + 'static>(
                     errors.xruns.fetch_add(1, Ordering::Relaxed);
                 }
                 cpal::ErrorKind::DeviceNotAvailable | cpal::ErrorKind::StreamInvalidated => {
+                    eprintln!("audio stream ended: {err}");
                     errors.lost.store(true, Ordering::Relaxed);
                 }
                 _ => eprintln!("audio stream error: {err}"),

@@ -8,6 +8,9 @@ license.workspace = true
 name = "scythe-server"
 path = "src/main.rs"
 
+[features]
+asio = ["scythe-engine/asio"]
+
 [dependencies]
 scythe-core.workspace = true
 scythe-engine.workspace = true
