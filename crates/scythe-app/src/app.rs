@@ -785,7 +785,7 @@ impl ScytheApp {
                 return;
             }
         };
-        match editor.open(window.window) {
+        match editor.open(window.handle()) {
             Ok((w, h)) => {
                 window.resize(w, h);
                 self.editors.push(OpenEditor { track, index, instance, editor, window });

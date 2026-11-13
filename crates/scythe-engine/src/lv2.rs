@@ -63,7 +63,7 @@ pub struct Lv2Info {
     pub binary: PathBuf,
     pub ports: Vec<PortInfo>,
     pub instrument: bool,
-    /// An X11 editor (`ui:X11UI`): its URI and binary.
+    /// An editor for this system's windows (`ui:X11UI`, `ui:WindowsUI`): its URI and binary.
     pub ui: Option<(String, PathBuf)>,
 }
 
@@ -205,7 +205,7 @@ fn plugin_info(g: &Graph, plugin: &Term, bundle: &Path) -> Option<Lv2Info> {
     let instrument = g.has_type(plugin, &lv2("InstrumentPlugin")) || (midi_in && !audio_in);
     let ui = g
         .objects(plugin, &format!("{UI}ui"))
-        .filter(|u| g.has_type(u, &format!("{UI}X11UI")))
+        .filter(|u| g.has_type(u, &format!("{UI}{}", if cfg!(windows) { "WindowsUI" } else { "X11UI" })))
         .find_map(|u| Some((u.iri()?.to_owned(), iri_path(g.object(u, &format!("{UI}binary"))?.iri()?)?)));
     Some(Lv2Info { uri, name, bundle: bundle.to_owned(), binary, ports, instrument, ui })
 }
@@ -1007,7 +1007,7 @@ impl Lv2Editor {
 }
 
 impl crate::editor::Editor for Lv2Editor {
-    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+    fn open(&mut self, parent: usize) -> Result<(u32, u32), String> {
         let (uri, binary) = self.ui.clone();
         // SAFETY: loading a plugin UI runs its initialisers; that is inherent to hosting it.
         let lib = unsafe { libloading::Library::new(&binary) }.map_err(|e| e.to_string())?;
@@ -1038,7 +1038,7 @@ impl crate::editor::Editor for Lv2Editor {
         let list = [
             Feature { uri: names[0].as_ptr(), data: &map as *const UridMap as *mut c_void },
             Feature { uri: names[1].as_ptr(), data: &unmap as *const UridUnmap as *mut c_void },
-            Feature { uri: names[2].as_ptr(), data: parent as usize as *mut c_void },
+            Feature { uri: names[2].as_ptr(), data: parent as *mut c_void },
             Feature { uri: names[3].as_ptr(), data: &resize as *const UiResize as *mut c_void },
             Feature { uri: names[4].as_ptr(), data: std::ptr::null_mut() },
             Feature { uri: names[5].as_ptr(), data: self.plugin },

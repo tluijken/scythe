@@ -12,9 +12,11 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
     clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
 };
-use clap_sys::ext::gui::{
-    CLAP_EXT_GUI, CLAP_WINDOW_API_X11, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle, clap_xwnd,
-};
+#[cfg(windows)]
+use clap_sys::ext::gui::CLAP_WINDOW_API_WIN32;
+use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle};
+#[cfg(not(windows))]
+use clap_sys::ext::gui::{CLAP_WINDOW_API_X11, clap_xwnd};
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_param_info, clap_plugin_params};
 use clap_sys::ext::posix_fd_support::{
     CLAP_EXT_POSIX_FD_SUPPORT, CLAP_POSIX_FD_ERROR, CLAP_POSIX_FD_READ, clap_host_posix_fd_support,
@@ -327,15 +329,18 @@ impl ClapEditor {
 }
 
 impl Editor for ClapEditor {
-    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
+    fn open(&mut self, parent: usize) -> Result<(u32, u32), String> {
         let gui = self.ext::<clap_plugin_gui>(CLAP_EXT_GUI).copied().ok_or("the plugin has no editor")?;
-        let x11 = CLAP_WINDOW_API_X11.as_ptr();
+        #[cfg(windows)]
+        let (api, specific) = (CLAP_WINDOW_API_WIN32.as_ptr(), clap_window_handle { win32: parent as *mut c_void });
+        #[cfg(not(windows))]
+        let (api, specific) = (CLAP_WINDOW_API_X11.as_ptr(), clap_window_handle { x11: parent as clap_xwnd });
         // SAFETY: main-thread gui calls in the order the extension prescribes.
         unsafe {
-            if !gui.is_api_supported.is_some_and(|f| f(self.plugin, x11, false)) {
-                return Err("the editor does not support X11 windows".into());
+            if !gui.is_api_supported.is_some_and(|f| f(self.plugin, api, false)) {
+                return Err("the editor does not support this system's windows".into());
             }
-            if !gui.create.is_some_and(|f| f(self.plugin, x11, false)) {
+            if !gui.create.is_some_and(|f| f(self.plugin, api, false)) {
                 return Err("the editor could not be created".into());
             }
             self.created = true;
@@ -343,7 +348,7 @@ impl Editor for ClapEditor {
             if let Some(get) = gui.get_size {
                 get(self.plugin, &mut w, &mut h);
             }
-            let window = clap_window { api: x11, specific: clap_window_handle { x11: parent as clap_xwnd } };
+            let window = clap_window { api, specific };
             if !gui.set_parent.is_some_and(|f| f(self.plugin, &window)) {
                 return Err("the editor could not be embedded".into());
             }

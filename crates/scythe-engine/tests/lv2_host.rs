@@ -219,7 +219,7 @@ fn opens_the_x11_ui_and_takes_its_control_changes() {
     let mut fx = registry(&root, 1000);
     let chain = fx.chain(Some(id), &project.tracks[0].fx);
     let mut editor = chain[0].with(|e| e.editor()).flatten().expect("the amp has a UI");
-    assert_eq!(editor.open(parent).unwrap(), (320, 200));
+    assert_eq!(editor.open(parent as usize).unwrap(), (320, 200));
     assert_eq!(editor.idle(), None);
 
     let ctx = scythe_engine::fx::ProcessContext {

@@ -32,3 +32,6 @@ rayon.workspace = true
 x11rb.workspace = true
 image.workspace = true
 egui_kittest = { version = "0.37.0", optional = true, features = ["snapshot", "wgpu"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true

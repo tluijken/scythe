@@ -669,6 +669,9 @@ pub struct Vst3Plugin {
     /// System exclusive for the next `process` call, as frame offset and message.
     pub sysex: Vec<(usize, Vec<u8>)>,
     changes: ComWrapper<ParamChanges>,
+    /// Where the plugin reports parameters it changed itself (meters, gain reduction): plugins
+    /// built with DPF assert when a host passes none.
+    out_changes: ComWrapper<ParamChanges>,
     /// One buffer per channel of every audio bus, inputs and outputs in bus order.
     inputs: Vec<Vec<f32>>,
     outputs: Vec<Vec<f32>>,
@@ -887,6 +890,7 @@ impl Vst3Plugin {
                 events: ComWrapper::new(EventList::default()),
                 sysex: Vec::new(),
                 changes: ComWrapper::new(ParamChanges::default()),
+                out_changes: ComWrapper::new(ParamChanges::default()),
                 inputs: vec![vec![0.0; block]; in_layout.iter().sum()],
                 outputs: vec![vec![0.0; block]; out_layout.iter().sum()],
                 in_layout,
@@ -1190,7 +1194,10 @@ impl Vst3Plugin {
                 .changes
                 .as_com_ref::<IParameterChanges>()
                 .map_or(std::ptr::null_mut(), |r| r.as_ptr()),
-            outputParameterChanges: std::ptr::null_mut(),
+            outputParameterChanges: self
+                .out_changes
+                .as_com_ref::<IParameterChanges>()
+                .map_or(std::ptr::null_mut(), |r| r.as_ptr()),
             inputEvents: self.events.as_com_ref::<IEventList>().map_or(std::ptr::null_mut(), |r| r.as_ptr()),
             outputEvents: std::ptr::null_mut(),
             processContext: &mut context,
@@ -1198,6 +1205,7 @@ impl Vst3Plugin {
         // SAFETY: every buffer and object referenced by `data` lives through the call.
         unsafe { self.processor.process(&mut data) };
         self.changes.clear();
+        self.out_changes.clear();
         self.sysex.clear();
     }
 
@@ -1310,6 +1318,11 @@ pub struct Vst3Editor {
     _module: Arc<Vst3Module>,
 }
 
+#[cfg(windows)]
+const NATIVE_PLATFORM: FIDString = kPlatformTypeHWND;
+#[cfg(not(windows))]
+const NATIVE_PLATFORM: FIDString = kPlatformTypeX11EmbedWindowID;
+
 impl Vst3Plugin {
     /// The plugin's editor view, when it has one. It is used without any lock around `self`;
     /// keep the plugin alive while the editor is in use.
@@ -1318,7 +1331,7 @@ impl Vst3Plugin {
         // SAFETY: createView returns null or a new reference to a view.
         let view = unsafe { ComPtr::from_raw(controller.createView(ViewType::kEditor)) }?;
         // SAFETY: a plain query on a valid view.
-        if unsafe { view.isPlatformTypeSupported(kPlatformTypeX11EmbedWindowID) } != kResultTrue {
+        if unsafe { view.isPlatformTypeSupported(NATIVE_PLATFORM) } != kResultTrue {
             return None;
         }
         Some(Vst3Editor {
@@ -1331,13 +1344,13 @@ impl Vst3Plugin {
 }
 
 impl crate::editor::Editor for Vst3Editor {
-    fn open(&mut self, parent: u32) -> Result<(u32, u32), String> {
-        // SAFETY: the frame outlives the view's use of it; `parent` is an X11 window id.
+    fn open(&mut self, parent: usize) -> Result<(u32, u32), String> {
+        // SAFETY: the frame outlives the view's use of it; `parent` is a native window.
         unsafe {
             if let Some(frame) = self.frame.as_com_ref::<IPlugFrame>() {
                 self.view.setFrame(frame.as_ptr());
             }
-            if self.view.attached(parent as usize as *mut c_void, kPlatformTypeX11EmbedWindowID) != kResultOk {
+            if self.view.attached(parent as *mut c_void, NATIVE_PLATFORM) != kResultOk {
                 return Err("the editor could not be attached".into());
             }
             self.attached = true;
