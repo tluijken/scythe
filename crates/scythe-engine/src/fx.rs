@@ -540,6 +540,25 @@ pub struct FxInstance {
     pub cpu: crate::perf::CpuTime,
 }
 
+/// What an instance holds once its effect went to the plugin thread to be destroyed.
+struct Released;
+
+impl Effect for Released {
+    fn process(&mut self, _: &mut [f32], _: &mut [f32], _: &ProcessContext) {}
+}
+
+/// Hosted plugins are destroyed on the plugin thread, where they were created.
+impl Drop for FxInstance {
+    fn drop(&mut self) {
+        if crate::plugin_thread::is_plugin_thread() {
+            return;
+        }
+        let effect = self.effect.get_mut().unwrap_or_else(|e| e.into_inner());
+        let effect = std::mem::replace(effect, Box::new(Released));
+        crate::plugin_thread::run(move || drop(effect));
+    }
+}
+
 impl FxInstance {
     pub fn new(mut fx: Box<dyn Effect>) -> Self {
         let probe = Arc::new(FxProbe::default());
@@ -1329,7 +1348,12 @@ impl FxRegistry {
         true
     }
 
+    /// Creates the effect for `slot` on the plugin thread, where hosted plugins must live.
     fn create(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
+        crate::plugin_thread::run(|| self.create_here(slot, channels))
+    }
+
+    fn create_here(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
         let plugin_chunk = plugin;
         let args = plugin.args();

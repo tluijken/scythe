@@ -2,6 +2,7 @@ mod app;
 mod commands;
 mod demo;
 mod dialog;
+mod editor_host;
 mod fx_preset;
 mod keys;
 mod live;
