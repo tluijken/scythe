@@ -1,0 +1,4 @@
+# Fixtures and snapshots are compared byte for byte; keep LF on Windows checkouts too.
+* text=auto eol=lf
+# REAPER writes these with CRLF; they stay as REAPER wrote them.
+crates/scythe-core/testdata/reaper-config/** -text
