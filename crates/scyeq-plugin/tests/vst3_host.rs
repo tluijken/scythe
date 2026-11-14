@@ -125,7 +125,10 @@ impl Instance {
 
     fn main_input_arrangement(&self) -> SpeakerArrangement {
         let mut arrangement = 0;
-        assert_eq!(unsafe { self.processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement) }, kResultOk);
+        assert_eq!(
+            unsafe { self.processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement) },
+            kResultOk
+        );
         arrangement
     }
 
