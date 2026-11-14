@@ -493,3 +493,48 @@ fn dynamic_cuts_and_notches_move_in_zero_latency() {
     eq.set(GLOBAL + global::PHASE, 2.0);
     assert_eq!(eq.band(0).dynamic, 0, "static in the FIR modes");
 }
+
+/// The 32-frame grid follows the sample position: a dynamic and a spectral band give the same
+/// output whatever block sizes the host uses, and so does a stopped transport counting frames.
+#[test]
+fn dynamic_bands_ignore_block_size() {
+    let sr = 48000u32;
+    let mut seed = 11u64;
+    let mut next = move || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed >> 33
+    };
+    let noise: Vec<f32> = (0..2 * sr as usize).map(|_| (next() as f32 / (1u64 << 31) as f32 - 0.5) * 0.8).collect();
+    let random: Vec<usize> = std::iter::repeat_with(|| 1 + next() as usize % 700).take(noise.len()).collect();
+    for mode in [0.0, 2.0] {
+        let render = |sizes: &[usize], playing: bool, from: i64| {
+            let mut eq = ScytheEq::new(sr);
+            eq.set(GLOBAL + global::PHASE, mode);
+            dynamic_band(&mut eq, 0, 1.0, -9.0, -30.0);
+            dynamic_band(&mut eq, 1, 2.0, -12.0, -30.0);
+            eq.set(BAND_STRIDE + band::FREQ, 4000.0);
+            let (mut l, mut r) = (noise.clone(), noise.iter().map(|x| -0.5 * x).collect::<Vec<_>>());
+            let mut at = 0;
+            for &n in sizes.iter().cycle() {
+                if at == l.len() {
+                    break;
+                }
+                let n = n.min(l.len() - at);
+                let c = ProcessContext { position: from + at as i64, playing, ..ctx(sr) };
+                eq.process(&mut l[at..at + n], &mut r[at..at + n], &c);
+                at += n;
+            }
+            (l, r)
+        };
+        let reference = render(&[512], true, 0);
+        assert!(reference.0.iter().zip(&noise).any(|(a, b)| a != b));
+        for (name, sizes, playing) in
+            [("37", &[37][..], true), ("random", &random, true), ("random, stopped", &random, false)]
+        {
+            let out = render(sizes, playing, 0);
+            assert!(out == reference, "mode {mode}, blocks of {name}");
+        }
+        // Playback starting part way into a grid cell.
+        assert!(render(&random, true, 1013) == render(&[512], true, 1013), "mode {mode}, from 1013");
+    }
+}

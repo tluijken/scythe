@@ -85,7 +85,8 @@ pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
     }
 }
 
-/// Frames between parameter updates of the zero-latency filters and the detectors.
+/// Frames between parameter updates of the zero-latency filters and the detectors. The cells
+/// lie on multiples of the sample position, so the output does not depend on the block sizes.
 const SUB: usize = 32;
 const SMOOTH_SECONDS: f64 = 0.015;
 const FADE_SECONDS: f64 = 0.01;
@@ -212,6 +213,8 @@ struct Band {
     cascade: Cascade,
     state: [CascadeState; 2],
     mix: f64,
+    /// The mix at the start of the current grid cell.
+    mix_from: f64,
     detector: Detector,
     dynamic_db: f64,
     solo: Cascade,
@@ -259,6 +262,10 @@ pub struct ScytheEq {
     /// Whether audio went through, so a structural change crossfades.
     running: bool,
     outgoing: Option<Box<Outgoing>>,
+    /// The sample position of the next frame, which places the grid cells.
+    clock: i64,
+    /// A grid cell has started since the last reset.
+    primed: bool,
 }
 
 /// The processing a structural change (phase mode, linear phase resolution, spectral bands on
@@ -313,6 +320,8 @@ impl ScytheEq {
             det: vec![0.0; SUB],
             running: false,
             outgoing: None,
+            clock: 0,
+            primed: false,
         };
         eq.reconfigure();
         eq.output_db = eq.value(GLOBAL + global::OUTPUT);
@@ -576,7 +585,9 @@ impl ScytheEq {
         *dirty = false;
     }
 
-    fn run_detectors(&mut self, frames: usize, ctx: &ProcessContext, at: usize) {
+    /// Feeds the detectors `frames` frames; at the `end` of a grid cell they set the bands'
+    /// dynamic gain, which the next cell uses.
+    fn run_detectors(&mut self, frames: usize, aux: Option<(&[f32], &[f32])>, at: usize, end: bool) {
         let fs = self.fs;
         for b in 0..BANDS {
             let s = self.settings[b];
@@ -594,7 +605,7 @@ impl ScytheEq {
             band.detector.retune(&listen, fs);
             for i in 0..frames {
                 let (l, r) = if s.external {
-                    ctx.aux.map_or((0.0, 0.0), |(al, ar)| {
+                    aux.map_or((0.0, 0.0), |(al, ar)| {
                         (al.get(at + i).copied().unwrap_or(0.0) as f64, ar.get(at + i).copied().unwrap_or(0.0) as f64)
                     })
                 } else {
@@ -614,20 +625,22 @@ impl ScytheEq {
                     Placement::Side => 0.5 * (l - r),
                 };
             }
-            let ballistics = Ballistics::new(s.attack, s.release, fs);
-            band.dynamic_db =
-                band.detector.run(&self.det[..frames], ballistics, s.threshold, s.auto_threshold, s.range, fs);
+            band.detector.feed(&self.det[..frames], Ballistics::new(s.attack, s.release, fs), fs);
+            if end {
+                band.dynamic_db = band.detector.settle(s.threshold, s.auto_threshold, s.range);
+            }
         }
     }
 
-    /// Runs the zero-latency bands over `buf`.
-    fn run_bands(&mut self, frames: usize) {
+    /// Moves the zero-latency bands on by a grid cell: their smoothing, fades and designs.
+    fn step_bands(&mut self) {
         let fs = self.fs;
-        let k = 1.0 - (-(frames as f64) / (SMOOTH_SECONDS * fs)).exp();
-        let fade_step = frames as f64 / (FADE_SECONDS * fs);
+        let k = 1.0 - (-(SUB as f64) / (SMOOTH_SECONDS * fs)).exp();
+        let fade_step = SUB as f64 / (FADE_SECONDS * fs);
         for b in 0..BANDS {
             let s = self.settings[b];
             let band = &mut self.bands[b];
+            band.mix_from = band.mix;
             let want = if s.active() { 1.0 } else { 0.0 };
             if band.mix == 0.0 && want == 0.0 {
                 continue;
@@ -644,6 +657,7 @@ impl ScytheEq {
                 band.log_q = s.design.q.ln();
                 band.state.iter_mut().for_each(CascadeState::reset);
                 band.last = None;
+                band.mix_from = 0.0;
                 continue;
             }
             let snap = |cur: &mut f64, target: f64| {
@@ -664,10 +678,21 @@ impl ScytheEq {
                 band.cascade = Cascade::matched(&Prototype::design(&design), fs);
                 band.last = Some(design);
             }
-            let (m0, m1) = (from, band.mix);
+        }
+    }
+
+    /// Runs the zero-latency bands over `buf[..frames]`, `phase` frames into the grid cell.
+    fn run_bands(&mut self, phase: usize, frames: usize, end: bool) {
+        for b in 0..BANDS {
+            let s = self.settings[b];
+            let band = &mut self.bands[b];
+            let (m0, m1) = (band.mix_from, band.mix);
+            if m0 == 0.0 && m1 == 0.0 {
+                continue;
+            }
             let [bl, br] = &mut self.buf;
             for i in 0..frames {
-                let m = m0 + (m1 - m0) * (i + 1) as f64 / frames as f64;
+                let m = m0 + (m1 - m0) * (phase + i + 1) as f64 / SUB as f64;
                 let (l, r) = (bl[i], br[i]);
                 let (nl, nr) = match s.placement {
                     Placement::Stereo => (band.state[0].run(&band.cascade, l), band.state[1].run(&band.cascade, r)),
@@ -687,12 +712,14 @@ impl ScytheEq {
                 bl[i] = l + m * (nl - l);
                 br[i] = r + m * (nr - r);
             }
-            band.state.iter_mut().for_each(CascadeState::flush);
+            if end {
+                band.state.iter_mut().for_each(CascadeState::flush);
+            }
         }
     }
 
     /// The signal of a soloed band or an auditioned detector over `buf`, when any.
-    fn run_solo(&mut self, frames: usize, ctx: &ProcessContext, at: usize) -> bool {
+    fn run_solo(&mut self, frames: usize, aux: Option<(&[f32], &[f32])>, at: usize, end: bool) -> bool {
         let Some(b) = self.settings.iter().position(|s| s.used && (s.solo || s.audition)) else { return false };
         let s = self.settings[b];
         let band = &mut self.bands[b];
@@ -703,7 +730,7 @@ impl ScytheEq {
         }
         for i in 0..frames {
             let (l, r) = if s.audition && s.external {
-                ctx.aux.map_or((0.0, 0.0), |(al, ar)| {
+                aux.map_or((0.0, 0.0), |(al, ar)| {
                     (al.get(at + i).copied().unwrap_or(0.0) as f64, ar.get(at + i).copied().unwrap_or(0.0) as f64)
                 })
             } else {
@@ -712,7 +739,9 @@ impl ScytheEq {
             self.buf[0][i] = band.solo_state[0].run(&band.solo, l);
             self.buf[1][i] = band.solo_state[1].run(&band.solo, r);
         }
-        band.solo_state.iter_mut().for_each(CascadeState::flush);
+        if end {
+            band.solo_state.iter_mut().for_each(CascadeState::flush);
+        }
         true
     }
 
@@ -851,10 +880,21 @@ fn character(kind: usize, x: f64, dc: &mut (f64, f64), fs: f64) -> f64 {
     }
 }
 
-impl Effect for ScytheEq {
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+impl ScytheEq {
+    /// Processes a block whose first frame is at sample `position`; without one (a stopped
+    /// transport) the grid carries on from the previous block.
+    pub fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        aux: Option<(&[f32], &[f32])>,
+        position: Option<i64>,
+    ) {
         let frames = left.len().min(right.len());
         self.running = true;
+        if let Some(p) = position {
+            self.clock = p;
+        }
         if self.auto_dirty {
             self.auto_target_db = self.auto_target();
             self.auto_dirty = false;
@@ -868,18 +908,27 @@ impl Effect for ScytheEq {
         let smooth = 1.0 - (-1.0 / (SMOOTH_SECONDS * fs)).exp();
         let mut at = 0;
         while at < frames {
-            let n = (frames - at).min(SUB);
+            let phase = self.clock.rem_euclid(SUB as i64) as usize;
+            let n = (frames - at).min(SUB - phase);
+            // A cell entered part way (the first after a reset) starts where it is entered.
+            let start = phase == 0 || !self.primed;
+            let end = phase + n == SUB;
+            self.primed = true;
             for i in 0..n {
                 self.inp[0][i] = left[at + i] as f64;
                 self.inp[1][i] = right[at + i] as f64;
             }
             self.buf[0][..n].copy_from_slice(&self.inp[0][..n]);
             self.buf[1][..n].copy_from_slice(&self.inp[1][..n]);
-            self.run_detectors(n, ctx, at);
-            let solo = self.run_solo(n, ctx, at);
+            let solo = self.run_solo(n, aux, at, end);
             let fading = !solo && self.outgoing.as_ref().is_some_and(|o| o.at < o.len);
-            if fading && self.outgoing.as_ref().is_some_and(|o| o.zero) {
-                self.run_bands(n);
+            let old_bands = fading && self.outgoing.as_ref().is_some_and(|o| o.zero);
+            if start && !solo && (old_bands || self.fir.is_none()) {
+                self.step_bands();
+            }
+            self.run_detectors(n, aux, at, end);
+            if old_bands {
+                self.run_bands(phase, n, end);
                 let o = self.outgoing.as_deref_mut().unwrap();
                 for c in 0..2 {
                     o.out[c][..n].copy_from_slice(&self.buf[c][..n]);
@@ -903,21 +952,11 @@ impl Effect for ScytheEq {
                 }
                 let fir = self.fir.as_deref_mut().unwrap();
                 fir.hold = fir.hold.saturating_sub(n);
-                let slots = fir.delay[0].len();
-                for (b, s) in self.settings.iter().enumerate() {
-                    let ring = &mut fir.delay[b];
-                    let k = if s.active() && s.dynamic == 1 {
-                        let gs = 10f64.powf(s.design.gain_db / 20.0);
-                        let gf = 10f64.powf((s.design.gain_db + s.range) / 20.0);
-                        let gt = 10f64.powf((s.design.gain_db + self.bands[b].dynamic_db) / 20.0);
-                        if (gf - gs).abs() > 1e-12 { ((gt - gs) / (gf - gs)) as f32 } else { 0.0 }
-                    } else {
-                        0.0
-                    };
-                    fir.amounts[b] = ring[fir.delay_at];
-                    ring[fir.delay_at] = k;
+                if start {
+                    for (amount, ring) in fir.amounts.iter_mut().zip(&fir.delay) {
+                        *amount = ring[fir.delay_at];
+                    }
                 }
-                fir.delay_at = (fir.delay_at + 1) % slots;
                 if !solo {
                     for i in 0..n {
                         let (l, r) = fir.engine.push(self.buf[0][i] as f32, self.buf[1][i] as f32, &fir.amounts);
@@ -925,8 +964,21 @@ impl Effect for ScytheEq {
                         self.buf[1][i] = r as f64;
                     }
                 }
+                if end {
+                    for (b, s) in self.settings.iter().enumerate() {
+                        fir.delay[b][fir.delay_at] = if s.active() && s.dynamic == 1 {
+                            let gs = 10f64.powf(s.design.gain_db / 20.0);
+                            let gf = 10f64.powf((s.design.gain_db + s.range) / 20.0);
+                            let gt = 10f64.powf((s.design.gain_db + self.bands[b].dynamic_db) / 20.0);
+                            if (gf - gs).abs() > 1e-12 { ((gt - gs) / (gf - gs)) as f32 } else { 0.0 }
+                        } else {
+                            0.0
+                        };
+                    }
+                    fir.delay_at = (fir.delay_at + 1) % fir.delay[0].len();
+                }
             } else if !solo {
-                self.run_bands(n);
+                self.run_bands(phase, n, end);
             }
             if fading && let Some(o) = self.outgoing.as_deref_mut() {
                 if o.shared {
@@ -950,7 +1002,7 @@ impl Effect for ScytheEq {
                 for i in 0..n {
                     let x = (self.buf[0][i] as f32, self.buf[1][i] as f32);
                     let mut sc = x;
-                    if externals && let Some((al, ar)) = ctx.aux {
+                    if externals && let Some((al, ar)) = aux {
                         let raw = (al.get(at + i).copied().unwrap_or(0.0), ar.get(at + i).copied().unwrap_or(0.0));
                         sc = match self.fir.as_deref_mut() {
                             Some(fir) if !fir.aux[0].is_empty() => {
@@ -1006,13 +1058,21 @@ impl Effect for ScytheEq {
                 right[at + i] = r as f32;
             }
             at += n;
+            self.clock += n as i64;
         }
+        self.publish();
+    }
+}
+
+impl Effect for ScytheEq {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        // Offline renders run with `playing` set too; stopped, the position stands still.
+        self.process_block(left, right, ctx.aux, ctx.playing.then_some(ctx.position));
         if let Some(sc) = ctx.aux
             && self.meters.sidechain.active()
         {
             self.meters.sidechain.tap(crate::probe::Side::Pre, sc.0, sc.1, ctx.sample_rate);
         }
-        self.publish();
     }
 
     fn reset(&mut self) {
@@ -1034,6 +1094,8 @@ impl Effect for ScytheEq {
             o.at = o.len;
         }
         self.dc = [(0.0, 0.0); 2];
+        self.clock = 0;
+        self.primed = false;
     }
 
     fn latency(&mut self) -> usize {
