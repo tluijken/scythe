@@ -80,6 +80,12 @@ impl ScyEqShared {
         self.stored.lock().unwrap_or_else(|e| e.into_inner()).version
     }
 
+    /// Tells the user when the loaded state was written by a newer ScyEQ-Pro than this one.
+    pub fn notice(&self) -> Option<String> {
+        (self.version() > params::VERSION)
+            .then(|| "Made with a newer ScyEQ-Pro; update to hear every setting.".to_string())
+    }
+
     pub fn track(&self) -> TrackInfo {
         self.track.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }

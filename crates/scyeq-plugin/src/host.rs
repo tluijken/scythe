@@ -185,6 +185,10 @@ impl EqHost for PluginHost<'_> {
     fn view(&mut self) -> &mut ViewState {
         &mut self.view
     }
+
+    fn notice(&self) -> Option<String> {
+        self.shared.notice()
+    }
 }
 
 /// Every instance in the library, this editor's first: their bands change through their own

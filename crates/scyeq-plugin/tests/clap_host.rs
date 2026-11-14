@@ -19,7 +19,7 @@ use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::CLAP_VERSION;
 use scyeq_dsp::params;
-use scyeq_plugin::plugin_format::{Kind, Map};
+use scyeq_plugin::plugin_format::{Kind, Map, Plugin, Shared};
 
 mod built;
 mod cases;
@@ -287,6 +287,17 @@ fn loads_scythe_state() {
     }
     assert!(!plugin.load(b"not a state"));
     assert_eq!(plugin.save(), cases::SONG2, "a refused state changes nothing");
+}
+
+#[test]
+fn newer_state_shows_a_notice() {
+    let (_plugin, shared) = <scyeq_plugin::ScyEqPlugin as Plugin>::new();
+    let state = |version| params::encode(&params::defaults(), &[], version);
+    assert_eq!(shared.notice(), None);
+    assert!(shared.load(&state(params::VERSION + 1)));
+    assert_eq!(shared.notice().as_deref(), Some("Made with a newer ScyEQ-Pro; update to hear every setting."));
+    assert!(shared.load(&state(params::VERSION)));
+    assert_eq!(shared.notice(), None, "a state of the current version takes the notice away");
 }
 
 #[test]
