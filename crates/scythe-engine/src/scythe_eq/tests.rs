@@ -560,6 +560,7 @@ fn unknown_values_survive_a_round_trip() {
     let written = eq.save_state().unwrap();
     let back = params::decode(&written).unwrap();
     assert_eq!(back.extra, decoded.extra);
+    assert_eq!(written[..12], state[..12]);
     assert_eq!(written[12 + params::TOTAL * 8..], state[12 + params::TOTAL * 8..]);
 }
 
@@ -567,14 +568,17 @@ fn unknown_values_survive_a_round_trip() {
 fn newer_version_is_reported() {
     let state = state_with(params::VERSION + 1, &params::defaults());
     assert_eq!(params::decode(&state).unwrap().version, params::VERSION + 1);
-    assert_eq!(params::decode(&params::encode(&params::defaults(), &[])).unwrap().version, params::VERSION);
+    assert_eq!(
+        params::decode(&params::encode(&params::defaults(), &[], params::VERSION)).unwrap().version,
+        params::VERSION
+    );
 }
 
 #[test]
 fn song_2_state_round_trips_byte_identical() {
     let state = include_bytes!("../../tests/fixtures/scyeq-song2.state");
     let decoded = params::decode(state).unwrap();
-    assert_eq!(params::encode(&decoded.values, &decoded.extra), state);
+    assert_eq!(params::encode(&decoded.values, &decoded.extra, decoded.version), state);
     let mut eq = ScytheEq::from_state(state, 48_000).unwrap();
     assert_eq!(eq.save_state().unwrap(), state);
 }

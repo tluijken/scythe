@@ -308,10 +308,11 @@ pub struct Decoded {
 }
 
 /// The stored state: magic, version, value count, then every value as an f64.
-pub fn encode(values: &[f64], extra: &[f64]) -> Vec<u8> {
+/// A state a newer version wrote keeps its version.
+pub fn encode(values: &[f64], extra: &[f64], version: u32) -> Vec<u8> {
     let mut d = Vec::with_capacity(12 + (values.len() + extra.len()) * 8);
     d.extend(MAGIC);
-    d.extend(VERSION.to_le_bytes());
+    d.extend(version.max(VERSION).to_le_bytes());
     d.extend(((values.len() + extra.len()) as u32).to_le_bytes());
     for (id, v) in values.iter().enumerate() {
         let v = if transient(id as u32) { 0.0 } else { *v };
@@ -360,7 +361,7 @@ mod tests {
         v[band_param(3, band::GAIN) as usize] = 4.5;
         v[band_param(3, band::SOLO) as usize] = 1.0;
         v[(GLOBAL + global::PHASE) as usize] = 2.0;
-        let back = decode(&encode(&v, &[])).unwrap().values;
+        let back = decode(&encode(&v, &[], VERSION)).unwrap().values;
         assert_eq!(back[band_param(3, band::GAIN) as usize], 4.5);
         assert_eq!(back[band_param(3, band::SOLO) as usize], 0.0);
         assert_eq!(back[(GLOBAL + global::PHASE) as usize], 2.0);
