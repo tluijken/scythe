@@ -1,6 +1,7 @@
 //! Hosts the workspace's own `vst2-test-plugin`. Skipped when it has not been built
 //! (`cargo build -p vst2-test-plugin`).
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::path::PathBuf;
 
 use scythe_core::rpp::project_from_rpp;
@@ -10,7 +11,10 @@ use scythe_engine::render::{MeterRegistry, RenderGraph, RenderScratch};
 
 fn library() -> Option<PathBuf> {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    ["debug", "release"].iter().map(|p| target.join(p).join("libvst2_test_plugin.so")).find(|p| p.exists())
+    ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}vst2_test_plugin{DLL_SUFFIX}")))
+        .find(|p| p.exists())
 }
 
 #[test]

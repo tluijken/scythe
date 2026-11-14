@@ -1,15 +1,19 @@
 //! Top-level windows that host plugin editors. Plugins embed into a native window: on Linux an
 //! X11 window, with its own X connection (XWayland under Wayland) next to the egui window; on
 //! Windows a Win32 window, sized for its monitor's DPI. They live on the plugin thread
-//! ([`scythe_engine::plugin_thread`]), whose message loop serves them on Windows.
+//! ([`scythe_engine::plugin_thread`]), whose message loop serves them on Windows. macOS has no
+//! plugin windows yet: AppKit only allows windows on the main thread, which egui owns.
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub use x11::PluginWindow;
+
+#[cfg(target_os = "macos")]
+pub use cocoa::PluginWindow;
 
 #[cfg(windows)]
 pub use win32::PluginWindow;
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 mod x11 {
     use x11rb::connection::Connection as _;
     use x11rb::protocol::Event;
@@ -255,6 +259,31 @@ mod win32 {
                 SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
                 DestroyWindow(self.hwnd);
             }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod cocoa {
+    pub struct PluginWindow;
+
+    impl PluginWindow {
+        pub fn new(_title: &str, _width: u32, _height: u32) -> Result<Self, String> {
+            Err("plugin editors are not supported on macOS yet".into())
+        }
+
+        pub fn handle(&self) -> usize {
+            0
+        }
+
+        pub fn scale(&self) -> f64 {
+            1.0
+        }
+
+        pub fn resize(&self, _width: u32, _height: u32) {}
+
+        pub fn close_requested(&self) -> bool {
+            true
         }
     }
 }

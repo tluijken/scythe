@@ -1,6 +1,7 @@
 //! Hosts the workspace's own `lv2-test-plugins`. Skipped when they have not been built
 //! (`cargo build -p lv2-test-plugins`).
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::path::{Path, PathBuf};
 
 use scythe_core::rpp::{project_from_rpp, project_to_rpp};
@@ -42,8 +43,10 @@ const PLUGINS_TTL: &str = r#"
 /// Writes an LV2 bundle around the built test library, or `None` when it is not built.
 fn bundle(name: &str) -> Option<PathBuf> {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    let lib =
-        ["debug", "release"].iter().map(|p| target.join(p).join("liblv2_test_plugins.so")).find(|p| p.exists())?;
+    let lib = ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}lv2_test_plugins{DLL_SUFFIX}")))
+        .find(|p| p.exists())?;
     let root = std::env::temp_dir().join(format!("scythe-lv2-{name}-{}", std::process::id()));
     let dir = root.join("scythe-test.lv2");
     std::fs::create_dir_all(&dir).unwrap();

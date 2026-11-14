@@ -477,11 +477,17 @@ impl Vst3Module {
         let lib = unsafe { OsLibrary::from_raw(raw) };
         // SAFETY: these entry points have these signatures in every VST 3 module.
         unsafe {
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "macos")))]
             let (entered, exit) = (
                 lib.get::<unsafe extern "system" fn(*mut c_void) -> bool>(b"ModuleEntry")
                     .map_or(true, |entry| entry(raw)),
                 lib.get::<unsafe extern "system" fn() -> bool>(b"ModuleExit").ok().map(|s| *s),
+            );
+            #[cfg(target_os = "macos")]
+            let (entered, exit) = (
+                lib.get::<unsafe extern "system" fn(*mut c_void) -> bool>(b"bundleEntry")
+                    .map_or(true, |entry| mac::with_bundle(path, |bundle| entry(bundle))),
+                lib.get::<unsafe extern "system" fn() -> bool>(b"bundleExit").ok().map(|s| *s),
             );
             #[cfg(windows)]
             let (entered, exit) = (
@@ -571,14 +577,17 @@ pub fn search_paths() -> Vec<PathBuf> {
         dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/vst3"));
     }
     dirs.extend(["/usr/lib/vst3", "/usr/local/lib/vst3", "/run/current-system/sw/lib/vst3"].map(PathBuf::from));
-    dirs.extend(scythe_core::paths::windows_plugin_dirs("VST3"));
+    dirs.extend(scythe_core::paths::system_plugin_dirs("VST3"));
     dirs
 }
 
 /// The shared library of a `.vst3` entry: the bundle's binary for this system
-/// (`Contents/x86_64-linux/<name>.so`, `Contents/x86_64-win/<name>.vst3`), or the file itself.
+/// (`Contents/x86_64-linux/<name>.so`, `Contents/x86_64-win/<name>.vst3`, `Contents/MacOS/<name>`),
+/// or the file itself.
 fn module_binary(entry: &Path) -> Option<PathBuf> {
-    if entry.is_dir() {
+    if cfg!(target_os = "macos") {
+        scythe_core::paths::bundle_executable(entry)
+    } else if entry.is_dir() {
         let stem = entry.file_stem()?.to_string_lossy().into_owned();
         let (system, ext) = if cfg!(windows) { ("win", "vst3") } else { ("linux", "so") };
         let so =
@@ -586,6 +595,45 @@ fn module_binary(entry: &Path) -> Option<PathBuf> {
         so.is_file().then_some(so)
     } else {
         entry.is_file().then(|| entry.to_owned())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::c_void;
+    use std::path::Path;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFURLCreateFromFileSystemRepresentation(
+            allocator: *const c_void,
+            buffer: *const u8,
+            length: isize,
+            is_directory: u8,
+        ) -> *const c_void;
+        fn CFBundleCreate(allocator: *const c_void, url: *const c_void) -> *mut c_void;
+        fn CFRelease(cf: *const c_void);
+    }
+
+    /// Calls `f` with a `CFBundleRef` for the bundle `binary` (`Foo.vst3/Contents/MacOS/Foo`)
+    /// sits in, as `bundleEntry` takes; null when there is none. Modules retain it themselves.
+    pub fn with_bundle(binary: &Path, f: impl FnOnce(*mut c_void) -> bool) -> bool {
+        let Some(bundle) = binary.ancestors().nth(3) else { return f(std::ptr::null_mut()) };
+        let bytes = bundle.as_os_str().as_encoded_bytes();
+        // SAFETY: `bytes` is valid for its length; every object created is released below.
+        unsafe {
+            let url =
+                CFURLCreateFromFileSystemRepresentation(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize, 1);
+            let cf_bundle = if url.is_null() { std::ptr::null_mut() } else { CFBundleCreate(std::ptr::null(), url) };
+            let entered = f(cf_bundle);
+            if !cf_bundle.is_null() {
+                CFRelease(cf_bundle);
+            }
+            if !url.is_null() {
+                CFRelease(url);
+            }
+            entered
+        }
     }
 }
 
@@ -1320,7 +1368,9 @@ pub struct Vst3Editor {
 
 #[cfg(windows)]
 const NATIVE_PLATFORM: FIDString = kPlatformTypeHWND;
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const NATIVE_PLATFORM: FIDString = kPlatformTypeNSView;
+#[cfg(not(any(windows, target_os = "macos")))]
 const NATIVE_PLATFORM: FIDString = kPlatformTypeX11EmbedWindowID;
 
 impl Vst3Plugin {

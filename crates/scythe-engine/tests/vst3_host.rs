@@ -1,6 +1,7 @@
 //! Hosts the workspace's own `vst3-test-plugin`. Skipped when it has not been built
 //! (`cargo build -p vst3-test-plugin`).
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::path::PathBuf;
 
 use scythe_core::rpp::{project_from_rpp, project_to_rpp};
@@ -13,12 +14,21 @@ use scythe_engine::vst3_host;
 /// Lays the built library out as a `.vst3` bundle, or `None` when it is not built.
 fn bundle(name: &str) -> Option<PathBuf> {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    let lib =
-        ["debug", "release"].iter().map(|p| target.join(p).join("libvst3_test_plugin.so")).find(|p| p.exists())?;
+    let lib = ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}vst3_test_plugin{DLL_SUFFIX}")))
+        .find(|p| p.exists())?;
     let root = std::env::temp_dir().join(format!("scythe-vst3-{name}-{}", std::process::id()));
-    let dir = root.join("Scythe Test.vst3/Contents").join(format!("{}-linux", std::env::consts::ARCH));
+    let contents = root.join("Scythe Test.vst3/Contents");
+    let (dir, file) = if cfg!(windows) {
+        (contents.join(format!("{}-win", std::env::consts::ARCH)), "Scythe Test.vst3")
+    } else if cfg!(target_os = "macos") {
+        (contents.join("MacOS"), "Scythe Test")
+    } else {
+        (contents.join(format!("{}-linux", std::env::consts::ARCH)), "Scythe Test.so")
+    };
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(lib, dir.join("Scythe Test.so")).unwrap();
+    std::fs::copy(lib, dir.join(file)).unwrap();
     Some(root)
 }
 

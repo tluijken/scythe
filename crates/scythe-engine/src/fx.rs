@@ -1414,8 +1414,14 @@ impl FxRegistry {
                     }
                 }
                 let path = self.find_vst(&file).ok_or_else(|| format!("{file} not found in the VST paths"))?;
-                let native = if cfg!(windows) { ".dll" } else { ".so" };
-                if !file.to_ascii_lowercase().ends_with(native) {
+                let native: &[&str] = if cfg!(windows) {
+                    &[".dll"]
+                } else if cfg!(target_os = "macos") {
+                    &[".vst", ".dylib"]
+                } else {
+                    &[".so"]
+                };
+                if !native.iter().any(|ext| file.to_ascii_lowercase().ends_with(ext)) {
                     return Err(format!("{file} is not a VST 2 plugin for this system"));
                 }
                 let mut plugin =
@@ -1564,10 +1570,13 @@ fn reaper_plugin_dirs() -> Vec<PathBuf> {
     {
         roots.extend([programs.join("REAPER (x64)"), programs.join("REAPER")]);
     }
+    if cfg!(target_os = "macos") {
+        roots.push(PathBuf::from("/Applications/REAPER.app/Contents"));
+    }
     roots.into_iter().map(|r| r.join("Plugins/FX")).filter(|d| d.is_dir()).collect()
 }
 
-/// `SCYTHE_VST_PATH` and `VST_PATH`, then the usual Linux or Windows locations.
+/// `SCYTHE_VST_PATH` and `VST_PATH`, then the usual Linux, Windows or macOS locations.
 fn vst_search_paths() -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = ["SCYTHE_VST_PATH", "VST_PATH"]
         .iter()
@@ -1586,8 +1595,11 @@ fn vst_search_paths() -> Vec<PathBuf> {
     if cfg!(windows) {
         let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from);
         paths.extend(program_files.iter().flat_map(|p| [p.join("VSTPlugins"), p.join("Steinberg").join("VSTPlugins")]));
-        paths.extend(scythe_core::paths::windows_plugin_dirs("VST2"));
-        paths.extend(scythe_core::paths::windows_plugin_dirs("Steinberg/VST2"));
+        paths.extend(scythe_core::paths::system_plugin_dirs("VST2"));
+        paths.extend(scythe_core::paths::system_plugin_dirs("Steinberg/VST2"));
+    }
+    if cfg!(target_os = "macos") {
+        paths.extend(scythe_core::paths::system_plugin_dirs("VST"));
     }
     paths
 }

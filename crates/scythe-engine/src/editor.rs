@@ -5,8 +5,8 @@
 use std::time::{Duration, Instant};
 
 pub trait Editor {
-    /// Embeds the editor in the native window `parent` (an X11 window id, on Windows an `HWND`);
-    /// returns its size in pixels.
+    /// Embeds the editor in the native window `parent` (an X11 window id, on Windows an `HWND`,
+    /// on macOS an `NSView`); returns its size in pixels.
     fn open(&mut self, parent: usize) -> Result<(u32, u32), String>;
     /// Runs the plugin's timers and file-descriptor callbacks. Returns a size the plugin asked
     /// its window to take.
