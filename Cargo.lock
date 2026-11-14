@@ -4226,6 +4226,7 @@ dependencies = [
  "rtrb",
  "rustfft",
  "scyeq-dsp",
+ "scyeq-plugin",
  "scythe-core",
  "serde",
  "serde_json",

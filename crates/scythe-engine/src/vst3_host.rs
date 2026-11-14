@@ -799,13 +799,15 @@ fn midi_controller(bytes: [u8; 3]) -> Option<(u8, usize, f64)> {
 unsafe impl Send for Vst3Plugin {}
 
 impl Vst3Plugin {
-    /// An instance whose audio buses are set up for a track of `channels` channels.
+    /// An instance whose audio buses are set up for a track of `channels` channels, with `state`
+    /// (in REAPER's layout) loaded before it is activated.
     pub fn new(
         module: Arc<Vst3Module>,
         info: &Vst3Info,
         sample_rate: f64,
         block: usize,
         channels: usize,
+        state: Option<&[u8]>,
     ) -> Result<Self, String> {
         let host = ComWrapper::new(HostApp);
         let host_unknown = host.as_com_ref::<FUnknown>().map_or(std::ptr::null_mut(), |r| r.as_ptr());
@@ -906,16 +908,6 @@ impl Vst3Plugin {
             if component.getBusCount(event, input) > 0 {
                 component.activateBus(event, input, 0, 1);
             }
-            let mut setup = ProcessSetup {
-                processMode: ProcessModes_::kRealtime as int32,
-                symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-                maxSamplesPerBlock: block as int32,
-                sampleRate: sample_rate,
-            };
-            processor.setupProcessing(&mut setup);
-            component.setActive(1);
-            processor.setProcessing(1);
-
             let mut midi_map = vec![None; 16 * MIDI_CONTROLLERS];
             if let Some(mapping) = controller.as_ref().and_then(|c| c.cast::<IMidiMapping>()) {
                 for (i, slot) in midi_map.iter_mut().enumerate() {
@@ -954,7 +946,21 @@ impl Vst3Plugin {
                 _module: module,
             };
             plugin.wire_buses();
-            plugin.sync_controller();
+            match state {
+                Some(state) => {
+                    plugin.load_state(state);
+                }
+                None => plugin.sync_controller(),
+            }
+            let mut setup = ProcessSetup {
+                processMode: ProcessModes_::kRealtime as int32,
+                symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+                maxSamplesPerBlock: block as int32,
+                sampleRate: sample_rate,
+            };
+            plugin.processor.setupProcessing(&mut setup);
+            plugin.component.setActive(1);
+            plugin.processor.setProcessing(1);
             Ok(plugin)
         }
     }

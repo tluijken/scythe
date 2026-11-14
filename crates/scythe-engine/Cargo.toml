@@ -49,4 +49,5 @@ mach2.workspace = true
 jack.workspace = true
 
 [dev-dependencies]
+scyeq-plugin.workspace = true
 x11rb.workspace = true

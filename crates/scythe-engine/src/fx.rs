@@ -804,6 +804,9 @@ pub struct FxRegistry {
     pub monitor_fx: Vec<FxSlot>,
     /// The live engine's audio device, for hardware inserts.
     pub hardware: Option<Arc<crate::hardware_io::HardwareIo>>,
+    /// Runs ScyEQ-Pro slots through the installed ScyEQ-Pro plugin rather than the built-in EQ,
+    /// to compare the two.
+    pub host_scyeq_plugin: bool,
 }
 
 impl FxRegistry {
@@ -820,6 +823,7 @@ impl FxRegistry {
             nam_preloaded: Default::default(),
             monitor_fx: Vec::new(),
             hardware: None,
+            host_scyeq_plugin: false,
         }
     }
 
@@ -1385,16 +1389,14 @@ impl FxRegistry {
                         })
                         .ok_or_else(|| format!("{file} is not installed as a Linux VST 3 plugin"))?;
                     let module = self.vst3_module(&info.path)?;
-                    let mut plugin = crate::vst3_host::Vst3Plugin::new(
+                    let plugin = crate::vst3_host::Vst3Plugin::new(
                         module,
                         &info,
                         self.sample_rate as f64,
                         crate::render::RenderScratch::MAX_BLOCK,
                         channels,
+                        state.as_ref().map(|s| &s.chunk[..]),
                     )?;
-                    if let Some(state) = state {
-                        plugin.load_state(&state.chunk);
-                    }
                     return Ok((Box::new(Vst3Effect::new(plugin)), FxStatus::Hosted(info.path.clone())));
                 }
                 let file = args.get(1).cloned().unwrap_or_default();
@@ -1487,7 +1489,7 @@ impl FxRegistry {
             }
             "CLAP" => {
                 let id = args.get(1).cloned().ok_or("CLAP slot without a plugin id")?;
-                if id == crate::scythe_eq::CLAP_ID {
+                if id == crate::scythe_eq::CLAP_ID && !self.host_scyeq_plugin {
                     let eq = match clap_state(plugin_chunk) {
                         Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
                             .ok_or("unreadable ScyEQ-Pro state")?,
@@ -1499,16 +1501,14 @@ impl FxRegistry {
                     .find_installed(|s| s.clap.iter().find(|d| d.id == id).cloned())
                     .ok_or_else(|| format!("CLAP plugin {id} is not installed"))?;
                 let lib = ClapLibrary::load(&desc.path).map_err(|e| e.to_string())?;
-                let mut plugin = ClapPlugin::create(
+                let plugin = ClapPlugin::create_with_state(
                     lib,
                     &id,
                     self.sample_rate as f64,
                     crate::render::RenderScratch::MAX_BLOCK as u32,
+                    clap_state(plugin_chunk).as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-                if let Some(state) = clap_state(plugin_chunk) {
-                    plugin.load_state(&state);
-                }
                 let instrument = desc.is_instrument();
                 Ok((
                     Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new(), presets: None }),
@@ -2054,6 +2054,7 @@ impl Effect for ClapEffect {
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(left.len() as i64, ctx);
         self.plugin.process(left, right);
     }
@@ -2070,6 +2071,7 @@ impl Effect for ClapEffect {
             }
             return;
         }
+        self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(range.len() as i64, ctx);
         self.plugin.process_channels(bufs, range);
     }
