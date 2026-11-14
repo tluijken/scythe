@@ -1,0 +1,22 @@
+[package]
+name = "scyeq-plugin"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+description = "ScyEQ-Pro as a CLAP and VST3 plugin"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+scyeq-dsp.workspace = true
+scyeq-ui.workspace = true
+plugin-format = { path = "/home/thomas/projects/prive/plugin-format" }
+
+[dev-dependencies]
+base64.workspace = true
+clap-sys.workspace = true
+libloading.workspace = true
+serde_json.workspace = true
+vst3.workspace = true

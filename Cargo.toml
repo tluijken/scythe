@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/scyeq-dsp", "crates/scyeq-ui", "crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-mcp", "crates/scythe-surface", "crates/scythe-app", "crates/scythe-itest", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
+members = ["crates/scyeq-dsp", "crates/scyeq-ui", "crates/scyeq-plugin", "crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-mcp", "crates/scythe-surface", "crates/scythe-app", "crates/scythe-itest", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 scyeq-dsp = { path = "crates/scyeq-dsp" }
 scyeq-ui = { path = "crates/scyeq-ui" }
+scyeq-plugin = { path = "crates/scyeq-plugin" }
 scythe-core = { path = "crates/scythe-core" }
 scythe-engine = { path = "crates/scythe-engine" }
 scythe-session = { path = "crates/scythe-session" }
