@@ -6,7 +6,7 @@
 </h1>
 
 A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
-format, with a modern UI based on the "REAPER redesign" mockup.
+format, with a modern UI of its own.
 
 - **REAPER-compatible.** Scythe opens and saves REAPER 7.73 `.RPP` projects losslessly: on 33
   real projects (~237k lines) a round trip changes only the header line. Projects play
@@ -350,3 +350,12 @@ interoperability goal.
   with it agrees to Steinberg's ASIO license. Without it Windows plays through WASAPI.
 - r8brain free (`RENDER_RESAMPLE 10`) is a Rust implementation of r8brain-free-src 6.x (MIT,
   Aleksey Vaneev); marker actions follow the SWS extension's rules, read from its source (MIT).
+
+## License
+
+Scythe is licensed under either of the [MIT license](LICENSE-MIT) or the
+[Apache License 2.0](LICENSE-APACHE), at your option. Third-party code, fonts and libraries it
+contains or loads are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+REAPER and Cockos are trademarks of Cockos Incorporated; VST and ASIO are trademarks of
+Steinberg Media Technologies GmbH. Scythe is not affiliated with or endorsed by either.
