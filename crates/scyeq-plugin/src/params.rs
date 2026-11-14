@@ -10,7 +10,10 @@ use scyeq_dsp::params::{self, Unit};
 pub fn infos() -> &'static [ParamInfo] {
     static INFOS: OnceLock<Vec<ParamInfo>> = OnceLock::new();
     INFOS.get_or_init(|| {
-        let automatable: Vec<u32> = params::automatable().collect();
+        // A phase mode or resolution change builds a new FIR path, which allocates: hosts get no
+        // automation lane that would do that during playback.
+        let structural = [params::GLOBAL + params::global::PHASE, params::GLOBAL + params::global::RESOLUTION];
+        let automatable: Vec<u32> = params::automatable().filter(|id| !structural.contains(id)).collect();
         params::ids()
             .filter_map(|id| {
                 let spec = params::spec_of(id)?;
@@ -134,5 +137,9 @@ mod tests {
         assert_eq!(kind(params::band::STEREO), Kind::List { min: 0, max: 4 });
         let solo = infos().iter().find(|p| p.id == params::band_param(2, params::band::SOLO)).unwrap();
         assert!(!solo.automatable);
+        let automatable = |id| infos().iter().find(|p| p.id == id).unwrap().automatable;
+        assert!(!automatable(params::GLOBAL + params::global::PHASE));
+        assert!(!automatable(params::GLOBAL + params::global::RESOLUTION));
+        assert!(automatable(params::band_param(0, params::band::FREQ)));
     }
 }

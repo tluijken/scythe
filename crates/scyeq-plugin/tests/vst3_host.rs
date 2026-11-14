@@ -229,7 +229,9 @@ fn reports_every_parameter() {
     let plugin = Instance::new();
     let ids: Vec<u32> = params::ids().collect();
     assert_eq!(unsafe { plugin.controller.getParameterCount() } as usize, ids.len());
-    let automatable: Vec<u32> = params::automatable().collect();
+    let structural = [params::GLOBAL + params::global::PHASE, params::GLOBAL + params::global::RESOLUTION];
+    let automatable: Vec<u32> = params::automatable().filter(|id| !structural.contains(id)).collect();
+    assert!(automatable.contains(&params::band_param(0, params::band::FREQ)));
     for (index, &id) in ids.iter().enumerate() {
         let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
         assert_eq!(unsafe { plugin.controller.getParameterInfo(index as i32, &mut info) }, kResultOk);

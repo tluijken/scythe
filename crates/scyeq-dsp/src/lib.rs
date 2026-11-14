@@ -454,13 +454,18 @@ impl ScytheEq {
                 stage.clear();
                 stage
             }
-            None => Box::new(Spectral::new(self.fs, BANDS)),
+            None => {
+                debug_assert!(false, "no spare spectral stage");
+                Box::new(Spectral::new(self.fs, BANDS))
+            }
         }
     }
 
     fn keep_spectral(&mut self, stage: Box<Spectral>) {
         if let Some(slot) = self.spare_spectral.iter_mut().find(|s| s.is_none()) {
             *slot = Some(stage);
+        } else {
+            debug_assert!(false, "no room for a spare spectral stage");
         }
     }
 
