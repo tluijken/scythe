@@ -250,7 +250,7 @@ fn compare_list(host: &dyn EqHost) -> Vec<CompareSource> {
     let mut out: Vec<CompareSource> = host
         .instances()
         .into_iter()
-        .map(|i| CompareSource { id: i.id, label: format!("{} (ScyEQ-Pro)", i.label) })
+        .map(|i| CompareSource { id: i.id, label: format!("{} (ScyEQ-Pro)", i.label), color: i.color })
         .collect();
     out.extend(host.compare_sources());
     out
@@ -285,7 +285,9 @@ pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     let mut cx = Cx { host, controls, gesture, salt: ui.scope_id().with("scyeq") };
     let cx = &mut cx;
     let sources = compare_list(cx.host);
-    forget_gone(view, &sources);
+    if cx.host.forgets_gone_sources() {
+        forget_gone(view, &sources);
+    }
     feed_analyzer(cx, view, &st);
     view.selected.retain(|b| st.v(p::band_param(*b, band::USED)) >= 0.5);
     cx.controls.sel = view.selected.iter().next().copied();

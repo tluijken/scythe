@@ -84,3 +84,8 @@ pub fn split_top(rect: Rect, h: f32, gap: f32) -> (Rect, Rect) {
         Rect::from_min_max(pos2(rect.left(), (rect.top() + h + gap).min(rect.bottom())), rect.max),
     )
 }
+
+/// A track's colour as a small dot centred on `at`.
+pub fn color_dot(painter: &egui::Painter, at: egui::Pos2, [r, g, b]: [u8; 3]) {
+    painter.circle_filled(at, 4.0, Color32::from_rgb(r, g, b));
+}

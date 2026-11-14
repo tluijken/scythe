@@ -121,3 +121,107 @@ fn a_reference_picked_later_is_measured() {
     assert_eq!(DECODED.load(Ordering::SeqCst), 1, "decoded once");
     assert_eq!(h.state().0.asked, 1);
 }
+
+/// Offers one other instance, "Bass", until told to stop.
+struct Offers {
+    eq: ScytheEq,
+    view: ViewState,
+    offered: bool,
+    forgets: bool,
+    /// The sources the editor asked a probe of.
+    asked: std::sync::Mutex<Vec<Id>>,
+}
+
+fn bass() -> Id {
+    Id::unique("bass")
+}
+
+impl EqHost for Offers {
+    fn values(&self) -> &[f64] {
+        self.eq.values()
+    }
+    fn begin(&mut self, _: u32) {}
+    fn set(&mut self, id: u32, value: f64) {
+        self.eq.set(id, value);
+    }
+    fn end(&mut self, _: u32) {}
+    fn edit(&mut self, _: &str, f: &mut dyn FnMut(&mut ScytheEq)) {
+        f(&mut self.eq);
+    }
+    fn meters(&self) -> Option<Arc<Meters>> {
+        None
+    }
+    fn probe(&self) -> Option<Arc<FxProbe>> {
+        None
+    }
+    fn latency(&self) -> usize {
+        0
+    }
+    fn sample_rate(&self) -> f64 {
+        48_000.0
+    }
+    fn instances(&self) -> Vec<Instance> {
+        let bass = Instance { id: bass(), label: "Bass".to_owned(), color: Some([40, 200, 40]) };
+        self.offered.then_some(bass).into_iter().collect()
+    }
+    fn compare_sources(&self) -> Vec<CompareSource> {
+        Vec::new()
+    }
+    fn source_probe(&self, id: Id) -> Option<Arc<FxProbe>> {
+        self.asked.lock().unwrap().push(id);
+        None
+    }
+    fn view(&mut self) -> &mut ViewState {
+        &mut self.view
+    }
+    fn forgets_gone_sources(&self) -> bool {
+        self.forgets
+    }
+}
+
+/// Bass picked as EQ Match reference, then no longer offered: whether the reference is still
+/// shown, and whether the editor still asks for Bass's probe.
+fn reference_after_bass_goes(forgets: bool) -> (bool, bool) {
+    let host = Offers {
+        eq: ScytheEq::new(48_000),
+        view: ViewState::default(),
+        offered: true,
+        forgets,
+        asked: Default::default(),
+    };
+    let mut h = Harness::builder()
+        .with_size(vec2(1180.0, 680.0))
+        .with_step_dt(1.0 / 30.0)
+        .with_context_setup(scyeq_ui::theme::install)
+        .build_ui_state(
+            |ui, (host, state): &mut (Offers, EditorState)| scyeq_ui::show(ui, host, state),
+            (host, EditorState::default()),
+        );
+    h.step();
+    h.get_by_label("Match").click();
+    h.run_steps(2);
+    h.get_by_value("Choose…").click();
+    h.run_steps(2);
+    h.get_by_label("Bass (ScyEQ-Pro)").click();
+    h.run_steps(2);
+    assert!(h.query_by_value("Bass (ScyEQ-Pro)").is_some(), "Bass is the reference");
+    assert!(h.state().0.asked.lock().unwrap().contains(&bass()));
+
+    h.state_mut().0.offered = false;
+    h.run_steps(2);
+    h.state().0.asked.lock().unwrap().clear();
+    h.run_steps(2);
+    let shown = h.query_by_value("Bass (ScyEQ-Pro)").is_some();
+    assert_eq!(h.query_by_value("Choose…").is_some(), !shown);
+    (shown, h.state().0.asked.lock().unwrap().contains(&bass()))
+}
+
+#[test]
+fn a_host_that_forgets_gone_sources_drops_the_reference() {
+    assert_eq!(reference_after_bass_goes(true), (false, false));
+}
+
+#[test]
+fn a_gone_source_stays_selected_by_default() {
+    assert_eq!(reference_after_bass_goes(false), (true, true));
+}

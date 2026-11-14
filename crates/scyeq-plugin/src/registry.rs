@@ -4,6 +4,9 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
+use plugin_format::egui;
+use scyeq_ui::Instance;
+
 use crate::plugin::ScyEqShared;
 
 static INSTANCES: Mutex<Vec<(u64, Weak<ScyEqShared>)>> = Mutex::new(Vec::new());
@@ -25,6 +28,27 @@ pub fn register(shared: &Arc<ScyEqShared>) -> Registration {
 /// Every registered instance but `me`, in the order they registered.
 pub fn others(me: u64) -> Vec<Arc<ScyEqShared>> {
     instances().iter().filter(|(id, _)| *id != me).filter_map(|(_, shared)| shared.upgrade()).collect()
+}
+
+/// [`others`] as the editor lists them.
+pub fn listed_others(me: u64) -> Vec<Instance> {
+    others(me).iter().map(|s| listed(s)).collect()
+}
+
+/// An instance as the editor lists it: by its track's name and colour, or numbered when the
+/// host names no track.
+pub fn listed(shared: &ScyEqShared) -> Instance {
+    let track = shared.track();
+    Instance {
+        id: id_of(shared),
+        label: track.name.unwrap_or_else(|| format!("ScyEQ-Pro {}", shared.id())),
+        color: track.color,
+    }
+}
+
+/// Stays the same for the instance's life, as the editor needs.
+pub(crate) fn id_of(shared: &ScyEqShared) -> egui::Id {
+    egui::Id::unique(("scyeq-plugin-instance", shared.id()))
 }
 
 fn instances() -> std::sync::MutexGuard<'static, Vec<(u64, Weak<ScyEqShared>)>> {

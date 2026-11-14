@@ -3,6 +3,7 @@
 
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use clap_sys::color::clap_color;
@@ -35,10 +36,12 @@ fn turn() -> MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// What the host says about the track an instance is on.
+/// What the host says about the track an instance is on, and how often the instance asked it
+/// to flush; no track info at all without a name.
 struct Track {
-    name: &'static str,
+    name: Option<&'static str>,
     color: [u8; 3],
+    flushes: AtomicU32,
 }
 
 unsafe extern "C" fn nothing(_: *const clap_host) {}
@@ -46,15 +49,20 @@ unsafe extern "C" fn rescan(_: *const clap_host, _: clap_param_rescan_flags) {}
 unsafe extern "C" fn clear(_: *const clap_host, _: u32, _: u32) {}
 
 static HOST_PARAMS: clap_host_params =
-    clap_host_params { rescan: Some(rescan), clear: Some(clear), request_flush: Some(nothing) };
+    clap_host_params { rescan: Some(rescan), clear: Some(clear), request_flush: Some(request_flush) };
 static HOST_TRACK_INFO: clap_host_track_info = clap_host_track_info { get: Some(track_info) };
+
+unsafe extern "C" fn request_flush(host: *const clap_host) {
+    unsafe { (*((*host).host_data as *const Track)).flushes.fetch_add(1, Ordering::SeqCst) };
+}
 
 unsafe extern "C" fn track_info(host: *const clap_host, info: *mut clap_track_info) -> bool {
     unsafe {
         let track = &*((*host).host_data as *const Track);
+        let Some(name) = track.name else { return false };
         let info = &mut *info;
         info.flags = CLAP_TRACK_INFO_HAS_TRACK_NAME | CLAP_TRACK_INFO_HAS_TRACK_COLOR;
-        for (at, &b) in info.name.iter_mut().zip(track.name.as_bytes()) {
+        for (at, &b) in info.name.iter_mut().zip(name.as_bytes()) {
             *at = b as c_char;
         }
         let [red, green, blue] = track.color;
@@ -83,12 +91,21 @@ enum Sent {
 struct Instance {
     plugin: *const clap_plugin,
     _host: Box<clap_host>,
-    _track: Box<Track>,
+    track: Box<Track>,
 }
 
 impl Instance {
     fn on(name: &'static str, color: [u8; 3]) -> Self {
-        let track = Box::new(Track { name, color });
+        Self::with(Track { name: Some(name), color, flushes: AtomicU32::new(0) })
+    }
+
+    /// On a track the host says nothing about.
+    fn unnamed() -> Self {
+        Self::with(Track { name: None, color: [0; 3], flushes: AtomicU32::new(0) })
+    }
+
+    fn with(track: Track) -> Self {
+        let track = Box::new(track);
         let host = Box::new(clap_host {
             clap_version: CLAP_VERSION,
             host_data: &*track as *const Track as *mut c_void,
@@ -111,7 +128,7 @@ impl Instance {
             assert!(((*plugin).init.unwrap())(plugin));
             plugin
         };
-        let instance = Self { plugin, _host: host, _track: track };
+        let instance = Self { plugin, _host: host, track };
         let mut values = params::defaults();
         values[params::band_param(0, band::USED) as usize] = 1.0;
         values[params::band_param(0, band::FREQ) as usize] = 1000.0;
@@ -218,15 +235,9 @@ fn on_track(name: &str) -> Arc<ScyEqShared> {
     everyone().into_iter().find(|s| s.track().name.as_deref() == Some(name)).expect(name)
 }
 
-/// The track names and colours of the instances `name` finds.
-fn found_by(name: &str) -> Vec<(String, [u8; 3])> {
-    registry::others(on_track(name).id())
-        .iter()
-        .map(|s| {
-            let track = s.track();
-            (track.name.unwrap_or_default(), track.color.unwrap_or_default())
-        })
-        .collect()
+/// The labels and colours of the instances `name` finds, as its editor lists them.
+fn found_by(name: &str) -> Vec<(String, Option<[u8; 3]>)> {
+    registry::listed_others(on_track(name).id()).into_iter().map(|i| (i.label, i.color)).collect()
 }
 
 /// The EQ Match references the editor offers.
@@ -263,7 +274,7 @@ fn instances_see_each_other() {
     let _turn = turn();
     let (kick, _bass, _vox) = band();
     let (red, green, blue) = ([200, 40, 40], [40, 200, 40], [40, 40, 200]);
-    let named = |list: &[(&str, [u8; 3])]| list.iter().map(|(n, c)| (n.to_string(), *c)).collect::<Vec<_>>();
+    let named = |list: &[(&str, [u8; 3])]| list.iter().map(|(n, c)| (n.to_string(), Some(*c))).collect::<Vec<_>>();
     assert_eq!(found_by("Kick"), named(&[("Bass", green), ("Vox", blue)]));
     assert_eq!(found_by("Bass"), named(&[("Kick", red), ("Vox", blue)]));
     assert_eq!(found_by("Vox"), named(&[("Kick", red), ("Bass", green)]));
@@ -328,6 +339,9 @@ fn editing_another_instance_reaches_its_host() {
     assert!(last > 2.0, "dragging up raises the gain: {last}");
     assert_eq!(bass.value(gain), last, "Bass's host reads what it was sent");
     assert!(kick.flush().is_empty() && vox.flush().is_empty(), "only Bass changed");
+    let flushes = |i: &Instance| i.track.flushes.load(Ordering::SeqCst);
+    assert!(flushes(&bass) > 0, "Bass's host was asked to flush");
+    assert_eq!((flushes(&kick), flushes(&vox)), (0, 0), "no other host was");
 }
 
 #[test]
@@ -349,4 +363,18 @@ fn closing_mid_drag_ends_the_gesture_on_the_other_instance() {
     let sent = bass.flush();
     assert_eq!(sent.first(), Some(&Sent::Begin(gain)), "{sent:?}");
     assert_eq!(sent.last(), Some(&Sent::End(gain)), "{sent:?}");
+}
+
+#[test]
+fn instances_on_unnamed_tracks_are_numbered() {
+    let _turn = turn();
+    let (kick, first, second) = (Instance::on("Kick", [200, 40, 40]), Instance::unnamed(), Instance::unnamed());
+    let listed = found_by("Kick");
+    let labels: Vec<&str> = listed.iter().map(|(label, _)| label.as_str()).collect();
+    assert_eq!(labels.len(), 2);
+    assert!(labels.iter().all(|l| l.starts_with("ScyEQ-Pro ")) && labels[0] != labels[1], "{labels:?}");
+    assert!(listed.iter().all(|(_, color)| color.is_none()));
+    drop(first);
+    assert_eq!(found_by("Kick")[0].0, labels[1], "a number stays with its instance");
+    drop((kick, second));
 }

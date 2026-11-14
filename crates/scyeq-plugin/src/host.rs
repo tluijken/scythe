@@ -139,7 +139,7 @@ impl EqHost for PluginHost<'_> {
     }
 
     fn instances(&self) -> Vec<Instance> {
-        registry::others(self.shared.id()).iter().map(|s| Instance { id: instance_id(s), label: label(s) }).collect()
+        registry::listed_others(self.shared.id())
     }
 
     /// A plugin sees no tracks of its own, only other instances.
@@ -148,7 +148,7 @@ impl EqHost for PluginHost<'_> {
     }
 
     fn source_probe(&self, id: egui::Id) -> Option<Arc<FxProbe>> {
-        registry::others(self.shared.id()).into_iter().find(|s| instance_id(s) == id).map(|s| s.probe().clone())
+        registry::others(self.shared.id()).into_iter().find(|s| registry::id_of(s) == id).map(|s| s.probe().clone())
     }
 
     /// On Linux the editor has a thread of its own, which a dialog must not hold: the host
@@ -177,6 +177,11 @@ impl EqHost for PluginHost<'_> {
         Some(load_reference)
     }
 
+    /// Instances come and go with the host's tracks.
+    fn forgets_gone_sources(&self) -> bool {
+        true
+    }
+
     fn view(&mut self) -> &mut ViewState {
         &mut self.view
     }
@@ -199,22 +204,22 @@ impl<'a> Instances<'a> {
     }
 
     fn find(&self, id: egui::Id) -> Option<&Arc<ScyEqShared>> {
-        self.all.iter().find(|s| instance_id(s) == id)
+        self.all.iter().find(|s| registry::id_of(s) == id)
     }
 
     /// The context changes to instance `id` go through; `None` while its host is unknown.
     fn cx_of(&self, id: egui::Id) -> Option<GuiContext> {
         let (me, others) = self.all.split_first()?;
-        if instance_id(me) == id {
+        if registry::id_of(me) == id {
             return Some(self.cx.clone());
         }
-        others.iter().find(|s| instance_id(s) == id)?.cx()
+        others.iter().find(|s| registry::id_of(s) == id)?.cx()
     }
 }
 
 impl InstanceList for Instances<'_> {
     fn instance_list(&self) -> Vec<Instance> {
-        self.all.iter().map(|s| Instance { id: instance_id(s), label: label(s) }).collect()
+        self.all.iter().map(|s| registry::listed(s)).collect()
     }
 
     fn instance_values(&self, id: egui::Id) -> Option<Vec<f64>> {
@@ -228,7 +233,7 @@ impl InstanceList for Instances<'_> {
     fn toggle_instance_bypass(&mut self, _id: egui::Id) {}
 
     fn instance_open(&self, id: egui::Id) -> bool {
-        self.all.first().is_some_and(|me| instance_id(me) == id)
+        self.all.first().is_some_and(|me| registry::id_of(me) == id)
     }
 
     fn toggle_instance_open(&mut self, _id: egui::Id) {}
@@ -257,16 +262,6 @@ impl InstanceList for Instances<'_> {
     fn controls_instances(&self) -> bool {
         false
     }
-}
-
-/// Stays the same for the instance's life, as the editor needs.
-fn instance_id(shared: &ScyEqShared) -> egui::Id {
-    egui::Id::unique(("scyeq-plugin-instance", shared.id()))
-}
-
-/// The track's name, as the host gave it.
-fn label(shared: &ScyEqShared) -> String {
-    shared.track().name.unwrap_or_else(|| "ScyEQ-Pro".to_owned())
 }
 
 fn pick_file() -> Option<PathBuf> {

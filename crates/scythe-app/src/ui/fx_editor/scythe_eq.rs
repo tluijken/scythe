@@ -105,14 +105,14 @@ impl EqHost for Host<'_, '_> {
         all_instances(self.cx.app)
             .into_iter()
             .filter(|i| !(i.owner == self.cx.ed.owner && i.path == self.cx.ed.path))
-            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label })
+            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label, color: None })
             .collect()
     }
 
     fn compare_sources(&self) -> Vec<CompareSource> {
         track_outputs(self.cx.app)
             .into_iter()
-            .map(|(owner, label)| CompareSource { id: source_id(&owner, &[]), label })
+            .map(|(owner, label)| CompareSource { id: source_id(&owner, &[]), label, color: None })
             .collect()
     }
 
@@ -306,7 +306,7 @@ impl InstanceList for ProjectInstances<'_> {
     fn instance_list(&self) -> Vec<scyeq_ui::Instance> {
         self.all
             .iter()
-            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label.clone() })
+            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label.clone(), color: None })
             .collect()
     }
 

@@ -45,7 +45,12 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(10), RAISED);
     let name_rect = Rect::from_min_size(rect.min + vec2(10.0, 8.0), vec2(150.0, 20.0));
-    ui.painter().text(name_rect.left_center(), Align2::LEFT_CENTER, &inst.label, theme::semibold(12.0), TEXT);
+    let mut name_at = name_rect.left_center();
+    if let Some(color) = inst.color {
+        widgets::color_dot(ui.painter(), name_at + vec2(4.0, 0.0), color);
+        name_at.x += 14.0;
+    }
+    ui.painter().text(name_at, Align2::LEFT_CENTER, &inst.label, theme::semibold(12.0), TEXT);
     let phase = ["Zero latency", "Natural", "Linear"][values[(GLOBAL + global::PHASE) as usize] as usize % 3];
     ui.painter().text(
         name_rect.left_center() + vec2(0.0, 18.0),

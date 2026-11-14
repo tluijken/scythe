@@ -47,6 +47,11 @@ pub trait EqHost {
     /// The instance list opens while `instances` is set: Scythe shows one for the whole project,
     /// a plugin shows [`crate::instances_window`] with it.
     fn view(&mut self) -> &mut ViewState;
+    /// Whether a compare or EQ Match source the host no longer offers is let go; otherwise it
+    /// stays selected.
+    fn forgets_gone_sources(&self) -> bool {
+        false
+    }
     /// A note shown over the graph, e.g. "made with a newer ScyEQ-Pro".
     fn notice(&self) -> Option<String> {
         None
@@ -68,6 +73,8 @@ pub struct Instance {
     /// Stays the same from frame to frame while the instance does.
     pub id: Id,
     pub label: String,
+    /// The colour of the instance's track, when the host gave one.
+    pub color: Option<[u8; 3]>,
 }
 
 /// A signal to compare and match with.
@@ -75,6 +82,7 @@ pub struct Instance {
 pub struct CompareSource {
     pub id: Id,
     pub label: String,
+    pub color: Option<[u8; 3]>,
 }
 
 /// A decoded reference file: planar channels (one or two).

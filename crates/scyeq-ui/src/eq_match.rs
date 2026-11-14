@@ -15,6 +15,7 @@ use crate::editor::{Cx, View};
 use crate::host::{CompareSource, DecodeFn, WindowSpec};
 use crate::model::{Plot, Scale};
 use crate::theme::{self, ACCENT, BG, RAISED_HI, TEXT_DIM, TEXT_MID};
+use crate::widgets;
 
 #[derive(Clone, Debug, PartialEq, Default)]
 enum Target {
@@ -199,7 +200,14 @@ fn match_body(
         };
         egui::ComboBox::from_id_salt(cx.salt.with("eq-match-ref")).selected_text(current).show_ui(ui, |ui| {
             for o in others {
-                if ui.selectable_label(panel.reference == Target::Source(o.clone()), &o.label).clicked() {
+                let picked = ui.horizontal(|ui| {
+                    if let Some(color) = o.color {
+                        let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+                        widgets::color_dot(ui.painter(), dot.center(), color);
+                    }
+                    ui.selectable_label(panel.reference == Target::Source(o.clone()), &o.label).clicked()
+                });
+                if picked.inner {
                     panel.reference = Target::Source(o.clone());
                     panel.other = vec![0.0; POINTS];
                     panel.other_frames = 0;

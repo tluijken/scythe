@@ -38,7 +38,7 @@ impl Fake {
 
 impl InstanceList for Fake {
     fn instance_list(&self) -> Vec<Instance> {
-        vec![Instance { id: vocals(), label: "Vocals".to_owned() }]
+        vec![Instance { id: vocals(), label: "Vocals".to_owned(), color: None }]
     }
 
     fn instance_values(&self, _id: Id) -> Option<Vec<f64>> {
