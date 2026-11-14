@@ -2,8 +2,12 @@
 //!
 //! It is stored as a CLAP slot (`<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` with its
 //! state in `<STATE`), a block REAPER keeps byte for byte when it does not know the plugin.
+//! A slot of the VST3 plugin, which REAPER writes when that is the one inserted, runs as the
+//! built-in EQ too and keeps its `<VST` block.
 
 pub use scyeq_dsp::*;
+
+use scythe_core::rpp::{Chunk, Node};
 
 use crate::fx::{Effect, ProcessContext};
 
@@ -12,39 +16,66 @@ pub const CLAP_ID: &str = "scythe.eq";
 pub const DISPLAY: &str = "CLAP: ScyEQ-Pro (Scythe)";
 /// The title projects saved before the EQ had its name carry; the slot is found by `CLAP_ID`.
 pub const OLD_DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
+pub const VST3_CLASS_ID: [u8; 16] = *b"ScytheScyEQPro01";
+/// The title REAPER gives a slot of the VST3 plugin; the slot is found by `VST3_CLASS_ID`.
+pub const VST3_DISPLAY: &str = "VST3: ScyEQ-Pro (Scythe)";
 pub const STATUS: &str = "parametric EQ";
 
 /// Whether `slot` holds a ScyEQ-Pro.
 pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
-    slot.raw.iter().any(|n| {
-        matches!(n, scythe_core::rpp::Node::Chunk(c)
-            if c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == CLAP_ID))
-    })
+    slot.raw.iter().any(|n| matches!(n, Node::Chunk(c) if is_chunk(c)))
+}
+
+/// Whether a slot's plugin block holds a ScyEQ-Pro, as the CLAP or the VST3 plugin.
+pub(crate) fn is_chunk(c: &Chunk) -> bool {
+    match c.name() {
+        "CLAP" => c.args().get(1).is_some_and(|id| id == CLAP_ID),
+        "VST" => is_vst3_chunk(c),
+        _ => false,
+    }
+}
+
+/// Whether a `<VST` block holds the VST3 plugin: its class id follows the numeric id, `123{…}`.
+pub(crate) fn is_vst3_chunk(c: &Chunk) -> bool {
+    let args = c.args();
+    c.name() == "VST"
+        && args.first().is_some_and(|d| d.starts_with("VST3"))
+        && args.get(4).and_then(|a| a.split_once('{')).is_some_and(|(_, cid)| {
+            cid.trim_end_matches('}').eq_ignore_ascii_case(&crate::vst3_host::cid_hex(&VST3_CLASS_ID))
+        })
+}
+
+/// The EQ state a ScyEQ-Pro block holds: the CLAP `<STATE`, or the component state inside the
+/// VST3 plugin's REAPER chunk. `None` when the block holds none.
+pub(crate) fn chunk_state(c: &Chunk) -> Option<Vec<u8>> {
+    if c.name() == "CLAP" {
+        return crate::fx::clap_state(c);
+    }
+    let lines: Vec<String> = c
+        .children
+        .iter()
+        .filter_map(|n| match n {
+            Node::Line(l) => Some(l.trim().to_owned()),
+            Node::Chunk(_) => None,
+        })
+        .collect();
+    let reaper = crate::vst2::ReaperVstState::decode(&lines)?;
+    let (component, _) = crate::vst3_host::split_reaper_state(&reaper.chunk)?;
+    (!component.is_empty()).then(|| component.to_vec())
 }
 
 /// The values stored in a ScyEQ-Pro slot.
 pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
-    use base64::Engine as _;
     let chunk = slot.raw.iter().find_map(|n| match n {
-        scythe_core::rpp::Node::Chunk(c) if c.name() == "CLAP" => Some(c),
+        Node::Chunk(c) if is_chunk(c) => Some(c),
         _ => None,
     })?;
-    let state = chunk.chunks("STATE").next()?;
-    let text: String = state
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            scythe_core::rpp::Node::Line(l) => Some(l.trim()),
-            scythe_core::rpp::Node::Chunk(_) => None,
-        })
-        .collect();
-    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?).map(|d| d.values)
+    params::decode(&chunk_state(chunk)?).map(|d| d.values)
 }
 
 /// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
 pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
     use base64::Engine as _;
-    use scythe_core::rpp::{Chunk, Node};
     let state = state.map_or_else(|| params::encode(&params::defaults(), &[], params::VERSION), <[u8]>::to_vec);
     let mut chunk = Chunk::new("CLAP", &[DISPLAY, CLAP_ID, ""]);
     chunk.line(["CFG", "4", "0", "0", ""]);

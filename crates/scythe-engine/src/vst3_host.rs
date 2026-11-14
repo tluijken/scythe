@@ -698,6 +698,26 @@ pub fn reaper_state(component: &[u8], controller: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The component and controller states of a VST 3 state in REAPER's layout.
+pub fn split_reaper_state(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let len = u32_at(0)?;
+    let component = data.get(8..8 + len)?;
+    let controller = u32_at(8 + len).and_then(|n| data.get(16 + len..16 + len + n)).unwrap_or(&[]);
+    Some((component, controller))
+}
+
+/// `data`, a VST 3 state in REAPER's layout, with `component` as its component state and the
+/// rest kept as it was.
+pub fn with_component(data: &[u8], component: &[u8]) -> Option<Vec<u8>> {
+    let (old, _) = split_reaper_state(data)?;
+    let mut out = (component.len() as u32).to_le_bytes().to_vec();
+    out.extend(&data[4..8]);
+    out.extend(component);
+    out.extend(&data[8 + old.len()..]);
+    Some(out)
+}
+
 // ---- instances ---------------------------------------------------------------------------
 
 pub struct ParamDesc {
@@ -1038,10 +1058,7 @@ impl Vst3Plugin {
     }
 
     pub fn load_state(&mut self, data: &[u8]) -> bool {
-        let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
-        let Some(len) = u32_at(0) else { return false };
-        let Some(component) = data.get(8..8 + len) else { return false };
-        let controller = u32_at(8 + len).and_then(|n| data.get(16 + len..16 + len + n)).unwrap_or(&[]);
+        let Some((component, controller)) = split_reaper_state(data) else { return false };
         let stream = stream_with(component);
         // SAFETY: the streams outlive the calls.
         unsafe {

@@ -196,6 +196,7 @@ fn registry(host: Host, library: &Path) -> FxRegistry {
         Host::Vst3 => {
             let module = vst3_host::Vst3Module::load(library).unwrap();
             fx.set_vst3_plugins(module.classes("ScyEQ-Pro.vst3"));
+            fx.host_scyeq_plugin = true;
         }
     }
     fx

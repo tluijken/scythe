@@ -1072,7 +1072,15 @@ impl FxRegistry {
                     Node::Chunk(_) => None,
                 })
                 .collect();
-            let mut new_lines = match ReaperVstState::decode(&lines) {
+            let built_in_eq = crate::scythe_eq::is_vst3_chunk(chunk)
+                && self.entries.get(&entry).is_some_and(|e| e.status == FxStatus::Native(crate::scythe_eq::STATUS));
+            let decoded = ReaperVstState::decode(&lines);
+            let state = match &decoded {
+                Some(old) if built_in_eq => crate::vst3_host::with_component(&old.chunk, &state)
+                    .unwrap_or_else(|| crate::vst3_host::reaper_state(&state, &[])),
+                _ => state,
+            };
+            let mut new_lines = match decoded {
                 Some(old) if old.chunk == state => lines.clone(),
                 Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
                     crate::builtin::sidechain_vst_lines(id, &state)
@@ -1338,11 +1346,11 @@ impl FxRegistry {
         let (Some(Node::Chunk(old)), Some(Node::Chunk(new))) = (entry.state.first(), state.first()) else {
             return false;
         };
-        let is_eq = |c: &Chunk| c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == crate::scythe_eq::CLAP_ID);
-        if !is_eq(old) || !is_eq(new) {
+        let built_in = entry.status == FxStatus::Native(crate::scythe_eq::STATUS);
+        if !built_in || old.name() != new.name() || !crate::scythe_eq::is_chunk(new) {
             return false;
         }
-        let Some(chunk) = clap_state(new) else { return false };
+        let Some(chunk) = crate::scythe_eq::chunk_state(new) else { return false };
         let Some(latency) = inst.with(|e| e.update_state(&chunk).then(|| e.latency())).flatten() else {
             return false;
         };
@@ -1359,6 +1367,14 @@ impl FxRegistry {
 
     fn create_here(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
+        if crate::scythe_eq::is_chunk(plugin) && !self.host_scyeq_plugin {
+            let eq = match crate::scythe_eq::chunk_state(plugin) {
+                Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
+                    .ok_or("unreadable ScyEQ-Pro state")?,
+                None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
+            };
+            return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
+        }
         let plugin_chunk = plugin;
         let args = plugin.args();
         let lines: Vec<String> = plugin
@@ -1489,14 +1505,6 @@ impl FxRegistry {
             }
             "CLAP" => {
                 let id = args.get(1).cloned().ok_or("CLAP slot without a plugin id")?;
-                if id == crate::scythe_eq::CLAP_ID && !self.host_scyeq_plugin {
-                    let eq = match clap_state(plugin_chunk) {
-                        Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
-                            .ok_or("unreadable ScyEQ-Pro state")?,
-                        None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
-                    };
-                    return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
-                }
                 let desc = self
                     .find_installed(|s| s.clap.iter().find(|d| d.id == id).cloned())
                     .ok_or_else(|| format!("CLAP plugin {id} is not installed"))?;
@@ -1803,7 +1811,7 @@ fn store_learned_bases(inst: &FxInstance, slot: &mut FxSlot) {
 }
 
 /// Plugin state saved in a `<STATE` child chunk of a `<CLAP` slot, base64 encoded.
-fn clap_state(c: &Chunk) -> Option<Vec<u8>> {
+pub(crate) fn clap_state(c: &Chunk) -> Option<Vec<u8>> {
     use base64::Engine as _;
     let state = c.chunks("STATE").next()?;
     let text: String = state
