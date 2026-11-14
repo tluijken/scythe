@@ -180,7 +180,9 @@ impl Session {
         let Ok((label, lo, hi, v)) = crate::api::envelope::param_info(self, target, fx, param) else { return };
         self.gesture("Write automation", |p| {
             if let Some(slot) = p.track_mut(track).and_then(|t| t.fx.get_mut(fx)) {
-                slot.set_parameter_envelope(&ParamEnvelope::new(param, lo, hi, v, &label));
+                let mut pe = ParamEnvelope::new(param, lo, hi, v, &label);
+                pe.spec = scythe_engine::scythe_eq::envelope_spec(slot, param).unwrap_or(pe.spec);
+                slot.set_parameter_envelope(&pe);
             }
         });
     }

@@ -97,6 +97,75 @@ pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
     }
 }
 
+/// Whether `slot` holds the CLAP plugin's block, the form Scythe itself stores ScyEQ-Pro in.
+fn is_clap_slot(slot: &scythe_core::FxSlot) -> bool {
+    slot.raw.iter().any(|n| matches!(n, Node::Chunk(c) if c.name() == "CLAP" && is_chunk(c)))
+}
+
+/// The parameter at `index` in the host's list. The plugin lists every stored value but solo and
+/// audition, so up to the analyzer settings the list is `params::automatable`.
+fn param_at(index: usize) -> Option<u32> {
+    params::automatable().nth(index)
+}
+
+/// How REAPER names parameter `index` of a ScyEQ-Pro slot in `PARMENV`: `<index>:<id>`.
+pub fn envelope_spec(slot: &scythe_core::FxSlot, index: usize) -> Option<String> {
+    is_slot(slot).then_some(())?;
+    param_at(index).map(|id| format!("{index}:{id}"))
+}
+
+/// Rewrites the envelopes of a CLAP slot that Scythe stored before they followed REAPER: from
+/// 0..1, mapped as `params::from_normalized` maps, to the parameter's own units and range.
+/// Parameters whose range is 0..1 read the same either way. Returns whether anything changed.
+pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
+    if !is_clap_slot(slot) {
+        return false;
+    }
+    let mut changed = false;
+    for mut pe in slot.parameter_envelopes() {
+        let Some((index, id)) = pe.param().and_then(|i| Some((i, param_at(i)?))) else { continue };
+        let Some(spec) = params::spec_of(id) else { continue };
+        if (pe.min, pe.max) != (0.0, 1.0) || (spec.min, spec.max) == (0.0, 1.0) {
+            continue;
+        }
+        for p in &mut pe.envelope.points {
+            p.value = params::from_normalized(id, p.value);
+        }
+        pe.default = params::from_normalized(id, pe.default);
+        (pe.min, pe.max) = (spec.min, spec.max);
+        pe.envelope.range = Some((spec.min, spec.max));
+        pe.spec = format!("{index}:{id}");
+        slot.set_parameter_envelope(&pe);
+        changed = true;
+    }
+    changed
+}
+
+/// Every ScyEQ-Pro slot of `project` through [`upgrade_envelopes`].
+pub fn upgrade_project(project: &mut scythe_core::Project) -> bool {
+    let mut changed = false;
+    for track in std::iter::once(&mut project.master).chain(project.tracks.iter_mut()) {
+        for slot in &mut track.fx {
+            changed |= upgrade_envelopes(slot);
+        }
+    }
+    changed
+}
+
+/// A slot's parameter as REAPER sees the CLAP plugin's: in its own units, 0..1 being its range
+/// end to end, also for frequencies and times.
+fn linear(id: u32, normalized: f64) -> f64 {
+    let spec = params::spec_of(id).map_or((0.0, 1.0), |s| (s.min, s.max));
+    spec.0 + normalized.clamp(0.0, 1.0) * (spec.1 - spec.0)
+}
+
+fn linear_position(id: u32, v: f64) -> f64 {
+    let spec = params::spec_of(id).map_or((0.0, 1.0), |s| (s.min, s.max));
+    if spec.1 > spec.0 { ((v - spec.0) / (spec.1 - spec.0)).clamp(0.0, 1.0) } else { 0.0 }
+}
+
+/// The CLAP slot, which is also how Scythe stores ScyEQ-Pro: envelopes in the parameters' own
+/// units, read at the end of each block, as REAPER automates the CLAP plugin.
 impl Effect for ScytheEq {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
         // Offline renders run with `playing` set too; stopped, the position stands still.
@@ -132,14 +201,22 @@ impl Effect for ScytheEq {
     }
 
     fn set_normalized(&mut self, index: usize, value: f64) -> bool {
-        let Some(id) = params::automatable().nth(index) else { return false };
-        self.set(id, params::from_normalized(id, value));
+        let Some(id) = param_at(index) else { return false };
+        self.set(id, linear(id, value));
         true
     }
 
     fn normalized(&mut self, index: usize) -> Option<f64> {
-        let id = params::automatable().nth(index)?;
-        Some(params::to_normalized(id, self.value(id)))
+        let id = param_at(index)?;
+        Some(linear_position(id, self.value(id)))
+    }
+
+    fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
+        params::spec_of(param_at(index)?).map(|s| (s.min, s.max))
+    }
+
+    fn automates_at_block_end(&self) -> bool {
+        true
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
@@ -152,6 +229,63 @@ impl Effect for ScytheEq {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
+    }
+}
+
+/// A slot of the VST3 plugin: envelopes hold VST3 normalised values, which the plugin maps as
+/// `params::from_normalized` does (logarithmic for frequencies, Q and times).
+pub struct Vst3Eq(pub ScytheEq);
+
+impl Effect for Vst3Eq {
+    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.0.process(left, right, ctx);
+    }
+
+    fn reset(&mut self) {
+        Effect::reset(&mut self.0);
+    }
+
+    fn latency(&mut self) -> usize {
+        Effect::latency(&mut self.0)
+    }
+
+    fn params(&mut self) -> Vec<ParamInfo> {
+        self.0.params()
+    }
+
+    fn param(&mut self, id: u32) -> Option<(f64, String)> {
+        self.0.param(id)
+    }
+
+    fn set_param(&mut self, id: u32, value: f64) {
+        self.0.set(id, value);
+    }
+
+    fn set_normalized(&mut self, index: usize, value: f64) -> bool {
+        let Some(id) = param_at(index) else { return false };
+        self.0.set(id, params::from_normalized(id, value));
+        true
+    }
+
+    fn normalized(&mut self, index: usize) -> Option<f64> {
+        let id = param_at(index)?;
+        Some(params::to_normalized(id, self.0.value(id)))
+    }
+
+    fn automates_at_block_end(&self) -> bool {
+        true
+    }
+
+    fn save_state(&mut self) -> Option<Vec<u8>> {
+        self.0.save_state()
+    }
+
+    fn update_state(&mut self, chunk: &[u8]) -> bool {
+        self.0.update_state(chunk)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(&mut self.0)
     }
 }
 
@@ -221,5 +355,80 @@ mod tests {
             // Playback starting part way into a grid cell.
             assert!(render(&random, true, 1013) == render(&[512], true, 1013), "mode {mode}, from 1013");
         }
+    }
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    /// The VST3 slot maps a normalised value to the same value the plugin's VST3 wrapper does, for
+    /// every parameter a host lists.
+    #[test]
+    fn vst3_mapping_matches_the_plugin() {
+        let mut eq = Vst3Eq(ScytheEq::new(48_000));
+        let infos = scyeq_plugin::params::infos();
+        for (index, id) in params::automatable().enumerate() {
+            let info = infos.iter().find(|p| p.id == id).unwrap();
+            assert_eq!(infos.iter().position(|p| p.id == id), Some(index), "{}", params::name(id));
+            for n in [0.0, 0.13, 0.5, 0.77, 1.0] {
+                assert!(eq.set_normalized(index, n));
+                assert_eq!(eq.0.value(id).to_bits(), info.plain(n).to_bits(), "{} at {n}", params::name(id));
+            }
+        }
+    }
+
+    /// The CLAP slot, Scythe's own form, takes values over the parameter's range end to end.
+    #[test]
+    fn clap_mapping_is_linear() {
+        let mut eq = ScytheEq::new(48_000);
+        let freq = params::band_param(0, params::band::FREQ);
+        assert_eq!(eq.param_range(freq as usize), Some((10.0, 30000.0)));
+        assert!(eq.set_normalized(freq as usize, 0.5));
+        assert_eq!(eq.value(freq), 15005.0);
+        assert_eq!(eq.normalized(freq as usize), Some(0.5));
+        assert!(eq.automates_at_block_end());
+        assert!(Vst3Eq(ScytheEq::new(48_000)).automates_at_block_end());
+    }
+
+    fn slot_with(envelopes: &str) -> scythe_core::FxSlot {
+        let mut slot = slot(None);
+        let text = format!("<X\n{envelopes}>\n");
+        let parsed = scythe_core::rpp::parse(&text).unwrap();
+        let wak = slot.raw.len() - 1;
+        slot.raw.splice(wak..wak, parsed.children);
+        slot
+    }
+
+    #[test]
+    fn envelopes_are_named_as_reaper_names_them() {
+        let slot = slot(None);
+        assert_eq!(envelope_spec(&slot, 3).as_deref(), Some("3:3"));
+        assert_eq!(envelope_spec(&slot, 23).as_deref(), Some("23:28"));
+        let other = scythe_core::FxSlot { name: "JS".into(), enabled: true, raw: Vec::new() };
+        assert_eq!(envelope_spec(&other, 3), None);
+    }
+
+    /// An envelope Scythe stored on 0..1 for a parameter with another range moves to the
+    /// parameter's units; 0..1 parameters and envelopes already in units stay as they are.
+    #[test]
+    fn old_envelopes_move_to_the_parameters_units() {
+        let mut slot = slot_with(concat!(
+            "<PARMENV 2 0 1 0.25\n  ACT 1 -1\n  PT 0 0.5 0\n  PT 1 1 0\n>\n",
+            "<PARMENV 0 0 1 0\n  ACT 1 -1\n  PT 0 1 1\n>\n",
+            "<PARMENV 3:3 -30 30 0\n  ACT 1 -1\n  PT 0 6 0\n>\n",
+        ));
+        let before = slot.clone();
+        assert!(upgrade_envelopes(&mut slot));
+        let freq = slot.parameter_envelope("2").unwrap();
+        assert_eq!((freq.spec.as_str(), freq.min, freq.max), ("2:2", 10.0, 30000.0));
+        assert_eq!(freq.default, params::from_normalized(2, 0.25));
+        let values: Vec<f64> = freq.envelope.points.iter().map(|p| p.value).collect();
+        assert_eq!(values, [params::from_normalized(2, 0.5), 30000.0]);
+        assert_eq!(slot.parameter_envelope("0"), before.parameter_envelope("0"));
+        assert_eq!(slot.parameter_envelope("3"), before.parameter_envelope("3"));
+        let upgraded = slot.clone();
+        assert!(!upgrade_envelopes(&mut slot), "a second load changes nothing");
+        assert_eq!(slot, upgraded);
     }
 }

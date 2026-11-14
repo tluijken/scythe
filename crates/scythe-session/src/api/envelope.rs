@@ -506,7 +506,9 @@ pub fn change<R>(
             let slot = t.fx.get_mut(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
             let mut pe = slot.parameter_envelope(&p.to_string()).unwrap_or_else(|| {
                 let (label, lo, hi, v) = param.clone().unwrap_or_default();
-                ParamEnvelope::new(p, lo, hi, v, &label)
+                let mut pe = ParamEnvelope::new(p, lo, hi, v, &label);
+                pe.spec = scythe_engine::scythe_eq::envelope_spec(slot, p).unwrap_or(pe.spec);
+                pe
             });
             pe.envelope = Envelope { range: Some((pe.min, pe.max)), ..env };
             slot.set_parameter_envelope(&pe);

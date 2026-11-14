@@ -312,6 +312,7 @@ impl Session {
     }
 
     fn after_load(&mut self) {
+        scythe_engine::scythe_eq::upgrade_project(&mut self.project);
         self.live.list = 0;
         self.live.player = Default::default();
         self.live.driving = false;

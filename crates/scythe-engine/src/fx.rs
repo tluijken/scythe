@@ -378,6 +378,14 @@ pub(crate) fn parameter_envelopes(
     slot: &FxSlot,
     ctx: &scythe_core::automation_item::AutomationContext,
 ) -> Vec<ParamAutomation> {
+    let mut upgraded = None;
+    if crate::scythe_eq::is_slot(slot) {
+        let mut copy = slot.clone();
+        if crate::scythe_eq::upgrade_envelopes(&mut copy) {
+            upgraded = Some(copy);
+        }
+    }
+    let slot = upgraded.as_ref().unwrap_or(slot);
     slot.raw
         .iter()
         .filter_map(|n| match n {
@@ -1373,7 +1381,9 @@ impl FxRegistry {
                     .ok_or("unreadable ScyEQ-Pro state")?,
                 None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
             };
-            return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
+            let eq: Box<dyn Effect> =
+                if plugin.name() == "VST" { Box::new(crate::scythe_eq::Vst3Eq(eq)) } else { Box::new(eq) };
+            return Ok((eq, FxStatus::Native(crate::scythe_eq::STATUS)));
         }
         let plugin_chunk = plugin;
         let args = plugin.args();
@@ -2710,5 +2720,74 @@ mod nam_tests {
         let second = registry.chain(None, &[linear])[0].clone();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(second.with(|e| e.latency()), Some(2048));
+    }
+}
+
+#[cfg(test)]
+mod scyeq_automation_tests {
+    use super::*;
+    use crate::scythe_eq::{ScytheEq, Vst3Eq, params};
+
+    const RATE: u32 = 48_000;
+
+    /// A ScyEQ-Pro slot with the plugin block `plugin` and one envelope, as REAPER writes them.
+    fn slot(plugin: &str, envelope: &str) -> FxSlot {
+        let text = format!("<FXCHAIN\n  BYPASS 0 0 0\n{plugin}  WAK 0 0\n{envelope}>\n");
+        let chain = scythe_core::rpp::parse(&text).unwrap();
+        FxSlot { name: "ScyEQ-Pro".into(), enabled: true, raw: chain.children }
+    }
+
+    fn clap() -> String {
+        format!("  <CLAP \"{}\" {} \"\"\n  >\n", crate::scythe_eq::DISPLAY, crate::scythe_eq::CLAP_ID)
+    }
+
+    fn vst3() -> String {
+        let cid = crate::vst3_host::cid_hex(&crate::scythe_eq::VST3_CLASS_ID);
+        format!("  <VST \"{}\" ScyEQ-Pro.vst3 0 \"\" 1{{{cid}}} \"\"\n  >\n", crate::scythe_eq::VST3_DISPLAY)
+    }
+
+    /// Plays the slot's envelopes into `fx` for the 512-frame block at `frame`.
+    fn automate(fx: &mut dyn Effect, slot: &FxSlot, frame: usize) {
+        let automation = parameter_envelopes(slot, &Default::default());
+        assert_eq!(automation.len(), 1);
+        apply_automation(fx, &automation, frame as f64 / RATE as f64, 512, RATE, &|_| false);
+    }
+
+    fn ramp(header: &str, from: f64, to: f64) -> String {
+        format!("  <PARMENV {header}\n    ACT 1 -1\n    PT 0 {from} 0\n    PT 1 {to} 0\n  >\n")
+    }
+
+    /// A CLAP slot's envelope is in the parameter's own units on a linear range, read at the last
+    /// frame of each block, as REAPER automates the CLAP plugin.
+    #[test]
+    fn clap_slot_envelopes_are_plain_and_read_at_the_block_end() {
+        let mut eq = ScytheEq::new(RATE);
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&clap(), &ramp("2:2 10 30000 15005", 100.0, 4900.0)), 0);
+        let end = 100.0 + 4800.0 * 511.0 / RATE as f64;
+        assert!((eq.value(freq) - end).abs() < 1e-9, "{} against {end}", eq.value(freq));
+        let gain = params::band_param(0, params::band::GAIN);
+        automate(&mut eq, &slot(&clap(), &ramp("3:3 -30 30 0", -12.0, 12.0)), 1024);
+        let end = -12.0 + 24.0 * 1535.0 / RATE as f64;
+        assert!((eq.value(gain) - end).abs() < 1e-9, "{} against {end}", eq.value(gain));
+    }
+
+    /// A VST3 slot's envelope holds VST3 normalised values, mapped as the plugin's VST3 wrapper
+    /// maps them: logarithmic for a frequency.
+    #[test]
+    fn vst3_slot_envelopes_are_vst3_normalised() {
+        let mut eq = Vst3Eq(ScytheEq::new(RATE));
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&vst3(), &ramp("2:2 0 1 0.5", 0.5, 0.5)), 0);
+        assert!((eq.0.value(freq) - 10.0 * 3000f64.sqrt()).abs() < 1e-9, "{}", eq.0.value(freq));
+    }
+
+    /// Envelopes Scythe stored before, 0..1 mapped logarithmically, play as they did.
+    #[test]
+    fn old_clap_slot_envelopes_play_as_before() {
+        let mut eq = ScytheEq::new(RATE);
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&clap(), &ramp("2 0 1 0.5", 0.5, 0.5)), 0);
+        assert!((eq.value(freq) - params::from_normalized(freq, 0.5)).abs() < 1e-9, "{}", eq.value(freq));
     }
 }

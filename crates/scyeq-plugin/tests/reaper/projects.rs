@@ -18,6 +18,10 @@ const SECONDS: f64 = 2.0;
 /// places them elsewhere.
 const OFFSET_START: f64 = 1013.0 / RATE as f64;
 const LIMIT_DB: f64 = -120.0;
+/// Where automated projects are compared from. REAPER's first block of a render races its
+/// parameter flush with the render thread, so it takes a parameter's stored value one run and its
+/// envelope's the next; the filters settle from that within half a second.
+const AUTOMATION_FROM: usize = RATE as usize / 2;
 
 struct Case {
     name: String,
@@ -121,8 +125,8 @@ fn cases() -> Vec<Case> {
     let mut v = params::defaults();
     shape_band(&mut v, 0, SHAPES[0]);
     // As REAPER writes them: `<index>:<CLAP id>`, the parameter's own range and units. Band 1's
-    // parameters have the same index and id. Each starts at the stored value: REAPER's first block
-    // of a render takes either that or the envelope's, not always the same.
+    // parameters have the same index and id. Each starts at the stored value, which keeps what
+    // REAPER's first block does from reaching far (see `AUTOMATION_FROM`).
     let gain = envelope("3:3 -30 30 0", &[(0.0, 4.0, 0), (0.7, -12.0, 1), (1.1, 9.0, 0), (1.9, -3.0, 0)]);
     cases.push(Case { envelope: Some(gain), ..Case::new("automated_gain", &v) });
     let frequency =
@@ -283,7 +287,9 @@ fn compare_case(dir: &Path, case: &Case) -> Result<(f64, usize), String> {
     if case.name != "defaults" && peak_difference(&scythe, &dry[skip..], sc).0 < -60.0 {
         return Err("Scythe's render is the dry signal".into());
     }
-    Ok(peak_difference(&reaper, &scythe, rc))
+    let from = if case.envelope.is_some() { AUTOMATION_FROM * rc as usize } else { 0 };
+    let (peak, at) = peak_difference(&reaper[from..], &scythe[from..], rc);
+    Ok((peak, at + from / rc as usize))
 }
 
 fn compare(dir: &Path, limit: f64) -> bool {

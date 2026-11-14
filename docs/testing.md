@@ -128,15 +128,19 @@ When REAPER comes from the Nix store the script builds the plugin with the syste
 toolchain instead (`PLUGIN_TOOLCHAIN`, its own target folder `target/reaper-compare`), as the
 released plugin is built on an older glibc.
 
-Two REAPER behaviours shape the projects: a project rendered at another rate than the audio
-device's is resampled twice unless it forces its own rate (`SAMPLERATE 48000 1 0`), and REAPER's
-first block of a render takes a parameter's stored value or its envelope's, not the same one
-every run, so the envelopes start at the stored value.
+Two REAPER behaviours shape the projects. A project rendered at another rate than the audio
+device's is resampled twice unless it forces its own rate (`SAMPLERATE 48000 1 0`). And REAPER's
+first block of a render races its parameter flush with the render thread: it takes a
+parameter's stored value one run and its envelope's the next, so two renders of the same project
+differ until the filters settle. The automated projects therefore start their envelopes at the
+stored value and are compared from frame 24000 (0.5 s) on; the others from frame 0.
 
-Results on 2026-11-14 (REAPER 7.73 on Linux, 7.85 on Windows): every fixed-settings project
-within -120 dBFS on both (exact, natural phase at -144.5 dBFS at most), Song 2's 30 instances
-loaded on both, and the two automated projects off by -16.7 and -12.3 dBFS, because Scythe's
-built-in ScyEQ-Pro reads an envelope at the start of each 512-frame block while REAPER gives the
-plugin the value at the block's last frame, and reads a `PARMENV` value as a normalised position
-mapped logarithmically for frequency, Q, attack and release where REAPER passes the CLAP plugin
-the value in its own units.
+Results on 2026-11-14 (REAPER 7.73 on Linux, 7.85 on Windows): every project within -120 dBFS
+on both, all but natural phase (-144.5 dBFS at most, not every run) bit for bit, and Song 2's 30
+instances loaded on both.
+
+Scythe plays ScyEQ-Pro's envelopes as REAPER plays them for the slot's format: read at the last
+frame of each 512-frame block, in the parameter's own units on a linear range for the CLAP slot
+(Scythe's own form, `PARMENV <index>:<id> <min> <max>`), as VST3 normalised values mapped as the
+plugin's VST3 wrapper maps them for the VST3 slot (`0 1`). Envelopes Scythe stored on 0..1 before
+are moved to the parameter's units when a project opens.
