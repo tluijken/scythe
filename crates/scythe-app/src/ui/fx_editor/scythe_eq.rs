@@ -1,23 +1,19 @@
 //! ScyEQ-Pro in Scythe: its editor (`scyeq_ui`) on a running instance, the compare sources
 //! the project offers, and the instance list, every ScyEQ-Pro in one window.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use egui::{Align2, CornerRadius, Id, Pos2, Rect, Sense, Shape, Stroke, Ui, UiBuilder, pos2, vec2};
-use scyeq_ui::model::{Plot, Scale, hz_text};
-use scyeq_ui::{CompareSource, EqHost, Reference, ViewState, WindowFn, WindowSpec};
+use egui::{Id, Rect, Ui, UiBuilder};
+use scyeq_ui::{CompareSource, EqHost, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec};
 use scythe_core::FxSlot;
 use scythe_engine::fx::FxOwner;
 use scythe_engine::probe::FxProbe;
-use scythe_engine::scythe_eq::filters::{Design, Prototype};
-use scythe_engine::scythe_eq::params::{self as p, BANDS, GLOBAL, band, global};
-use scythe_engine::scythe_eq::{self, BandSettings, Meters, ScytheEq};
+use scythe_engine::scythe_eq::params::{self as p, band};
+use scythe_engine::scythe_eq::{self, Meters, ScytheEq};
 
-use super::{Ctx, band_color, chain_slots, slot_at};
+use super::{Ctx, chain_slots, slot_at};
 use crate::app::ScytheApp;
-use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID};
-use crate::ui::widgets;
 use crate::ui::window::{WindowKind, scythe_window};
 
 /// The editor of the ScyEQ-Pro `cx` shows, in `rect`.
@@ -62,8 +58,7 @@ impl EqHost for Host<'_, '_> {
     fn begin(&mut self, _id: u32) {}
 
     fn set(&mut self, id: u32, value: f64) {
-        let label = format!("Adjust {}", p::name(id));
-        let now = self.cx.app.fx_gesture(&label, &self.cx.inst, |e| {
+        let now = self.cx.app.fx_gesture("Adjust ScyEQ-Pro", &self.cx.inst, |e| {
             e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>()).map(|eq| {
                 eq.set(id, value);
                 eq.value(id)
@@ -131,8 +126,12 @@ impl EqHost for Host<'_, '_> {
         app.engine.fx().instance_at(&i.owner, &slots, &i.path).map(|i| i.probe.clone())
     }
 
-    fn measure_reference(&self) -> Option<scyeq_ui::MeasureFn> {
-        Some(measure_file)
+    fn pick_reference(&mut self) -> Option<PathBuf> {
+        rfd::FileDialog::new().add_filter("Audio", &["wav", "flac", "mp3", "ogg", "aif", "aiff"]).pick_file()
+    }
+
+    fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
+        Some(decode_file)
     }
 
     fn view(&mut self) -> &mut ViewState {
@@ -179,11 +178,9 @@ fn track_probe(app: &ScytheApp, owner: &FxOwner) -> Option<Arc<FxProbe>> {
     }
 }
 
-/// A reference file's third-octave levels.
-fn measure_file(path: &Path) -> Result<Reference, String> {
+fn decode_file(path: &Path) -> Result<ReferenceAudio, String> {
     let audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
-    let a = scythe_engine::analysis::analyse(&audio.channels, audio.sample_rate, None, None);
-    Ok(Reference { bands: a.bands.iter().map(|b| (b.hz, b.level_db)).collect() })
+    Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 
 fn panel(ctx: &egui::Context, spec: &WindowSpec, open: &mut bool, body: &mut dyn FnMut(&mut Ui)) {
@@ -264,27 +261,15 @@ fn walk(
 }
 
 /// The instance list: every ScyEQ-Pro with its curve and bands, editable in place.
+/// The instance list, while `app.view.eq_instances`.
 pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
     if !app.view.eq_instances {
         return;
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    scythe_window("scythe-eq-instances", "ScyEQ-Pro instances".to_owned(), WindowKind::Panel)
-        .default_size(vec2(760.0, 420.0))
-        .show(&ctx, &mut open, |ui| {
-            let list = all_instances(app);
-            if list.is_empty() {
-                ui.label(egui::RichText::new("No ScyEQ-Pro in this project").color(TEXT_DIM));
-                return;
-            }
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for inst in list {
-                    instance_row(app, ui, &inst);
-                    ui.add_space(6.0);
-                }
-            });
-        });
+    let all = all_instances(app);
+    scyeq_ui::instances_window(&ctx, &mut ProjectInstances { app, all }, &mut open);
     if !open {
         app.view.eq_instances = false;
         if app.session.in_gesture() {
@@ -293,129 +278,80 @@ pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
     }
 }
 
-fn instance_row(app: &mut ScytheApp, ui: &mut Ui, inst: &Instance) {
-    let slots = chain_slots(app, &inst.owner);
-    let Some(slot) = slot_at(&slots, &inst.path) else { return };
-    let running = app.engine.fx().instance_at(&inst.owner, &slots, &inst.path);
-    let values = running
-        .as_ref()
-        .and_then(|i| {
+/// The project's ScyEQ-Pro instances for the instance list, its changes undo steps of the
+/// session.
+struct ProjectInstances<'a> {
+    app: &'a mut ScytheApp,
+    all: Vec<Instance>,
+}
+
+impl ProjectInstances<'_> {
+    fn find(&self, id: Id) -> Option<&Instance> {
+        self.all.iter().find(|i| source_id(&i.owner, &i.path) == id)
+    }
+
+    fn slot(&self, id: Id) -> Option<FxSlot> {
+        let i = self.find(id)?;
+        slot_at(&chain_slots(self.app, &i.owner), &i.path)
+    }
+
+    fn running(&self, id: Id) -> Option<Arc<scythe_engine::fx::FxInstance>> {
+        let i = self.find(id)?;
+        let slots = chain_slots(self.app, &i.owner);
+        self.app.engine.fx().instance_at(&i.owner, &slots, &i.path)
+    }
+}
+
+impl InstanceList for ProjectInstances<'_> {
+    fn instance_list(&self) -> Vec<scyeq_ui::Instance> {
+        self.all
+            .iter()
+            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label.clone() })
+            .collect()
+    }
+
+    fn instance_values(&self, id: Id) -> Option<Vec<f64>> {
+        let slot = self.slot(id)?;
+        let running = self.running(id).and_then(|i| {
             i.with(|e| e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>()).map(|eq| eq.values().to_vec()))
                 .flatten()
-        })
-        .or_else(|| scythe_eq::slot_values(&slot))
-        .unwrap_or_else(p::defaults);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(10), RAISED);
-    let name_rect = Rect::from_min_size(rect.min + vec2(10.0, 8.0), vec2(150.0, 20.0));
-    ui.painter().text(name_rect.left_center(), Align2::LEFT_CENTER, &inst.label, theme::semibold(12.0), TEXT);
-    let phase = ["Zero latency", "Natural", "Linear"][values[(GLOBAL + global::PHASE) as usize] as usize % 3];
-    ui.painter().text(
-        name_rect.left_center() + vec2(0.0, 18.0),
-        Align2::LEFT_CENTER,
-        phase,
-        theme::regular(10.0),
-        TEXT_DIM,
-    );
-    let key = |what: &str| Id::unique(("eq-instances", &inst.owner, &inst.path, what));
-    let open_r = Rect::from_min_size(rect.min + vec2(10.0, 50.0), vec2(56.0, 24.0));
-    let is_open = super::is_open_at(app, &inst.owner, &inst.path);
-    if widgets::text_pill(
-        ui,
-        open_r,
-        if is_open { "Close" } else { "Open" },
-        theme::regular(11.0),
-        if is_open { ACCENT } else { RAISED_HI },
-        if is_open { BG } else { TEXT_MID },
-    )
-    .clicked()
-    {
-        super::toggle_at(app, &inst.owner, &inst.path);
-    }
-    let on_r = Rect::from_min_size(rect.min + vec2(72.0, 50.0), vec2(70.0, 24.0));
-    if widgets::text_pill(
-        ui,
-        on_r,
-        if slot.enabled { "On" } else { "Bypassed" },
-        theme::regular(11.0),
-        if slot.enabled { RAISED_HI } else { theme::SWITCH_OFF },
-        TEXT_MID,
-    )
-    .clicked()
-    {
-        super::edit_slot(app, &inst.owner, &inst.path, "Toggle FX bypass", &|s| s.enabled = !s.enabled);
-    }
-    let curve =
-        Rect::from_min_max(pos2(rect.left() + 160.0, rect.top() + 8.0), pos2(rect.left() + 400.0, rect.bottom() - 8.0));
-    let plot = Plot::new(curve, Scale::log(20.0, 20000.0), Scale::lin(-15.0, 15.0));
-    ui.painter().rect_filled(curve, CornerRadius::same(6), BG);
-    ui.painter().line_segment(
-        [pos2(curve.left(), plot.sy(0.0)), pos2(curve.right(), plot.sy(0.0))],
-        Stroke::new(1.0, RAISED_HI),
-    );
-    let designs: Vec<Design> =
-        (0..BANDS).map(|b| BandSettings::read(&values, b)).filter(|s| s.active()).map(|s| s.design).collect();
-    let protos: Vec<Prototype> = designs.iter().map(Prototype::design).collect();
-    let pts: Vec<Pos2> = plot
-        .xs(2.0)
-        .into_iter()
-        .map(|f| {
-            let db: f64 = protos.iter().map(|p| 20.0 * p.magnitude(f).max(1e-9).log10()).sum();
-            plot.point(f, db.clamp(-15.0, 15.0))
-        })
-        .collect();
-    ui.painter_at(curve).add(Shape::line(pts, Stroke::new(1.6, ACCENT)));
-    // Band chips: click bypasses, drag up and down sets the gain.
-    let mut x = curve.right() + 10.0;
-    let mut y = rect.top() + 8.0;
-    for b in (0..BANDS).filter(|b| values[p::band_param(*b, band::USED) as usize] >= 0.5) {
-        let s = BandSettings::read(&values, b);
-        let text = if s.design.shape.has_gain() {
-            format!("{} {} {:+.1}", b + 1, hz_text(s.design.freq), s.design.gain_db)
-        } else {
-            format!("{} {} {}", b + 1, s.design.shape.label(), hz_text(s.design.freq))
-        };
-        let w = widgets::text_width(ui, &text, theme::regular(10.0)) + 14.0;
-        if x + w > rect.right() - 8.0 {
-            x = curve.right() + 10.0;
-            y += 26.0;
-        }
-        if y + 22.0 > rect.bottom() {
-            break;
-        }
-        let r = Rect::from_min_size(pos2(x, y), vec2(w, 22.0));
-        let resp = ui.interact(r, key(&format!("band{b}")), Sense::click_and_drag());
-        let color = band_color(b);
-        let fill = if s.enabled { theme::with_alpha(color, if resp.hovered() { 90 } else { 55 }) } else { BG };
-        ui.painter().rect_filled(r, CornerRadius::same(6), fill);
-        ui.painter().text(
-            r.center(),
-            Align2::CENTER_CENTER,
-            &text,
-            theme::regular(10.0),
-            if s.enabled { TEXT } else { TEXT_DIM },
-        );
-        resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::Role::Button, true, format!("{} band {}", inst.label, b + 1))
         });
-        if let Some(fx) = &running {
-            if resp.clicked() {
-                app.end_gesture();
-                app.fx_gesture("Bypass EQ band", fx, |e| {
-                    e.set_param(p::band_param(b, band::ENABLED), if s.enabled { 0.0 } else { 1.0 })
-                });
-                app.end_gesture();
-            }
-            if resp.dragged() && s.design.shape.has_gain() {
-                let gain = values[p::band_param(b, band::GAIN) as usize] - resp.drag_delta().y as f64 * 0.1;
-                app.fx_gesture("Adjust EQ band gain", fx, |e| {
-                    e.set_param(p::band_param(b, band::GAIN), gain.clamp(-30.0, 30.0))
-                });
-            }
-            if resp.drag_stopped() {
-                app.end_gesture();
-            }
-        }
-        x += w + 6.0;
+        Some(running.or_else(|| scythe_eq::slot_values(&slot)).unwrap_or_else(p::defaults))
+    }
+
+    fn instance_enabled(&self, id: Id) -> bool {
+        self.slot(id).is_some_and(|s| s.enabled)
+    }
+
+    fn toggle_instance_bypass(&mut self, id: Id) {
+        let Some(i) = self.find(id).cloned() else { return };
+        super::edit_slot(self.app, &i.owner, &i.path, "Toggle FX bypass", &|s| s.enabled = !s.enabled);
+    }
+
+    fn instance_open(&self, id: Id) -> bool {
+        self.find(id).is_some_and(|i| super::is_open_at(self.app, &i.owner, &i.path))
+    }
+
+    fn toggle_instance_open(&mut self, id: Id) {
+        let Some(i) = self.find(id).cloned() else { return };
+        super::toggle_at(self.app, &i.owner, &i.path);
+    }
+
+    fn begin_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn set_instance(&mut self, id: Id, param: u32, value: f64) {
+        let Some(fx) = self.running(id) else { return };
+        let label = if param % p::BAND_STRIDE == band::ENABLED { "Bypass EQ band" } else { "Adjust EQ band gain" };
+        self.app.fx_gesture(label, &fx, |e| e.set_param(param, value));
+    }
+
+    fn end_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn window(&self) -> WindowFn {
+        panel
     }
 }

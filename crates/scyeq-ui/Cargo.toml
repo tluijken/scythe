@@ -7,8 +7,6 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 scyeq-dsp.workspace = true
 egui.workspace = true
-realfft.workspace = true
-rfd.workspace = true
 
 [dev-dependencies]
 egui_kittest = "0.37.0"

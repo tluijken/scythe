@@ -49,6 +49,16 @@ impl EditorState {
     pub fn selected(&self) -> &BTreeSet<usize> {
         &self.view.selected
     }
+
+    /// Ends the gesture under way, calling `end` for each parameter begun in it (as
+    /// `state.end_gesture(|id| host.end(id))`). A host calls it when it closes the editor, so
+    /// no gesture stays open.
+    pub fn end_gesture(&mut self, mut end: impl FnMut(u32)) {
+        for id in std::mem::take(&mut self.gesture) {
+            end(id);
+        }
+        self.controls.key_gesture = false;
+    }
 }
 
 pub(crate) struct View {

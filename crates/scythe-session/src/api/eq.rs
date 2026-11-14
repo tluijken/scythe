@@ -406,22 +406,8 @@ fn source_levels(
     if let Some(file) = &source.file {
         let audio = scythe_engine::media::decode_file(std::path::Path::new(file))
             .map_err(|e| ApiError::invalid(format!("{file}: {e}")))?;
-        let a = scythe_engine::analysis::analyse(&audio.channels, audio.sample_rate, None, None);
-        let hz: Vec<f64> = a.bands.iter().map(|b| b.hz.ln()).collect();
-        let db: Vec<f64> = a.bands.iter().map(|b| b.level_db).collect();
-        return Ok(Some(
-            freqs
-                .iter()
-                .map(|f| {
-                    let x = f.ln();
-                    match hz.iter().position(|h| *h >= x) {
-                        Some(0) => db[0],
-                        Some(k) => db[k - 1] + (x - hz[k - 1]) / (hz[k] - hz[k - 1]) * (db[k] - db[k - 1]),
-                        None => *db.last().unwrap_or(&-150.0),
-                    }
-                })
-                .collect(),
-        ));
+        let bands = scythe_engine::scythe_eq::reference::third_octaves(&audio.channels, audio.sample_rate);
+        return Ok(Some(scythe_engine::scythe_eq::reference::levels_at(&bands, freqs)));
     }
     let track = source.track.as_ref().ok_or_else(|| ApiError::invalid("give `track` (with `index`) or `file`"))?;
     let audio = match source.index {

@@ -526,8 +526,13 @@ fn window(app: &mut ScytheApp, ui: &mut Ui, ed: &mut FxEditor) -> bool {
         let pointer = ctx.input(|i| i.pointer.hover_pos());
         ed.controls.hovered = pointer.is_some_and(|p| s.response.rect.contains(p));
     }
-    if !open && app.session.in_gesture() {
-        app.end_gesture();
+    if !open {
+        if let Some(eq) = ed.eq.as_mut() {
+            eq.end_gesture(|_| app.end_gesture());
+        }
+        if app.session.in_gesture() {
+            app.end_gesture();
+        }
     }
     open
 }

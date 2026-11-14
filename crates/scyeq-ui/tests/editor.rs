@@ -168,3 +168,24 @@ fn adding_a_band_is_one_edit() {
     assert_eq!(host.eq.value(p::band_param(1, band::USED)), 1.0, "band 2 is in use");
     assert!(h.state().1.selected().contains(&1), "the new band is selected");
 }
+
+#[test]
+fn closing_mid_drag_ends_the_gesture() {
+    let mut h = harness();
+    h.step();
+    let from = h.get_by_label("Band 1").rect().center();
+    h.event(egui::Event::PointerMoved(from));
+    h.step();
+    button(&mut h, from, true);
+    for i in 1..=4 {
+        h.event(egui::Event::PointerMoved(from + vec2(10.0 * i as f32, 0.0)));
+        h.step();
+    }
+    let freq = p::band_param(0, band::FREQ);
+    let (host, state) = h.state_mut();
+    assert_eq!(host.count(|c| *c == Call::End(freq)), 0, "{:?}", host.calls);
+    state.end_gesture(|id| host.end(id));
+    assert_eq!(host.count(|c| *c == Call::End(freq)), 1, "{:?}", host.calls);
+    state.end_gesture(|id| host.end(id));
+    assert_eq!(host.count(|c| *c == Call::End(freq)), 1, "a second close ends nothing more");
+}

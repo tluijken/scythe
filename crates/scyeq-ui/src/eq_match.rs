@@ -8,10 +8,11 @@ use egui::{CornerRadius, Id, Pos2, Sense, Shape, Stroke, Ui, pos2, vec2};
 use scyeq_dsp::filters::{Design, Prototype};
 use scyeq_dsp::matching::{self, MatchOptions};
 use scyeq_dsp::params::{self as p, BANDS, band};
+use scyeq_dsp::reference::{levels_at, third_octaves};
 
 use crate::analyzer::{POINTS, grid_hz};
 use crate::editor::{Cx, View};
-use crate::host::{CompareSource, MeasureFn, Reference, WindowSpec};
+use crate::host::{CompareSource, DecodeFn, WindowSpec};
 use crate::model::{Plot, Scale};
 use crate::theme::{self, ACCENT, BG, RAISED_HI, TEXT_DIM, TEXT_MID};
 
@@ -111,30 +112,13 @@ impl MatchPanel {
     }
 }
 
-/// The reference's levels on the analyzer's grid: its bands' levels interpolated.
-fn on_grid(reference: &Reference) -> Vec<f64> {
-    let hz: Vec<f64> = reference.bands.iter().map(|b| b.0.ln()).collect();
-    let db: Vec<f64> = reference.bands.iter().map(|b| b.1).collect();
-    (0..POINTS)
-        .map(|i| {
-            let x = grid_hz(i).ln();
-            match hz.iter().position(|h| *h >= x) {
-                Some(0) => db[0],
-                Some(k) => {
-                    let t = (x - hz[k - 1]) / (hz[k] - hz[k - 1]);
-                    db[k - 1] + t * (db[k] - db[k - 1])
-                }
-                None => *db.last().unwrap_or(&-150.0),
-            }
-        })
-        .collect()
-}
-
-/// A reference file measured on a thread of its own, on the analyzer's grid.
-fn measure_file(measure: MeasureFn, path: PathBuf) -> Receiver<Result<Vec<f64>, String>> {
+/// A reference file's third-octave levels on the analyzer's grid, measured on a thread of its
+/// own.
+fn measure_file(decode: DecodeFn, path: PathBuf) -> Receiver<Result<Vec<f64>, String>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let _ = tx.send(measure(&path).map(|r| on_grid(&r)));
+        let freqs: Vec<f64> = (0..POINTS).map(grid_hz).collect();
+        let _ = tx.send(decode(&path).map(|a| levels_at(&third_octaves(&a.channels, a.sample_rate), &freqs)));
     });
     rx
 }
@@ -191,7 +175,8 @@ fn match_body(
     others: &[CompareSource],
     values: &[f64],
 ) {
-    let measure = cx.host.measure_reference();
+    let decode = cx.host.decode_reference();
+    let mut pick = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Reference").color(TEXT_DIM));
         let current = match &panel.reference {
@@ -210,17 +195,19 @@ fn match_body(
                     view.other = Some(o.id);
                 }
             }
-            if let Some(measure) = measure
+            if decode.is_some()
                 && ui.selectable_label(matches!(panel.reference, Target::File(_)), "Audio file…").clicked()
-                && let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "aif", "aiff"])
-                    .pick_file()
             {
-                panel.file = None;
-                panel.job = Some(measure_file(measure, path.clone()));
-                panel.reference = Target::File(path);
+                pick = true;
             }
         });
+        if let Some(decode) = decode.filter(|_| pick)
+            && let Some(path) = cx.host.pick_reference()
+        {
+            panel.file = None;
+            panel.job = Some(measure_file(decode, path.clone()));
+            panel.reference = Target::File(path);
+        }
         let label = if panel.capturing { "Stop learning" } else { "Learn" };
         if ui
             .button(label)

@@ -12,7 +12,10 @@ pub mod fir;
 pub mod matching;
 pub mod params;
 pub mod probe;
+pub mod reference;
 pub mod spectral;
+
+pub use realfft;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};

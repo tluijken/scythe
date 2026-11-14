@@ -1,7 +1,7 @@
 //! What ScyEQ-Pro's editor needs from whoever runs the EQ: Scythe, or a plugin host through
 //! the plugin build.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use egui::{Id, Ui, Vec2};
@@ -29,11 +29,17 @@ pub trait EqHost {
     fn compare_sources(&self) -> Vec<CompareSource>;
     /// The output of an instance or compare source.
     fn source_probe(&self, id: Id) -> Option<Arc<FxProbe>>;
-    /// Measures a reference file for EQ Match; it runs on a thread of its own. `None` when
-    /// files cannot be matched to.
-    fn measure_reference(&self) -> Option<MeasureFn> {
+    /// Asks for an audio file to match to; `None` when none was picked.
+    fn pick_reference(&mut self) -> Option<PathBuf> {
         None
     }
+    /// Decodes a reference file for EQ Match, on a thread of its own. `None` when files cannot
+    /// be matched to.
+    fn decode_reference(&self) -> Option<DecodeFn> {
+        None
+    }
+    /// The instance list opens while `instances` is set: Scythe shows one for the whole project,
+    /// a plugin shows [`crate::instances_window`] with it.
     fn view(&mut self) -> &mut ViewState;
     /// A note shown over the graph, e.g. "made with a newer ScyEQ-Pro".
     fn notice(&self) -> Option<String> {
@@ -65,14 +71,37 @@ pub struct CompareSource {
     pub label: String,
 }
 
-/// A reference file's level per frequency band, from low to high.
+/// A decoded reference file: planar channels (one or two).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Reference {
-    /// Centre frequency (Hz) and level (dB) per band.
-    pub bands: Vec<(f64, f64)>,
+pub struct ReferenceAudio {
+    pub channels: Vec<Vec<f32>>,
+    pub sample_rate: u32,
 }
 
-pub type MeasureFn = fn(&Path) -> Result<Reference, String>;
+pub type DecodeFn = fn(&Path) -> Result<ReferenceAudio, String>;
+
+/// Every ScyEQ-Pro the host runs, for the instance list. `id`s are [`Instance::id`]s.
+pub trait InstanceList {
+    /// Every instance, in the order to list them.
+    fn instance_list(&self) -> Vec<Instance>;
+    /// An instance's parameter values; `None` leaves it out of the list.
+    fn instance_values(&self, id: Id) -> Option<Vec<f64>>;
+    /// Whether the instance is on (not bypassed).
+    fn instance_enabled(&self, id: Id) -> bool;
+    fn toggle_instance_bypass(&mut self, id: Id);
+    /// Whether the instance's editor is open.
+    fn instance_open(&self, id: Id) -> bool;
+    fn toggle_instance_open(&mut self, id: Id);
+    /// A gesture on an instance's parameter, as [`EqHost::begin`], [`EqHost::set`] and
+    /// [`EqHost::end`] are on the editor's own.
+    fn begin_instance(&mut self, id: Id, param: u32);
+    fn set_instance(&mut self, id: Id, param: u32, value: f64);
+    fn end_instance(&mut self, id: Id, param: u32);
+    /// How the list's window is framed.
+    fn window(&self) -> WindowFn {
+        egui_window
+    }
+}
 
 /// What the host keeps for the editor beyond one editor's life.
 #[derive(Clone, Debug, Default, PartialEq)]

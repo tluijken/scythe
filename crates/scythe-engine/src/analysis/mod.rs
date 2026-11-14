@@ -9,34 +9,14 @@ pub mod masking;
 pub mod probe;
 pub mod segments;
 
-use std::sync::Arc;
-
-use realfft::num_complex::Complex32;
-use realfft::{RealFftPlanner, RealToComplex};
+pub use scyeq_dsp::reference::{FLOOR_DB, band_centres, band_edges};
+use scyeq_dsp::reference::{Ltas, db};
 use serde::{Deserialize, Serialize};
 
 use crate::loudness::LoudnessScan;
 
-/// What silence and other immeasurably low levels read, in dB, so every value stays a number.
-pub const FLOOR_DB: f64 = -150.0;
-
 /// Where the low end ends for the mono check.
 pub const LOW_END_HZ: f64 = 120.0;
-
-/// Third-octave band centres from 20 Hz to 20 kHz (base-10 series, IEC 61260).
-pub fn band_centres() -> Vec<f64> {
-    (-17..=13).map(|k| 1000.0 * 10f64.powf(k as f64 / 10.0)).collect()
-}
-
-/// The lower and upper edge of the third-octave band around `centre`.
-pub fn band_edges(centre: f64) -> (f64, f64) {
-    let half = 10f64.powf(1.0 / 20.0);
-    (centre / half, centre * half)
-}
-
-fn db(power: f64) -> f64 {
-    if power > 1e-15 { 10.0 * power.log10() } else { FLOOR_DB }
-}
 
 fn amp_db(amplitude: f64) -> f64 {
     if amplitude > 1e-7 { 20.0 * amplitude.log10() } else { FLOOR_DB }
@@ -214,15 +194,7 @@ impl Onsets {
 pub struct Analyzer {
     rate: u32,
     channels: usize,
-    fft: Arc<dyn RealToComplex<f32>>,
-    window: Vec<f32>,
-    window_power: f64,
-    fill: [Vec<f32>; 2],
-    input: Vec<f32>,
-    spectrum: [Vec<Complex32>; 2],
-    /// Summed over frames, per bin: |L|², |R|² and Re(L·R*).
-    power: [Vec<f64>; 3],
-    frames: u64,
+    spectrum: Ltas,
     loudness: LoudnessScan,
     true_peak: TruePeak,
     sample_peak: f32,
@@ -234,25 +206,10 @@ pub struct Analyzer {
 impl Analyzer {
     /// `channels` is what the source has (1 or 2); a mono source is pushed as two equal channels.
     pub fn new(rate: u32, channels: usize) -> Self {
-        // About 3 Hz per bin, so the lowest third-octave bands hold a few bins.
-        let len = (rate as usize / 3).next_power_of_two().max(1024);
-        let mut planner = RealFftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(len);
-        let window: Vec<f32> =
-            (0..len).map(|i| (0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / len as f64).cos()) as f32).collect();
-        let window_power = window.iter().map(|w| (*w as f64).powi(2)).sum();
-        let bins = len / 2 + 1;
         Self {
             rate,
             channels: channels.max(1),
-            input: fft.make_input_vec(),
-            spectrum: [fft.make_output_vec(), fft.make_output_vec()],
-            fft,
-            window,
-            window_power,
-            fill: [Vec::with_capacity(len), Vec::with_capacity(len)],
-            power: [vec![0.0; bins], vec![0.0; bins], vec![0.0; bins]],
-            frames: 0,
+            spectrum: Ltas::new(rate),
             loudness: LoudnessScan::new(rate),
             true_peak: TruePeak::new(),
             sample_peak: 0.0,
@@ -260,10 +217,6 @@ impl Analyzer {
             samples: 0,
             onsets: Onsets::new(rate),
         }
-    }
-
-    fn len(&self) -> usize {
-        self.window.len()
     }
 
     pub fn push(&mut self, left: &[f32], right: &[f32]) {
@@ -276,69 +229,20 @@ impl Analyzer {
             self.samples += 1;
             self.onsets.push(l, r);
         }
-        let mut at = 0;
-        while at < left.len().min(right.len()) {
-            let room = self.len() - self.fill[0].len();
-            let n = room.min(left.len() - at);
-            self.fill[0].extend_from_slice(&left[at..at + n]);
-            self.fill[1].extend_from_slice(&right[at..at + n]);
-            at += n;
-            if self.fill[0].len() == self.len() {
-                self.transform();
-                let hop = self.len() / 2;
-                self.fill[0].drain(..hop);
-                self.fill[1].drain(..hop);
-            }
-        }
-    }
-
-    fn transform(&mut self) {
-        for c in 0..2 {
-            for ((x, s), w) in self.input.iter_mut().zip(&self.fill[c]).zip(&self.window) {
-                *x = s * w;
-            }
-            let _ = self.fft.process(&mut self.input, &mut self.spectrum[c]);
-        }
-        let [l, r] = &self.spectrum;
-        for (k, (a, b)) in l.iter().zip(r).enumerate() {
-            self.power[0][k] += a.norm_sqr() as f64;
-            self.power[1][k] += b.norm_sqr() as f64;
-            self.power[2][k] += (a.re * b.re + a.im * b.im) as f64;
-        }
-        self.frames += 1;
+        self.spectrum.push(left, right);
     }
 
     /// The measurements. A source shorter than one analysis window is measured over the part
     /// it fills, padded with silence.
     pub fn finish(mut self) -> Analysis {
-        if self.frames == 0 && !self.fill[0].is_empty() {
-            let len = self.len();
-            self.fill[0].resize(len, 0.0);
-            self.fill[1].resize(len, 0.0);
-            self.transform();
-        }
-        let len = self.len();
-        let bin_hz = self.rate as f64 / len as f64;
-        // Mean power per bin in the units of the signal's mean square (see `band_power`).
-        let scale = 2.0 / (len as f64 * self.window_power * self.frames.max(1) as f64);
-        let bins = self.power[0].len();
-        let mut mid = vec![0.0; bins];
-        let mut side = vec![0.0; bins];
-        for k in 0..bins {
-            let (ll, rr, lr) = (self.power[0][k], self.power[1][k], self.power[2][k]);
-            mid[k] = (ll + rr + 2.0 * lr) / 4.0 * scale;
-            side[k] = ((ll + rr - 2.0 * lr) / 4.0 * scale).max(0.0);
-        }
-        let range = |lo: f64, hi: f64| {
-            let a = ((lo / bin_hz).ceil() as usize).max(1);
-            let b = ((hi / bin_hz).ceil() as usize).min(bins);
-            a..b.max(a)
-        };
+        self.spectrum.finish();
+        let bin_hz = self.spectrum.bin_hz();
+        let (mid, side) = self.spectrum.mid_side();
+        let range = |lo: f64, hi: f64| self.spectrum.bins(lo, hi);
         let sum = |v: &[f64], r: std::ops::Range<usize>| v[r].iter().sum::<f64>();
         let correlation_in = |r: std::ops::Range<usize>| {
-            let ll = sum(&self.power[0], r.clone());
-            let rr = sum(&self.power[1], r.clone());
-            let lr = sum(&self.power[2], r);
+            let [ll, rr, lr] = self.spectrum.power();
+            let (ll, rr, lr) = (sum(ll, r.clone()), sum(rr, r.clone()), sum(lr, r));
             if ll * rr > 1e-30 { (lr / (ll * rr).sqrt()).clamp(-1.0, 1.0) } else { 1.0 }
         };
 

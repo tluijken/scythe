@@ -7,9 +7,13 @@ pub mod editor;
 mod eq_match;
 pub mod fonts;
 pub mod host;
+mod instances;
 pub mod model;
 pub mod theme;
 pub mod widgets;
 
 pub use editor::{EditorState, show};
-pub use host::{CompareSource, EqHost, Instance, MeasureFn, Reference, ViewState, WindowFn, WindowSpec};
+pub use host::{
+    CompareSource, DecodeFn, EqHost, Instance, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec,
+};
+pub use instances::instances_window;
