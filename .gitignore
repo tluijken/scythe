@@ -1,7 +1,4 @@
 /target
 /node_modules
 /.devbox
-/.rea
-/package.json
-/package-lock.json
 .claude/worktrees/
