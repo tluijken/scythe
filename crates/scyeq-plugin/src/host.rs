@@ -157,20 +157,13 @@ impl EqHost for PluginHost<'_> {
         registry::others(self.shared.id()).into_iter().find(|s| registry::id_of(s) == id).map(|s| s.probe().clone())
     }
 
-    /// On Linux the editor has a thread of its own, which a dialog must not hold: the host
-    /// waits for that thread when it closes the window. Elsewhere the dialog is modal on the
-    /// host's UI thread, as dialogs there are.
+    /// The dialog never runs inside the editor's frame. On Linux the host waits for the editor
+    /// thread when it closes the window; on Windows the dialog's modal loop would paint the
+    /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
         keep_loaded();
-        if !cfg!(target_os = "linux") {
-            return pick_file();
-        }
         if self.picking.is_none() {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let _ = tx.send(pick_file());
-            });
-            *self.picking = Some(rx);
+            *self.picking = Some(start_pick(file_dialog()));
         }
         None
     }
@@ -284,8 +277,45 @@ fn set(shared: &ScyEqShared, cx: &GuiContext, id: u32, value: f64) {
     }
 }
 
-fn pick_file() -> Option<PathBuf> {
-    rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+#[cfg(not(target_os = "macos"))]
+fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
+    || rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+}
+
+/// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet,
+/// it returns at once, and its answer is waited for on the pick's thread.
+#[cfg(target_os = "macos")]
+fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
+    let picked = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file();
+    move || block_on(picked).map(|file| file.path().to_path_buf())
+}
+
+/// Runs `dialog` on a thread of its own; its answer arrives through the receiver.
+fn start_pick(dialog: impl FnOnce() -> Option<PathBuf> + Send + 'static) -> Receiver<Option<PathBuf>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(dialog());
+    });
+    rx
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct Unpark(std::thread::Thread);
+    impl std::task::Wake for Unpark {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(Unpark(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+        std::thread::park();
+    }
 }
 
 /// The file picked, once the dialog closed; `None` while it is open, and after it closed
@@ -412,6 +442,49 @@ mod tests {
         drop(tx);
         assert_eq!(take_picked(&mut picking), None);
         assert!(picking.is_none());
+    }
+
+    #[test]
+    fn a_pick_runs_on_a_thread_of_its_own() {
+        let (release, wait) = mpsc::channel::<()>();
+        let caller = std::thread::current().id();
+        let mut picking = Some(start_pick(move || {
+            assert_ne!(std::thread::current().id(), caller);
+            wait.recv().unwrap();
+            Some(PathBuf::from("/music/reference.wav"))
+        }));
+        assert_eq!(take_picked(&mut picking), None, "the dialog is still open");
+        release.send(()).unwrap();
+        let picked = loop {
+            match take_picked(&mut picking) {
+                Some(path) => break path,
+                None => {
+                    assert!(picking.is_some(), "the pick ended without a file");
+                    std::thread::yield_now();
+                }
+            }
+        };
+        assert_eq!(picked, PathBuf::from("/music/reference.wav"));
+    }
+
+    #[test]
+    fn a_future_woken_from_another_thread_is_waited_for() {
+        let (tx, rx) = mpsc::channel();
+        let mut sent = false;
+        let future = std::future::poll_fn(move |cx| {
+            if let Ok(value) = rx.try_recv() {
+                return std::task::Poll::Ready(value);
+            }
+            if !std::mem::replace(&mut sent, true) {
+                let (tx, waker) = (tx.clone(), cx.waker().clone());
+                std::thread::spawn(move || {
+                    tx.send(7).unwrap();
+                    waker.wake();
+                });
+            }
+            std::task::Poll::Pending
+        });
+        assert_eq!(block_on(future), 7);
     }
 
     #[test]
