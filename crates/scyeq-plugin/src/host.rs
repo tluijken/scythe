@@ -100,13 +100,13 @@ impl EqHost for PluginHost<'_> {
         self.cx.end(id);
     }
 
-    /// Made on a copy of the values, then sent as a gesture per changed parameter: a host
-    /// records each, and gets a dirty mark for the edit as a whole. Solo and audition change
-    /// on the instance alone.
+    /// Made on a copy of the values, then sent as one gesture over every changed parameter, so
+    /// a host records the edit as one step and gets a dirty mark for it. Solo and audition
+    /// change on the instance alone.
     fn edit(&mut self, _label: &str, f: &mut dyn FnMut(&mut ScytheEq)) {
         let mut eq = ScytheEq::with_values(self.values.clone(), self.shared.sample_rate());
         f(&mut eq);
-        let mut changed = false;
+        let mut changed = Vec::new();
         for id in params::ids() {
             let (old, new) = (self.values[id as usize], eq.value(id));
             if old == new {
@@ -115,17 +115,24 @@ impl EqHost for PluginHost<'_> {
             if params::transient(id) {
                 self.shared.set_param(id, new);
                 self.values[id as usize] = self.shared.param(id);
-                continue;
+            } else {
+                changed.push((id, new));
             }
+        }
+        if changed.is_empty() {
+            return;
+        }
+        for &(id, _) in &changed {
             self.cx.begin(id);
+        }
+        for &(id, new) in &changed {
             self.cx.set(id, new);
-            self.cx.end(id);
             self.values[id as usize] = self.shared.param(id);
-            changed = true;
         }
-        if changed {
-            self.cx.mark_dirty();
+        for &(id, _) in &changed {
+            self.cx.end(id);
         }
+        self.cx.mark_dirty();
     }
 
     fn meters(&self) -> Option<Arc<Meters>> {

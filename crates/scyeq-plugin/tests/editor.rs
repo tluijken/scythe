@@ -263,11 +263,18 @@ fn add_band_marks_dirty_and_sends_params() {
     let sent = instance.flush();
     let p = |offset| params::band_param(1, offset);
     assert_eq!(instance.value(p(band::USED)), 1.0, "band 2 is in use");
+    let kind = |s: &Sent| match s {
+        Sent::Begin(_) => 0,
+        Sent::Value(..) => 1,
+        Sent::End(_) => 2,
+    };
+    assert!(sent.is_sorted_by_key(kind), "one gesture: every begin, then every value, then every end: {sent:?}");
     for offset in [band::USED, band::FREQ, band::GAIN] {
         let id = p(offset);
         let value = instance.value(id);
-        let at = position(&sent, |s| *s == Sent::Value(id, value)).unwrap_or_else(|| panic!("{offset}: {sent:?}"));
-        assert!(at > 0 && sent[at - 1] == Sent::Begin(id) && sent[at + 1] == Sent::End(id), "{sent:?}");
+        assert!(sent.contains(&Sent::Value(id, value)), "{offset}: {sent:?}");
+        assert_eq!(sent.iter().filter(|s| **s == Sent::Begin(id)).count(), 1, "{sent:?}");
+        assert_eq!(sent.iter().filter(|s| **s == Sent::End(id)).count(), 1, "{sent:?}");
     }
     for (&id, old) in listed.iter().zip(before) {
         let now = instance.value(id);
