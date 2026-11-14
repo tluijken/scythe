@@ -25,5 +25,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets --features scythe-app/asio -- -D warnings
+      - name: Build ScyEQ-Pro
+        run: cargo build -p scyeq-plugin --lib
       - name: Test
         run: cargo test --workspace --features scythe-app/asio --no-fail-fast

@@ -11,14 +11,13 @@ pub struct Built {
     pub binary: PathBuf,
 }
 
-/// The library `name` next to the test, in a bundle with `extension` on macOS. Makes the bundle
-/// anew, so call it once per process, before the library is loaded.
+/// The library `name` cargo built, in a bundle with `extension` next to the test on macOS. Makes
+/// the bundle anew, so call it once per process, before the library is loaded.
 pub fn plugin(name: &str, extension: &str) -> Built {
-    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-    let library = dir.join(format!("{}{name}{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
-    assert!(library.exists(), "{} not built", library.display());
+    let library = library(name);
     #[cfg(target_os = "macos")]
     {
+        let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
         let path = dir.join(format!("{name}.{extension}"));
         let binary = bundle(&library, &path, name);
         Built { path, binary }
@@ -28,6 +27,19 @@ pub fn plugin(name: &str, extension: &str) -> Built {
         let _ = extension;
         Built { path: library.clone(), binary: library }
     }
+}
+
+/// The nearest library `name` above the test: beside it in `deps` with cargo's old build layout,
+/// otherwise the one `cargo build` put in the profile directory (the new layout keeps each unit
+/// in a directory of its own).
+fn library(name: &str) -> PathBuf {
+    let file = format!("{}{name}{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(&file))
+        .find(|library| library.exists())
+        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
 }
 
 #[cfg(target_os = "macos")]

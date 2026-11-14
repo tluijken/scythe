@@ -26,7 +26,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build test plugins
-        run: cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin
+        run: cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin -p scyeq-plugin
       - name: Test
         run: cargo test --workspace --no-fail-fast
         env:

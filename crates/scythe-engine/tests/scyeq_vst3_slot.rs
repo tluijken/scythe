@@ -14,11 +14,16 @@ use scythe_engine::vst3_host;
 
 const RATE: u32 = 48_000;
 
+/// The nearest plugin library above the test: beside it in `deps` with cargo's old build layout,
+/// otherwise the one `cargo build -p scyeq-plugin` put in the profile directory.
 fn plugin_library() -> PathBuf {
-    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-    let library = dir.join(format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
-    assert!(library.exists(), "{} not built", library.display());
-    library
+    let file = format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(&file))
+        .find(|library| library.exists())
+        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
 }
 
 fn state() -> Vec<u8> {

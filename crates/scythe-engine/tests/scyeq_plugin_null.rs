@@ -51,12 +51,17 @@ const RATE: u32 = 48_000;
 const START: i64 = 1013;
 const FRAMES: usize = 24_000;
 
-/// The plugin library cargo built for this test, as a dependency.
+/// The nearest plugin library above the test: the one cargo built beside it as a dependency with
+/// its old build layout, otherwise the one `cargo build -p scyeq-plugin` put in the profile
+/// directory (the new layout keeps each unit in a directory of its own).
 fn plugin_library() -> PathBuf {
-    let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
-    let library = dir.join(format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX));
-    assert!(library.exists(), "{} not built", library.display());
-    library
+    let file = format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .map(|dir| dir.join(&file))
+        .find(|library| library.exists())
+        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
 }
 
 /// Every shape on a band of its own, a dynamic band, a spectral band and a band keyed by the
