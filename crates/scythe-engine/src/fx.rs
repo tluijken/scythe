@@ -1084,8 +1084,11 @@ impl FxRegistry {
                 && self.entries.get(&entry).is_some_and(|e| e.status == FxStatus::Native(crate::scythe_eq::STATUS));
             let decoded = ReaperVstState::decode(&lines);
             let state = match &decoded {
-                Some(old) if built_in_eq => crate::vst3_host::with_component(&old.chunk, &state)
-                    .unwrap_or_else(|| crate::vst3_host::reaper_state(&state, &[])),
+                Some(old) if built_in_eq => {
+                    let Some(state) = crate::vst3_host::with_component(&old.chunk, &state) else { return };
+                    state
+                }
+                None if built_in_eq => return,
                 _ => state,
             };
             let mut new_lines = match decoded {
@@ -1358,7 +1361,7 @@ impl FxRegistry {
         if !built_in || old.name() != new.name() || !crate::scythe_eq::is_chunk(new) {
             return false;
         }
-        let Some(chunk) = crate::scythe_eq::chunk_state(new) else { return false };
+        let Ok(Some(chunk)) = crate::scythe_eq::chunk_state(new) else { return false };
         let Some(latency) = inst.with(|e| e.update_state(&chunk).then(|| e.latency())).flatten() else {
             return false;
         };
@@ -1376,7 +1379,7 @@ impl FxRegistry {
     fn create_here(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
         if crate::scythe_eq::is_chunk(plugin) && !self.host_scyeq_plugin {
-            let eq = match crate::scythe_eq::chunk_state(plugin) {
+            let eq = match crate::scythe_eq::chunk_state(plugin)? {
                 Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
                     .ok_or("unreadable ScyEQ-Pro state")?,
                 None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
@@ -2789,5 +2792,78 @@ mod scyeq_automation_tests {
         let freq = params::band_param(0, params::band::FREQ);
         automate(&mut eq, &slot(&clap(), &ramp("2 0 1 0.5", 0.5, 0.5)), 0);
         assert!((eq.value(freq) - params::from_normalized(freq, 0.5)).abs() < 1e-9, "{}", eq.value(freq));
+    }
+}
+
+#[cfg(test)]
+mod scyeq_state_tests {
+    use super::*;
+
+    /// A project whose one track holds `plugin`, a ScyEQ-Pro block, as its slot.
+    fn project(plugin: &str) -> Project {
+        let text = format!(
+            "<FXCHAIN\n  BYPASS 0 0 0\n{plugin}  FXID {{4D1D3BD8-4B1B-4B4F-9C2B-5E0C9C7C0E01}}\n  WAK 0 0\n>\n"
+        );
+        let chain = scythe_core::rpp::parse(&text).unwrap();
+        let mut track = scythe_core::Track::new("Vocals");
+        track.fx.push(FxSlot { name: "ScyEQ-Pro".into(), enabled: true, raw: chain.children });
+        let mut project = Project::default();
+        project.tracks.push(track);
+        project
+    }
+
+    fn vst3(lines: &[String]) -> String {
+        let cid = crate::vst3_host::cid_hex(&crate::scythe_eq::VST3_CLASS_ID);
+        let body: String = lines.iter().map(|l| format!("    {l}\n")).collect();
+        format!("  <VST \"{}\" ScyEQ-Pro.vst3 0 \"\" 1{{{cid}}} \"\"\n{body}  >\n", crate::scythe_eq::VST3_DISPLAY)
+    }
+
+    fn clap(state: &str) -> String {
+        let (display, id) = (crate::scythe_eq::DISPLAY, crate::scythe_eq::CLAP_ID);
+        format!("  <CLAP \"{display}\" {id} \"\"\n    CFG 4 0 0 \"\"\n    <STATE\n      {state}\n    >\n  >\n")
+    }
+
+    /// Loads `project` into a registry that runs ScyEQ-Pro built in and saves it: the EQ is not
+    /// made, and the slot comes back as it was.
+    fn survives(plugin: &str) {
+        let mut project = project(plugin);
+        let before = scythe_core::rpp::project_to_rpp(&project);
+        let mut registry = FxRegistry::new(48_000);
+        let track = &project.tracks[0];
+        registry.chain(Some(track.id), &track.fx);
+        let status = registry.status(Some(track.id), &track.fx[0], 0).cloned();
+        assert!(matches!(status, Some(FxStatus::Unavailable(_))), "{status:?}");
+        registry.store_states(&mut project);
+        assert_eq!(scythe_core::rpp::project_to_rpp(&project), before);
+    }
+
+    #[test]
+    fn an_undecodable_vst3_block_is_kept() {
+        survives(&vst3(&["not base64 at all!".into(), "AAAA".into()]));
+    }
+
+    #[test]
+    fn a_vst3_block_whose_component_does_not_fit_is_kept() {
+        let mut chunk = 9_999u32.to_le_bytes().to_vec();
+        chunk.extend([0; 4]);
+        chunk.extend(b"short");
+        survives(&vst3(&crate::builtin::vst_lines(1, &chunk)));
+    }
+
+    #[test]
+    fn a_vst3_block_holding_no_eq_state_is_kept() {
+        let component = b"no ScyEQ-Pro state";
+        survives(&vst3(&crate::builtin::vst_lines(1, &crate::vst3_host::reaper_state(component, &[]))));
+    }
+
+    #[test]
+    fn an_undecodable_clap_state_is_kept() {
+        survives(&clap("not base64 at all!"));
+    }
+
+    #[test]
+    fn a_clap_state_holding_no_eq_state_is_kept() {
+        use base64::Engine as _;
+        survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
     }
 }

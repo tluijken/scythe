@@ -46,10 +46,15 @@ pub(crate) fn is_vst3_chunk(c: &Chunk) -> bool {
 }
 
 /// The EQ state a ScyEQ-Pro block holds: the CLAP `<STATE`, or the component state inside the
-/// VST3 plugin's REAPER chunk. `None` when the block holds none.
-pub(crate) fn chunk_state(c: &Chunk) -> Option<Vec<u8>> {
+/// VST3 plugin's REAPER chunk. `None` when the block holds none (a new VST3 slot holds an empty
+/// component); an error when it holds one that does not decode, which must not be replaced.
+pub(crate) fn chunk_state(c: &Chunk) -> Result<Option<Vec<u8>>, &'static str> {
+    const UNREADABLE: &str = "unreadable ScyEQ-Pro state";
     if c.name() == "CLAP" {
-        return crate::fx::clap_state(c);
+        if c.chunks("STATE").next().is_none() {
+            return Ok(None);
+        }
+        return crate::fx::clap_state(c).map(Some).ok_or(UNREADABLE);
     }
     let lines: Vec<String> = c
         .children
@@ -59,9 +64,12 @@ pub(crate) fn chunk_state(c: &Chunk) -> Option<Vec<u8>> {
             Node::Chunk(_) => None,
         })
         .collect();
-    let reaper = crate::vst2::ReaperVstState::decode(&lines)?;
-    let (component, _) = crate::vst3_host::split_reaper_state(&reaper.chunk)?;
-    (!component.is_empty()).then(|| component.to_vec())
+    if lines.is_empty() {
+        return Ok(None);
+    }
+    let reaper = crate::vst2::ReaperVstState::decode(&lines).ok_or(UNREADABLE)?;
+    let (component, _) = crate::vst3_host::split_reaper_state(&reaper.chunk).ok_or(UNREADABLE)?;
+    Ok((!component.is_empty()).then(|| component.to_vec()))
 }
 
 /// The values stored in a ScyEQ-Pro slot.
@@ -70,7 +78,7 @@ pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
         Node::Chunk(c) if is_chunk(c) => Some(c),
         _ => None,
     })?;
-    params::decode(&chunk_state(chunk)?).map(|d| d.values)
+    params::decode(&chunk_state(chunk).ok()??).map(|d| d.values)
 }
 
 /// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
