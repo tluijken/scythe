@@ -375,3 +375,20 @@ fn a_phase_mode_change_announces_its_latency_without_an_editor() {
     assert_eq!(unsafe { plugin.processor.getLatencySamples() }, 2048);
     plugin.deactivate();
 }
+
+#[test]
+fn a_value_outside_the_range_is_saved_as_stored() {
+    let _turn = turn();
+    let freq = params::band_param(2, params::band::FREQ);
+    let max = params::spec_of(freq).unwrap().max;
+    let mut values = params::defaults();
+    values[freq as usize] = max * 2.0;
+    let mut state = b"SCEQ".to_vec();
+    state.extend(params::VERSION.to_le_bytes());
+    state.extend((values.len() as u32).to_le_bytes());
+    state.extend(values.iter().flat_map(|v| v.to_le_bytes()));
+    let plugin = Instance::new();
+    assert!(plugin.load(&state));
+    assert!(close(plugin.value(freq), max), "the host and the sound see it clamped");
+    assert!(plugin.save() == state, "a newer version's wider range survives this one");
+}

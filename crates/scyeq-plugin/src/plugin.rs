@@ -38,9 +38,11 @@ pub struct ScyEqShared {
     view: Mutex<ViewState>,
 }
 
-/// Values a newer version stored, written back unchanged, and the version that wrote them.
+/// Values a newer version stored, written back unchanged, the known values stored outside their
+/// range, written back while left alone, and the version that wrote them.
 struct Stored {
     extra: Vec<f64>,
+    unclamped: Vec<(u32, f64)>,
     version: u32,
 }
 
@@ -52,7 +54,7 @@ impl ScyEqShared {
             cx: Mutex::new(None),
             values: params::defaults().into_iter().map(|v| AtomicU64::new(v.to_bits())).collect(),
             changed: AtomicBool::new(false),
-            stored: Mutex::new(Stored { extra: Vec::new(), version: params::VERSION }),
+            stored: Mutex::new(Stored { extra: Vec::new(), unclamped: Vec::new(), version: params::VERSION }),
             track: Mutex::new(TrackInfo::default()),
             editor_size: AtomicU64::new(0),
             probe: Arc::new(FxProbe::default()),
@@ -150,7 +152,7 @@ impl Shared for ScyEqShared {
 
     fn save(&self) -> Vec<u8> {
         let stored = self.stored.lock().unwrap_or_else(|e| e.into_inner());
-        params::encode(&self.values(), &stored.extra, stored.version)
+        params::encode(&params::unclamp(&self.values(), &stored.unclamped), &stored.extra, stored.version)
     }
 
     fn load(&self, bytes: &[u8]) -> bool {
@@ -159,7 +161,7 @@ impl Shared for ScyEqShared {
         for (slot, v) in self.values.iter().zip(&decoded.values) {
             slot.store(v.to_bits(), Ordering::Relaxed);
         }
-        *stored = Stored { extra: decoded.extra, version: decoded.version };
+        *stored = Stored { extra: decoded.extra, unclamped: decoded.unclamped, version: decoded.version };
         self.changed.store(true, Ordering::Release);
         true
     }

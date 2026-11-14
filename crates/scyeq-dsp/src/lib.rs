@@ -213,6 +213,8 @@ pub struct ScytheEq {
     /// Stored values from a newer version, written back unchanged.
     extra: Vec<f64>,
     version: u32,
+    /// Known values stored outside the range, written back while left alone.
+    unclamped: Vec<(u32, f64)>,
     settings: Vec<BandSettings>,
     bands: Vec<Band>,
     mode: PhaseMode,
@@ -271,6 +273,7 @@ impl ScytheEq {
         let mut eq = Self::with_values(decoded.values, sample_rate);
         eq.extra = decoded.extra;
         eq.version = decoded.version;
+        eq.unclamped = decoded.unclamped;
         Some(eq)
     }
 
@@ -282,6 +285,7 @@ impl ScytheEq {
             values,
             extra: Vec::new(),
             version: params::VERSION,
+            unclamped: Vec::new(),
             bands: (0..BANDS).map(|_| Band::default()).collect(),
             mode: PhaseMode::ZeroLatency,
             resolution: 1,
@@ -1101,7 +1105,7 @@ impl ScytheEq {
 
     /// The stored state, with any values from a newer version written back unchanged.
     pub fn state(&self) -> Vec<u8> {
-        params::encode(&self.values, &self.extra, self.version)
+        params::encode(&params::unclamp(&self.values, &self.unclamped), &self.extra, self.version)
     }
 
     /// Recalls a stored state; false (and nothing changed) when `chunk` is not one.
@@ -1110,6 +1114,7 @@ impl ScytheEq {
         self.set_all(&decoded.values);
         self.extra = decoded.extra;
         self.version = decoded.version;
+        self.unclamped = decoded.unclamped;
         true
     }
 }

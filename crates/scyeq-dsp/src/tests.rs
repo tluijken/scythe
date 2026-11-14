@@ -527,3 +527,26 @@ fn song_2_state_round_trips_byte_identical() {
     let eq = ScytheEq::from_state(state, 48_000).unwrap();
     assert_eq!(eq.state(), state);
 }
+
+/// A range a newer version widened: the value it stored plays clamped here and is written back as
+/// it was, until it is changed.
+#[test]
+fn a_value_outside_the_range_is_kept_and_played_clamped() {
+    let freq = params::band_param(2, band::FREQ);
+    let max = params::spec_of(freq).unwrap().max;
+    let mut values = params::defaults();
+    values[freq as usize] = max * 2.0;
+    let state = state_with(params::VERSION, &values);
+    assert_eq!(params::decode(&state).unwrap().values[freq as usize], max);
+
+    let mut eq = ScytheEq::from_state(&state, 48_000).unwrap();
+    assert_eq!(eq.value(freq), max);
+    assert!(eq.state() == state, "written back as stored");
+    let mut loaded = ScytheEq::new(48_000);
+    assert!(loaded.load_state(&state));
+    assert_eq!(loaded.value(freq), max);
+    assert!(loaded.state() == state, "written back as stored");
+
+    eq.set(freq, 1000.0);
+    assert_eq!(params::decode(&eq.state()).unwrap().values[freq as usize], 1000.0);
+}

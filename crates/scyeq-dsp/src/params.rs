@@ -305,6 +305,9 @@ pub struct Decoded {
     pub values: Vec<f64>,
     pub extra: Vec<f64>,
     pub version: u32,
+    /// Known values stored outside this version's range, as stored: a newer version may have
+    /// widened it. `values` holds them clamped.
+    pub unclamped: Vec<(u32, f64)>,
 }
 
 /// The stored state: magic, version, value count, then every value as an f64.
@@ -337,14 +340,34 @@ pub fn decode(data: &[u8]) -> Option<Decoded> {
     let n = word(8)? as usize;
     let mut values = defaults();
     let mut extra = Vec::new();
+    let mut unclamped = Vec::new();
     for (i, b) in data.get(12..)?.as_chunks::<8>().0.iter().take(n).enumerate() {
         let v = f64::from_le_bytes(*b);
         match values.get_mut(i) {
-            Some(slot) => *slot = clamp(i as u32, v),
+            Some(slot) => {
+                *slot = clamp(i as u32, v);
+                if slot.to_bits() != v.to_bits() {
+                    unclamped.push((i as u32, v));
+                }
+            }
             None => extra.push(v),
         }
     }
-    Some(Decoded { values, extra, version })
+    Some(Decoded { values, extra, version, unclamped })
+}
+
+/// `values` as they are stored: a value decoding clamped goes back as it was stored while it still
+/// holds what it was clamped to.
+pub fn unclamp(values: &[f64], unclamped: &[(u32, f64)]) -> Vec<f64> {
+    let mut stored = values.to_vec();
+    for &(id, v) in unclamped {
+        if let Some(slot) = stored.get_mut(id as usize)
+            && slot.to_bits() == clamp(id, v).to_bits()
+        {
+            *slot = v;
+        }
+    }
+    stored
 }
 
 pub fn defaults() -> Vec<f64> {
