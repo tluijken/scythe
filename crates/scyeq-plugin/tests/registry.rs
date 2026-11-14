@@ -374,6 +374,14 @@ fn instances_on_unnamed_tracks_are_numbered() {
     assert_eq!(labels.len(), 2);
     assert!(labels.iter().all(|l| l.starts_with("ScyEQ-Pro ")) && labels[0] != labels[1], "{labels:?}");
     assert!(listed.iter().all(|(_, color)| color.is_none()));
+    let mut h = kick.harness();
+    open_match(&mut h);
+    h.get_by_value("Choose…").click();
+    h.run_steps(2);
+    for label in &labels {
+        assert!(h.query_by_label(label).is_some(), "{label} offered as it is named");
+    }
+    drop(h);
     drop(first);
     assert_eq!(found_by("Kick")[0].0, labels[1], "a number stays with its instance");
     drop((kick, second));

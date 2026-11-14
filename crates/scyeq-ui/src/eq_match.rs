@@ -200,14 +200,7 @@ fn match_body(
         };
         egui::ComboBox::from_id_salt(cx.salt.with("eq-match-ref")).selected_text(current).show_ui(ui, |ui| {
             for o in others {
-                let picked = ui.horizontal(|ui| {
-                    if let Some(color) = o.color {
-                        let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
-                        widgets::color_dot(ui.painter(), dot.center(), color);
-                    }
-                    ui.selectable_label(panel.reference == Target::Source(o.clone()), &o.label).clicked()
-                });
-                if picked.inner {
+                if reference_entry(ui, panel.reference == Target::Source(o.clone()), o).clicked() {
                     panel.reference = Target::Source(o.clone());
                     panel.other = vec![0.0; POINTS];
                     panel.other_frames = 0;
@@ -309,4 +302,14 @@ fn match_body(
             ui.label(egui::RichText::new(format!("only {free} free band(s)")).color(TEXT_DIM));
         }
     });
+}
+
+/// A reference to choose, full width as the dropdown lays it out, with the source's colour as
+/// a dot in room the label leaves before its text.
+fn reference_entry(ui: &mut Ui, selected: bool, source: &CompareSource) -> egui::Response {
+    let Some(color) = source.color else { return ui.selectable_label(selected, &source.label) };
+    let resp = ui.selectable_label(selected, format!("    {}", source.label));
+    widgets::color_dot(ui.painter(), resp.rect.left_center() + vec2(8.0, 0.0), color);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, &source.label));
+    resp
 }

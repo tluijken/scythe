@@ -250,7 +250,11 @@ fn compare_list(host: &dyn EqHost) -> Vec<CompareSource> {
     let mut out: Vec<CompareSource> = host
         .instances()
         .into_iter()
-        .map(|i| CompareSource { id: i.id, label: format!("{} (ScyEQ-Pro)", i.label), color: i.color })
+        .map(|i| {
+            // A plugin already names an instance on an unnamed track "ScyEQ-Pro N".
+            let label = if i.label.starts_with("ScyEQ-Pro") { i.label } else { format!("{} (ScyEQ-Pro)", i.label) };
+            CompareSource { id: i.id, label, color: i.color }
+        })
         .collect();
     out.extend(host.compare_sources());
     out
