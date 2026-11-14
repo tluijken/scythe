@@ -12,6 +12,7 @@ rubberband = []
 asio = ["cpal/asio"]
 
 [dependencies]
+scyeq-dsp.workspace = true
 scythe-core.workspace = true
 thiserror.workspace = true
 arc-swap.workspace = true

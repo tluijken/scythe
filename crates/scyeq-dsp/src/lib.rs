@@ -3,22 +3,21 @@
 //! placement, dynamic and spectral dynamic bands with internal or external sidechain, a
 //! character stage, auto gain and an output section.
 //!
-//! It is stored as a CLAP slot (`<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` with its
-//! state in `<STATE`), a block REAPER keeps byte for byte when it does not know the plugin.
+//! The DSP on its own, without a host: Scythe runs it as one of its effects, a plugin build
+//! wraps it for other hosts.
 
 pub mod dynamics;
 pub mod filters;
 pub mod fir;
 pub mod matching;
 pub mod params;
+pub mod probe;
 pub mod spectral;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::clap_host::ParamInfo;
-use crate::fx::{Effect, ProcessContext};
-use crate::probe::FxProbe;
+use probe::FxProbe;
 
 use dynamics::{Ballistics, Detector};
 use filters::{BRICKWALL, C64, Cascade, CascadeState, Design, Prototype, Shape};
@@ -26,63 +25,15 @@ use fir::{FirEngine, Layout, Timing};
 use params::{BAND_STRIDE, BANDS, GLOBAL, PhaseMode, Placement, band, global};
 use spectral::{Spectral, SpectralBand};
 
-pub const NAME: &str = "ScyEQ-Pro";
-pub const CLAP_ID: &str = "scythe.eq";
-pub const DISPLAY: &str = "CLAP: ScyEQ-Pro (Scythe)";
-/// The title projects saved before the EQ had its name carry; the slot is found by `CLAP_ID`.
-pub const OLD_DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
-pub const STATUS: &str = "parametric EQ";
-
-/// Whether `slot` holds a ScyEQ-Pro.
-pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
-    slot.raw.iter().any(|n| {
-        matches!(n, scythe_core::rpp::Node::Chunk(c)
-            if c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == CLAP_ID))
-    })
-}
-
-/// The values stored in a ScyEQ-Pro slot.
-pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
-    use base64::Engine as _;
-    let chunk = slot.raw.iter().find_map(|n| match n {
-        scythe_core::rpp::Node::Chunk(c) if c.name() == "CLAP" => Some(c),
-        _ => None,
-    })?;
-    let state = chunk.chunks("STATE").next()?;
-    let text: String = state
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            scythe_core::rpp::Node::Line(l) => Some(l.trim()),
-            scythe_core::rpp::Node::Chunk(_) => None,
-        })
-        .collect();
-    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?).map(|d| d.values)
-}
-
-/// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
-pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
-    use base64::Engine as _;
-    use scythe_core::rpp::{Chunk, Node};
-    let state = state.map_or_else(|| params::encode(&params::defaults(), &[], params::VERSION), <[u8]>::to_vec);
-    let mut chunk = Chunk::new("CLAP", &[DISPLAY, CLAP_ID, ""]);
-    chunk.line(["CFG", "4", "0", "0", ""]);
-    let mut st = Chunk::new("STATE", &[]);
-    let text = base64::engine::general_purpose::STANDARD.encode(&state);
-    for line in text.as_bytes().chunks(128) {
-        st.line([String::from_utf8_lossy(line)]);
-    }
-    chunk.push_chunk(st);
-    scythe_core::FxSlot {
-        name: DISPLAY.into(),
-        enabled: true,
-        raw: vec![
-            Node::Line("BYPASS 0 0 0".into()),
-            Node::Chunk(chunk),
-            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
-            Node::Line("WAK 0 0".into()),
-        ],
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// Edit on a logarithmic scale (frequencies, times).
+    pub log: bool,
 }
 
 /// Frames between parameter updates of the zero-latency filters and the detectors. The cells
@@ -1073,18 +1024,9 @@ impl ScytheEq {
     }
 }
 
-impl Effect for ScytheEq {
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
-        // Offline renders run with `playing` set too; stopped, the position stands still.
-        self.process_block(left, right, ctx.aux, ctx.playing.then_some(ctx.position));
-        if let Some(sc) = ctx.aux
-            && self.meters.sidechain.active()
-        {
-            self.meters.sidechain.tap(crate::probe::Side::Pre, sc.0, sc.1, ctx.sample_rate);
-        }
-    }
-
-    fn reset(&mut self) {
+impl ScytheEq {
+    /// Clears what the processing remembers of earlier audio, as after a seek.
+    pub fn reset(&mut self) {
         for b in &mut self.bands {
             b.state.iter_mut().for_each(CascadeState::reset);
             b.solo_state.iter_mut().for_each(CascadeState::reset);
@@ -1107,49 +1049,23 @@ impl Effect for ScytheEq {
         self.primed = false;
     }
 
-    fn latency(&mut self) -> usize {
+    /// Frames the output lags the input.
+    pub fn latency(&self) -> usize {
         self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency())
     }
 
-    fn params(&mut self) -> Vec<ParamInfo> {
-        params::automatable().filter_map(params::info).collect()
+    /// The stored state, with any values from a newer version written back unchanged.
+    pub fn state(&self) -> Vec<u8> {
+        params::encode(&self.values, &self.extra, self.version)
     }
 
-    fn param(&mut self, id: u32) -> Option<(f64, String)> {
-        params::spec_of(id)?;
-        let v = self.value(id);
-        Some((v, params::format(id, v)))
-    }
-
-    fn set_param(&mut self, id: u32, value: f64) {
-        self.set(id, value);
-    }
-
-    fn set_normalized(&mut self, index: usize, value: f64) -> bool {
-        let Some(id) = params::automatable().nth(index) else { return false };
-        self.set(id, params::from_normalized(id, value));
-        true
-    }
-
-    fn normalized(&mut self, index: usize) -> Option<f64> {
-        let id = params::automatable().nth(index)?;
-        Some(params::to_normalized(id, self.value(id)))
-    }
-
-    fn save_state(&mut self) -> Option<Vec<u8>> {
-        Some(params::encode(&self.values, &self.extra, self.version))
-    }
-
-    fn update_state(&mut self, chunk: &[u8]) -> bool {
+    /// Recalls a stored state; false (and nothing changed) when `chunk` is not one.
+    pub fn load_state(&mut self, chunk: &[u8]) -> bool {
         let Some(decoded) = params::decode(chunk) else { return false };
         self.set_all(&decoded.values);
         self.extra = decoded.extra;
         self.version = decoded.version;
         true
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 }
 

@@ -4045,6 +4045,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "scyeq-dsp"
+version = "0.1.0"
+dependencies = [
+ "realfft",
+]
+
+[[package]]
 name = "scythe-app"
 version = "0.1.0"
 dependencies = [
@@ -4103,6 +4110,7 @@ dependencies = [
  "realfft",
  "rtrb",
  "rustfft",
+ "scyeq-dsp",
  "scythe-core",
  "serde",
  "serde_json",

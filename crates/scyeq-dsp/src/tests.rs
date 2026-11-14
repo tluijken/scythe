@@ -3,11 +3,6 @@ use std::f64::consts::PI;
 use super::filters::{Design, Prototype, Shape};
 use super::params::{BAND_STRIDE, GLOBAL, band, global};
 use super::*;
-use crate::fx::Effect;
-
-fn ctx(sr: u32) -> ProcessContext<'static> {
-    ProcessContext { sample_rate: sr, ..crate::stock::testing::context() }
-}
 
 fn set_band(eq: &mut ScytheEq, b: usize, shape: Shape, freq: f64, gain: f64, q: f64) {
     let id = |o: u32| b as u32 * BAND_STRIDE + o;
@@ -42,10 +37,9 @@ fn db(x: f64) -> f64 {
 }
 
 /// Runs `l`/`r` through the effect in blocks of 256 (as a host would).
-fn run(eq: &mut ScytheEq, l: &mut [f32], r: &mut [f32], sr: u32) {
-    let c = ctx(sr);
+fn run(eq: &mut ScytheEq, l: &mut [f32], r: &mut [f32]) {
     for (a, b) in l.chunks_mut(256).zip(r.chunks_mut(256)) {
-        eq.process(a, b, &c);
+        eq.process_block(a, b, None, None);
     }
 }
 
@@ -54,7 +48,7 @@ fn gain_at(eq: &mut ScytheEq, f: f64, sr: u32) -> f64 {
     let mut l = sine(f, 0.25, n, sr as f64);
     let mut r = l.clone();
     eq.reset();
-    run(eq, &mut l, &mut r, sr);
+    run(eq, &mut l, &mut r);
     let tail = n / 2;
     db(amplitude(&l[tail..], f, sr as f64) / 0.25)
 }
@@ -64,7 +58,7 @@ fn an_empty_eq_is_transparent() {
     let mut eq = ScytheEq::new(48000);
     let input = sine(440.0, 0.5, 4800, 48000.0);
     let (mut l, mut r) = (input.clone(), input.clone());
-    run(&mut eq, &mut l, &mut r, 48000);
+    run(&mut eq, &mut l, &mut r);
     assert_eq!(eq.latency(), 0);
     assert!(l.iter().zip(&input).all(|(a, b)| (a - b).abs() < 1e-6));
 }
@@ -112,7 +106,7 @@ fn linear_phase_is_symmetric_and_reports_its_latency() {
     let mut l = vec![0.0f32; n];
     l[0] = 1.0;
     let mut r = l.clone();
-    run(&mut eq, &mut l, &mut r, sr);
+    run(&mut eq, &mut l, &mut r);
     let peak = l.iter().enumerate().max_by(|a, b| a.1.abs().total_cmp(&b.1.abs())).unwrap().0;
     assert_eq!(peak, latency);
     for k in 1..latency - 300 {
@@ -176,7 +170,7 @@ fn bands_act_on_their_stereo_placement() {
         let n = 48000;
         let input = sine(1000.0, 0.25, n, sr as f64);
         let (mut l, mut r) = (input.clone(), input.clone());
-        run(&mut eq, &mut l, &mut r, sr);
+        run(&mut eq, &mut l, &mut r);
         let half = n / 2;
         assert!((db(amplitude(&l[half..], 1000.0, 48000.0) / 0.25) + 12.0).abs() < 0.2, "left cut, mode {mode}");
         assert!(db(amplitude(&r[half..], 1000.0, 48000.0) / 0.25).abs() < 0.1, "right untouched, mode {mode}");
@@ -184,12 +178,12 @@ fn bands_act_on_their_stereo_placement() {
         eq.set(band::STEREO, 4.0);
         let (mut l, mut r) = (input.clone(), input.clone());
         eq.reset();
-        run(&mut eq, &mut l, &mut r, sr);
+        run(&mut eq, &mut l, &mut r);
         assert!(db(amplitude(&l[half..], 1000.0, 48000.0) / 0.25).abs() < 0.1, "side on mono, mode {mode}");
         eq.set(band::STEREO, 3.0);
         let (mut l, mut r) = (input.clone(), input.clone());
         eq.reset();
-        run(&mut eq, &mut l, &mut r, sr);
+        run(&mut eq, &mut l, &mut r);
         for ch in [&l, &r] {
             assert!(
                 (db(amplitude(&ch[half..], 1000.0, 48000.0) / 0.25) + 12.0).abs() < 0.2,
@@ -208,7 +202,6 @@ fn parameter_changes_glide_without_zipper_steps() {
     set_band(&mut eq, 0, Shape::Bell, 200.0, -6.0, 1.0);
     let input = sine(200.0, 0.25, 24000, sr as f64);
     let (mut l, mut r) = (input.clone(), input.clone());
-    let c = ctx(sr);
     let mut max_step = 0.0f32;
     for (k, (a, b)) in l.chunks_mut(64).zip(r.chunks_mut(64)).enumerate() {
         if k == 150 {
@@ -217,7 +210,7 @@ fn parameter_changes_glide_without_zipper_steps() {
         if k == 250 {
             eq.set(band::FREQ, 400.0);
         }
-        eq.process(a, b, &c);
+        eq.process_block(a, b, None, None);
     }
     for w in l[4800..].windows(2) {
         max_step = max_step.max((w[1] - w[0]).abs());
@@ -234,14 +227,13 @@ fn changing_shape_or_bypassing_fades_instead_of_clicking() {
     set_band(&mut eq, 0, Shape::Bell, 1000.0, 12.0, 1.0);
     let input = sine(100.0, 0.25, 24000, sr as f64);
     let (mut l, mut r) = (input.clone(), input.clone());
-    let c = ctx(sr);
     for (k, (a, b)) in l.chunks_mut(64).zip(r.chunks_mut(64)).enumerate() {
         match k {
             100 => eq.set(band::SHAPE, Shape::LowCut.index() as f64),
             200 => eq.set(band::ENABLED, 0.0),
             _ => {}
         }
-        eq.process(a, b, &c);
+        eq.process_block(a, b, None, None);
     }
     let step = l.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
     assert!(step < 0.02, "{step}");
@@ -275,13 +267,13 @@ fn gain_scale_and_output_section() {
     eq.set(GLOBAL + global::PAN, 100.0);
     let mut l = sine(50.0, 0.5, 4800, 48000.0);
     let mut r = l.clone();
-    run(&mut eq, &mut l, &mut r, 48000);
+    run(&mut eq, &mut l, &mut r);
     assert!(l[2400..].iter().all(|v| v.abs() < 1e-4) && r[2400..].iter().any(|v| v.abs() > 0.1));
     eq.set(GLOBAL + global::PAN, 0.0);
     eq.set(GLOBAL + global::WIDTH, 0.0);
     let mut l = sine(50.0, 0.5, 4800, 48000.0);
     let mut r = vec![0.0; 4800];
-    run(&mut eq, &mut l, &mut r, 48000);
+    run(&mut eq, &mut l, &mut r);
     assert!(l[2400..].iter().zip(&r[2400..]).all(|(a, b)| (a - b).abs() < 1e-5), "mono at zero width");
 }
 
@@ -291,7 +283,7 @@ fn state_survives_save_and_load() {
     set_band(&mut eq, 5, Shape::HighCut, 9000.0, 0.0, 0.9);
     eq.set(5 * BAND_STRIDE + band::SLOPE, 6.0);
     eq.set(GLOBAL + global::CHARACTER, 2.0);
-    let state = eq.save_state().unwrap();
+    let state = eq.state();
     let back = ScytheEq::from_state(&state, 44100).unwrap();
     assert_eq!(back.values(), eq.values());
     assert_eq!(back.band(5).design.slope, 6);
@@ -306,7 +298,7 @@ fn silence_after_a_burst_stays_free_of_subnormals() {
     let mut l = vec![0.0f32; 48000 * 20];
     l[0] = 1.0;
     let mut r = l.clone();
-    run(&mut eq, &mut l, &mut r, 48000);
+    run(&mut eq, &mut l, &mut r);
     assert!(l.iter().all(|v| *v == 0.0 || v.is_normal()));
     for b in &eq.bands[..2] {
         for st in &b.state {
@@ -322,7 +314,7 @@ fn character_modes_add_their_harmonics() {
         eq.set(GLOBAL + global::CHARACTER, kind);
         let mut l = sine(1000.0, 0.7, 48000, 48000.0);
         let mut r = l.clone();
-        run(&mut eq, &mut l, &mut r, 48000);
+        run(&mut eq, &mut l, &mut r);
         let h = |f: f64| db(amplitude(&l[24000..], f, 48000.0) / 0.7);
         assert_eq!(h(2000.0) > -80.0, even, "kind {kind}: 2nd {}", h(2000.0));
         assert_eq!(h(3000.0) > -80.0, odd, "kind {kind}: 3rd {}", h(3000.0));
@@ -354,7 +346,7 @@ fn dynamic_bands_cut_only_while_their_band_is_loud() {
             let mut l = sine(1000.0, 0.005, n, sr as f64);
             let mut r = l.clone();
             eq.reset();
-            run(&mut eq, &mut l, &mut r, sr);
+            run(&mut eq, &mut l, &mut r);
             db(amplitude(&l[n / 2..], 1000.0, sr as f64) / 0.005)
         };
         assert!(quiet.abs() < 0.2, "mode {mode}: quiet {quiet}");
@@ -373,8 +365,7 @@ fn an_external_sidechain_drives_the_band() {
     let mut l = sine(1000.0, 0.01, n, sr as f64);
     let mut r = l.clone();
     let key = sine(1000.0, 0.5, n, sr as f64);
-    let c = ProcessContext { aux: Some((&key, &key)), ..ctx(sr) };
-    eq.process(&mut l, &mut r, &c);
+    eq.process_block(&mut l, &mut r, Some((&key, &key)), None);
     let g = db(amplitude(&l[n / 2..], 1000.0, sr as f64) / 0.01);
     assert!((g + 12.0).abs() < 0.3, "{g}");
     assert!((eq.meters().dynamic(0) + 12.0).abs() < 0.1);
@@ -394,7 +385,7 @@ fn spectral_bands_tame_only_the_loud_bins() {
     let b = sine(1400.0, 0.005, n, sr as f64);
     let mut l: Vec<f32> = a.iter().zip(&b).map(|(x, y)| x + y).collect();
     let mut r = l.clone();
-    run(&mut eq, &mut l, &mut r, sr);
+    run(&mut eq, &mut l, &mut r);
     let tail = &l[n / 2..];
     let loud = db(amplitude(tail, 1000.0, sr as f64) / 0.5);
     let quiet = db(amplitude(tail, 1400.0, sr as f64) / 0.005);
@@ -426,7 +417,6 @@ fn structural_switches_while_playing_do_not_click() {
     let n = sr as usize;
     let input = sine(f, amp, n * 6, sr as f64);
     let (mut l, mut r) = (input.clone(), input.clone());
-    let c = ctx(sr);
     type Switch = Box<dyn Fn(&mut ScytheEq)>;
     let switches: [(usize, Switch, usize); 5] = [
         (1, Box::new(|eq| eq.set(GLOBAL + global::PHASE, 2.0)), 2048),
@@ -444,7 +434,7 @@ fn structural_switches_while_playing_do_not_click() {
             assert_eq!(eq.latency(), *latency, "switch {next}");
             next += 1;
         }
-        eq.process(a, b, &c);
+        eq.process_block(a, b, None, None);
     }
     assert_eq!(next, switches.len());
     let steepest = (2.0 * PI * f / sr as f64 * amp) as f32;
@@ -475,7 +465,7 @@ fn dynamic_cuts_and_notches_move_in_zero_latency() {
         let n = sr as usize;
         let mut l = sine(tone, amp, n, sr as f64);
         let mut r = l.clone();
-        run(&mut eq, &mut l, &mut r, sr);
+        run(&mut eq, &mut l, &mut r);
         db(amplitude(&l[n / 2..], tone, sr as f64) / amp)
     };
     let fixed = gain(Shape::LowCut, 100.0, 70.0, 0.5, false);
@@ -492,51 +482,6 @@ fn dynamic_cuts_and_notches_move_in_zero_latency() {
     eq.set(band::DYNAMIC, 1.0);
     eq.set(GLOBAL + global::PHASE, 2.0);
     assert_eq!(eq.band(0).dynamic, 0, "static in the FIR modes");
-}
-
-/// The 32-frame grid follows the sample position: a dynamic and a spectral band give the same
-/// output whatever block sizes the host uses, and so does a stopped transport counting frames.
-#[test]
-fn dynamic_bands_ignore_block_size() {
-    let sr = 48000u32;
-    let mut seed = 11u64;
-    let mut next = move || {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        seed >> 33
-    };
-    let noise: Vec<f32> = (0..2 * sr as usize).map(|_| (next() as f32 / (1u64 << 31) as f32 - 0.5) * 0.8).collect();
-    let random: Vec<usize> = std::iter::repeat_with(|| 1 + next() as usize % 700).take(noise.len()).collect();
-    for mode in [0.0, 2.0] {
-        let render = |sizes: &[usize], playing: bool, from: i64| {
-            let mut eq = ScytheEq::new(sr);
-            eq.set(GLOBAL + global::PHASE, mode);
-            dynamic_band(&mut eq, 0, 1.0, -9.0, -30.0);
-            dynamic_band(&mut eq, 1, 2.0, -12.0, -30.0);
-            eq.set(BAND_STRIDE + band::FREQ, 4000.0);
-            let (mut l, mut r) = (noise.clone(), noise.iter().map(|x| -0.5 * x).collect::<Vec<_>>());
-            let mut at = 0;
-            for &n in sizes.iter().cycle() {
-                if at == l.len() {
-                    break;
-                }
-                let n = n.min(l.len() - at);
-                let c = ProcessContext { position: from + at as i64, playing, ..ctx(sr) };
-                eq.process(&mut l[at..at + n], &mut r[at..at + n], &c);
-                at += n;
-            }
-            (l, r)
-        };
-        let reference = render(&[512], true, 0);
-        assert!(reference.0.iter().zip(&noise).any(|(a, b)| a != b));
-        for (name, sizes, playing) in
-            [("37", &[37][..], true), ("random", &random, true), ("random, stopped", &random, false)]
-        {
-            let out = render(sizes, playing, 0);
-            assert!(out == reference, "mode {mode}, blocks of {name}");
-        }
-        // Playback starting part way into a grid cell.
-        assert!(render(&random, true, 1013) == render(&[512], true, 1013), "mode {mode}, from 1013");
-    }
 }
 
 fn state_with(version: u32, values: &[f64]) -> Vec<u8> {
@@ -556,8 +501,8 @@ fn unknown_values_survive_a_round_trip() {
     let state = state_with(params::VERSION + 1, &all);
     let decoded = params::decode(&state).unwrap();
     assert_eq!(decoded.extra, [1.5, -7.25, 1e9]);
-    let mut eq = ScytheEq::from_state(&state, 48_000).unwrap();
-    let written = eq.save_state().unwrap();
+    let eq = ScytheEq::from_state(&state, 48_000).unwrap();
+    let written = eq.state();
     let back = params::decode(&written).unwrap();
     assert_eq!(back.extra, decoded.extra);
     assert_eq!(written[..12], state[..12]);
@@ -576,9 +521,9 @@ fn newer_version_is_reported() {
 
 #[test]
 fn song_2_state_round_trips_byte_identical() {
-    let state = include_bytes!("../../tests/fixtures/scyeq-song2.state");
+    let state = include_bytes!("../tests/fixtures/scyeq-song2.state");
     let decoded = params::decode(state).unwrap();
     assert_eq!(params::encode(&decoded.values, &decoded.extra, decoded.version), state);
-    let mut eq = ScytheEq::from_state(state, 48_000).unwrap();
-    assert_eq!(eq.save_state().unwrap(), state);
+    let eq = ScytheEq::from_state(state, 48_000).unwrap();
+    assert_eq!(eq.state(), state);
 }

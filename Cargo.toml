@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-mcp", "crates/scythe-surface", "crates/scythe-app", "crates/scythe-itest", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
+members = ["crates/scyeq-dsp", "crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-mcp", "crates/scythe-surface", "crates/scythe-app", "crates/scythe-itest", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,6 +8,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+scyeq-dsp = { path = "crates/scyeq-dsp" }
 scythe-core = { path = "crates/scythe-core" }
 scythe-engine = { path = "crates/scythe-engine" }
 scythe-session = { path = "crates/scythe-session" }
@@ -60,6 +61,9 @@ opt-level = 2
 
 # The engine's DSP at opt-level 0 makes debug builds unusable with real projects (a live set
 # loads 2.4x slower and renders at 2.4x the load); level 1 costs about 5 s per engine rebuild.
+[profile.dev.package.scyeq-dsp]
+opt-level = 1
+
 [profile.dev.package.scythe-engine]
 opt-level = 1
 

@@ -131,7 +131,7 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scythe_eq::filters::Shape;
+    use crate::filters::Shape;
 
     #[test]
     fn gain_computer_has_a_soft_knee_and_stops_at_the_range() {

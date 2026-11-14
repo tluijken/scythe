@@ -33,6 +33,7 @@ use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
+pub use scyeq_dsp::ParamInfo;
 
 use crate::editor::{Editor, POLL_ERROR, POLL_READ, Timers, ready_fds};
 
@@ -451,17 +452,6 @@ unsafe extern "C" fn events_get(list: *const clap_input_events, index: u32) -> *
     // SAFETY: as above; the index is below `events_size`.
     let events = unsafe { &*((*list).ctx as *const Vec<*const clap_event_header>) };
     events.get(index as usize).copied().unwrap_or(std::ptr::null())
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParamInfo {
-    pub id: u32,
-    pub name: String,
-    pub min: f64,
-    pub max: f64,
-    pub default: f64,
-    /// Edit on a logarithmic scale (frequencies, times).
-    pub log: bool,
 }
 
 /// A note event for `process`, `offset` frames into the block.
