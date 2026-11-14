@@ -1,7 +1,7 @@
 # ScyEQ-Pro plugin
 
 Scythe's ScyEQ-Pro equalizer as a CLAP and VST 3 plugin. Each zip, `ScyEQ-Pro-<version>-<os>.zip`,
-holds `ScyEQ-Pro.clap` and `ScyEQ-Pro.vst3`.
+holds `ScyEQ-Pro.clap` and `ScyEQ-Pro.vst3`, with the licenses and third-party notices.
 
 ## Install
 
