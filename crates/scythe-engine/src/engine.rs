@@ -253,7 +253,13 @@ impl Transport {
 
 /// Renders one output buffer. Shared by the device callback and the null output thread.
 /// Live input delivered to the audio callback: interleaved samples and their channel count.
-type InputFeed = (rtrb::Consumer<f32>, usize);
+struct InputFeed {
+    rx: rtrb::Consumer<f32>,
+    channels: usize,
+    /// A capture stream runs on its own clock, so a backlog beyond a block of slack is
+    /// dropped; a generated feed is played as it comes.
+    own_clock: bool,
+}
 /// The rings of the open MIDI inputs.
 type MidiFeed = Vec<InputRings>;
 /// MIDI that arrived while playing, with the project frame of the block it was played in.
@@ -487,9 +493,9 @@ impl Processor {
         while let Ok(feed) = self.input_rx.try_recv() {
             self.input = feed;
         }
-        let Some((rx, channels)) = &mut self.input else { return false };
+        let Some(InputFeed { rx, channels, own_clock }) = &mut self.input else { return false };
         let ch = (*channels).max(1);
-        let excess = input_excess(rx.slots() / ch, frames);
+        let excess = if *own_clock { input_excess(rx.slots() / ch, frames) } else { 0 };
         for _ in 0..excess * ch {
             let _ = rx.pop();
         }
@@ -1621,7 +1627,7 @@ impl Engine {
     fn open_capture(&mut self) -> Result<(), String> {
         let (capture, rx) =
             crate::capture::Capture::open(&self.devices, self.info.sample_rate, self.input_map.as_deref())?;
-        let _ = self.input_tx.send(Some((rx, capture.channels)));
+        let _ = self.input_tx.send(Some(InputFeed { rx, channels: capture.channels, own_clock: true }));
         self.capture = Some(capture);
         Ok(())
     }
@@ -1837,7 +1843,7 @@ impl Engine {
     /// monitored tracks hear it: for tests and generated input.
     pub fn set_input_feed(&mut self, rx: rtrb::Consumer<f32>, channels: usize) {
         self.capture = None;
-        let _ = self.input_tx.send(Some((rx, channels)));
+        let _ = self.input_tx.send(Some(InputFeed { rx, channels, own_clock: false }));
     }
 
     /// Tells the metronome whether a recording runs ("run metronome during recording").
@@ -2289,7 +2295,7 @@ mod tests {
         let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), transport, feeds);
         proc.set_outputs(2);
         let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(BLOCK * 16);
-        senders.input_tx.send(Some((rx, 1))).unwrap();
+        senders.input_tx.send(Some(InputFeed { rx, channels: 1, own_clock: true })).unwrap();
         // Block k carries one impulse at its own frame, so where it is heard says which it is.
         const SPOTS: usize = 14;
         let spot = |k: usize| 5 + 8 * (k % SPOTS);
@@ -2325,6 +2331,33 @@ mod tests {
         assert_eq!(monitored_input_delays(4, 1), [128, 128, 128, 128]);
         // ...and a longer backlog is dropped down to it rather than heard late.
         assert!(monitored_input_delays(4, 5).iter().all(|&d| d <= 256));
+    }
+
+    /// The null output works off a stall with blocks back to back; a generated feed has no
+    /// clock of its own, so its backlog is played rather than dropped and no block runs dry.
+    #[test]
+    fn a_generated_input_feed_keeps_its_backlog() {
+        const BLOCK: usize = 128;
+        let mut p = Project::default();
+        let t = p.add_track("in");
+        let track = p.track_mut(t).unwrap();
+        (track.armed, track.monitor, track.rec_input) = (true, true, 0);
+        let pool = MediaPool::default();
+        let graph = RenderGraph::build(&p, &pool, &mut MeterRegistry::default(), &mut FxRegistry::new(8000), 8000);
+        let (senders, feeds) = feeds();
+        let mut proc = Processor::new(Arc::new(ArcSwap::from_pointee(graph)), Arc::new(Transport::new(8000)), feeds);
+        proc.set_outputs(2);
+        let (mut tx, rx) = rtrb::RingBuffer::<f32>::new(BLOCK * 16);
+        for _ in 0..BLOCK * 6 {
+            tx.push(0.5).unwrap();
+        }
+        senders.input_tx.send(Some(InputFeed { rx, channels: 1, own_clock: false })).unwrap();
+        for k in 0..6 {
+            let mut buf = vec![0.0f32; 2 * BLOCK];
+            proc.write_interleaved(&mut buf, 2);
+            let heard = buf.chunks(2).filter(|f| f[0].abs() > 0.1).count();
+            assert!(heard >= BLOCK / 2, "block {k} hears its input in {heard} frames");
+        }
     }
 
     fn processor(p: &Project, pool: &MediaPool, transport: &Arc<Transport>) -> Processor {
@@ -2898,7 +2931,7 @@ mod tests {
                 let _ = tx.push(if c == 16 { 0.5 } else { 0.0 });
             }
         }
-        senders.input_tx.send(Some((rx, 18))).unwrap();
+        senders.input_tx.send(Some(InputFeed { rx, channels: 18, own_clock: true })).unwrap();
         let mut out = vec![0.0f32; 2 * 512];
         proc.write_interleaved(&mut out, 2);
         let peak = out.iter().fold(0f32, |m, s| m.max(s.abs()));
