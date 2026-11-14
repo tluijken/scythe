@@ -17,6 +17,11 @@ Rust crates Scythe depends on are fetched by Cargo and keep their own licenses: 
 or Apache-2.0, some BSD, ISC, Zlib, Unicode-3.0 or BSL-1.0, and `symphonia` under MPL-2.0
 (used unchanged). Binary releases list every crate with its license text.
 
+The ScyEQ-Pro plugin (`crates/scyeq-plugin`) links its crates statically into one library, among
+them [baseview](https://github.com/RustAudio/baseview) and
+[egui-baseview](https://codeberg.org/RustAudio/egui-baseview) for its editor window (MIT or
+Apache-2.0) and `symphonia` for EQ Match reference files (MPL-2.0, used unchanged).
+
 Libraries loaded at run time and not shipped with Scythe: SoundTouch (LGPL-2.1), Rubber Band
 (GPL-2.0-or-later, only with the `rubberband` feature), and on Windows the ASIO SDK (Steinberg's
 license, only with the `asio` feature). See "Licensing notes" in the README.

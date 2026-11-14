@@ -122,6 +122,14 @@ Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set 
 
 ![ScyEQ-Pro on a vocal: bands, a dynamic band moving, the analyzer and the piano strip](docs/screenshots/scyeq-pro.png)
 
+#### ScyEQ-Pro plugin
+
+ScyEQ-Pro also runs outside Scythe, as a CLAP and VST 3 plugin for Linux, Windows and macOS
+(beta), with the same sound, editor and state: a project made in REAPER with the CLAP plugin
+opens in Scythe with the built-in ScyEQ-Pro, and back. Each CI run builds it as
+`ScyEQ-Pro-<version>-<os>.zip`; [crates/scyeq-plugin/README.md](crates/scyeq-plugin/README.md)
+says where to install it.
+
 ### Arrange and editing
 
 - Move, trim, split, fade, crossfade, glue, copy and paste items; razor edits, ripple editing
