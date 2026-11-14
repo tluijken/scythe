@@ -1,20 +1,14 @@
 //! ScyEQ-Pro's editor (`scyeq_ui`) on the plugin's shared half: changes go to the host as
 //! parameter gestures through the instance's `GuiContext`.
 
-use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Once};
 
 use plugin_format::{GuiContext, Shared, egui};
 use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ViewState};
-use symphonia::core::codecs::audio::AudioDecoderOptions;
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
 
 use crate::plugin::ScyEqShared;
 
@@ -24,11 +18,13 @@ pub(crate) struct Editor {
     cx: GuiContext,
     state: EditorState,
     themed: bool,
+    /// A reference file being picked on a thread of its own.
+    picking: Option<Receiver<Option<PathBuf>>>,
 }
 
 impl Editor {
     pub(crate) fn new(shared: Arc<ScyEqShared>, cx: GuiContext) -> Self {
-        Self { shared, cx, state: EditorState::default(), themed: false }
+        Self { shared, cx, state: EditorState::default(), themed: false, picking: None }
     }
 
     pub(crate) fn frame(&mut self, root: &mut egui::Ui) {
@@ -36,7 +32,13 @@ impl Editor {
             scyeq_ui::theme::install(root.ctx());
         }
         let view = self.shared.view();
-        let mut host = PluginHost { shared: &self.shared, cx: &self.cx, values: self.shared.values(), view };
+        let mut host = PluginHost {
+            shared: &self.shared,
+            cx: &self.cx,
+            values: self.shared.values(),
+            view,
+            picking: &mut self.picking,
+        };
         egui::CentralPanel::default().show(root, |ui| scyeq_ui::show(ui, &mut host, &mut self.state));
         if host.view.instances {
             let ctx = root.ctx().clone();
@@ -60,6 +62,7 @@ struct PluginHost<'a> {
     cx: &'a GuiContext,
     values: Vec<f64>,
     view: ViewState,
+    picking: &'a mut Option<Receiver<Option<PathBuf>>>,
 }
 
 impl EqHost for PluginHost<'_> {
@@ -132,8 +135,26 @@ impl EqHost for PluginHost<'_> {
         None
     }
 
+    /// On Linux the editor has a thread of its own, which a dialog must not hold: the host
+    /// waits for that thread when it closes the window. Elsewhere the dialog is modal on the
+    /// host's UI thread, as dialogs there are.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("Audio", &["wav", "flac", "mp3", "ogg", "aif", "aiff"]).pick_file()
+        keep_loaded();
+        if !cfg!(target_os = "linux") {
+            return pick_file();
+        }
+        if self.picking.is_none() {
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(pick_file());
+            });
+            *self.picking = Some(rx);
+        }
+        None
+    }
+
+    fn picked_reference(&mut self) -> Option<PathBuf> {
+        take_picked(self.picking)
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
@@ -198,58 +219,61 @@ impl InstanceList for ThisInstance<'_> {
     }
 }
 
-/// A reference file for EQ Match, decoded with Symphonia as Scythe decodes media.
+fn pick_file() -> Option<PathBuf> {
+    rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+}
+
+/// The file picked, once the dialog closed; `None` while it is open, and after it closed
+/// without one.
+fn take_picked(picking: &mut Option<Receiver<Option<PathBuf>>>) -> Option<PathBuf> {
+    let picked = match picking.as_ref()?.try_recv() {
+        Err(TryRecvError::Empty) => return None,
+        Ok(path) => path,
+        Err(TryRecvError::Disconnected) => None,
+    };
+    *picking = None;
+    picked
+}
+
+/// A reference file for EQ Match, decoded as Scythe decodes it.
 fn load_reference(path: &Path) -> Result<ReferenceAudio, String> {
-    let file = File::open(path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut format = symphonia::default::get_probe()
-        .probe(&hint, stream, FormatOptions::default(), MetadataOptions::default())
-        .map_err(|e| e.to_string())?;
-    let track = format.default_track(TrackType::Audio).ok_or("no audio track")?;
-    let track_id = track.id;
-    let codec = track.codec_params.as_ref().and_then(|p| p.audio()).ok_or("no audio codec parameters")?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(codec, &AudioDecoderOptions::default())
-        .map_err(|e| e.to_string())?;
-    let mut sample_rate = codec.sample_rate.unwrap_or(0);
-    let mut channels: Vec<Vec<f32>> = Vec::new();
-    let mut planes: Vec<Vec<f32>> = Vec::new();
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(SymphoniaError::ResetRequired) => break,
-            Err(e) => return Err(e.to_string()),
-        };
-        if packet.track_id != track_id {
-            continue;
-        }
-        match decoder.decode(&packet) {
-            Ok(buf) => {
-                sample_rate = buf.spec().rate();
-                buf.copy_to_vecs_planar::<f32>(&mut planes);
-                let frames = buf.frames();
-                if channels.len() < planes.len() {
-                    let have = channels.first().map_or(0, Vec::len);
-                    channels.resize_with(planes.len(), || vec![0.0; have]);
-                }
-                for (dst, src) in channels.iter_mut().zip(&planes) {
-                    dst.extend_from_slice(&src[..frames.min(src.len())]);
-                }
-            }
-            // A corrupt packet is skipped; the rest of the stream is usually fine.
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(e) => return Err(e.to_string()),
+    let audio = scythe_decode::decode(path, false).map_err(|e| e.to_string())?;
+    Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
+}
+
+/// Keeps this library loaded until the process ends. The file dialog and the reference decode
+/// run on threads that cannot be stopped or waited for (the dialog stays open as long as the
+/// user leaves it), so a host that unloads the plugin meanwhile must not unmap their code.
+/// Called before either starts.
+fn keep_loaded() {
+    static PINNED: Once = Once::new();
+    PINNED.call_once(|| unsafe { pin(keep_loaded as *const ()) });
+}
+
+#[cfg(unix)]
+unsafe fn pin(code: *const ()) {
+    unsafe {
+        let mut info: libc::Dl_info = std::mem::zeroed();
+        if libc::dladdr(code.cast(), &mut info) != 0 && !info.dli_fname.is_null() {
+            // Never closed: with RTLD_NODELETE the library outlives every dlclose.
+            libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NODELETE);
         }
     }
-    if channels.is_empty() || sample_rate == 0 {
-        return Err("the file holds no audio".to_owned());
+}
+
+#[cfg(windows)]
+unsafe fn pin(code: *const ()) {
+    use windows_sys::Win32::System::LibraryLoader::{
+        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
+    };
+    let mut module = std::ptr::null_mut();
+    unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+            code.cast(),
+            &mut module,
+        );
     }
-    channels.truncate(2);
-    Ok(ReferenceAudio { channels, sample_rate })
 }
 
 #[cfg(test)]
@@ -297,5 +321,37 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         assert!(audio.is_err());
         assert!(load_reference(Path::new("/nonexistent/reference.wav")).is_err());
+    }
+
+    #[test]
+    fn a_pick_is_taken_once_the_dialog_closed() {
+        let (tx, rx) = mpsc::channel();
+        let mut picking = Some(rx);
+        assert_eq!(take_picked(&mut picking), None, "still open");
+        assert!(picking.is_some());
+        tx.send(Some(PathBuf::from("/music/reference.wav"))).unwrap();
+        assert_eq!(take_picked(&mut picking), Some(PathBuf::from("/music/reference.wav")));
+        assert!(picking.is_none(), "taken once");
+        assert_eq!(take_picked(&mut picking), None);
+    }
+
+    #[test]
+    fn a_dialog_closed_without_a_file_or_gone_ends_the_pick() {
+        let (tx, rx) = mpsc::channel();
+        let mut picking = Some(rx);
+        tx.send(None).unwrap();
+        assert_eq!(take_picked(&mut picking), None);
+        assert!(picking.is_none());
+        let (tx, rx) = mpsc::channel::<Option<PathBuf>>();
+        let mut picking = Some(rx);
+        drop(tx);
+        assert_eq!(take_picked(&mut picking), None);
+        assert!(picking.is_none());
+    }
+
+    #[test]
+    fn keeping_the_library_loaded_can_be_asked_again() {
+        keep_loaded();
+        keep_loaded();
     }
 }

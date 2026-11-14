@@ -201,8 +201,9 @@ fn match_body(
                 pick = true;
             }
         });
-        if let Some(decode) = decode.filter(|_| pick)
-            && let Some(path) = cx.host.pick_reference()
+        let picked = if pick { cx.host.pick_reference() } else { None };
+        if let Some(decode) = decode
+            && let Some(path) = picked.or_else(|| cx.host.picked_reference())
         {
             panel.file = None;
             panel.job = Some(measure_file(decode, path.clone()));

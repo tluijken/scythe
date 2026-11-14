@@ -4149,14 +4149,16 @@ dependencies = [
  "base64 0.23.1",
  "clap-sys",
  "egui_kittest",
+ "libc",
  "libloading 0.8.9",
  "plugin-format",
  "rfd",
  "scyeq-dsp",
  "scyeq-ui",
+ "scythe-decode",
  "serde_json",
- "symphonia",
  "vst3",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4185,6 +4187,7 @@ dependencies = [
  "rfd",
  "scyeq-ui",
  "scythe-core",
+ "scythe-decode",
  "scythe-engine",
  "scythe-server",
  "scythe-session",
@@ -4204,6 +4207,13 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "scythe-decode"
+version = "0.1.0"
+dependencies = [
+ "symphonia",
 ]
 
 [[package]]
@@ -4231,6 +4241,7 @@ dependencies = [
  "scyeq-dsp",
  "scyeq-plugin",
  "scythe-core",
+ "scythe-decode",
  "serde",
  "serde_json",
  "symphonia",

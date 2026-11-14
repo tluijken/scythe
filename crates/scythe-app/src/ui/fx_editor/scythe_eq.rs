@@ -127,7 +127,7 @@ impl EqHost for Host<'_, '_> {
     }
 
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("Audio", &["wav", "flac", "mp3", "ogg", "aif", "aiff"]).pick_file()
+        rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {

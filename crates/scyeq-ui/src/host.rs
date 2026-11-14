@@ -29,8 +29,14 @@ pub trait EqHost {
     fn compare_sources(&self) -> Vec<CompareSource>;
     /// The output of an instance or compare source.
     fn source_probe(&self, id: Id) -> Option<Arc<FxProbe>>;
-    /// Asks for an audio file to match to; `None` when none was picked.
+    /// Asks for an audio file to match to; `None` when none was picked, or when the answer comes
+    /// later through [`EqHost::picked_reference`].
     fn pick_reference(&mut self) -> Option<PathBuf> {
+        None
+    }
+    /// A file picked since [`EqHost::pick_reference`] returned without one; asked every frame
+    /// while EQ Match is open.
+    fn picked_reference(&mut self) -> Option<PathBuf> {
         None
     }
     /// Decodes a reference file for EQ Match, on a thread of its own. `None` when files cannot

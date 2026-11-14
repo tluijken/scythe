@@ -15,7 +15,13 @@ scyeq-ui.workspace = true
 plugin-format = { path = "/home/thomas/projects/prive/plugin-format" }
 # The portal (or zenity) on Linux, not GTK: a plugin must not run a GTK loop inside the host.
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
-symphonia.workspace = true
+scythe-decode.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
