@@ -329,3 +329,49 @@ fn stereo_by_default_and_the_channels_stay_apart() {
     assert!(out_left == left && out_right == right);
     plugin.deactivate();
 }
+
+/// The restarts a host is asked for.
+struct Restarts(Mutex<Vec<int32>>);
+
+impl Class for Restarts {
+    type Interfaces = (IComponentHandler,);
+}
+
+impl IComponentHandlerTrait for Restarts {
+    unsafe fn beginEdit(&self, _: ParamID) -> tresult {
+        kResultOk
+    }
+    unsafe fn performEdit(&self, _: ParamID, _: ParamValue) -> tresult {
+        kResultOk
+    }
+    unsafe fn endEdit(&self, _: ParamID) -> tresult {
+        kResultOk
+    }
+    unsafe fn restartComponent(&self, flags: int32) -> tresult {
+        self.0.lock().unwrap().push(flags);
+        kResultOk
+    }
+}
+
+#[test]
+fn a_phase_mode_change_announces_its_latency_without_an_editor() {
+    use RestartFlags_::kLatencyChanged;
+    let _turn = turn();
+    let plugin = Instance::new();
+    let restarts = ComWrapper::new(Restarts(Mutex::new(Vec::new())));
+    let handler = restarts.to_com_ptr::<IComponentHandler>().unwrap();
+    assert_eq!(unsafe { plugin.controller.setComponentHandler(handler.as_ptr()) }, kResultOk);
+    plugin.activate(48_000.0, 256);
+    assert_eq!(unsafe { plugin.processor.getLatencySamples() }, 0);
+    let phase = params::GLOBAL + params::global::PHASE;
+    unsafe {
+        let linear = plugin.controller.plainParamToNormalized(phase, 2.0);
+        assert_eq!(plugin.controller.setParamNormalized(phase, linear), kResultOk);
+    }
+    plugin.run(&cases::noise(1024, 3), 256);
+    assert!(!restarts.0.lock().unwrap().contains(&(kLatencyChanged as int32)), "process leaves it to the UI thread");
+    assert!(close(plugin.value(phase), 2.0));
+    assert!(restarts.0.lock().unwrap().contains(&(kLatencyChanged as int32)));
+    assert_eq!(unsafe { plugin.processor.getLatencySamples() }, 2048);
+    plugin.deactivate();
+}
