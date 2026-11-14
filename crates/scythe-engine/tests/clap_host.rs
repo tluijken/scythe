@@ -22,7 +22,7 @@ fn hosts_scans_processes_and_restores_state() {
     };
     let lib = ClapLibrary::load(&path).unwrap();
     let descs = lib.descriptors();
-    assert_eq!(descs.len(), 3);
+    assert_eq!(descs.len(), 4);
     assert_eq!(descs[0].id, "org.scythe.test-gain");
     assert!(descs[1].is_instrument() && !descs[0].is_instrument());
     assert_eq!(descs[0].features, ["audio-effect"]);
@@ -371,4 +371,21 @@ fn lsp_parameters_take_the_first_write() {
         let restored = fresh.param_value(p.id).unwrap();
         assert!((restored - wanted).abs() < 1e-4, "{} {} restored: {restored}", desc.id, p.name);
     }
+}
+
+#[test]
+fn port_configurations_end_on_stereo_with_the_sidechain() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let stereo = ClapPlugin::create(lib.clone(), "org.scythe.test-gain", 48000.0, 512).unwrap();
+    assert_eq!(
+        stereo.pins(),
+        (4, 2),
+        "a plugin starting on stereo keeps its sidechain, not the plain stereo listed first"
+    );
+    let mono = ClapPlugin::create(lib, "org.scythe.test-gain-mono", 48000.0, 512).unwrap();
+    assert_eq!(mono.pins(), (4, 2), "a mono input moves to stereo, keeping the sidechain");
 }

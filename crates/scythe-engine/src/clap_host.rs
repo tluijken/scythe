@@ -657,10 +657,14 @@ impl ClapPlugin {
         Ok(me)
     }
 
-    /// Picks the plugin's stereo in, stereo out configuration when it offers one: the tracks it
-    /// plays on are stereo, and a plugin starting out with a mono input would hear only the left
-    /// channel.
+    /// Moves a plugin whose main input is not stereo to a stereo in, stereo out configuration
+    /// when it offers one, keeping at least as many input ports (its sidechain): the tracks it
+    /// plays on are stereo, and on a mono input it would hear only the left channel.
     fn select_stereo(&self) {
+        let ports = self.port_layout(true);
+        if ports.first() == Some(&2) {
+            return;
+        }
         use clap_sys::ext::audio_ports_config::{
             CLAP_EXT_AUDIO_PORTS_CONFIG, clap_audio_ports_config, clap_plugin_audio_ports_config,
         };
@@ -671,19 +675,23 @@ impl ClapPlugin {
         };
         let Some((count, config, select)) = ext.and_then(|e| Some((e.count?, e.get?, e.select?))) else { return };
         // SAFETY: main-thread calls on an inactive plugin, with a zeroed struct to fill.
-        unsafe {
-            for index in 0..count(self.plugin) {
-                let mut c: clap_audio_ports_config = std::mem::zeroed();
-                if config(self.plugin, index, &mut c)
-                    && c.has_main_input
-                    && c.main_input_channel_count == 2
-                    && c.has_main_output
-                    && c.main_output_channel_count == 2
-                {
-                    select(self.plugin, c.id);
-                    return;
-                }
-            }
+        let stereo: Vec<clap_audio_ports_config> = unsafe {
+            (0..count(self.plugin))
+                .filter_map(|index| {
+                    let mut c: clap_audio_ports_config = std::mem::zeroed();
+                    (config(self.plugin, index, &mut c)
+                        && c.has_main_input
+                        && c.main_input_channel_count == 2
+                        && c.has_main_output
+                        && c.main_output_channel_count == 2)
+                        .then_some(c)
+                })
+                .collect()
+        };
+        let keeps_ports = stereo.iter().find(|c| c.input_port_count as usize >= ports.len());
+        if let Some(c) = keeps_ports.or(stereo.first()) {
+            // SAFETY: as above.
+            unsafe { select(self.plugin, c.id) };
         }
     }
 

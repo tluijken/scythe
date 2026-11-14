@@ -946,11 +946,8 @@ impl Vst3Plugin {
                 _module: module,
             };
             plugin.wire_buses();
-            match state {
-                Some(state) => {
-                    plugin.load_state(state);
-                }
-                None => plugin.sync_controller(),
+            if !state.is_some_and(|state| plugin.load_state(state)) {
+                plugin.sync_controller();
             }
             let mut setup = ProcessSetup {
                 processMode: ProcessModes_::kRealtime as int32,
