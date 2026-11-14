@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use plugin_format::{Block, GuiContext, Info, ParamInfo, Plugin, Shared, TrackInfo, egui};
+use plugin_format::{Block, GuiContext, Info, Layout, ParamInfo, Plugin, Shared, TrackInfo, egui};
 use scyeq_dsp::probe::{FxProbe, Side};
 use scyeq_dsp::{Meters, ScytheEq, params};
 
@@ -202,6 +202,8 @@ impl Plugin for ScyEqPlugin {
         sidechain: true,
     };
     const EDITOR_SIZE: (u32, u32) = (1180, 680);
+    const LAYOUTS: &'static [Layout] =
+        &[Layout { name: "Stereo", main_inputs: 2 }, Layout { name: "Mono in, stereo out", main_inputs: 1 }];
 
     type Shared = ScyEqShared;
 

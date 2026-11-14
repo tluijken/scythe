@@ -118,9 +118,22 @@ impl Instance {
     /// Runs `input` (both channels the same) through in blocks of `block` frames, without any
     /// parameter changes.
     fn run(&self, input: &[f32], block: usize) -> Vec<f32> {
-        let mut output = Vec::with_capacity(input.len());
-        for chunk in input.chunks(block) {
-            let mut ins = [chunk.to_vec(), chunk.to_vec()];
+        let (left, right) = self.run_stereo(input, input, block);
+        assert_eq!(left, right);
+        left
+    }
+
+    fn main_input_arrangement(&self) -> SpeakerArrangement {
+        let mut arrangement = 0;
+        assert_eq!(unsafe { self.processor.getBusArrangement(BusDirections_::kInput as BusDirection, 0, &mut arrangement) }, kResultOk);
+        arrangement
+    }
+
+    fn run_stereo(&self, left: &[f32], right: &[f32], block: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut left_out, mut right_out) = (Vec::with_capacity(left.len()), Vec::with_capacity(left.len()));
+        for (l, r) in left.chunks(block).zip(right.chunks(block)) {
+            let chunk = l;
+            let mut ins = [l.to_vec(), r.to_vec()];
             let mut outs = [vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]];
             let mut in_ptrs = [ins[0].as_mut_ptr(), ins[1].as_mut_ptr()];
             let mut out_ptrs = [outs[0].as_mut_ptr(), outs[1].as_mut_ptr()];
@@ -146,10 +159,10 @@ impl Instance {
                 processContext: ptr::null_mut(),
             };
             assert_eq!(unsafe { self.processor.process(&mut data) }, kResultOk);
-            assert_eq!(outs[0], outs[1]);
-            output.extend_from_slice(&outs[0]);
+            left_out.extend_from_slice(&outs[0]);
+            right_out.extend_from_slice(&outs[1]);
         }
-        output
+        (left_out, right_out)
     }
 }
 
@@ -297,5 +310,19 @@ fn process_before_flush() {
     plugin.activate(48_000.0, 256);
     let input = cases::noise(4096, 3);
     assert!(plugin.run(&input, 256) == input);
+    plugin.deactivate();
+}
+
+#[test]
+fn stereo_by_default_and_the_channels_stay_apart() {
+    let _turn = turn();
+    let plugin = Instance::new();
+    assert_eq!(plugin.main_input_arrangement(), SpeakerArr::kStereo);
+    plugin.activate(48_000.0, 256);
+    let left = cases::noise(4096, 3);
+    let right = cases::noise(4096, 4);
+    assert!(left != right);
+    let (out_left, out_right) = plugin.run_stereo(&left, &right, 256);
+    assert!(out_left == left && out_right == right);
     plugin.deactivate();
 }

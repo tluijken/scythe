@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{clap_event_header, clap_input_events, clap_output_events};
+use clap_sys::ext::audio_ports::{CLAP_EXT_AUDIO_PORTS, clap_audio_port_info, clap_plugin_audio_ports};
 use clap_sys::ext::params::{
     CLAP_EXT_PARAMS, CLAP_PARAM_IS_AUTOMATABLE, CLAP_PARAM_IS_STEPPED, clap_param_info, clap_plugin_params,
 };
@@ -138,9 +139,23 @@ impl Instance {
     /// Runs `input` (both channels the same) through in blocks of `block` frames, without any
     /// parameter events.
     fn run(&self, input: &[f32], block: usize) -> Vec<f32> {
-        let mut output = Vec::with_capacity(input.len());
-        for chunk in input.chunks(block) {
-            let mut ins = [chunk.to_vec(), chunk.to_vec()];
+        let (left, right) = self.run_stereo(input, input, block);
+        assert_eq!(left, right);
+        left
+    }
+
+    fn main_input_channels(&self) -> u32 {
+        let ports: &clap_plugin_audio_ports = self.extension(CLAP_EXT_AUDIO_PORTS);
+        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
+        assert!(unsafe { (ports.get.unwrap())(self.0, 0, true, &mut info) });
+        info.channel_count
+    }
+
+    fn run_stereo(&self, left: &[f32], right: &[f32], block: usize) -> (Vec<f32>, Vec<f32>) {
+        let (mut left_out, mut right_out) = (Vec::with_capacity(left.len()), Vec::with_capacity(left.len()));
+        for (l, r) in left.chunks(block).zip(right.chunks(block)) {
+            let chunk = l;
+            let mut ins = [l.to_vec(), r.to_vec()];
             let mut outs = [vec![0.0f32; chunk.len()], vec![0.0f32; chunk.len()]];
             let mut in_ptrs = [ins[0].as_mut_ptr(), ins[1].as_mut_ptr()];
             let mut out_ptrs = [outs[0].as_mut_ptr(), outs[1].as_mut_ptr()];
@@ -172,10 +187,10 @@ impl Instance {
                 out_events: &out_events,
             };
             unsafe { ((*self.0).process.unwrap())(self.0, &process) };
-            assert_eq!(outs[0], outs[1]);
-            output.extend_from_slice(&outs[0]);
+            left_out.extend_from_slice(&outs[0]);
+            right_out.extend_from_slice(&outs[1]);
         }
-        output
+        (left_out, right_out)
     }
 }
 
@@ -309,5 +324,19 @@ fn process_before_flush() {
     plugin.activate(48_000.0, 256);
     let input = cases::noise(4096, 3);
     assert!(plugin.run(&input, 256) == input);
+    plugin.deactivate();
+}
+
+#[test]
+fn stereo_by_default_and_the_channels_stay_apart() {
+    let _turn = turn();
+    let plugin = Instance::new();
+    assert_eq!(plugin.main_input_channels(), 2);
+    plugin.activate(48_000.0, 256);
+    let left = cases::noise(4096, 3);
+    let right = cases::noise(4096, 4);
+    assert!(left != right);
+    let (out_left, out_right) = plugin.run_stereo(&left, &right, 256);
+    assert!(out_left == left && out_right == right);
     plugin.deactivate();
 }
