@@ -4052,6 +4052,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "scyeq-ui"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui_kittest",
+ "realfft",
+ "rfd",
+ "scyeq-dsp",
+]
+
+[[package]]
 name = "scythe-app"
 version = "0.1.0"
 dependencies = [
@@ -4066,6 +4077,7 @@ dependencies = [
  "rayon",
  "realfft",
  "rfd",
+ "scyeq-ui",
  "scythe-core",
  "scythe-engine",
  "scythe-server",

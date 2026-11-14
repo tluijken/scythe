@@ -1,4 +1,4 @@
-/* The desktop app's look (scythe-app/src/theme.rs): warm dark panels, Inter and JetBrains Mono,
+/* The desktop app's look (scyeq-ui/src/theme.rs): warm dark panels, Inter and JetBrains Mono,
    orange accent, pill buttons. */
 
 @font-face { font-family: "Inter"; src: url("/fonts/Inter-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }

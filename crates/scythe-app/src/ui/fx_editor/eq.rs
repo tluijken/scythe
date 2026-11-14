@@ -55,8 +55,8 @@ pub(crate) fn wheel_width(width: f64, steps: f64) -> f64 {
 pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let Some((bands, sr)) = cx.read(|eq: &mut ReaEqCompat| (eq.bands.clone(), eq.sample_rate())) else { return };
     let output_db = cx.read(|eq: &mut ReaEqCompat| 20.0 * eq.output.max(1e-9).log10()).unwrap_or(0.0);
-    if cx.ed.sel.is_some_and(|k| k >= bands.len()) {
-        cx.ed.sel = None;
+    if cx.ed.controls.sel.is_some_and(|k| k >= bands.len()) {
+        cx.ed.controls.sel = None;
     }
     let strip_h = if rect.width() < 640.0 { 68.0 } else { 34.0 };
     let (graph, strip) = split_top(rect, rect.height() - strip_h - 8.0, 8.0);
@@ -73,7 +73,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         for (t, c) in total.iter_mut().zip(&curve) {
             *t += c;
         }
-        let selected = cx.ed.sel == Some(k);
+        let selected = cx.ed.controls.sel == Some(k);
         let points: Vec<Pos2> = xs.iter().zip(&curve).map(|(&f, &db)| plot.point(f, db.clamp(-60.0, 60.0))).collect();
         let color = band_color(k);
         if selected {
@@ -92,7 +92,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         .collect();
     for (k, b) in bands.iter().enumerate() {
         let color = if b.enabled { band_color(k) } else { theme::SWITCH_OFF };
-        handle(ui, graph, at[k], color, cx.ed.sel == Some(k), &(k + 1).to_string());
+        handle(ui, graph, at[k], color, cx.ed.controls.sel == Some(k), &(k + 1).to_string());
     }
     graph_input(cx, ui, &plot, &bands, &at, sr);
     // The handles are painted, not widgets: hover-only nodes let AccessKit find them without
@@ -102,7 +102,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         let r = ui.interact(Rect::from_center_size(*p, vec2(16.0, 16.0)), id, Sense::hover());
         r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Band {}", k + 1)));
     }
-    if let Some(k) = cx.ed.sel
+    if let Some(k) = cx.ed.controls.sel
         && let Some(b) = bands.get(k)
     {
         let (hz, db) = handle_values(b, sr);
@@ -137,9 +137,9 @@ fn graph_input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[Band], at: &[Pos
     let top = plot.x.hi;
     if resp.drag_started() || resp.clicked() || resp.secondary_clicked() {
         let origin = widgets::drag_origin(ui, &resp).or(pointer);
-        cx.ed.sel = origin.and_then(|p| hit(at, p));
-        cx.ed.dragging = if resp.drag_started() { cx.ed.sel } else { None };
-        cx.ed.focus = None;
+        cx.ed.controls.sel = origin.and_then(|p| hit(at, p));
+        cx.ed.dragging = if resp.drag_started() { cx.ed.controls.sel } else { None };
+        cx.ed.controls.focus = None;
     }
     if let (Some(k), Some(p)) = (cx.ed.dragging, pointer)
         && resp.dragged()
@@ -179,7 +179,7 @@ fn graph_input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[Band], at: &[Pos
     }
     if resp.hovered() {
         let wheel = super::wheel(ui);
-        let target = pointer.and_then(|p| hit(at, p)).or(cx.ed.sel);
+        let target = pointer.and_then(|p| hit(at, p)).or(cx.ed.controls.sel);
         if wheel != 0.0
             && let Some(k) = target
             && let Some(b) = bands.get(k)
@@ -188,7 +188,7 @@ fn graph_input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[Band], at: &[Pos
         }
     }
     let menu_at = pointer;
-    resp.context_menu(|ui| match cx.ed.sel {
+    resp.context_menu(|ui| match cx.ed.controls.sel {
         Some(k) if k < bands.len() => band_menu(cx, ui, k, &bands[k]),
         _ => {
             if ui.button("Add band here").clicked() {
@@ -200,9 +200,9 @@ fn graph_input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[Band], at: &[Pos
             }
         }
     });
-    if let Some(k) = cx.ed.sel
-        && cx.ed.hovered
-        && cx.ed.typing.is_none()
+    if let Some(k) = cx.ed.controls.sel
+        && cx.ed.controls.hovered
+        && cx.ed.controls.typing.is_none()
         && let Some(b) = bands.get(k)
     {
         arrow_keys(cx, ui, k, b, sr, top);
@@ -227,7 +227,7 @@ fn arrow_keys(cx: &mut Ctx, ui: &Ui, k: usize, b: &Band, sr: f64, top: f64) {
     if side != 0 {
         let step = if fine { 1.0 / 100.0 } else { 1.0 / 12.0 };
         cx.set(freq, (b.freq * 2f64.powf(side as f64 * step)).clamp(20.0, top));
-        cx.ed.key_gesture = true;
+        cx.ed.controls.key_gesture = true;
     }
     if vert != 0 {
         if b.kind.has_gain() {
@@ -237,7 +237,7 @@ fn arrow_keys(cx: &mut Ctx, ui: &Ui, k: usize, b: &Band, sr: f64, top: f64) {
         } else {
             cx.set(width, wheel_width(b.bandwidth, vert as f64));
         }
-        cx.ed.key_gesture = true;
+        cx.ed.controls.key_gesture = true;
     }
     if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
         remove_band(cx, k);
@@ -248,13 +248,13 @@ fn add_band(cx: &mut Ctx, kind: BandKind, hz: f64, db: f64) {
     let band =
         Band { kind, enabled: true, freq: hz, gain: 10f64.powf(db.clamp(-DB_RANGE, DB_RANGE) / 20.0), bandwidth: 1.0 };
     if let Some(k) = cx.edit_once("Add EQ band", |eq: &mut ReaEqCompat| eq.add_band(band)) {
-        cx.ed.sel = Some(k);
+        cx.ed.controls.sel = Some(k);
     }
 }
 
 fn remove_band(cx: &mut Ctx, k: usize) {
     cx.edit_once("Remove EQ band", |eq: &mut ReaEqCompat| eq.remove_band(k));
-    cx.ed.sel = None;
+    cx.ed.controls.sel = None;
 }
 
 fn band_menu(cx: &mut Ctx, ui: &mut Ui, k: usize, b: &Band) {
@@ -303,7 +303,7 @@ fn strip_row(cx: &mut Ctx, ui: &mut Ui, strip: Rect, bands: &[Band]) {
         if r.right() > chips.right() - 60.0 {
             break;
         }
-        let selected = cx.ed.sel == Some(k);
+        let selected = cx.ed.controls.sel == Some(k);
         let color = if b.enabled { band_color(k) } else { theme::SWITCH_OFF };
         let resp = ui.interact(r, Id::unique(("fx-eq-chip", &cx.ed.owner, &cx.ed.path, k)), Sense::click());
         ui.painter().rect_filled(r, CornerRadius::same(13), if selected { color } else { RAISED });
@@ -316,8 +316,8 @@ fn strip_row(cx: &mut Ctx, ui: &mut Ui, strip: Rect, bands: &[Band]) {
             if selected { BG } else { TEXT },
         );
         if resp.clicked() {
-            cx.ed.sel = Some(k);
-            cx.ed.focus = None;
+            cx.ed.controls.sel = Some(k);
+            cx.ed.controls.focus = None;
         }
         x += 30.0;
     }
@@ -329,7 +329,7 @@ fn strip_row(cx: &mut Ctx, ui: &mut Ui, strip: Rect, bands: &[Band]) {
         let hz = bands.last().map_or(1000.0, |b| (b.freq * 2.0).min(16000.0));
         add_band(cx, BandKind::Peak, hz, 0.0);
     }
-    let Some(k) = cx.ed.sel.filter(|k| *k < bands.len()) else {
+    let Some(k) = cx.ed.controls.sel.filter(|k| *k < bands.len()) else {
         ui.painter().text(
             fields.left_center() + vec2(4.0, 2.0),
             Align2::LEFT_CENTER,

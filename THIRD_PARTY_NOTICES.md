@@ -8,8 +8,8 @@ or is derived from the following third-party work, each under its own license.
 | [cpal](https://github.com/RustAudio/cpal) 0.18.2 | `vendor/cpal/` | Apache-2.0 (`vendor/cpal/LICENSE`) | Changed for configurable ALSA periods; see `vendor/cpal/MODIFICATIONS.md` |
 | [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) 6.x, Aleksey Vaneev | `crates/scythe-engine/src/r8brain.rs` | MIT (notice in the file) | Rust implementation of its converter design, with its filter tables |
 | [Preact](https://preactjs.com) and [htm](https://github.com/developit/htm) | `crates/scythe-server/web/vendor/` | MIT and Apache-2.0 (`LICENSE-preact.txt`, `LICENSE-htm.txt`) | Bundled unchanged |
-| [Inter](https://rsms.me/inter/) | `crates/scythe-app/assets/fonts/` | SIL OFL 1.1 (`Inter-OFL.txt`) | |
-| [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | `crates/scythe-app/assets/fonts/` | SIL OFL 1.1 (`JetBrainsMono-OFL.txt`) | |
+| [Inter](https://rsms.me/inter/) | `crates/scyeq-ui/assets/fonts/` | SIL OFL 1.1 (`Inter-OFL.txt`) | |
+| [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | `crates/scyeq-ui/assets/fonts/` | SIL OFL 1.1 (`JetBrainsMono-OFL.txt`) | |
 | [cargo-wix](https://github.com/volks73/cargo-wix) template | `crates/scythe-app/wix/main.wxs` | Apache-2.0 | The installer definition started from its template |
 | [SWS extension](https://github.com/reaper-oss/sws) | marker actions and cue buses | MIT | Behaviour follows its rules; no code is copied |
 

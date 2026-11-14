@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use realfft::RealFftPlanner;
 use realfft::num_complex::Complex32;
-use scythe_engine::probe::{FxProbe, RING, Side};
+use scyeq_dsp::probe::{FxProbe, RING, Side};
 
 /// Points of the display grid, log spaced from `LO` to `HI` Hz.
 pub const POINTS: usize = 560;

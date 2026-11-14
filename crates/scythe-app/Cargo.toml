@@ -10,6 +10,7 @@ asio = ["scythe-engine/asio", "scythe-server/asio"]
 itest = ["dep:egui_kittest"]
 
 [dependencies]
+scyeq-ui.workspace = true
 scythe-core.workspace = true
 scythe-engine.workspace = true
 scythe-session.workspace = true

@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 
 use egui::{Pos2, Rect, pos2};
-use scythe_engine::clap_host::ParamInfo;
+use scyeq_dsp::ParamInfo;
 
 /// One axis of a graph: linear or logarithmic between `lo` and `hi`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,6 +154,10 @@ impl History {
 
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     pub fn capacity(&self) -> usize {
