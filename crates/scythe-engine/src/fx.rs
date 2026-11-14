@@ -2695,7 +2695,7 @@ mod nam_tests {
         let first = registry.chain(None, std::slice::from_ref(&first_slot))[0].clone();
         let mut values = params::defaults();
         values[(GLOBAL + global::PHASE) as usize] = 2.0;
-        let mut linear = crate::scythe_eq::slot(Some(&params::encode(&values)));
+        let mut linear = crate::scythe_eq::slot(Some(&params::encode(&values, &[])));
         linear.raw[2] = first_slot.raw[2].clone();
         let second = registry.chain(None, &[linear])[0].clone();
         assert!(Arc::ptr_eq(&first, &second));

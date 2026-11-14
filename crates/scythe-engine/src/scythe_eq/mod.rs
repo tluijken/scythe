@@ -57,14 +57,14 @@ pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
             scythe_core::rpp::Node::Chunk(_) => None,
         })
         .collect();
-    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?)
+    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?).map(|d| d.values)
 }
 
 /// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
 pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
     use base64::Engine as _;
     use scythe_core::rpp::{Chunk, Node};
-    let state = state.map_or_else(|| params::encode(&params::defaults()), <[u8]>::to_vec);
+    let state = state.map_or_else(|| params::encode(&params::defaults(), &[]), <[u8]>::to_vec);
     let mut chunk = Chunk::new("CLAP", &[DISPLAY, CLAP_ID, ""]);
     chunk.line(["CFG", "4", "0", "0", ""]);
     let mut st = Chunk::new("STATE", &[]);
@@ -244,6 +244,8 @@ struct FirPath {
 pub struct ScytheEq {
     fs: f64,
     values: Vec<f64>,
+    /// Stored values from a newer version, written back unchanged.
+    extra: Vec<f64>,
     settings: Vec<BandSettings>,
     bands: Vec<Band>,
     mode: PhaseMode,
@@ -295,7 +297,10 @@ impl ScytheEq {
     }
 
     pub fn from_state(state: &[u8], sample_rate: u32) -> Option<Self> {
-        Some(Self::with_values(params::decode(state)?, sample_rate))
+        let decoded = params::decode(state)?;
+        let mut eq = Self::with_values(decoded.values, sample_rate);
+        eq.extra = decoded.extra;
+        Some(eq)
     }
 
     pub fn with_values(values: Vec<f64>, sample_rate: u32) -> Self {
@@ -304,6 +309,7 @@ impl ScytheEq {
             fs,
             settings: (0..BANDS).map(|b| BandSettings::read(&values, b)).collect(),
             values,
+            extra: Vec::new(),
             bands: (0..BANDS).map(|_| Band::default()).collect(),
             mode: PhaseMode::ZeroLatency,
             resolution: 1,
@@ -1128,12 +1134,13 @@ impl Effect for ScytheEq {
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
-        Some(params::encode(&self.values))
+        Some(params::encode(&self.values, &self.extra))
     }
 
     fn update_state(&mut self, chunk: &[u8]) -> bool {
-        let Some(values) = params::decode(chunk) else { return false };
-        self.set_all(&values);
+        let Some(decoded) = params::decode(chunk) else { return false };
+        self.set_all(&decoded.values);
+        self.extra = decoded.extra;
         true
     }
 

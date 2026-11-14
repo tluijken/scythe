@@ -538,3 +538,43 @@ fn dynamic_bands_ignore_block_size() {
         assert!(render(&random, true, 1013) == render(&[512], true, 1013), "mode {mode}, from 1013");
     }
 }
+
+fn state_with(version: u32, values: &[f64]) -> Vec<u8> {
+    let mut d = b"SCEQ".to_vec();
+    d.extend(version.to_le_bytes());
+    d.extend((values.len() as u32).to_le_bytes());
+    for v in values {
+        d.extend(v.to_le_bytes());
+    }
+    d
+}
+
+#[test]
+fn unknown_values_survive_a_round_trip() {
+    let mut all = params::defaults();
+    all.extend([1.5, -7.25, 1e9]);
+    let state = state_with(params::VERSION + 1, &all);
+    let decoded = params::decode(&state).unwrap();
+    assert_eq!(decoded.extra, [1.5, -7.25, 1e9]);
+    let mut eq = ScytheEq::from_state(&state, 48_000).unwrap();
+    let written = eq.save_state().unwrap();
+    let back = params::decode(&written).unwrap();
+    assert_eq!(back.extra, decoded.extra);
+    assert_eq!(written[12 + params::TOTAL * 8..], state[12 + params::TOTAL * 8..]);
+}
+
+#[test]
+fn newer_version_is_reported() {
+    let state = state_with(params::VERSION + 1, &params::defaults());
+    assert_eq!(params::decode(&state).unwrap().version, params::VERSION + 1);
+    assert_eq!(params::decode(&params::encode(&params::defaults(), &[])).unwrap().version, params::VERSION);
+}
+
+#[test]
+fn song_2_state_round_trips_byte_identical() {
+    let state = include_bytes!("../../tests/fixtures/scyeq-song2.state");
+    let decoded = params::decode(state).unwrap();
+    assert_eq!(params::encode(&decoded.values, &decoded.extra), state);
+    let mut eq = ScytheEq::from_state(state, 48_000).unwrap();
+    assert_eq!(eq.save_state().unwrap(), state);
+}

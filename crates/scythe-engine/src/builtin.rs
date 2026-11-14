@@ -107,7 +107,7 @@ impl Builtin {
             Self::MidiControl => b64.decode(CONTROL_MIDI_DEFAULT).unwrap(),
             Self::FftEq => b64.decode(FIR_DEFAULT).unwrap(),
             Self::HardwareInsert => b64.decode(INSERT_DEFAULT).unwrap(),
-            Self::ScytheEq => crate::scythe_eq::params::encode(&crate::scythe_eq::params::defaults()),
+            Self::ScytheEq => crate::scythe_eq::params::encode(&crate::scythe_eq::params::defaults(), &[]),
         }
     }
 
