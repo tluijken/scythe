@@ -75,6 +75,17 @@ impl MatchPanel {
         self.capturing.then_some(reference)
     }
 
+    /// Drops a source reference that `known` no longer knows.
+    pub(crate) fn forget_gone(&mut self, known: &dyn Fn(Id) -> bool) {
+        if let Target::Source(s) = &self.reference
+            && !known(s.id)
+        {
+            self.reference = Target::None;
+            self.other = vec![0.0; POINTS];
+            self.other_frames = 0;
+        }
+    }
+
     fn reference_levels(&self) -> Option<Vec<f64>> {
         match &self.reference {
             Target::File(_) => self.file.clone(),

@@ -42,7 +42,6 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
     if values.len() < p::TOTAL {
         return;
     }
-    let enabled = list.instance_enabled(inst.id);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 92.0), Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::same(10), RAISED);
     let name_rect = Rect::from_min_size(rect.min + vec2(10.0, 8.0), vec2(150.0, 20.0));
@@ -56,32 +55,8 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
         TEXT_DIM,
     );
     let key = |what: &str| inst.id.with(("eq-instances", what));
-    let open_r = Rect::from_min_size(rect.min + vec2(10.0, 50.0), vec2(56.0, 24.0));
-    let is_open = list.instance_open(inst.id);
-    if widgets::text_pill(
-        ui,
-        open_r,
-        if is_open { "Close" } else { "Open" },
-        theme::regular(11.0),
-        if is_open { ACCENT } else { RAISED_HI },
-        if is_open { BG } else { TEXT_MID },
-    )
-    .clicked()
-    {
-        list.toggle_instance_open(inst.id);
-    }
-    let on_r = Rect::from_min_size(rect.min + vec2(72.0, 50.0), vec2(70.0, 24.0));
-    if widgets::text_pill(
-        ui,
-        on_r,
-        if enabled { "On" } else { "Bypassed" },
-        theme::regular(11.0),
-        if enabled { RAISED_HI } else { theme::SWITCH_OFF },
-        TEXT_MID,
-    )
-    .clicked()
-    {
-        list.toggle_instance_bypass(inst.id);
+    if list.controls_instances() {
+        open_and_bypass(list, ui, rect, inst);
     }
     let curve =
         Rect::from_min_max(pos2(rect.left() + 160.0, rect.top() + 8.0), pos2(rect.left() + 400.0, rect.bottom() - 8.0));
@@ -156,5 +131,36 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
             }
         }
         x += w + 6.0;
+    }
+}
+
+fn open_and_bypass(list: &mut dyn InstanceList, ui: &mut Ui, rect: Rect, inst: &Instance) {
+    let open_r = Rect::from_min_size(rect.min + vec2(10.0, 50.0), vec2(56.0, 24.0));
+    let is_open = list.instance_open(inst.id);
+    if widgets::text_pill(
+        ui,
+        open_r,
+        if is_open { "Close" } else { "Open" },
+        theme::regular(11.0),
+        if is_open { ACCENT } else { RAISED_HI },
+        if is_open { BG } else { TEXT_MID },
+    )
+    .clicked()
+    {
+        list.toggle_instance_open(inst.id);
+    }
+    let enabled = list.instance_enabled(inst.id);
+    let on_r = Rect::from_min_size(rect.min + vec2(72.0, 50.0), vec2(70.0, 24.0));
+    if widgets::text_pill(
+        ui,
+        on_r,
+        if enabled { "On" } else { "Bypassed" },
+        theme::regular(11.0),
+        if enabled { RAISED_HI } else { theme::SWITCH_OFF },
+        TEXT_MID,
+    )
+    .clicked()
+    {
+        list.toggle_instance_bypass(inst.id);
     }
 }

@@ -17,6 +17,8 @@ struct Fake {
     values: Vec<f64>,
     calls: Vec<Call>,
     open: bool,
+    /// Whether the list may open and bypass instances.
+    controls: bool,
 }
 
 fn vocals() -> Id {
@@ -30,7 +32,7 @@ impl Fake {
         values[p::band_param(0, band::USED) as usize] = 1.0;
         values[p::band_param(0, band::FREQ) as usize] = 1000.0;
         values[p::band_param(0, band::GAIN) as usize] = 0.0;
-        Self { values, calls: Vec::new(), open: true }
+        Self { values, calls: Vec::new(), open: true, controls: true }
     }
 }
 
@@ -54,6 +56,10 @@ impl InstanceList for Fake {
     }
 
     fn toggle_instance_open(&mut self, _id: Id) {}
+
+    fn controls_instances(&self) -> bool {
+        self.controls
+    }
 
     fn begin_instance(&mut self, id: Id, param: u32) {
         self.calls.push(Call::Begin(id, param));
@@ -113,4 +119,30 @@ fn dragging_an_instances_gain_is_one_gesture() {
     assert_eq!(calls.iter().filter(|c| matches!(c, Call::End(..))).count(), 1, "{calls:?}");
     assert!(calls.iter().all(|c| !matches!(c, Call::Set(_, id, _) if id != &gain)), "{calls:?}");
     assert!(list.values[gain as usize] > 2.0, "dragging up raises the gain: {}", list.values[gain as usize]);
+}
+
+fn harness(list: Fake) -> Harness<'static, Fake> {
+    Harness::builder().with_size(vec2(900.0, 500.0)).with_context_setup(scyeq_ui::theme::install).build_ui_state(
+        |ui, list: &mut Fake| {
+            let ctx = ui.ctx().clone();
+            let mut open = list.open;
+            scyeq_ui::instances_window(&ctx, list, &mut open);
+            list.open = open;
+        },
+        list,
+    )
+}
+
+#[test]
+fn a_list_that_cannot_open_or_bypass_instances_offers_neither() {
+    let mut h = harness(Fake::new());
+    h.step();
+    assert!(h.query_by_label("Open").is_some());
+    assert!(h.query_by_label("On").is_some());
+
+    let mut h = harness(Fake { controls: false, ..Fake::new() });
+    h.step();
+    assert!(h.query_by_label("Open").is_none());
+    assert!(h.query_by_label("On").is_none());
+    assert!(h.query_by_label("Vocals band 1").is_some(), "the bands are still there");
 }

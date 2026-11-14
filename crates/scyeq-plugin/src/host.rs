@@ -11,6 +11,7 @@ use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ViewState};
 
 use crate::plugin::ScyEqShared;
+use crate::registry;
 
 /// One open editor window.
 pub(crate) struct Editor {
@@ -20,11 +21,14 @@ pub(crate) struct Editor {
     themed: bool,
     /// A reference file being picked on a thread of its own.
     picking: Option<Receiver<Option<PathBuf>>>,
+    /// A gesture begun in the instance list, on this instance or another: the context it went
+    /// through and the parameter.
+    listed_gesture: Option<(GuiContext, u32)>,
 }
 
 impl Editor {
     pub(crate) fn new(shared: Arc<ScyEqShared>, cx: GuiContext) -> Self {
-        Self { shared, cx, state: EditorState::default(), themed: false, picking: None }
+        Self { shared, cx, state: EditorState::default(), themed: false, picking: None, listed_gesture: None }
     }
 
     pub(crate) fn frame(&mut self, root: &mut egui::Ui) {
@@ -42,10 +46,20 @@ impl Editor {
         egui::CentralPanel::default().show(root, |ui| scyeq_ui::show(ui, &mut host, &mut self.state));
         if host.view.instances {
             let ctx = root.ctx().clone();
-            let mut list = ThisInstance { shared: &self.shared, cx: &self.cx };
+            let mut list = Instances::new(&self.shared, &self.cx, &mut self.listed_gesture);
             scyeq_ui::instances_window(&ctx, &mut list, &mut host.view.instances);
         }
+        let listing = host.view.instances;
         self.shared.set_view(host.view);
+        if !listing {
+            self.end_listed_gesture();
+        }
+    }
+
+    fn end_listed_gesture(&mut self) {
+        if let Some((cx, id)) = self.listed_gesture.take() {
+            cx.end(id);
+        }
     }
 }
 
@@ -53,6 +67,7 @@ impl Drop for Editor {
     fn drop(&mut self) {
         let cx = &self.cx;
         self.state.end_gesture(|id| cx.end(id));
+        self.end_listed_gesture();
     }
 }
 
@@ -124,15 +139,16 @@ impl EqHost for PluginHost<'_> {
     }
 
     fn instances(&self) -> Vec<Instance> {
-        Vec::new()
+        registry::others(self.shared.id()).iter().map(|s| Instance { id: instance_id(s), label: label(s) }).collect()
     }
 
+    /// A plugin sees no tracks of its own, only other instances.
     fn compare_sources(&self) -> Vec<CompareSource> {
         Vec::new()
     }
 
-    fn source_probe(&self, _id: egui::Id) -> Option<Arc<FxProbe>> {
-        None
+    fn source_probe(&self, id: egui::Id) -> Option<Arc<FxProbe>> {
+        registry::others(self.shared.id()).into_iter().find(|s| instance_id(s) == id).map(|s| s.probe().clone())
     }
 
     /// On Linux the editor has a thread of its own, which a dialog must not hold: the host
@@ -166,26 +182,43 @@ impl EqHost for PluginHost<'_> {
     }
 }
 
-/// The instance list with the one instance this editor belongs to.
-struct ThisInstance<'a> {
-    shared: &'a ScyEqShared,
+/// Every instance in the library, this editor's first: their bands change through their own
+/// contexts, so each one's host records the change. A plugin cannot open another plugin's
+/// window or bypass it, and ScyEQ-Pro has no bypass parameter, so the list offers neither.
+struct Instances<'a> {
+    all: Vec<Arc<ScyEqShared>>,
     cx: &'a GuiContext,
+    gesture: &'a mut Option<(GuiContext, u32)>,
 }
 
-impl ThisInstance<'_> {
-    fn id() -> egui::Id {
-        egui::Id::unique("scyeq-plugin-this-instance")
+impl<'a> Instances<'a> {
+    fn new(me: &Arc<ScyEqShared>, cx: &'a GuiContext, gesture: &'a mut Option<(GuiContext, u32)>) -> Self {
+        let mut all = vec![me.clone()];
+        all.extend(registry::others(me.id()));
+        Self { all, cx, gesture }
+    }
+
+    fn find(&self, id: egui::Id) -> Option<&Arc<ScyEqShared>> {
+        self.all.iter().find(|s| instance_id(s) == id)
+    }
+
+    /// The context changes to instance `id` go through; `None` while its host is unknown.
+    fn cx_of(&self, id: egui::Id) -> Option<GuiContext> {
+        let (me, others) = self.all.split_first()?;
+        if instance_id(me) == id {
+            return Some(self.cx.clone());
+        }
+        others.iter().find(|s| instance_id(s) == id)?.cx()
     }
 }
 
-impl InstanceList for ThisInstance<'_> {
+impl InstanceList for Instances<'_> {
     fn instance_list(&self) -> Vec<Instance> {
-        let label = self.shared.track().name.unwrap_or_else(|| "ScyEQ-Pro".to_owned());
-        vec![Instance { id: Self::id(), label }]
+        self.all.iter().map(|s| Instance { id: instance_id(s), label: label(s) }).collect()
     }
 
     fn instance_values(&self, id: egui::Id) -> Option<Vec<f64>> {
-        (id == Self::id()).then(|| self.shared.values())
+        self.find(id).map(|s| s.values())
     }
 
     fn instance_enabled(&self, _id: egui::Id) -> bool {
@@ -195,28 +228,45 @@ impl InstanceList for ThisInstance<'_> {
     fn toggle_instance_bypass(&mut self, _id: egui::Id) {}
 
     fn instance_open(&self, id: egui::Id) -> bool {
-        id == Self::id()
+        self.all.first().is_some_and(|me| instance_id(me) == id)
     }
 
     fn toggle_instance_open(&mut self, _id: egui::Id) {}
 
     fn begin_instance(&mut self, id: egui::Id, param: u32) {
-        if id == Self::id() {
-            self.cx.begin(param);
+        let Some(cx) = self.cx_of(id) else { return };
+        if let Some((unfinished, unfinished_param)) = self.gesture.take() {
+            unfinished.end(unfinished_param);
         }
+        cx.begin(param);
+        *self.gesture = Some((cx, param));
     }
 
     fn set_instance(&mut self, id: egui::Id, param: u32, value: f64) {
-        if id == Self::id() {
-            self.cx.set(param, value);
+        if let Some(cx) = self.cx_of(id) {
+            cx.set(param, value);
         }
     }
 
     fn end_instance(&mut self, id: egui::Id, param: u32) {
-        if id == Self::id() {
-            self.cx.end(param);
-        }
+        let Some(cx) = self.cx_of(id) else { return };
+        cx.end(param);
+        *self.gesture = None;
     }
+
+    fn controls_instances(&self) -> bool {
+        false
+    }
+}
+
+/// Stays the same for the instance's life, as the editor needs.
+fn instance_id(shared: &ScyEqShared) -> egui::Id {
+    egui::Id::unique(("scyeq-plugin-instance", shared.id()))
+}
+
+/// The track's name, as the host gave it.
+fn label(shared: &ScyEqShared) -> String {
+    shared.track().name.unwrap_or_else(|| "ScyEQ-Pro".to_owned())
 }
 
 fn pick_file() -> Option<PathBuf> {

@@ -4,6 +4,7 @@
 mod host;
 pub mod params;
 mod plugin;
+pub mod registry;
 
 pub use plugin::{ScyEqPlugin, ScyEqShared};
 pub use plugin_format;

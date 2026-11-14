@@ -103,6 +103,11 @@ pub trait InstanceList {
     fn begin_instance(&mut self, id: Id, param: u32);
     fn set_instance(&mut self, id: Id, param: u32, value: f64);
     fn end_instance(&mut self, id: Id, param: u32);
+    /// Whether the list offers to open and bypass instances; a plugin can do neither for another
+    /// plugin.
+    fn controls_instances(&self) -> bool {
+        true
+    }
     /// How the list's window is framed.
     fn window(&self) -> WindowFn {
         egui_window

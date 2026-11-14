@@ -7,12 +7,20 @@ use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::ViewState;
 
 use crate::host::Editor;
+use crate::registry::{self, Registration};
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What the host, the editor and the audio thread share: the settings as `f64` bits, and what
 /// the state keeps besides them.
 pub struct ScyEqShared {
     /// For each editor to keep the shared half it draws.
     me: Weak<ScyEqShared>,
+    /// Unique among the library's instances for the life of the process; never 0.
+    id: u64,
+    /// The instance's, once the host is known: other instances' editors change this one's
+    /// parameters through it, so its host records the change.
+    cx: Mutex<Option<GuiContext>>,
     values: Box<[AtomicU64]>,
     /// Set after a value changed, for the audio thread to pick the values up.
     changed: AtomicBool,
@@ -40,6 +48,8 @@ impl ScyEqShared {
     fn new(me: &Weak<ScyEqShared>) -> Self {
         Self {
             me: me.clone(),
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            cx: Mutex::new(None),
             values: params::defaults().into_iter().map(|v| AtomicU64::new(v.to_bits())).collect(),
             changed: AtomicBool::new(false),
             stored: Mutex::new(Stored { extra: Vec::new(), version: params::VERSION }),
@@ -51,6 +61,14 @@ impl ScyEqShared {
             sample_rate: AtomicU32::new(0),
             view: Mutex::new(ViewState::default()),
         }
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn cx(&self) -> Option<GuiContext> {
+        self.cx.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn values(&self) -> Vec<f64> {
@@ -146,6 +164,10 @@ impl Shared for ScyEqShared {
         Box::new(move |root| editor.frame(root))
     }
 
+    fn attach(&self, cx: GuiContext) {
+        *self.cx.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx);
+    }
+
     fn set_track(&self, info: TrackInfo) {
         *self.track.lock().unwrap_or_else(|e| e.into_inner()) = info;
     }
@@ -168,6 +190,7 @@ pub struct ScyEqPlugin {
     scratch: Vec<f64>,
     latency: u32,
     latency_changed: bool,
+    _registration: Registration,
 }
 
 struct Running {
@@ -258,6 +281,7 @@ impl Plugin for ScyEqPlugin {
             scratch: vec![0.0; params::TOTAL],
             latency: 0,
             latency_changed: false,
+            _registration: registry::register(&shared),
         };
         (plugin, shared)
     }

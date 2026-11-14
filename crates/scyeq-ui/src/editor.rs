@@ -256,6 +256,18 @@ fn compare_list(host: &dyn EqHost) -> Vec<CompareSource> {
     out
 }
 
+/// Stops comparing and matching with a source that is gone: an instance removed, a track
+/// deleted.
+fn forget_gone(view: &mut View, sources: &[CompareSource]) {
+    let known = |id: Id| sources.iter().any(|s| s.id == id);
+    if view.other.is_some_and(|id| !known(id)) {
+        view.other = None;
+    }
+    if let Some(panel) = &mut view.match_panel {
+        panel.forget_gone(&known);
+    }
+}
+
 /// Draws the editor in the space `ui` has left.
 pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     let started = Instant::now();
@@ -273,6 +285,7 @@ pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     let mut cx = Cx { host, controls, gesture, salt: ui.scope_id().with("scyeq") };
     let cx = &mut cx;
     let sources = compare_list(cx.host);
+    forget_gone(view, &sources);
     feed_analyzer(cx, view, &st);
     view.selected.retain(|b| st.v(p::band_param(*b, band::USED)) >= 0.5);
     cx.controls.sel = view.selected.iter().next().copied();
