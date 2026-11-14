@@ -1,5 +1,5 @@
-//! Scythe EQ across the project: EQ Match (bands fitted so this instance's input moves towards
-//! another instance's signal or a reference file) and the instance list, every Scythe EQ in
+//! ScyEQ-Pro across the project: EQ Match (bands fitted so this instance's input moves towards
+//! another instance's signal or a reference file) and the instance list, every ScyEQ-Pro in
 //! one window.
 
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID
 use crate::ui::widgets;
 use crate::ui::window::{WindowKind, scythe_window};
 
-/// A Scythe EQ somewhere in the project.
+/// A ScyEQ-Pro somewhere in the project.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Instance {
     pub owner: FxOwner,
@@ -30,7 +30,7 @@ pub struct Instance {
     pub label: String,
 }
 
-/// Every Scythe EQ in the project, in track order: each track's chain, input chain and take
+/// Every ScyEQ-Pro in the project, in track order: each track's chain, input chain and take
 /// chains, then the master's and the monitoring chain, containers included. The label says
 /// where: "Vocals", "Vocals · input", "Guitar · Rig › 3".
 pub fn all_instances(app: &ScytheApp) -> Vec<Instance> {
@@ -91,16 +91,16 @@ fn walk(
     }
 }
 
-/// The other Scythe EQs, for comparing and matching.
+/// The other ScyEQ-Pro instances, for comparing and matching.
 pub fn other_instances(cx: &Ctx) -> Vec<Instance> {
     all_instances(cx.app).into_iter().filter(|i| !(i.owner == cx.ed.owner && i.path == cx.ed.path)).collect()
 }
 
-/// What an instance can compare and match with: the other Scythe EQs, then every track's
+/// What an instance can compare and match with: the other ScyEQ-Pro instances, then every track's
 /// and the master's output after its effects (an empty path).
 pub fn compare_sources(cx: &Ctx) -> Vec<Instance> {
     let mut out: Vec<Instance> =
-        other_instances(cx).into_iter().map(|i| Instance { label: format!("{} (Scythe EQ)", i.label), ..i }).collect();
+        other_instances(cx).into_iter().map(|i| Instance { label: format!("{} (ScyEQ-Pro)", i.label), ..i }).collect();
     for t in &cx.app.project.tracks {
         let label = if t.name.is_empty() { "Track".to_owned() } else { t.name.clone() };
         out.push(Instance { owner: FxOwner::Track(t.id), path: Vec::new(), label });
@@ -339,7 +339,7 @@ fn match_body(
     let secs = |frames: usize| frames as f64 / 60.0;
     let status = match (&panel.reference, panel.job.is_some()) {
         (_, true) => "Measuring the file…".to_owned(),
-        (Reference::None, _) => "Pick a track, another Scythe EQ or an audio file to match to".to_owned(),
+        (Reference::None, _) => "Pick a track, another ScyEQ-Pro or an audio file to match to".to_owned(),
         _ => format!(
             "Input learned {:.0} s{}",
             secs(panel.current_frames),
@@ -402,19 +402,19 @@ fn match_body(
     });
 }
 
-/// The instance list: every Scythe EQ with its curve and bands, editable in place.
+/// The instance list: every ScyEQ-Pro with its curve and bands, editable in place.
 pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
     if !app.view.eq_instances {
         return;
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    scythe_window("scythe-eq-instances", "Scythe EQ instances".to_owned(), WindowKind::Panel)
+    scythe_window("scythe-eq-instances", "ScyEQ-Pro instances".to_owned(), WindowKind::Panel)
         .default_size(vec2(760.0, 420.0))
         .show(&ctx, &mut open, |ui| {
             let list = all_instances(app);
             if list.is_empty() {
-                ui.label(egui::RichText::new("No Scythe EQ in this project").color(TEXT_DIM));
+                ui.label(egui::RichText::new("No ScyEQ-Pro in this project").color(TEXT_DIM));
                 return;
             }
             egui::ScrollArea::vertical().show(ui, |ui| {

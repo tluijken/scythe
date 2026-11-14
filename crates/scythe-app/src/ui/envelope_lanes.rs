@@ -114,7 +114,11 @@ fn lanes(app: &ScytheApp, id: TrackId) -> Vec<Lane> {
         for p in slot.parameter_envelopes() {
             let Some(param) = p.param() else { continue };
             let at = EnvRef { track: track_ref(id), envelope: format!("fx:{fx}:{param}"), send: None, item: None };
-            let label = if p.label.is_empty() { format!("{} #{param}", slot.name) } else { p.label.clone() };
+            let label = if p.label.is_empty() {
+                format!("{} #{param}", scythe_engine::stock::shown_name(&slot.name))
+            } else {
+                p.label.clone()
+            };
             out.push(Lane { at, label, color: PARAM_COLOR, kind: None });
         }
     }
@@ -307,7 +311,7 @@ fn add_menu(app: &mut ScytheApp, ui: &mut Ui, track: TrackId) {
         if params.is_empty() {
             continue;
         }
-        ui.menu_button(&slot.name, |ui| {
+        ui.menu_button(scythe_engine::stock::shown_name(&slot.name), |ui| {
             egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
                 for (param, p) in params.iter().enumerate() {
                     if slot.parameter_envelope(&param.to_string()).is_some() || !ui.button(&p.name).clicked() {

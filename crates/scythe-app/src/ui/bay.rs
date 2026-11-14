@@ -146,7 +146,7 @@ fn effects(app: &mut ScytheApp, ui: &mut Ui) {
         }
         ui.end_row();
         for f in fx {
-            ui.label(f.name);
+            ui.label(scythe_engine::stock::shown_name(&f.name));
             ui.label(f.instances.to_string());
             ui.label(f.tracks.join(", "));
             ui.end_row();

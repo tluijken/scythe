@@ -13,7 +13,7 @@ measured.
   as "Custom" unless it is one of Scythe's scales. Modulation and learn
   from an editor work on a track's own top-level effects only. `TrackFX_Show` with flag 1 shows
   the effect's parameters in the inspector, as Scythe has no FX chain window.
-- Scythe EQ: REAPER does not have it, so a project using it plays in REAPER with the slot
+- ScyEQ-Pro: REAPER does not have it, so a project using it plays in REAPER with the slot
   offline (passing audio unchanged) and REAPER keeps its settings for Scythe. Dynamic bands in
   the natural and linear phase modes add one correction kernel per band to the static curve,
   exact when a single dynamic band moves and a first-order approximation when two overlapping

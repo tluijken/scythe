@@ -1,4 +1,4 @@
-//! Scythe EQ's parameters and the state it stores: a flat table of values in their own units
+//! ScyEQ-Pro's parameters and the state it stores: a flat table of values in their own units
 //! (Hz, dB, ms), `BAND_STRIDE` per band followed by the globals.
 
 use crate::clap_host::ParamInfo;

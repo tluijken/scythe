@@ -66,7 +66,7 @@ impl Builtin {
             Self::MidiControl => "MIDI control",
             Self::FftEq => "FFT EQ",
             Self::HardwareInsert => "Hardware insert",
-            Self::ScytheEq => "Scythe EQ",
+            Self::ScytheEq => "ScyEQ-Pro",
         }
     }
 

@@ -1,4 +1,4 @@
-//! The Scythe EQ analyzer: spectra of the audio before and after the EQ, its sidechain and
+//! The ScyEQ-Pro analyzer: spectra of the audio before and after the EQ, its sidechain and
 //! another instance's signal, made on a thread of its own from the probes' rings and handed
 //! to the editor as levels on a fixed log-frequency grid.
 //!

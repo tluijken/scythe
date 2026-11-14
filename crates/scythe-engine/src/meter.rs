@@ -8,7 +8,7 @@ pub struct Meter {
     /// Time the track takes to render, its effects included.
     pub cpu: crate::perf::CpuTime,
     /// The track's audio after its effects and before its fader, for an analyzer comparing
-    /// with the track (Scythe EQ's Compare and Match).
+    /// with the track (ScyEQ-Pro's Compare and Match).
     pub probe: std::sync::Arc<crate::probe::FxProbe>,
     /// Peaks of blocks rendered ahead of the playhead (anticipative FX), held until the
     /// callback plays their frames so the meter moves with what is heard.

@@ -10,19 +10,19 @@ use super::fx::{ChainAt, edit_stock, instance, locate};
 use super::{ApiError, TrackRef};
 use crate::Session;
 
-/// Scythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side
+/// ScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side
 /// per band, zero latency, natural or linear phase). Every value can also be read and set as
 /// a plain parameter with `fx.params` / `fx.param`; these commands address bands by number and
 /// shape by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "cmd")]
 pub enum EqCommand {
-    /// Every Scythe EQ in the project, input, take and monitoring chains and containers
+    /// Every ScyEQ-Pro in the project, input, take and monitoring chains and containers
     /// included: track, chain (with `item` and `take` for a take), `index` and `inside` as
     /// `eq.get` takes them, name, phase mode and the bands in use.
     #[serde(rename = "eq.instances")]
     Instances,
-    /// One Scythe EQ's global settings and its bands in use, with each dynamic band's current
+    /// One ScyEQ-Pro's global settings and its bands in use, with each dynamic band's current
     /// gain change.
     #[serde(rename = "eq.get")]
     Get {
@@ -123,7 +123,7 @@ pub enum EqCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// What this Scythe EQ puts out next to what a track, the master or another instance
+    /// What this ScyEQ-Pro puts out next to what a track, the master or another instance
     /// plays, on third-octave bands, with the ranges where they collide (both loud and within
     /// 6 dB). It reads the last third of a second of audio, so ask while the part plays; the
     /// first call after a pause starts listening and may answer `live: false`.
@@ -137,7 +137,7 @@ pub enum EqCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// EQ Match: bells and shelves that move this Scythe EQ's input towards the spectrum of
+    /// EQ Match: bells and shelves that move this ScyEQ-Pro's input towards the spectrum of
     /// a track, the master, another instance or an audio file. Live sources are read over the
     /// last third of a second, so ask while the part plays. With `apply` the bands go into
     /// free band slots as one undo step.
@@ -165,14 +165,14 @@ pub enum EqCommand {
     },
 }
 
-/// A signal Scythe EQ compares or matches with: give `track` alone, `track` and `index`, or
+/// A signal ScyEQ-Pro compares or matches with: give `track` alone, `track` and `index`, or
 /// `file`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EqSource {
     /// A track or `"master"`: its audio after its effects, before its fader.
     #[serde(default)]
     pub track: Option<TrackRef>,
-    /// With `track`: the Scythe EQ at this position of the track's chain instead, its output.
+    /// With `track`: the ScyEQ-Pro at this position of the track's chain instead, its output.
     #[serde(default)]
     pub index: Option<usize>,
     /// An audio file: its long-term spectrum.
@@ -279,7 +279,7 @@ fn describe_band(values: &[f64], b: usize, dynamic_db: Option<f32>) -> Value {
     })
 }
 
-/// A Scythe EQ's settings as `eq.get` answers them.
+/// A ScyEQ-Pro's settings as `eq.get` answers them.
 pub fn describe(values: &[f64], meters: Option<&scythe_eq::Meters>, latency: Option<usize>) -> Value {
     let g = |o: u32| values[(GLOBAL + o) as usize];
     let bands: Vec<Value> = (0..BANDS)
@@ -323,12 +323,12 @@ fn running(
     let inst = instance(session, loc, at, index)?;
     let is_eq = inst.with(|e| e.as_any_mut().is_some_and(|a| a.is::<ScytheEq>())).unwrap_or(false);
     if !is_eq {
-        return Err(ApiError::invalid("the effect is not a Scythe EQ"));
+        return Err(ApiError::invalid("the effect is not a ScyEQ-Pro"));
     }
     Ok(inst)
 }
 
-/// Every Scythe EQ in the project, containers included: the track (`null` for the master and
+/// Every ScyEQ-Pro in the project, containers included: the track (`null` for the master and
 /// the monitoring chain), the chain fields `eq.get` takes and the instance's summary.
 pub fn instances(session: &Session) -> Vec<Value> {
     let mut out = Vec::new();
@@ -508,7 +508,7 @@ fn match_to(
         })
         .collect();
     let applied = if apply && !proposal.is_empty() {
-        edit_stock(session, &inst, "EQ match", "Scythe EQ", |eq: &mut ScytheEq| {
+        edit_stock(session, &inst, "EQ match", "ScyEQ-Pro", |eq: &mut ScytheEq| {
             Ok(matching::apply_bands(eq, &proposal))
         })?
     } else {
@@ -581,7 +581,7 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
             } else {
                 "Change EQ band"
             };
-            edit_stock(session, &inst, label, "Scythe EQ", |eq: &mut ScytheEq| {
+            edit_stock(session, &inst, label, "ScyEQ-Pro", |eq: &mut ScytheEq| {
                 let b = match which {
                     Some(b) => b,
                     None => (0..BANDS)
@@ -638,7 +638,7 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
             at,
         } => {
             let inst = running(session, &track, index, &at)?;
-            let out = edit_stock(session, &inst, "Change Scythe EQ", "Scythe EQ", |eq: &mut ScytheEq| {
+            let out = edit_stock(session, &inst, "Change ScyEQ-Pro", "ScyEQ-Pro", |eq: &mut ScytheEq| {
                 let changes = [
                     (global::OUTPUT, output_db),
                     (global::AUTO_GAIN, auto_gain.map(flag)),

@@ -46,7 +46,7 @@ project's (44.1 kHz when it sets none), whatever rate the audio device runs at; 
 
 ## Master and loudness
 
-- A ReaLimit-style limiter alone could not reach the reference's loudness without either barely
+- A ScyLimit-style limiter alone could not reach the reference's loudness without either barely
   moving (slow release) or crunching cymbals (fast release). What worked: a multiband stage on
   the lows, a clipper (LSP Clipper) for the transients, then a limiter (LSP Limiter) for the
   rest. Turn off LSP Limiter's automatic level regulation and LSP Clipper's LUFS limitation,
@@ -118,7 +118,7 @@ project's (44.1 kHz when it sets none), whatever rate the audio device runs at; 
   lower high cut), and delay and reverb on a return with the reverb on the echoes only. Keep
   the return well under the dry lead; matching it to the dry level was far too much.
 - **Trackspacer**: send the keys into channels 3/4 of the guitar bus (`track.channels`,
-  `send.channels`) and give the bus a Scythe EQ dynamic band (`external_sidechain`, broad, a
+  `send.channels`) and give the bus a ScyEQ-Pro dynamic band (`external_sidechain`, broad, a
   few dB range) where the keys live. The guitars then make room only while the keys play.
 
 ## Vocals

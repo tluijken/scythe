@@ -1316,7 +1316,12 @@ fn fx_params(
 }
 
 /// REAPER stores plugin names as `VST3: Name (Vendor)`; show the name and keep the rest as detail.
+/// Stock plugins Scythe implements show its own name.
 fn split_plugin_name(full: &str) -> (String, String) {
+    let shown = scythe_engine::stock::shown_name(full);
+    if shown != full {
+        return (shown.into_owned(), "built in".to_owned());
+    }
     match full.split_once(": ") {
         Some((kind, rest)) => (rest.to_owned(), kind.to_owned()),
         None => (full.to_owned(), "plugin".to_owned()),

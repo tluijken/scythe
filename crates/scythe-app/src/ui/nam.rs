@@ -226,7 +226,7 @@ pub(crate) fn header(app: &mut ScytheApp, ui: &mut Ui, target: &Target) {
         let make = Rect::from_min_max(pos2(right - 104.0, rect.center().y - 12.0), pos2(right, rect.center().y + 12.0));
         if text_pill(ui, make, "Make rig", theme::semibold(12.0), ACCENT, BG)
             .on_hover_text(
-                "Turn this slot (and the ReaVerb after it) into a guitar rig: gate, amp, cab, EQ and output in one \
+                "Turn this slot (and the ScyVerb after it) into a guitar rig: gate, amp, cab, EQ and output in one \
                  slot, with snapshots and presets of the whole rig. REAPER opens it as an FX container.",
             )
             .clicked()

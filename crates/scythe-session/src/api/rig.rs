@@ -35,8 +35,8 @@ pub enum RigCommand {
         #[serde(default)]
         preset: Option<String>,
     },
-    /// Turns the Neural Amp Modeler slot at `index` into a rig, together with a ReaGate right
-    /// before it and the ReaVerb (impulse response) and ReaEQ right after it. The stages it
+    /// Turns the Neural Amp Modeler slot at `index` into a rig, together with a ScyGate right
+    /// before it and the ScyVerb (impulse response) and ScyEQ right after it. The stages it
     /// lacks are added switched off, so the sound stays the same.
     #[serde(rename = "rig.convert")]
     Convert {

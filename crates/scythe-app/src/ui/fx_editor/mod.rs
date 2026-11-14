@@ -69,19 +69,19 @@ impl Kind {
 
     fn title(self) -> &'static str {
         match self {
-            Self::Eq => "ReaEQ",
-            Self::Comp => "ReaComp",
-            Self::Xcomp => "ReaXcomp",
-            Self::Gate => "ReaGate",
-            Self::Limit => "ReaLimit",
-            Self::Delay => "ReaDelay",
-            Self::Fir => "ReaFIR",
-            Self::Verbate => "ReaVerbate",
-            Self::Verb => "ReaVerb",
-            Self::Synth => "ReaSynth",
-            Self::Insert => "ReaInsert",
-            Self::ControlMidi => "ReaControlMIDI",
-            Self::ScytheEq => "Scythe EQ",
+            Self::Eq => "ScyEQ",
+            Self::Comp => "ScyComp",
+            Self::Xcomp => "ScyXcomp",
+            Self::Gate => "ScyGate",
+            Self::Limit => "ScyLimit",
+            Self::Delay => "ScyDelay",
+            Self::Fir => "ScyFir",
+            Self::Verbate => "ScyVerbate",
+            Self::Verb => "ScyVerb",
+            Self::Synth => "ScySynth",
+            Self::Insert => "ScyInsert",
+            Self::ControlMidi => "ScyControlMIDI",
+            Self::ScytheEq => "ScyEQ-Pro",
         }
     }
 
@@ -259,7 +259,7 @@ pub struct FxEditor {
     dragging: Option<usize>,
     /// The ReaXcomp band shown.
     band: usize,
-    /// Scythe EQ's own view state.
+    /// ScyEQ-Pro's own view state.
     pub(crate) eq: Option<Box<scythe_eq::EqView>>,
 }
 

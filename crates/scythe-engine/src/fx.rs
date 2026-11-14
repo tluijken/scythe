@@ -1111,7 +1111,7 @@ impl FxRegistry {
             }
             chunk.push_chunk(st);
         }
-        // A Scythe EQ whose latency changed (phase mode, spectral bands) crossfades to its new
+        // A ScyEQ-Pro whose latency changed (phase mode, spectral bands) crossfades to its new
         // processing itself; the next sync rebuilds the chain, which compensates the new latency.
         let latency = if crate::scythe_eq::is_slot(slot) { inst.with(|e| e.latency()) } else { None };
         let key = entry.clone();
@@ -1325,7 +1325,7 @@ impl FxRegistry {
         updated
     }
 
-    /// Hands a changed state of a running Scythe EQ to it (an undo, a pasted preset), keeping
+    /// Hands a changed state of a running ScyEQ-Pro to it (an undo, a pasted preset), keeping
     /// its filter memories (it crossfades a change of latency); false when the slot changed
     /// otherwise.
     fn update_scythe_eq(&mut self, key: &(Owner, String), state: &[Node]) -> bool {
@@ -1490,7 +1490,7 @@ impl FxRegistry {
                 if id == crate::scythe_eq::CLAP_ID {
                     let eq = match clap_state(plugin_chunk) {
                         Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
-                            .ok_or("unreadable Scythe EQ state")?,
+                            .ok_or("unreadable ScyEQ-Pro state")?,
                         None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
                     };
                     return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
@@ -2685,7 +2685,7 @@ mod nam_tests {
         assert!(left.iter().chain(&right).all(|&s| s == 0.5));
     }
 
-    /// A Scythe EQ whose phase mode changes keeps its instance (it crossfades inside), and the
+    /// A ScyEQ-Pro whose phase mode changes keeps its instance (it crossfades inside), and the
     /// chain built next reads the new latency.
     #[test]
     fn scythe_eq_latency_changes_keep_the_instance() {

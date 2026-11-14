@@ -99,7 +99,7 @@ compare with scythe's output sample by sample:
 | Timecode generator (`<SOURCE LTC`) at 24, 25 and 30 fps, with an hour offset, from a later item position with a source offset | exact (5 renders); 23.976 and 29.97 (drop and non-drop) are a fraction of a sample to a few samples off REAPER's phase |
 | VST 3 and CLAP pin maps on the workspace's test plugins: sidechain bus/port from channels 3/4 or 1/2, outputs to 3/4, summed inputs, sidechain off | exact (9 cases) |
 | VST 3 buses: the layouts REAPER asks of the workspace's test gain and synth on 2-, 3-, 4-, 6-, 8- and 16-channel tracks (`setBusArrangements` calls logged by the plugin), the pin maps it saves for them, and a 6-channel render through the gain | same layouts and pin maps (12 cases) |
-| Scythe EQ (Scythe's own plugin) in REAPER: a project with the `<CLAP "CLAP: Scythe EQ (Scythe)" scythe.eq "">` slot, its `<STATE` and a `PARMENV` on one of its parameters, opened and saved by REAPER 7.73 (Lua `Main_SaveProjectEx`); an unknown VST slot for comparison | the CLAP slot, its state and the envelope points saved byte for byte (REAPER adds a label to `PARMENV` and puts it after `FXID`); an unknown VST slot keeps its bytes but REAPER re-flows the base64 lines |
+| ScyEQ-Pro (Scythe's own plugin) in REAPER: a project with the `<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` slot, its `<STATE` and a `PARMENV` on one of its parameters, opened and saved by REAPER 7.73 (Lua `Main_SaveProjectEx`); an unknown VST slot for comparison | the CLAP slot, its state and the envelope points saved byte for byte (REAPER adds a label to `PARMENV` and puts it after `FXID`); an unknown VST slot keeps its bytes but REAPER re-flows the base64 lines |
 | FX presets: loading `.ini` presets with other pin maps and flag words into VST 3 and VST 2 slots, VST 2 programs, `.vstpreset` files, ReaComp's stock library (`.rpl`) and its import (`LastDefImpTime`) | same `<VST` lines and preset names (14 cases) |
 | Send modes: post-fader, pre-FX and pre-fader sends from a track with a JSFX gain, fader, pan and volume envelope; with the source muted, another track soloed, the bus soloed (with and without the source's master send), the bus muted; polarity, mono downmix, trim and pre-FX volume envelopes; sends into a mono destination channel (pan, then the pair averaged) | exact (26/26 within 1e-5) |
 | Pan modes: balance, 3.x balance, stereo pan and dual pan at pans -1 to 1, widths -1 to 1 and pan laws 0 dB, -3 dB, -6 dB, -12 dB, +3 dB and +6 dB (a left-only then right-only source gives the gain matrix); the project default mode (3.x balance, stereo pan, dual pan); width and dual pan envelopes (width multiplies, dual pan adds) and a pan envelope in stereo pan | exact (144 cases) |
@@ -147,7 +147,7 @@ bridged to ALSA with a2jmidid and the device played by the `midi_probe` example)
 
 Performance was compared with REAPER 7.73 on a 48-track band session (drum multitrack, two
 bass DIs and a bass amp, five guitars each through a container of ReaGate, Neural Amp Modeler,
-ReaVerb cab and two ReaEQs, vocals, keys, 22 Scythe EQs; 1.7 GB of 44.1 kHz media), REAPER
+ReaVerb cab and two ReaEQs, vocals, keys, 22 ScyEQ-Pro instances; 1.7 GB of 44.1 kHz media), REAPER
 with the same NAM LV2 plugin (nixpkgs `neural-amp-modeler-lv2`), both on a dummy JACK server
 at 44.1 kHz for 30 s of playback, on a 6 P + 8 E core laptop CPU (`examples/perf_probe.rs` for
 the per-track figures):
@@ -157,7 +157,7 @@ the per-track figures):
 | JACK client xruns in 30 s at 128 / 256 / 512 frames | REAPER 0 / 0 / 0 (anticipative FX on); Scythe 0 / 0 / 0, before these changes 120 / 1 / 0 |
 | Process CPU while playing (percent of one core) at 128 / 256 / 512 | REAPER 185 / 162 / 145; Scythe 79 / 73 / 67, before 503 / 310 / 217 |
 
-Anticipative FX and ALSA periods, measured on the session's current version (25 Scythe EQs, which
+Anticipative FX and ALSA periods, measured on the session's current version (25 ScyEQ-Pro instances, which
 REAPER cannot load, removed for both) at 44.1 kHz on a private JACK dummy server whose threads
 and both programs' JACK client threads run at `SCHED_RR` 20 (RealtimeKit), back to back with the
 load average below 5; Scythe also through ALSA (the `alsa-plugins` JACK PCM, so ALSA's period
@@ -169,7 +169,7 @@ count applies):
 | Process CPU over 30 s at 64 frames | REAPER 267 %; Scythe 106 % (JACK), 92 % (ALSA, 3 periods) |
 | Xruns over 30 s at 128 frames | REAPER 0 with anticipative FX, 23-36 without; Scythe 0 either way |
 | Callback render time at 128 frames (2.9 ms budget), p50 / p99 / max | Scythe with anticipative FX 0.05 / 0.11 / 0.23 ms, without 0.87 / 1.41 / 2.37 ms; with one NAM guitar armed and monitored (it and its two folder buses live) 0.57 / 1.07 / 1.73 ms |
-| Five minutes of the full session (Scythe EQs included) through ALSA, 3 periods | 128 frames: 0 xruns, 0 late blocks, callback p99 0.15 ms, max 0.40 ms, 100 % CPU; 64 frames: 0 engine xruns, 0 late blocks, callback p99 0.11 ms, max 0.28 ms, 118 % CPU (the JACK server logged 15 xruns of the ALSA-to-JACK bridge thread not being woken in time) |
+| Five minutes of the full session (ScyEQ-Pro instances included) through ALSA, 3 periods | 128 frames: 0 xruns, 0 late blocks, callback p99 0.15 ms, max 0.40 ms, 100 % CPU; 64 frames: 0 engine xruns, 0 late blocks, callback p99 0.11 ms, max 0.28 ms, 118 % CPU (the JACK server logged 15 xruns of the ALSA-to-JACK bridge thread not being woken in time) |
 | Round trip of a monitored input through the guitar rig (ReaGate, NAM, ReaVerb cab, two ReaEQs, ReaComp, ReaLimit), `jack_iodelay` at 128 frames | REAPER 659.6 frames, Scythe 588.6 frames (775 while its NAM converted a 48 kHz model's rate); through an empty armed track both 128. NAM alone: REAPER 141.0 at 44.1 and 48 kHz, Scythe 141.0 at both (327.8 at 44.1 kHz with the rate conversion) |
 | NAM with a 48 kHz model in a project at 44.1 kHz and 48 kHz with the rate forced (`SAMPLERATE 44100 1 0`), REAPER 7.73 with the LV2 plugin 0.1.4, eight sines (82 Hz-5.1 kHz) | REAPER runs the model at the project's rate: at -60 dBFS its 44.1 kHz response over its 48 kHz one swings by up to 13 dB, and its 44.1 kHz render is closest to running the model straight at 44.1 kHz. Scythe now does the same: delay 0, residual after REAPER's normalization gain 8.3 % at 44.1 kHz and 7.9 % at 48 kHz (the two implementations' difference; 16.3 % at 44.1 kHz with the old linear-phase conversion, 22.4 % with a minimum-phase one) |
 | NAM loudness normalization: REAPER 7.73 renders through the LV2 plugin 0.1.4 with six models (loudness -8.9, -11.1, -13.5, -20.8, -39.6 dB and none; 44.1 and 48 kHz, rate forced) and two with input/output levels +6/-3 dB | REAPER brings a stated loudness to -18 dB (before: Scythe off by -9.1, -6.9, -4.7, +2.6, +21.5 dB); Scythe now within 0.09 dB in output level on every normalized model, 0.15 dB on the one without |

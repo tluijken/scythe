@@ -210,6 +210,8 @@ pub fn group_roles(t: &Track) -> Vec<GroupRole> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FxInfo {
     pub index: usize,
+    /// As Scythe shows it: its own name (`ScyComp`) for a stock plugin it implements, the
+    /// project's title (`VST3: Curve 3 (AcmeAudio)`) otherwise.
     pub name: String,
     pub enabled: bool,
     /// Whether it processes audio (built in or hosted) rather than passing it through.
@@ -521,7 +523,7 @@ pub fn chain_info(session: &Session, owner: &scythe_engine::fx::FxOwner, slots: 
                 path.pop();
                 FxInfo {
                     index: i,
-                    name: slot.name.clone(),
+                    name: scythe_engine::stock::shown_name(&slot.name).into_owned(),
                     enabled: slot.enabled,
                     running: container.is_some() || !matches!(status, None | Some(FxStatus::Unavailable(_))),
                     offline: slot.offline(),

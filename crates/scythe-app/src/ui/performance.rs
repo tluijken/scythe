@@ -52,7 +52,9 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                         let name = ui.label(&t.name);
                         if !t.fx.is_empty() {
                             let list: Vec<String> =
-                                t.fx.iter().map(|f| format!("{:>5.1}%  {}", f.cpu, f.name)).collect();
+                                t.fx.iter()
+                                    .map(|f| format!("{:>5.1}%  {}", f.cpu, scythe_engine::stock::shown_name(&f.name)))
+                                    .collect();
                             name.on_hover_text(RichText::new(list.join("\n")).font(theme::mono(11.0)));
                         }
                         ui.label(RichText::new(format!("{:.1}%", t.cpu)).font(theme::mono(11.0)));

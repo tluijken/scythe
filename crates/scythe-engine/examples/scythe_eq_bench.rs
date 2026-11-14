@@ -1,4 +1,4 @@
-//! CPU cost of one Scythe EQ instance at 48 kHz in blocks of 256 frames, per processing mode:
+//! CPU cost of one ScyEQ-Pro instance at 48 kHz in blocks of 256 frames, per processing mode:
 //! eight static bands, then the same with two dynamic bands and one spectral band.
 //!
 //! cargo run --release -p scythe-engine --example scythe_eq_bench

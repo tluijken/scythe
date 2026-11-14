@@ -168,7 +168,7 @@ pub fn get(params: &Value) -> Result<(String, String), String> {
                  3. Tonal balance: analysis_match_eq with the reference and the mix, max_gain_db 4 and \
                  max_bands 5. Explain each proposed band in words (\"+2 dB low shelf at 100 Hz: the \
                  reference has more low end\"). Apply it with `apply`: \"{target}\" (one undo step, a \
-                 new ReaEQ), or leave it out if the differences are under 1 dB.\n\
+                 new ScyEQ), or leave it out if the differences are under 1 dB.\n\
                  4. Loudness and dynamics: follow the `dynamics` advice of match_eq only as far as it \
                  is safe: at most 6 dB more limiter drive per step, a ceiling of -1 dBTP, a compressor \
                  only for a peak-to-loudness ratio much above the reference's. Add effects with fx_add \

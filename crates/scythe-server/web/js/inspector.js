@@ -270,7 +270,7 @@ function FxSection({ store, track }) {
             store.fire({ cmd: "fx.remove", track: trackRef(track.id), index: fx.index });
           }} />
         </div>
-        ${open === fx.index && (fx.name.includes("Scythe EQ")
+        ${open === fx.index && (fx.name.includes("ScyEQ-Pro")
           ? html`<${EqBands} store=${store} track=${track} index=${fx.index} />`
           : html`<${FxParams} store=${store} track=${track} index=${fx.index} />`)}
       </div>`,

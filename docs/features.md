@@ -162,7 +162,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   channels play into channels 3 and up, sends take any channel pair (or one channel) to any
   pair of the destination (`AUXRECV` source and destination channels), folders carry every
   channel to their parent, a track can feed its parent from a channel offset (`MAINSEND`),
-  and ReaGate and ReaComp listen to the channels their detector input names (channels 3/4 for a
+  and ScyGate and ScyComp listen to the channels their detector input names (channels 3/4 for a
   sidechain, stored as REAPER's UI stores it).
   Effects follow their pin maps (VST and VST 3 state headers, `<JS_PINMAP`, LV2's `<IN_PINS`
   and `<OUT_PINS`): input pins sum the channels mapped to them, output pins replace theirs,
@@ -224,48 +224,60 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   and `fx.catalog` answers straight away with `scanning` and `progress`, `failed`, and `rescan`.
   `SCYTHE_SYSTEM_PLUGINS=0` limits the scan to `$CLAP_PATH`, `$LV2_PATH`, `$VST3_PATH` and
   `$SCYTHE_VST_PATH` (the tests use it).
-- **Stock effect emulations**: ReaEQ, ReaVerb and ReaSamplOmatic5000 and ReaDelay settings stored
-  in projects play through built-in equivalents (the sampler receives the track's MIDI, live input
+- **REAPER-compatible effects**: Scythe's own effects read and write the settings of REAPER's
+  stock effects, so projects using those play in Scythe and REAPER opens Scythe's as its own:
+
+  | Scythe | REAPER | Scythe | REAPER |
+  |---|---|---|---|
+  | ScyEQ | ReaEQ | ScyVerb | ReaVerb |
+  | ScyComp | ReaComp | ScyVerbate | ReaVerbate |
+  | ScyXcomp | ReaXcomp | ScySynth | ReaSynth |
+  | ScyGate | ReaGate | ScySampler | ReaSamplOmatic5000 |
+  | ScyLimit | ReaLimit | ScyControlMIDI | ReaControlMIDI |
+  | ScyDelay | ReaDelay | ScyFir | ReaFIR |
+  | ScyInsert | ReaInsert | | |
+
+  ScyEQ, ScyVerb, ScySampler and ScyDelay settings stored in projects play through built-in equivalents (the sampler receives the track's MIDI, live input
   and MIDI an earlier effect sends; musical delay lengths follow the tempo map), as do the
-  dynamics: ReaComp (detector input, RMS, detector low/high-pass and filter preview, pre-comp
-  lookahead, soft and legacy knee, auto make-up, auto release, classic attack, wet/dry), ReaGate
+  dynamics: ScyComp (detector input, RMS, detector low/high-pass and filter preview, pre-comp
+  lookahead, soft and legacy knee, auto make-up, auto release, classic attack, wet/dry), ScyGate
   (detector filters, RMS, hysteresis, hold, pre-open, noise, wet/dry, both invert modes, MIDI note
-  out), ReaLimit (10 ms lookahead, its two-stage release) and ReaXcomp (any number of bands,
+  out), ScyLimit (10 ms lookahead, its two-stage release) and ScyXcomp (any number of bands,
   feedback detector, band gains and bypass, output gain), all latency compensated and modelled on
   REAPER 7.73 renders (`scythe-engine/src/stock/`, one file per plugin, dispatched from a table of
-  REAPER's VST identities). ReaVerbate (Freeverb with REAPER's ten combs and six allpasses per
-  channel, pre-delay, width and wet filters), ReaSynth (its naive oscillators and mix laws,
+  REAPER's VST identities). ScyVerbate (Freeverb with REAPER's ten combs and six allpasses per
+  channel, pre-delay, width and wet filters), ScySynth (its naive oscillators and mix laws,
   envelope, pitch wheel, REAPER's -80 dB voice gating and 512-frame block behaviour) and
-  ReaControlMIDI (transpose, snap to a scale, and the bank/program, volume, pan and pitch-wheel
+  ScyControlMIDI (transpose, snap to a scale, and the bank/program, volume, pan and pitch-wheel
   sends at playback start) are emulated the same way and offered as the built-ins "Algorithmic
-  reverb", "Synth" and "MIDI control", and so are ReaFIR's EQ mode (REAPER's curve drawing:
+  reverb", "Synth" and "MIDI control", and so are ScyFir's EQ mode (REAPER's curve drawing:
   straight lines in Hz between three or more points, a Bézier in log frequency between two, as a
-  linear-phase FIR of the FFT size; built-in "FFT EQ"), ReaVerb's echo generator and reverse
-  modules, and ReaInsert ("Hardware insert": sends to two device outputs, plays two device inputs
+  linear-phase FIR of the FFT size; built-in "FFT EQ"), ScyVerb's echo generator and reverse
+  modules, and ScyInsert ("Hardware insert": sends to two device outputs, plays two device inputs
   back, its delay compensation reported as latency and measured by a ping through the cable;
   silent in offline renders as in REAPER without a device). Settings an emulation does not cover
-  (ReaFIR's dynamics modes, other ReaVerb modules) run in REAPER's own binary when it is on the
+  (ScyFir's dynamics modes, other ScyVerb modules) run in REAPER's own binary when it is on the
   VST path.
 - **Built-ins**: The same effects are offered as built-ins in the plugin browser (equalizer, gate,
   compressor, delay, convolution reverb, limiter, multiband compressor) with editable parameters
   (the inspector's parameter rows, `fx.params` and `fx.set_param`), and are saved in REAPER's own
   format, so REAPER opens them as ReaEQ, ReaGate, ReaComp, ReaDelay, ReaVerb, ReaLimit and
   ReaXcomp.
-- **Stock effect editors**: The stock effects (ReaEQ, ReaComp, ReaXcomp, ReaGate, ReaLimit,
-  ReaDelay, ReaFIR, ReaVerbate, ReaVerb, ReaSynth, ReaInsert, ReaControlMIDI) get **Edit** too,
+- **Stock effect editors**: The stock effects (ScyEQ, ScyComp, ScyXcomp, ScyGate, ScyLimit,
+  ScyDelay, ScyFir, ScyVerbate, ScyVerb, ScySynth, ScyInsert, ScyControlMIDI) get **Edit** too,
   opening a graphical editor in a resizable window (for a track's or the master's effects, input
   FX, monitoring FX, the active take's FX in the item card and effects inside containers; also
-  from ReaScript's `TrackFX_Show`), drawn from the emulation's own math: ReaEQ's
+  from ReaScript's `TrackFX_Show`), drawn from the emulation's own math: ScyEQ's
   response per band and in all with draggable handles (drag for frequency and gain, scroll or
   Shift-drag for the width, double-click to switch a band, right-click for its type, add and
   remove bands) over a live spectrum before and after; transfer curves with threshold and ratio
-  handles, the detector's level on the curve, gain reduction meters and history for ReaComp and
-  ReaLimit; ReaXcomp's crossovers on the spectrum with each band's response, transfer curve and
-  meter; ReaGate's detector level with its opening and closing thresholds and when it stood open;
-  ReaDelay's taps and their echoes on a time line with a row of values per tap; ReaFIR's curve
-  drawn with points over the spectrum; ReaVerbate's decay by frequency; ReaVerb's impulse
-  response; ReaSynth's oscillator and envelope; ReaInsert's routing (the device's channel pairs by name) and
-  ping; ReaXcomp's bands split and removed; ReaControlMIDI's scale clicked key by key. Every control drags,
+  handles, the detector's level on the curve, gain reduction meters and history for ScyComp and
+  ScyLimit; ScyXcomp's crossovers on the spectrum with each band's response, transfer curve and
+  meter; ScyGate's detector level with its opening and closing thresholds and when it stood open;
+  ScyDelay's taps and their echoes on a time line with a row of values per tap; ScyFir's curve
+  drawn with points over the spectrum; ScyVerbate's decay by frequency; ScyVerb's impulse
+  response; ScySynth's oscillator and envelope; ScyInsert's routing (the device's channel pairs by name) and
+  ping; ScyXcomp's bands split and removed; ScyControlMIDI's scale clicked key by key. Every control drags,
   scrolls, takes the arrow keys once clicked, types a value on double-click and offers
   Modulate/Learn on right-click; each drag (and each drag on the parameter rows, which stay a tab
   away) is one undo step. The meters and spectra come from a probe the effect fills only while its
@@ -325,8 +337,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   the track's MIDI and pass what they send on to the next effect in the chain; they are read from
   `~/.config/REAPER/Effects` and the installed REAPER's `InstallData/Effects` (or
   `$SCYTHE_JSFX_PATH`).
-- **Scythe EQ** (Scythe's own, not in REAPER): a 24-band dynamic equalizer, offered in the FX
-  browser as "Scythe EQ". It targets the feature set of today's commercial dynamic EQs, built
+- **ScyEQ-Pro** (Scythe's own, not in REAPER): a 24-band dynamic equalizer, offered in the FX
+  browser as "ScyEQ-Pro". It targets the feature set of today's commercial dynamic EQs, built
   from public descriptions and DSP literature in Scythe's own design.
   - *Bands*: bell, low and high shelf, low and high cut, notch, band pass, tilt shelf (−g/2 below,
     +g/2 above the frequency), flat tilt (a constant dB-per-octave tilt across 20 Hz–20 kHz,
@@ -390,7 +402,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     band's controls, and the phase mode, resolution, latency, character, Gain-Q, display range,
     auto gain, gain scale, output, pan and width.
   - *Analyzer*: pre (outline), post (filled, fading towards the bottom), the sidechain (in its
-    own colour when a band uses it) and another Scythe EQ's signal, on a thread of its own from
+    own colour when a band uses it) and another ScyEQ-Pro's signal, on a thread of its own from
     the effect's probe rings; resolution low to maximum (FFTs of 2048 to 16384 samples, the last
     zero padded twice), speed very slow to very fast (separate rise time and fall rate), peak
     hold that falls after 1.5 s, freeze, tilt 0–6 dB/oct (4.5 by default) and a 60, 90 or 120 dB
@@ -402,17 +414,17 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
     highlighted; dragging it makes a bell there with the gain following the pointer.
   - *Compare and collisions*: "Compare" shows any track's or the master's output (after its
     effects, before its fader, tapped by the engine only while someone reads it) or another
-    Scythe EQ's; where both signals are loud and within 6 dB of each other the frequencies are
+    ScyEQ-Pro's; where both signals are loud and within 6 dB of each other the frequencies are
     shaded as collisions.
   - *EQ Match*: learns this instance's input against a track's, the master's or another Scythe
     EQ's signal (both averaged while playing) or against an audio file (measured offline), levels the difference (its mean
     over 100 Hz–10 kHz removed), smooths it (0.05–2 octaves), scales it by the amount and fits up
     to 16 bands (shelves where the difference reaches an end of the spectrum, bells elsewhere,
     gains refined together); Apply adds them to free bands as one undo step.
-  - *Instance list* ("Instances"): every Scythe EQ in the project with its curve and where it
+  - *Instance list* ("Instances"): every ScyEQ-Pro in the project with its curve and where it
     sits (track, input and take chains, the master, monitoring, containers: "Vocals · input",
     "Guitar · Rig › 3"); open or bypass each, click a band to bypass it, drag it up and down for its gain.
-  - *Storage*: a CLAP slot, `<CLAP "CLAP: Scythe EQ (Scythe)" scythe.eq "">` with its settings
+  - *Storage*: a CLAP slot, `<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` with its settings
     in `<STATE` (magic `SCEQ`, a version, then every value as a double in its own units).
     REAPER 7.73 opens such a project with "the following effects … are not available"; the slot
     shows offline, passes audio, and REAPER saves the block byte for byte, envelopes on its
@@ -464,8 +476,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   REAPER keeps opening the slot; snapshots go into the track's `<EXT` extension state, which
   REAPER keeps. `.nam` files dropped on a track load into its NAM slot (or a new one).
 - **Guitar rigs** put the whole tone in one slot: a REAPER FX container named "Rig: <amp> + <cab>"
-  holding a gate (ReaGate), the NAM amp, the cab (ReaVerb with the impulse response, and a second
-  one in parallel to blend), an EQ (ReaEQ: low cut, bass, mid, treble, high cut) and the output
+  holding a gate (ScyGate), the NAM amp, the cab (ScyVerb with the impulse response, and a second
+  one in parallel to blend), an EQ (ScyEQ: low cut, bass, mid, treble, high cut) and the output
   level, so REAPER opens and plays it unchanged. The effects list shows it as one slot whose
   **Edit** opens the rig window: the signal chain from left to right with a switch per stage, the
   picked stage's knobs under it (the gate's threshold, attack, release and hysteresis; the EQ's
@@ -478,7 +490,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   any track, `_SCYTHE_RIG_PRESET_NEXT`/`PREVIOUS`) hold the whole rig; the control API and MCP
   have `rig.*`, with `rig.preview` (an amp model or cab impulse response tried as one undo step),
   `rig.keep` and `rig.revert`, and `nam.preview`/`nam.keep`/`nam.revert` for a bare NAM slot.
-  **Make rig** turns a NAM slot and the ReaVerb after it into a rig; a bare NAM slot
+  **Make rig** turns a NAM slot and the ScyVerb after it into a rig; a bare NAM slot
   works as before. Switching is click-free: models crossfade, impulse responses crossfade over 20
   ms, a stage switched on or off crossfades over 10 ms, and gate, EQ and level changes reach the
   running effects in place.
@@ -605,8 +617,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   shapes, volume envelopes in REAPER's fader scaling (`VOLTYPE 1`: they move linearly in fader
   position, `gain = 10^0.6 / 2 * x * (1 + x)` with `x` the cube of the position), shown
   and editable on the lanes (double-click adds, drag moves, right-click deletes). FX parameter
-  envelopes play back: bypass for every effect, wet/dry for ReaVerb and ReaDelay, and
-  ReaDelay's per-tap enable, volume and feedback, every hosted plugin's parameters; they follow
+  envelopes play back: bypass for every effect, wet/dry for ScyVerb and ScyDelay, and
+  ScyDelay's per-tap enable, volume and feedback, every hosted plugin's parameters; they follow
   the project play rate and, like track envelopes and their automation items, tempo edits in a
   beats timebase.
 - **Envelope lanes** (the envelope button on the left rail): the selected track's envelopes,
@@ -813,7 +825,7 @@ backing-track or click file, with tempo, and proposed song and `!1016` stop mark
 `analysis_file`, `analysis_mix`, `analysis_compare` and `analysis_match_eq` (EBU R128 loudness,
 true peak, loudness range, crest factor, third-octave spectrum and tonal balance, width and
 correlation per band, low-end mono check, brightness, transient density; mixes rendered
-offline through the render path, never played; a few limited-gain ReaEQ bands proposed and
+offline through the render path, never played; a few limited-gain ScyEQ bands proposed and
 applied as one undo step, with compression and limiting advice), `events_since` and
 `events_meters` for polling, the access links with their QR payloads, and `script_run` for
 ReaScript text in the desktop app. A compact set of tools is listed by default; `--tools
@@ -1178,7 +1190,7 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   counts open more. Track record inputs ("Input: Mono" and "Input: Stereo" with every channel
   and pair, as REAPER lists them, the pairs starting on even channels too unless "Show
   non-standard stereo channel pairs" is off, `allstereopairs=0`), track hardware outputs,
-  monitor mixes, the metronome output and ReaInsert list them all; monitoring and recording
+  monitor mixes, the metronome output and ScyInsert list them all; monitoring and recording
   reach up to 64 inputs. Monitoring and recording share the device's one capture stream, so a
   device that opens for capture only once records while tracks monitor.
 - **Channel names and remapping** (REAPER's "Input/Output channel name aliasing/remapping"):
@@ -1231,8 +1243,8 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   again there with the new plan; arming or disarming a track while playing switches the same
   way.
   Meters of tracks rendered ahead move when their audio is played. Playback is sample-identical
-  to rendering every track in the callback: Song 2's effects (NAM, ReaVerb, ReaComp, ReaEQ,
-  ReaGate, ReaLimit, Scythe EQ) give the same samples at 128, 384, 512 and 1024-frame blocks
+  to rendering every track in the callback: Song 2's effects (NAM, ScyVerb, ScyComp, ScyEQ,
+  ScyGate, ScyLimit, ScyEQ-Pro) give the same samples at 128, 384, 512 and 1024-frame blocks
   (`examples/block_identity.rs`), and a test plays a project with folders, sends, a delay, an
   EQ and a loop both ways and compares them. Settings in the audio device window (Buffering:
   anticipative FX, render-ahead, "Allow live FX multiprocessing"), `workrender` bit 1,
