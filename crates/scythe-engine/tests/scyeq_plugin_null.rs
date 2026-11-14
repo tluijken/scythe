@@ -315,3 +315,95 @@ fn noise(frames: usize, seed: u64) -> Vec<f32> {
         })
         .collect()
 }
+
+/// Every value each automatable parameter (and solo and audition) can take in turn, from the
+/// rich state with all bands in use, then back: each band shape, slope, stereo placement and
+/// dynamic mode once. Phase mode and, in linear phase, its resolution change the FIR length:
+/// they build a new FIR path.
+fn automation(phase: usize) -> (Vec<f64>, Vec<(u32, f64)>) {
+    use scythe_engine::scythe_eq::params::Unit;
+    let mut values = params::decode(&state(phase)).unwrap().values;
+    for b in 0..params::BANDS {
+        values[params::band_param(b, band::USED) as usize] = 1.0;
+    }
+    let solo = (0..params::BANDS).flat_map(|b| [band::SOLO, band::AUDITION].map(|o| params::band_param(b, o)));
+    let mut changes = Vec::new();
+    for id in params::automatable().chain(solo) {
+        let structural = id == GLOBAL + global::PHASE || (phase == 2 && id == GLOBAL + global::RESOLUTION);
+        if structural {
+            continue;
+        }
+        let spec = params::spec_of(id).unwrap();
+        let v = values[id as usize];
+        match spec.unit {
+            Unit::Switch | Unit::Choice(_) | Unit::Shape | Unit::Slope => {
+                for k in spec.min as usize..=spec.max as usize {
+                    if k as f64 != v {
+                        changes.push((id, k as f64));
+                    }
+                }
+            }
+            _ => {
+                let n = params::to_normalized(id, v);
+                changes.push((id, params::from_normalized(id, if n < 0.5 { n + 0.37 } else { n - 0.37 })));
+            }
+        }
+        changes.push((id, v));
+    }
+    (values, changes)
+}
+
+#[test]
+fn automation_does_not_allocate() {
+    use scyeq_plugin::ScyEqPlugin;
+    use scyeq_plugin::plugin_format::{Block, Plugin, Shared};
+    use scythe_engine::scythe_eq::ScytheEq;
+
+    let block = 256;
+    let blocks = 64;
+    let main = [noise(block * blocks, 3), noise(block * blocks, 4)];
+    let key = [noise(block * blocks, 5), noise(block * blocks, 6)];
+    let counted = |f: &mut dyn FnMut()| {
+        COUNT.with(|c| c.set(0));
+        COUNTING.with(|c| c.set(true));
+        f();
+        COUNTING.with(|c| c.set(false));
+        COUNT.with(Cell::get)
+    };
+    for phase in 0..3 {
+        let (values, changes) = automation(phase);
+        let mut eq = ScytheEq::with_values(values.clone(), RATE);
+        let (mut plugin, shared) = ScyEqPlugin::new();
+        assert!(shared.load(&params::encode(&values, &[], params::VERSION)));
+        plugin.activate(RATE as f64, block, 2);
+        let mut failed = Vec::new();
+        for (i, change) in std::iter::once(None).chain(changes.iter().copied().map(Some)).enumerate() {
+            let at = i % blocks * block;
+            let input = |c: usize| main[c][at..at + block].to_vec();
+            let sidechain = [&key[0][at..at + block], &key[1][at..at + block]];
+            let position = Some((i * block) as i64);
+            let (mut l, mut r) = (input(0), input(1));
+            let built_in = counted(&mut || {
+                if let Some((id, v)) = change {
+                    eq.set(id, v);
+                }
+                eq.process_block(&mut l, &mut r, Some((sidechain[0], sidechain[1])), position);
+            });
+            if let Some((id, v)) = change {
+                shared.set_param(id, v);
+            }
+            let (mut l, mut r) = (input(0), input(1));
+            let hosted = counted(&mut || {
+                let mut channels: [&mut [f32]; 2] = [&mut l, &mut r];
+                plugin.process(Block { channels: &mut channels, sidechain: Some(sidechain), position, playing: true });
+            });
+            // The first block lets the EQ grow what it keeps between blocks.
+            if let Some((id, v)) = change
+                && built_in + hosted > 0
+            {
+                failed.push(format!("{} = {v}: {built_in} built in, {hosted} hosted", params::name(id)));
+            }
+        }
+        assert!(failed.is_empty(), "phase {phase}: allocated on\n{}", failed.join("\n"));
+    }
+}
