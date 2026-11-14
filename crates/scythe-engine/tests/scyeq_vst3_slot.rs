@@ -169,3 +169,44 @@ fn edited_vst3_slot_saves_vst3() {
     assert!(matches!(status, FxStatus::Hosted(_)), "{status:?}");
     assert_eq!(vst_block(&hosted), after, "the plugin reads the edited block and saves it unchanged");
 }
+
+/// A project REAPER 7.73 saved with the ScyEQ-Pro VST3 on a track, set through ReaScript by
+/// `fixtures/reaper-scyeq-vst3.lua`.
+const REAPER_WROTE: &str = include_str!("fixtures/reaper-scyeq-vst3.RPP");
+
+#[test]
+fn a_vst3_slot_reaper_wrote_runs_built_in_and_saves_unchanged() {
+    let project = project_from_rpp(REAPER_WROTE).unwrap();
+    let slot = &project.tracks[0].fx[0];
+    assert!(scythe_eq::is_slot(slot));
+    let values = scythe_eq::slot_values(slot).expect("the plugin's state");
+    let set = [
+        (band_param(0, band::USED), 1.0),
+        (band_param(0, band::SHAPE), 2.0 / 9.0),
+        (band_param(0, band::FREQ), 0.25),
+        (band_param(0, band::GAIN), 0.4),
+        (band_param(1, band::USED), 1.0),
+        (band_param(1, band::FREQ), 0.6),
+        (band_param(1, band::GAIN), 0.7),
+        (band_param(1, band::Q), 0.5),
+        (params::GLOBAL + params::global::OUTPUT, 0.55),
+    ];
+    // REAPER hands the normalised values over in single precision.
+    for (id, v) in params::defaults().into_iter().enumerate() {
+        let id = id as u32;
+        let expected = set.iter().find(|s| s.0 == id).map_or(v, |&(_, n)| params::from_normalized(id, n as f32 as f64));
+        let stored = values[id as usize];
+        assert!(
+            (stored - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+            "{}: {stored} against {expected}",
+            params::name(id)
+        );
+    }
+    assert_eq!(Shape::from_index(values[band_param(0, band::SHAPE) as usize] as usize), Shape::HighShelf);
+
+    let mut fx = registry(false);
+    let (saved, status) = save(&mut fx, project.clone());
+    assert_eq!(status, FxStatus::Native(scythe_eq::STATUS));
+    assert_eq!(running_values(&fx, &project), values);
+    assert_eq!(vst_block(&saved), vst_block(REAPER_WROTE).replace('\r', ""), "nothing edited, nothing rewritten");
+}
