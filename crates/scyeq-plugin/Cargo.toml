@@ -13,10 +13,14 @@ crate-type = ["cdylib", "rlib"]
 scyeq-dsp.workspace = true
 scyeq-ui.workspace = true
 plugin-format = { path = "/home/thomas/projects/prive/plugin-format" }
+# The portal (or zenity) on Linux, not GTK: a plugin must not run a GTK loop inside the host.
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+symphonia.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
 clap-sys.workspace = true
+egui_kittest = "0.37.0"
 libloading.workspace = true
 serde_json.workspace = true
 vst3.workspace = true

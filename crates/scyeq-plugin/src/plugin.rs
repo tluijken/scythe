@@ -1,13 +1,18 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 
-use plugin_format::{Block, GuiContext, Info, Layout, ParamInfo, Plugin, Shared, TrackInfo, egui};
+use plugin_format::{Block, GuiContext, Info, Layout, ParamInfo, Plugin, Shared, TrackInfo};
 use scyeq_dsp::probe::{FxProbe, Side};
 use scyeq_dsp::{Meters, ScytheEq, params};
+use scyeq_ui::ViewState;
+
+use crate::host::Editor;
 
 /// What the host, the editor and the audio thread share: the settings as `f64` bits, and what
 /// the state keeps besides them.
 pub struct ScyEqShared {
+    /// For each editor to keep the shared half it draws.
+    me: Weak<ScyEqShared>,
     values: Box<[AtomicU64]>,
     /// Set after a value changed, for the audio thread to pick the values up.
     changed: AtomicBool,
@@ -16,6 +21,13 @@ pub struct ScyEqShared {
     /// Width and height at a scale of 1.0, as `width << 32 | height`; 0 until resized.
     editor_size: AtomicU64,
     probe: Arc<FxProbe>,
+    /// The running EQ's, from `activate` on.
+    meters: Mutex<Option<Arc<Meters>>>,
+    latency: AtomicU32,
+    /// The host's, from `activate` on; 0 before.
+    sample_rate: AtomicU32,
+    /// Kept for the next editor while none is open; not part of the state.
+    view: Mutex<ViewState>,
 }
 
 /// Values a newer version stored, written back unchanged, and the version that wrote them.
@@ -25,14 +37,19 @@ struct Stored {
 }
 
 impl ScyEqShared {
-    fn new() -> Self {
+    fn new(me: &Weak<ScyEqShared>) -> Self {
         Self {
+            me: me.clone(),
             values: params::defaults().into_iter().map(|v| AtomicU64::new(v.to_bits())).collect(),
             changed: AtomicBool::new(false),
             stored: Mutex::new(Stored { extra: Vec::new(), version: params::VERSION }),
             track: Mutex::new(TrackInfo::default()),
             editor_size: AtomicU64::new(0),
             probe: Arc::new(FxProbe::default()),
+            meters: Mutex::new(None),
+            latency: AtomicU32::new(0),
+            sample_rate: AtomicU32::new(0),
+            view: Mutex::new(ViewState::default()),
         }
     }
 
@@ -52,6 +69,31 @@ impl ScyEqShared {
     /// What the analyzer reads: the audio before and after the EQ.
     pub fn probe(&self) -> &Arc<FxProbe> {
         &self.probe
+    }
+
+    pub fn meters(&self) -> Option<Arc<Meters>> {
+        self.meters.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Processing latency in samples.
+    pub fn latency(&self) -> u32 {
+        self.latency.load(Ordering::Relaxed)
+    }
+
+    /// The host's sample rate, or 48 kHz until the plugin is first activated.
+    pub fn sample_rate(&self) -> u32 {
+        match self.sample_rate.load(Ordering::Relaxed) {
+            0 => 48_000,
+            rate => rate,
+        }
+    }
+
+    pub(crate) fn view(&self) -> ViewState {
+        self.view.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub(crate) fn set_view(&self, view: ViewState) {
+        *self.view.lock().unwrap_or_else(|e| e.into_inner()) = view;
     }
 }
 
@@ -98,12 +140,10 @@ impl Shared for ScyEqShared {
         true
     }
 
-    fn editor(&self, _: GuiContext) -> Box<dyn FnMut(&mut egui::Ui) + Send> {
-        Box::new(|root| {
-            egui::CentralPanel::default().show(root, |ui| {
-                ui.heading("ScyEQ-Pro");
-            });
-        })
+    fn editor(&self, cx: GuiContext) -> plugin_format::Editor {
+        let Some(shared) = self.me.upgrade() else { return Box::new(|_| {}) };
+        let mut editor = Editor::new(shared, cx);
+        Box::new(move |root| editor.frame(root))
     }
 
     fn set_track(&self, info: TrackInfo) {
@@ -159,6 +199,7 @@ impl ScyEqPlugin {
         if latency != self.latency {
             self.latency = latency;
             self.latency_changed = true;
+            self.shared.latency.store(latency, Ordering::Relaxed);
         }
     }
 }
@@ -202,13 +243,15 @@ impl Plugin for ScyEqPlugin {
         sidechain: true,
     };
     const EDITOR_SIZE: (u32, u32) = (1180, 680);
+    const RESIZABLE: bool = true;
+    const EDITOR_MIN: (u32, u32) = (760, 440);
     const LAYOUTS: &'static [Layout] =
         &[Layout { name: "Stereo", main_inputs: 2 }, Layout { name: "Mono in, stereo out", main_inputs: 1 }];
 
     type Shared = ScyEqShared;
 
     fn new() -> (Self, Arc<ScyEqShared>) {
-        let shared = Arc::new(ScyEqShared::new());
+        let shared = Arc::new_cyclic(ScyEqShared::new);
         let plugin = Self {
             shared: shared.clone(),
             eq: None,
@@ -226,6 +269,9 @@ impl Plugin for ScyEqPlugin {
         self.latency = eq.latency() as u32;
         self.latency_changed = false;
         let meters = eq.meters();
+        self.shared.latency.store(self.latency, Ordering::Relaxed);
+        self.shared.sample_rate.store(sample_rate, Ordering::Relaxed);
+        *self.shared.meters.lock().unwrap_or_else(|e| e.into_inner()) = Some(meters.clone());
         self.eq = Some(Running { eq, meters, sample_rate, inputs, spare: vec![0.0; max_block] });
         self.latency
     }
