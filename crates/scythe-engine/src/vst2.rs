@@ -231,8 +231,10 @@ unsafe impl Send for Vst2Plugin {}
 
 impl Vst2Plugin {
     pub fn load(path: &Path, sample_rate: f32, block_size: i32) -> Result<Self, Vst2Error> {
+        let binary = if cfg!(target_os = "macos") { scythe_core::paths::bundle_executable(path) } else { None };
         // SAFETY: loading a plugin runs its initialisers; that is inherent to hosting plugins.
-        let lib = unsafe { libloading::Library::new(path) }.map_err(|e| Vst2Error::Load(path.into(), e.to_string()))?;
+        let lib = unsafe { libloading::Library::new(binary.as_deref().unwrap_or(path)) }
+            .map_err(|e| Vst2Error::Load(path.into(), e.to_string()))?;
         // SAFETY: the symbol has the VST entry point signature by convention.
         let main: libloading::Symbol<PluginMain> =
             unsafe { lib.get(b"VSTPluginMain\0").or_else(|_| lib.get(b"main\0")) }

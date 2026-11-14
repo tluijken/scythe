@@ -22,7 +22,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    #[cfg(unix)]
+    #[cfg(not(any(windows, target_os = "macos")))]
     pub fn current() -> Self {
         let hard = |resource| {
             let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
@@ -35,8 +35,9 @@ impl Limits {
         Self { rtprio: if rtprio == libc::RLIM_INFINITY { 99 } else { rtprio }, memlock }
     }
 
-    /// Windows has neither limit: MMCSS grants real-time priority without one.
-    #[cfg(windows)]
+    /// Neither limit applies on Windows and macOS: MMCSS and the time-constraint policy grant
+    /// real-time scheduling without one.
+    #[cfg(any(windows, target_os = "macos"))]
     pub fn current() -> Self {
         Self { rtprio: 99, memlock: None }
     }

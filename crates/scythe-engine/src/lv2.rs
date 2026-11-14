@@ -63,7 +63,8 @@ pub struct Lv2Info {
     pub binary: PathBuf,
     pub ports: Vec<PortInfo>,
     pub instrument: bool,
-    /// An editor for this system's windows (`ui:X11UI`, `ui:WindowsUI`): its URI and binary.
+    /// An editor for this system's windows (`ui:X11UI`, `ui:WindowsUI`, `ui:CocoaUI`): its URI and
+    /// binary.
     pub ui: Option<(String, PathBuf)>,
 }
 
@@ -82,7 +83,7 @@ pub fn search_paths() -> Vec<PathBuf> {
         dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/lv2"));
     }
     dirs.extend(["/usr/lib/lv2", "/usr/local/lib/lv2", "/run/current-system/sw/lib/lv2"].map(PathBuf::from));
-    dirs.extend(scythe_core::paths::windows_plugin_dirs("LV2"));
+    dirs.extend(scythe_core::paths::system_plugin_dirs("LV2"));
     if let Some(appdata) = std::env::var_os("APPDATA").filter(|_| cfg!(windows)) {
         dirs.push(PathBuf::from(appdata).join("LV2"));
     }
@@ -119,6 +120,16 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<Lv2Info> {
 fn file_iri(path: &Path) -> String {
     let path = path.display().to_string().replace(' ', "%20");
     if cfg!(windows) { format!("file:///{}", path.replace('\\', "/")) } else { format!("file://{path}") }
+}
+
+fn native_ui() -> &'static str {
+    if cfg!(windows) {
+        "WindowsUI"
+    } else if cfg!(target_os = "macos") {
+        "CocoaUI"
+    } else {
+        "X11UI"
+    }
 }
 
 fn iri_path(iri: &str) -> Option<PathBuf> {
@@ -205,7 +216,7 @@ fn plugin_info(g: &Graph, plugin: &Term, bundle: &Path) -> Option<Lv2Info> {
     let instrument = g.has_type(plugin, &lv2("InstrumentPlugin")) || (midi_in && !audio_in);
     let ui = g
         .objects(plugin, &format!("{UI}ui"))
-        .filter(|u| g.has_type(u, &format!("{UI}{}", if cfg!(windows) { "WindowsUI" } else { "X11UI" })))
+        .filter(|u| g.has_type(u, &format!("{UI}{}", native_ui())))
         .find_map(|u| Some((u.iri()?.to_owned(), iri_path(g.object(u, &format!("{UI}binary"))?.iri()?)?)));
     Some(Lv2Info { uri, name, bundle: bundle.to_owned(), binary, ports, instrument, ui })
 }

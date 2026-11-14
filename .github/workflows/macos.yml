@@ -1,0 +1,33 @@
+name: macOS
+
+# macOS runner minutes count ten times against a private repository's quota, so this runs on
+# demand and for main only.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build test plugins
+        run: cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin
+      - name: Test
+        run: cargo test --workspace --no-fail-fast
+        env:
+          SCYTHE_SYSTEM_PLUGINS: "0"

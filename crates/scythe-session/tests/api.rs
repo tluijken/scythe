@@ -1,3 +1,4 @@
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -2215,7 +2216,10 @@ fn a_file_overwritten_in_place_is_read_again() {
 /// The workspace's `clap-test-gain` plugin; `None` until `cargo build -p clap-test-gain`.
 fn clap_test_gain() -> Option<Vec<scythe_engine::clap_host::ClapDescriptor>> {
     let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    let path = ["debug", "release"].iter().map(|p| target.join(p).join("libclap_test_gain.so")).find(|p| p.exists())?;
+    let path = ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}clap_test_gain{DLL_SUFFIX}")))
+        .find(|p| p.exists())?;
     Some(scythe_engine::clap_host::ClapLibrary::load(&path).ok()?.descriptors())
 }
 

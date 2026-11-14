@@ -38,7 +38,10 @@ pub mod preview;
 pub mod probe;
 mod r8brain;
 pub mod reaeq;
-#[cfg(unix)]
+#[cfg(not(any(windows, target_os = "macos")))]
+pub mod realtime;
+#[cfg(target_os = "macos")]
+#[path = "realtime_macos.rs"]
 pub mod realtime;
 #[cfg(windows)]
 #[path = "realtime_windows.rs"]

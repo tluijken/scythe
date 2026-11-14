@@ -89,6 +89,13 @@ adding them to `PATH` and opening `.RPP` files with Scythe are features to pick 
 file association is off by default). The installer is not signed, so SmartScreen warns before it
 runs.
 
+### macOS
+
+On macOS Scythe builds with rustup's stable toolchain and the Xcode Command Line Tools, and plays
+through Core Audio. It finds CLAP, VST 3, VST 2 and LV2 plugins in `/Library/Audio/Plug-Ins` and
+`~/Library/Audio/Plug-Ins`, and keeps its settings in `~/Library/Application Support/scythe`.
+Plugin editors do not open yet, and there is no app bundle or installer.
+
 ## Features
 
 A summary; [docs/features.md](docs/features.md) has the full description of each area.

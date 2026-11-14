@@ -1,13 +1,17 @@
 //! Hosts the workspace's own `clap-test-gain` plugin. Skipped when it has not been built
 //! (`cargo build -p clap-test-gain`).
 
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::path::PathBuf;
 
 use scythe_engine::clap_host::{ClapLibrary, ClapPlugin};
 
 fn test_plugin() -> Option<PathBuf> {
     let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
-    ["debug", "release"].iter().map(|p| target.join(p).join("libclap_test_gain.so")).find(|p| p.exists())
+    ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}clap_test_gain{DLL_SUFFIX}")))
+        .find(|p| p.exists())
 }
 
 #[test]

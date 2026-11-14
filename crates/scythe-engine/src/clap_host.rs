@@ -12,10 +12,12 @@ use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
     clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
 };
+#[cfg(target_os = "macos")]
+use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
 #[cfg(windows)]
 use clap_sys::ext::gui::CLAP_WINDOW_API_WIN32;
 use clap_sys::ext::gui::{CLAP_EXT_GUI, clap_host_gui, clap_plugin_gui, clap_window, clap_window_handle};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use clap_sys::ext::gui::{CLAP_WINDOW_API_X11, clap_xwnd};
 use clap_sys::ext::params::{CLAP_EXT_PARAMS, clap_param_info, clap_plugin_params};
 use clap_sys::ext::posix_fd_support::{
@@ -102,8 +104,10 @@ impl ClapLibrary {
     }
 
     fn open(path: &Path) -> Result<Arc<Self>, ClapError> {
+        let binary = if cfg!(target_os = "macos") { scythe_core::paths::bundle_executable(path) } else { None };
         // SAFETY: loading a plugin runs its initialisers; inherent to hosting plugins.
-        let lib = unsafe { libloading::Library::new(path) }.map_err(|e| ClapError::Load(path.into(), e.to_string()))?;
+        let lib = unsafe { libloading::Library::new(binary.as_deref().unwrap_or(path)) }
+            .map_err(|e| ClapError::Load(path.into(), e.to_string()))?;
         // SAFETY: `clap_entry` is a `clap_plugin_entry` by the CLAP ABI.
         let entry: *const clap_plugin_entry = unsafe {
             *lib.get::<*const clap_plugin_entry>(b"clap_entry\0").map_err(|_| ClapError::NoEntry(path.into()))?
@@ -184,7 +188,7 @@ pub fn search_paths() -> Vec<PathBuf> {
         dirs.push(Path::new("/etc/profiles/per-user").join(user).join("lib/clap"));
     }
     dirs.extend(["/usr/lib/clap", "/usr/local/lib/clap", "/run/current-system/sw/lib/clap"].map(PathBuf::from));
-    dirs.extend(scythe_core::paths::windows_plugin_dirs("CLAP"));
+    dirs.extend(scythe_core::paths::system_plugin_dirs("CLAP"));
     dirs
 }
 
@@ -334,7 +338,9 @@ impl Editor for ClapEditor {
         let gui = self.ext::<clap_plugin_gui>(CLAP_EXT_GUI).copied().ok_or("the plugin has no editor")?;
         #[cfg(windows)]
         let (api, specific) = (CLAP_WINDOW_API_WIN32.as_ptr(), clap_window_handle { win32: parent as *mut c_void });
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        let (api, specific) = (CLAP_WINDOW_API_COCOA.as_ptr(), clap_window_handle { cocoa: parent as *mut c_void });
+        #[cfg(not(any(windows, target_os = "macos")))]
         let (api, specific) = (CLAP_WINDOW_API_X11.as_ptr(), clap_window_handle { x11: parent as clap_xwnd });
         // SAFETY: main-thread gui calls in the order the extension prescribes.
         unsafe {
