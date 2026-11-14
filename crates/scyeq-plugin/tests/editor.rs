@@ -22,7 +22,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use scyeq_dsp::params::{self, band};
 use scyeq_plugin::ScyEqPlugin;
-use scyeq_plugin::plugin_format::{self, Editor, egui};
+use scyeq_plugin::plugin_format::{self, Editor, Shared, egui};
 
 static DIRTY_MARKS: AtomicU32 = AtomicU32::new(0);
 
@@ -244,7 +244,8 @@ fn editor_drag_reaches_the_host() {
 fn add_band_marks_dirty_and_sends_params() {
     let _turn = turn();
     let instance = Instance::with_a_band();
-    let before: Vec<f64> = params::ids().map(|id| instance.value(id)).collect();
+    let listed: Vec<u32> = scyeq_plugin::params::infos().iter().map(|p| p.id).collect();
+    let before: Vec<f64> = listed.iter().map(|&id| instance.value(id)).collect();
     let marks = DIRTY_MARKS.load(Ordering::SeqCst);
     let mut h = instance.harness();
     h.step();
@@ -268,7 +269,7 @@ fn add_band_marks_dirty_and_sends_params() {
         let at = position(&sent, |s| *s == Sent::Value(id, value)).unwrap_or_else(|| panic!("{offset}: {sent:?}"));
         assert!(at > 0 && sent[at - 1] == Sent::Begin(id) && sent[at + 1] == Sent::End(id), "{sent:?}");
     }
-    for (id, old) in params::ids().zip(before) {
+    for (&id, old) in listed.iter().zip(before) {
         let now = instance.value(id);
         let sent_value = sent.contains(&Sent::Value(id, now));
         assert_eq!(sent_value, now != old, "{}: {old} -> {now}, {sent:?}", params::name(id));
@@ -303,4 +304,30 @@ fn two_editors_at_once() {
     let ended = sent.iter().filter(|s| matches!(s, Sent::End(_))).count();
     assert!(begun > 0 && begun == ended, "closing mid-drag ends the gesture: {sent:?}");
     assert!(two.flush().is_empty(), "the other instance was only looked at");
+}
+
+#[test]
+fn solo_stays_on_the_instance() {
+    let _turn = turn();
+    let instance = Instance::with_a_band();
+    let solo = params::band_param(0, band::SOLO);
+    let marks = DIRTY_MARKS.load(Ordering::SeqCst);
+    let mut h = instance.harness();
+    h.step();
+    h.step();
+    let at = h.get_by_label("Band 1").rect().center();
+    h.event(egui::Event::PointerMoved(at));
+    h.step();
+    button(&mut h, at, true);
+    button(&mut h, at, false);
+    h.get_by_label("Solo").click();
+    h.step();
+
+    let soloed: Vec<_> =
+        scyeq_plugin::registry::others(0).into_iter().filter(|shared| shared.param(solo) == 1.0).collect();
+    assert_eq!(soloed.len(), 1, "the band is soloed on its instance");
+    assert!(instance.flush().is_empty(), "the host hears nothing of it");
+    instance.on_main_thread();
+    assert_eq!(DIRTY_MARKS.load(Ordering::SeqCst), marks, "and the project does not change");
+    assert_eq!(params::decode(&soloed[0].save()).unwrap().values[solo as usize], 0.0, "nor is it saved");
 }

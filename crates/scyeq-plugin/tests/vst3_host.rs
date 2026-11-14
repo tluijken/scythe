@@ -227,7 +227,8 @@ fn close(a: f64, b: f64) -> bool {
 fn reports_every_parameter() {
     let _turn = turn();
     let plugin = Instance::new();
-    let ids: Vec<u32> = params::ids().collect();
+    let ids: Vec<u32> = scyeq_plugin::params::infos().iter().map(|p| p.id).collect();
+    assert_eq!(ids.len(), 375, "every stored value: all but solo and audition");
     assert_eq!(unsafe { plugin.controller.getParameterCount() } as usize, ids.len());
     let structural = [params::GLOBAL + params::global::PHASE, params::GLOBAL + params::global::RESOLUTION];
     let automatable: Vec<u32> = params::automatable().filter(|id| !structural.contains(id)).collect();
@@ -270,7 +271,7 @@ fn loads_scythe_state() {
     assert!(plugin.load(cases::SONG2));
     assert_eq!(plugin.save(), cases::SONG2);
     let stored = params::decode(cases::SONG2).unwrap().values;
-    for id in params::ids() {
+    for id in scyeq_plugin::params::infos().iter().map(|p| p.id) {
         assert!(close(plugin.value(id), stored[id as usize]), "{}", params::name(id));
     }
     assert!(!plugin.load(b"not a state"));

@@ -295,7 +295,7 @@ const MAGIC: &[u8; 4] = b"SCEQ";
 pub const VERSION: u32 = 1;
 
 /// Not stored: soloing and auditioning are momentary.
-fn transient(id: u32) -> bool {
+pub fn transient(id: u32) -> bool {
     id < GLOBAL && matches!(id % BAND_STRIDE, band::SOLO | band::AUDITION)
 }
 

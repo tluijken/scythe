@@ -90,7 +90,7 @@ impl EqHost for PluginHost<'_> {
     }
 
     fn set(&mut self, id: u32, value: f64) {
-        self.cx.set(id, value);
+        set(self.shared, self.cx, id, value);
         if let Some(at) = self.values.get_mut(id as usize) {
             *at = self.shared.param(id);
         }
@@ -101,7 +101,8 @@ impl EqHost for PluginHost<'_> {
     }
 
     /// Made on a copy of the values, then sent as a gesture per changed parameter: a host
-    /// records each, and gets a dirty mark for the edit as a whole.
+    /// records each, and gets a dirty mark for the edit as a whole. Solo and audition change
+    /// on the instance alone.
     fn edit(&mut self, _label: &str, f: &mut dyn FnMut(&mut ScytheEq)) {
         let mut eq = ScytheEq::with_values(self.values.clone(), self.shared.sample_rate());
         f(&mut eq);
@@ -109,6 +110,11 @@ impl EqHost for PluginHost<'_> {
         for id in params::ids() {
             let (old, new) = (self.values[id as usize], eq.value(id));
             if old == new {
+                continue;
+            }
+            if params::transient(id) {
+                self.shared.set_param(id, new);
+                self.values[id as usize] = self.shared.param(id);
                 continue;
             }
             self.cx.begin(id);
@@ -252,8 +258,8 @@ impl InstanceList for Instances<'_> {
     }
 
     fn set_instance(&mut self, id: egui::Id, param: u32, value: f64) {
-        if let Some(cx) = self.cx_of(id) {
-            cx.set(param, value);
+        if let (Some(shared), Some(cx)) = (self.find(id), self.cx_of(id)) {
+            set(shared, &cx, param, value);
         }
     }
 
@@ -265,6 +271,16 @@ impl InstanceList for Instances<'_> {
 
     fn controls_instances(&self) -> bool {
         false
+    }
+}
+
+/// Sets `id` on `shared` through its context, so the host records it; solo and audition, which
+/// the host does not know, on the instance alone.
+fn set(shared: &ScyEqShared, cx: &GuiContext, id: u32, value: f64) {
+    if params::transient(id) {
+        shared.set_param(id, value);
+    } else {
+        cx.set(id, value);
     }
 }
 

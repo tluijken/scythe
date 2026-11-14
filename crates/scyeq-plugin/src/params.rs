@@ -1,5 +1,6 @@
 //! ScyEQ-Pro's settings as the host sees them: one parameter per stored value, its id the
-//! value's index in the state, so ids never move.
+//! value's index in the state, so ids never move. Solo and audition are not stored, so hosts do
+//! not see them: the editor sets them on its instance alone.
 
 use std::sync::OnceLock;
 
@@ -15,6 +16,7 @@ pub fn infos() -> &'static [ParamInfo] {
         let structural = [params::GLOBAL + params::global::PHASE, params::GLOBAL + params::global::RESOLUTION];
         let automatable: Vec<u32> = params::automatable().filter(|id| !structural.contains(id)).collect();
         params::ids()
+            .filter(|&id| !params::transient(id))
             .filter_map(|id| {
                 let spec = params::spec_of(id)?;
                 let kind = match spec.unit {
@@ -135,8 +137,10 @@ mod tests {
         assert_eq!(kind(params::band::SHAPE), Kind::List { min: 0, max: 9 });
         assert_eq!(kind(params::band::SLOPE), Kind::List { min: 0, max: 9 });
         assert_eq!(kind(params::band::STEREO), Kind::List { min: 0, max: 4 });
-        let solo = infos().iter().find(|p| p.id == params::band_param(2, params::band::SOLO)).unwrap();
-        assert!(!solo.automatable);
+        for offset in [params::band::SOLO, params::band::AUDITION] {
+            assert!(infos().iter().all(|p| p.id != params::band_param(2, offset)), "{offset} is not stored");
+        }
+        assert_eq!(infos().len(), params::ids().count() - 2 * params::BANDS);
         let automatable = |id| infos().iter().find(|p| p.id == id).unwrap().automatable;
         assert!(!automatable(params::GLOBAL + params::global::PHASE));
         assert!(!automatable(params::GLOBAL + params::global::RESOLUTION));
