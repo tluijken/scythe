@@ -46,7 +46,8 @@ fn edit_modulation(app: &mut ScytheApp, w: &ModWindow, f: impl FnOnce(&mut Param
     let Some(slot) = app.project.track(w.track).and_then(|t| t.fx.get(w.fx)).cloned() else { return };
     let mut md = m::modulation(&slot, w.param).unwrap_or_else(|| {
         let (name, value) = param_state(&app.session, Target::Track(w.track), w.fx, &slot, w.param);
-        let fx_name = slot.name.split_once(": ").map_or(slot.name.as_str(), |(_, n)| n);
+        let shown = scythe_engine::stock::shown_name(&slot.name);
+        let fx_name = shown.split_once(": ").map_or(&*shown, |(_, n)| n);
         let fx_name = fx_name.rsplit_once(" (").map_or(fx_name, |(n, _)| n);
         ParamModulation::new(w.param.to_string(), format!("{name} / {fx_name}"), value)
     });
@@ -273,8 +274,11 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
         }
     }
     let Some(l) = md.link.as_mut().filter(|_| active) else { return };
-    let chain: Vec<String> =
-        app.project.track(w.track).map(|t| t.fx.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
+    let chain: Vec<String> = app
+        .project
+        .track(w.track)
+        .map(|t| t.fx.iter().map(|s| scythe_engine::stock::shown_name(&s.name).into_owned()).collect())
+        .unwrap_or_default();
     egui::Grid::new("mod-link").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Source");
         let current = match &l.source {

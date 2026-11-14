@@ -77,7 +77,7 @@ pub struct ViewState {
     pub modulation: Option<crate::ui::modulation::ModWindow>,
     /// The graphical editors of stock effects that are open.
     pub fx_editors: Vec<crate::ui::fx_editor::FxEditor>,
-    /// The window listing every Scythe EQ in the project is open.
+    /// The window listing every ScyEQ-Pro in the project is open.
     pub eq_instances: bool,
     /// The tempo map shows as a lane among the envelope lanes (REAPER's master tempo envelope).
     pub tempo_lane: bool,
@@ -748,7 +748,7 @@ impl ScytheApp {
         };
         let Some(slot) = slots.and_then(|s| s.get(index)).cloned() else { return };
         let Some(instance) = self.engine.fx().instance(track, &slot, index) else {
-            self.notify(format!("{} is not running", slot.name));
+            self.notify(format!("{} is not running", scythe_engine::stock::shown_name(&slot.name)));
             return;
         };
         if let Some(at) = self.gfx_views.iter().position(|v| v.track == track && v.index == index) {

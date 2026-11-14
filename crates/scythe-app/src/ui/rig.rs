@@ -559,7 +559,7 @@ fn gate(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
         |s, v| s.gate.hysteresis_db = v,
     );
     let rest = row.end(ui);
-    note(ui, rest, "A noise gate before the amp (ReaGate): it keeps a high-gain amp quiet between notes.");
+    note(ui, rest, "A noise gate before the amp (ScyGate): it keeps a high-gain amp quiet between notes.");
 }
 
 fn eq(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
@@ -590,7 +590,7 @@ fn eq(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {
     row.freq(app, ui, at, "Treble Hz", s.eq.treble_hz, (1000.0, 12000.0), 3200.0, |s, v| s.eq.treble_hz = v);
     row.cut(app, ui, at, "High cut", s.eq.high_cut, HIGH_CUT, true, |s, v| s.eq.high_cut = v);
     let rest = row.end(ui);
-    note(ui, rest, "After the cab (ReaEQ): low and high cut, a bass shelf, a mid peak and a treble shelf.");
+    note(ui, rest, "After the cab (ScyEQ): low and high cut, a bass shelf, a mid peak and a treble shelf.");
 }
 
 fn output(app: &mut ScytheApp, ui: &mut Ui, at: RigAt, s: &RigSettings) {

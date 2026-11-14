@@ -386,7 +386,7 @@ pub fn control_midi(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
                 .into_iter()
                 .find(|s| (0..12u8).all(|d| s.has(d) == new[d as usize]))
                 .map_or_else(|| "Custom".to_owned(), |s| s.name);
-            cx.edit_once("Edit ReaControlMIDI scale", |c: &mut ControlMidi| c.set_scale(new, &name));
+            cx.edit_once("Edit ScyControlMIDI scale", |c: &mut ControlMidi| c.set_scale(new, &name));
         }
         if resp.secondary_clicked() {
             cx.set_once(11, n as f64);

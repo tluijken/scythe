@@ -1,4 +1,4 @@
-//! Scythe EQ's editor: the analyzer behind the curve of every band and of the whole EQ, a
+//! ScyEQ-Pro's editor: the analyzer behind the curve of every band and of the whole EQ, a
 //! handle per band, a piano strip under the frequency axis, the selected band's controls and
 //! the global ones.
 //!
@@ -46,7 +46,7 @@ pub struct EqView {
     alt_solo: Option<usize>,
     /// EQ scale: ± this many dB.
     pub range_db: f64,
-    /// Another Scythe EQ, or a track's output when the path is empty, to show (and find
+    /// Another ScyEQ-Pro, or a track's output when the path is empty, to show (and find
     /// collisions with).
     pub other: Option<(FxOwner, Vec<usize>)>,
     pub collisions: bool,
@@ -693,7 +693,7 @@ fn grab_candidate(plot: &Plot, levels: &Levels, view: &EqView, p: Pos2) -> Optio
 }
 
 fn put(cx: &mut Ctx, id: u32, v: f64) {
-    cx.edit("Adjust Scythe EQ", |eq: &mut ScytheEq| eq.set(id, v));
+    cx.edit("Adjust ScyEQ-Pro", |eq: &mut ScytheEq| eq.set(id, v));
 }
 
 fn put_once(cx: &mut Ctx, label: &str, id: u32, v: f64) {
@@ -741,7 +741,7 @@ fn graph_input(
     let area = plot.rect;
     let resp = ui.interact(area, Id::unique(("scythe-eq-graph", &cx.ed.owner, &cx.ed.path)), Sense::click_and_drag());
     let resp = resp.on_hover_cursor(egui::CursorIcon::Crosshair);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Scythe EQ graph"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "ScyEQ-Pro graph"));
     let pointer = resp.interact_pointer_pos().or(resp.hover_pos());
     let (shift, alt, command) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt, i.modifiers.command));
     let under = pointer.and_then(|p| hit(handles, p));

@@ -147,7 +147,7 @@ pub enum AnalysisCommand {
     Compare { reference: Subject, mix: Subject },
     /// Proposes a few EQ bands (smoothed, limited gain) that bring `mix`'s tonal balance
     /// towards `reference`'s, with advice on compression and limiting for its loudness and
-    /// peaks. With `apply`, the bands go onto that track (or the master) as a new ReaEQ in one
+    /// peaks. With `apply`, the bands go onto that track (or the master) as a new ScyEQ in one
     /// undo step once the job is done.
     #[serde(rename = "analysis.match_eq")]
     MatchEq {
@@ -168,7 +168,7 @@ pub enum AnalysisCommand {
         #[serde(default)]
         max_hz: Option<f64>,
     },
-    /// Adds a ReaEQ with these bands to a track's (or the master's) effects, as one undo step.
+    /// Adds a ScyEQ with these bands to a track's (or the master's) effects, as one undo step.
     #[serde(rename = "analysis.apply_eq")]
     ApplyEq { track: TrackRef, bands: Vec<Band> },
     /// Finds which instrument groups bury each other, where in the spectrum and how often.

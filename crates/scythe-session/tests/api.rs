@@ -130,7 +130,7 @@ fn effects_are_added_bypassed_and_removed() {
     let chain = ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:compressor"}));
     assert_eq!(chain.as_array().unwrap().len(), 1);
     let chain = ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "Equalizer", "index": 0}));
-    assert_eq!(chain[0]["name"], "VST: ReaEQ (Cockos)");
+    assert_eq!(chain[0]["name"], "ScyEQ");
     assert_eq!(chain[0]["running"], true);
     let chain = ok(&mut s, json!({"cmd": "fx.bypass", "track": t, "index": 1, "bypassed": true}));
     assert_eq!(chain[1]["enabled"], false);
@@ -150,7 +150,7 @@ fn chains_take_wet_parallel_and_containers() {
     ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "container"}));
     let chain = ok(&mut s, json!({"cmd": "fx.container.move_in", "track": t, "index": 0, "container": 1}));
     assert_eq!(chain.as_array().unwrap().len(), 1);
-    assert_eq!(chain[0]["container"]["effects"][0]["name"], "VST: ReaComp (Cockos)");
+    assert_eq!(chain[0]["container"]["effects"][0]["name"], "ScyComp");
     ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "Equalizer", "inside": [0]}));
     let chain = ok(&mut s, json!({"cmd": "fx.parallel", "track": t, "index": 1, "mode": "parallel", "inside": [0]}));
     assert_eq!(chain[0]["container"]["effects"][1]["parallel"], "parallel");
@@ -1799,7 +1799,7 @@ fn scythe_eq_bands_are_set_by_name_saved_and_undone() {
     assert_eq!(list["instances"][0]["phase_mode"], "linear");
 
     let text = scythe_core::rpp::project_to_rpp(&s.project);
-    assert!(text.contains("<CLAP \"CLAP: Scythe EQ (Scythe)\" scythe.eq \"\""), "{text}");
+    assert!(text.contains("<CLAP \"CLAP: ScyEQ-Pro (Scythe)\" scythe.eq \"\""), "{text}");
     let back = scythe_core::rpp::project_from_rpp(&text).unwrap();
     let values = scythe_engine::scythe_eq::slot_values(&back.tracks[0].fx[0]).unwrap();
     assert_eq!(values[3], -4.5);
@@ -1919,7 +1919,7 @@ fn amplitude_at(x: &[f32], freq: f64, rate: f64) -> f64 {
     2.0 * re.hypot(im) / x.len() as f64
 }
 
-/// A piano sent into a guitar bus's channels 3/4 keys a Scythe EQ dynamic band there: the
+/// A piano sent into a guitar bus's channels 3/4 keys a ScyEQ-Pro dynamic band there: the
 /// guitar dips while the piano plays and the piano itself never reaches channels 1/2.
 #[test]
 fn a_send_to_channels_3_4_keys_a_dynamic_eq_band() {

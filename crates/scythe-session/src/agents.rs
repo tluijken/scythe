@@ -412,6 +412,10 @@ pub fn track_name(project: &Project, value: &Value) -> Option<String> {
 
 /// A plugin as people say it: "VST3: Curve 3 (AcmeAudio)" is "Curve 3".
 pub fn plugin_name(name: &str) -> String {
+    let shown = scythe_engine::stock::shown_name(name);
+    if shown != name {
+        return shown.into_owned();
+    }
     let name = name.split_once(": ").map_or(name, |(_, n)| n);
     let name = match name.rfind(" (") {
         Some(at) if name.ends_with(')') && at > 0 => &name[..at],
@@ -590,7 +594,7 @@ mod tests {
         assert_eq!(a.running(), 0);
         assert!(a.busy(Instant::now()));
         assert!(!a.busy(Instant::now() + ACTIVE_FOR + Duration::from_millis(10)));
-        let failing = a.begin(&hello("one", "http"), "fx_add", "Add ReaEQ".into()).unwrap();
+        let failing = a.begin(&hello("one", "http"), "fx_add", "Add ScyEQ".into()).unwrap();
         a.end(failing, Some("no plugin".into()));
         assert_eq!(a.light(Instant::now()), Light::Error);
         for _ in 0..CALLS_KEPT + 10 {

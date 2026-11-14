@@ -5,13 +5,13 @@
   </picture>
 </h1>
 
-A from-scratch digital audio workstation in Rust, modelled on REAPER's feature set and file
-format, with a modern UI of its own.
+A from-scratch digital audio workstation in Rust, strongly inspired by the fantastic
+[REAPER](https://www.reaper.fm) and compatible with its projects, with a modern UI of its own.
 
 - **REAPER-compatible.** Scythe opens and saves REAPER 7.73 `.RPP` projects losslessly: on 33
   real projects (~237k lines) a round trip changes only the header line. Projects play
-  sample-identically to REAPER wherever that was measured, from pan laws and fades to ReaEQ,
-  ReaComp, JSFX and resampling ([how](#how-scythe-is-verified)).
+  sample-identically to REAPER wherever that was measured, from pan laws and fades to REAPER's
+  ReaEQ and ReaComp, JSFX and resampling ([how](#how-scythe-is-verified)).
 - **Built for the stage.** In-ear monitor mixes with "more me", setlists with count-in and stop
   markers, footswitches and control surfaces, and a headless server that runs as a service.
 - **Drive it with an AI agent.** Claude Code and other MCP clients can build a live session from a
@@ -100,18 +100,18 @@ Plugin editors do not open yet, and there is no app bundle or installer.
 
 A summary; [docs/features.md](docs/features.md) has the full description of each area.
 
-### Scythe EQ
+### ScyEQ-Pro
 
 Scythe's own equalizer, which REAPER does not have: 24 bands of ten shapes (bell, shelves,
 cuts from 6 to 96 dB/oct and brickwall, notch, band pass, tilt shelf, flat tilt, all pass)
-that beyond ReaEQ can be
+that beyond ScyEQ can be
 
 - **dynamic**, moving towards a range while their region (or a sidechain on channels 3/4)
   crosses a threshold, or **spectral**, taming only the bins that poke out inside their region;
 - placed on **stereo, left, right, mid or side** each;
 - run at **zero latency** (matched filters that keep the analog shape up to Nyquist), in
   **natural phase** or in **linear phase**, with the latency compensated;
-- matched to any track, the master, another Scythe EQ or a reference file with **EQ Match**, edited
+- matched to any track, the master, another ScyEQ-Pro or a reference file with **EQ Match**, edited
   across the project in the **instance list**, and checked for **collisions** with any track's spectrum.
 
 The editor draws every band and the summed curve, with each dynamic band moving live, over a
@@ -120,7 +120,7 @@ freeze) with a piano strip, note readout and spectrum grab: drag a peak to put a
 Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set its bands with
 `eq.band` over the control API and MCP. [More](docs/features.md#effects-and-plugins).
 
-![Scythe EQ on a vocal: bands, a dynamic band moving, the analyzer and the piano strip](docs/screenshots/scythe-eq.png)
+![ScyEQ-Pro on a vocal: bands, a dynamic band moving, the analyzer and the piano strip](docs/screenshots/scyeq-pro.png)
 
 ### Arrange and editing
 
@@ -144,10 +144,11 @@ Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set 
 
 ### Effects and plugins
 
-- **Stock effect emulations** modelled on REAPER 7.73 renders: ReaEQ, ReaComp, ReaXcomp, ReaGate,
-  ReaLimit, ReaDelay, ReaVerb, ReaVerbate, ReaFIR, ReaSynth, ReaSamplOmatic5000, ReaInsert and
-  ReaControlMIDI, saved in REAPER's own format so REAPER opens them unchanged. Each has a
-  graphical editor drawn from the emulation's own math.
+- **REAPER-compatible effects**: ScyEQ, ScyComp, ScyXcomp, ScyGate, ScyLimit, ScyDelay,
+  ScyVerb, ScyVerbate, ScyFir, ScySynth, ScySampler, ScyInsert and ScyControlMIDI read and write
+  the settings of REAPER's stock effects (ReaEQ, ReaComp and the rest; the pairs are listed in
+  [docs/features.md](docs/features.md)), measured against REAPER 7.73 renders, so REAPER opens
+  them unchanged. Each has a graphical editor drawn from the emulation's own math.
 - **Plugin hosting**: CLAP, LV2, VST 2 and VST 3 (instruments too), with their own editors,
   presets in REAPER's preset files and latency compensation across tracks, sends and folders.
   Plugins are scanned in the background with a cache, CLAP and VST 3 in a child process with a
@@ -162,9 +163,9 @@ Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set 
   previewed in the slot and kept.
 - Parameter modulation (LFO, audio control signal, parameter links, MIDI), MIDI and OSC learn.
 
-| ReaEQ | ReaComp |
+| ScyEQ | ScyComp |
 |---|---|
-| ![ReaEQ's editor: band handles over the live spectrum](docs/screenshots/reaeq-editor.png) | ![ReaComp's editor: transfer curve, gain reduction and history](docs/screenshots/reacomp-editor.png) |
+| ![ScyEQ's editor: band handles over the live spectrum](docs/screenshots/scyeq-editor.png) | ![ScyComp's editor: transfer curve, gain reduction and history](docs/screenshots/scycomp-editor.png) |
 
 | Guitar rig | NAM and TONE3000 browser |
 |---|---|
@@ -317,7 +318,7 @@ Every known difference, area by area, is in [docs/limitations.md](docs/limitatio
 | Crate | Contents |
 |---|---|
 | `scythe-core` | Project model (tracks, folders, items, takes, sends, markers, tempo map, envelopes, fades, MIDI sources), lossless `.RPP` reader/writer, pan and fader laws, undo history |
-| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia, with REAPER's MP3 framing) and REAPER's resample modes, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ReaEQ/ReaVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
+| `scythe-engine` | cpal output with a null-device fallback, lock-free transport, immutable render graph swapped via `arc-swap`, media decoding (symphonia, with REAPER's MP3 framing) and REAPER's resample modes, peaks, meters, offline WAV bounce, envelopes, metronome, preview synth, recording, FX chains (ScyEQ/ScyVerb-compatible effects, gate, compressor, convolution), CLAP, LV2, VST 2 and VST 3 hosting with editors and latency compensation, time-stretch |
 | `clap-test-gain`, `lv2-test-plugins`, `vst2-test-plugin`, `vst3-test-plugin` | Minimal plugins the host tests load (one per format) |
 | `scythe-session` | The live session without UI: project and undo, engine sync, media loading, recording and monitoring, metronome, automation writing, meters, save/open/auto-save; the control API (`api::Command`, events) and the pump that runs it on the session's thread |
 | `scythe-server` | Control API over HTTP and WebSocket (axum) and MCP at `/mcp`, the web UI (`web/`: plain ES modules with a vendored Preact + htm), the headless runner and its config, the `scythe-server` binary |

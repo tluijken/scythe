@@ -103,7 +103,7 @@ pub enum FxCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// Adds, removes or retypes a band of a ReaEQ (the built-in equalizer).
+    /// Adds, removes or retypes a band of a ScyEQ (the built-in equalizer).
     #[serde(rename = "fx.eq_band")]
     EqBand {
         track: TrackRef,
@@ -128,7 +128,7 @@ pub enum FxCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// Adds, removes or changes a tap of a ReaDelay (the built-in delay).
+    /// Adds, removes or changes a tap of a ScyDelay (the built-in delay).
     #[serde(rename = "fx.delay_tap")]
     DelayTap {
         track: TrackRef,
@@ -164,7 +164,7 @@ pub enum FxCommand {
         #[serde(flatten)]
         at: ChainAt,
     },
-    /// Replaces the curve of a ReaFIR (the built-in FFT EQ) in its EQ mode: points of
+    /// Replaces the curve of a ScyFir (the built-in FFT EQ) in its EQ mode: points of
     /// frequency in Hz and gain in dB.
     #[serde(rename = "fx.fir_points")]
     FirPoints {
@@ -390,7 +390,9 @@ fn catalog_of(installed: &scythe_engine::plugin_scan::Snapshot) -> Vec<(CatalogE
 fn find_plugin(session: &Session, wanted: &str) -> Option<FxSlot> {
     let builtin = Builtin::ALL.iter().find(|b| {
         let id = format!("builtin:{}", b.label().to_lowercase().replace(' ', "-"));
-        id == wanted || b.label().eq_ignore_ascii_case(wanted)
+        id == wanted
+            || b.label().eq_ignore_ascii_case(wanted)
+            || (matches!(b, Builtin::ScytheEq) && wanted == "builtin:scythe-eq")
     });
     if let Some(b) = builtin {
         return Some(b.slot());
@@ -585,7 +587,7 @@ pub enum ListAction {
     Set,
 }
 
-/// A ReaEQ band type.
+/// A ScyEQ band type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EqKind {
@@ -885,7 +887,7 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
                 ListAction::Remove => "Remove EQ band",
                 ListAction::Set => "Change EQ band type",
             };
-            let bands = edit_stock(session, &inst, label, "ReaEQ", |eq: &mut ReaEqCompat| {
+            let bands = edit_stock(session, &inst, label, "ScyEQ", |eq: &mut ReaEqCompat| {
                 let existing = |b: Option<usize>, n: usize| {
                     b.filter(|b| *b < n).ok_or_else(|| ApiError::not_found(format!("the EQ has {n} band(s)")))
                 };
@@ -933,7 +935,7 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
                 ListAction::Set => "Change delay tap",
             };
             let gain = |db: f64| if db <= -59.9 { 0.0 } else { 10f64.powf(db.min(12.0) / 20.0) };
-            let taps = edit_stock(session, &inst, label, "ReaDelay", |d: &mut ReaDelayCompat| {
+            let taps = edit_stock(session, &inst, label, "ScyDelay", |d: &mut ReaDelayCompat| {
                 let taps = d.taps();
                 let at = match action {
                     ListAction::Add => None,
@@ -974,7 +976,7 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
             }
             let points: Vec<(f32, f32)> =
                 points.iter().map(|[hz, db]| (hz.clamp(1.0, 24000.0), db.clamp(-90.0, 24.0))).collect();
-            let n = edit_stock(session, &inst, "Draw FFT EQ curve", "ReaFIR", |f: &mut Fir| {
+            let n = edit_stock(session, &inst, "Draw FFT EQ curve", "ScyFir", |f: &mut Fir| {
                 f.set_points(points);
                 Ok(f.points().len())
             })?;
@@ -1001,7 +1003,7 @@ pub fn execute(session: &mut Session, command: FxCommand) -> Result<Value, ApiEr
 }
 
 /// The effect and parameter an `fx.param` command (as JSON) names, as people say them:
-/// ("ReaComp", "Threshold").
+/// ("ScyComp", "Threshold").
 pub fn param_names(session: &Session, command: &Value) -> Option<(String, String)> {
     let Ok(FxCommand::SetParam { track, index, param, at, .. }) = serde_json::from_value(command.clone()) else {
         return None;

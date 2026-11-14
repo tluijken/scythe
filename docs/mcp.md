@@ -78,7 +78,7 @@ from the API. `crates/scythe-mcp/tests/tools.json` is a snapshot of the whole li
 | Monitor mixes | `mix_list`, `mix_get`, `mix_create`, `mix_copy`, `mix_rename`, `mix_delete`, `mix_level`, `mix_pan`, `mix_mute`, `mix_own`, `mix_more_me`, `mix_volume`, `mix_output`, `mix_limiter`, `mix_add_source`, `mix_remove_source`, `mix_cue_bus` |
 | Setlists | `setlist_songs`, `setlist_list`, `setlist_get`, `setlist_create`, `setlist_rename`, `setlist_delete`, `setlist_duplicate`, `setlist_set`, `setlist_move`, `setlist_import`, `setlist_export`, `setlist_select`, `setlist_cue`, `setlist_play`, `setlist_stop`, `setlist_next`, `setlist_previous`, `setlist_auto_advance`, `setlist_marker_actions`, `setlist_status` |
 | Media | `media_import` (audio and MIDI files as items: onto a track, new tracks, or in sequence with gaps), `media_probe` (format, rate, channels, length, loudness, true peak) |
-| Analysis | `analysis_file`, `analysis_mix` (the master, a track or bus, or a track group, rendered offline), `analysis_compare`, `analysis_match_eq` (and `apply` it as a ReaEQ), `analysis_apply_eq`, `analysis_masking` (which instrument groups bury each other, in which region and how often, each group rendered offline through its buses), `analysis_segments` (songs in a backing-track or click file, proposed song and `!1016` stop markers), `analysis_job` |
+| Analysis | `analysis_file`, `analysis_mix` (the master, a track or bus, or a track group, rendered offline), `analysis_compare`, `analysis_match_eq` (and `apply` it as a ScyEQ), `analysis_apply_eq`, `analysis_masking` (which instrument groups bury each other, in which region and how often, each group rendered offline through its buses), `analysis_segments` (songs in a backing-track or click file, proposed song and `!1016` stop markers), `analysis_job` |
 | Events | `events_since` (what happened since a number: project changes, notices, transport, setlist, device health), `events_meters` (peak meters of the master, tracks and monitor mixes, and the device's health) |
 | Access links | `access_whoami`, `access_list`, `access_create`, `access_update`, `access_renew`, `access_delete`: links for musicians' mixes and the stage tablet, with `urls`, their QR code payloads (served by `scythe-server` and `scythe --control`) |
 | Scripts | `script_run`: ReaScript text (Lua or EEL) in the desktop app, one undo step |
@@ -200,7 +200,7 @@ An example of what an agent does given `match_reference` with `/refs/album/03.fl
    Hz)", "1.6 dB more in the presence (3-8 kHz)".
 3. `analysis_match_eq` with the same subjects, `max_gain_db: 4`, `max_bands: 5`, `apply:
    "master"`: a +2.2 dB low shelf at 100 Hz and a -1.5 dB peak at 4 kHz go onto the master as
-   one ReaEQ (one undo step, `Match EQ`); `dynamics` suggests 5.3 dB of limiter drive with a
+   one ScyEQ (one undo step, `Match EQ`); `dynamics` suggests 5.3 dB of limiter drive with a
    -1 dBTP ceiling.
 4. `fx_add` `builtin:limiter` on the master, `fx_param` its threshold and ceiling.
 5. `analysis_compare` again: within 0.6 LU, every region within 1 dB. The agent stops and lists

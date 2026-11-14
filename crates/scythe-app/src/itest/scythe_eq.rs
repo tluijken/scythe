@@ -1,4 +1,4 @@
-//! Scythe EQ's editor: adding it from the FX browser, adding bands with the mouse, moving
+//! ScyEQ-Pro's editor: adding it from the FX browser, adding bands with the mouse, moving
 //! one and several, removing them with the keyboard, undo, and the instance list.
 
 use egui::accesskit::Role;
@@ -9,7 +9,7 @@ use scythe_engine::scythe_eq::slot_values;
 use super::TestApp;
 
 fn values(t: &TestApp) -> Vec<f64> {
-    slot_values(&t.track("Drums").fx[0]).expect("a Scythe EQ state")
+    slot_values(&t.track("Drums").fx[0]).expect("a ScyEQ-Pro state")
 }
 
 fn used(v: &[f64]) -> Vec<usize> {
@@ -21,13 +21,13 @@ fn scythe_eq_editor_adds_moves_and_removes_bands() {
     let mut t = TestApp::live("scythe_eq");
     t.click("Track Drums");
     t.click("Add plugin");
-    t.click("Scythe EQ");
+    t.click("ScyEQ-Pro");
     assert_eq!(t.track("Drums").fx.len(), 1);
     assert!(scythe_engine::scythe_eq::is_slot(&t.track("Drums").fx[0]));
     t.click_role(Role::Button, "Edit");
     let drums = t.track("Drums").id;
     assert!(crate::ui::fx_editor::is_open(t.app(), Some(drums), 0), "the editor opened");
-    let graph = t.rect("Scythe EQ graph");
+    let graph = t.rect("ScyEQ-Pro graph");
 
     // Double-clicks add a bell where they land, and a cut near the ends. A pause before each
     // keeps egui from counting it with the click before as a triple click.

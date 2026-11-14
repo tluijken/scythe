@@ -1,9 +1,9 @@
-//! Scythe EQ: Scythe's own parametric and dynamic equaliser. Up to 24 bands of ten shapes,
+//! ScyEQ-Pro: Scythe's own parametric and dynamic equaliser. Up to 24 bands of ten shapes,
 //! zero latency (matched IIR), natural phase or linear phase processing, per-band stereo
 //! placement, dynamic and spectral dynamic bands with internal or external sidechain, a
 //! character stage, auto gain and an output section.
 //!
-//! It is stored as a CLAP slot (`<CLAP "CLAP: Scythe EQ (Scythe)" scythe.eq "">` with its
+//! It is stored as a CLAP slot (`<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` with its
 //! state in `<STATE`), a block REAPER keeps byte for byte when it does not know the plugin.
 
 pub mod dynamics;
@@ -26,12 +26,14 @@ use fir::{FirEngine, Layout, Timing};
 use params::{BAND_STRIDE, BANDS, GLOBAL, PhaseMode, Placement, band, global};
 use spectral::{Spectral, SpectralBand};
 
-pub const NAME: &str = "Scythe EQ";
+pub const NAME: &str = "ScyEQ-Pro";
 pub const CLAP_ID: &str = "scythe.eq";
-pub const DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
-pub const STATUS: &str = "Scythe EQ";
+pub const DISPLAY: &str = "CLAP: ScyEQ-Pro (Scythe)";
+/// The title projects saved before the EQ had its name carry; the slot is found by `CLAP_ID`.
+pub const OLD_DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
+pub const STATUS: &str = "parametric EQ";
 
-/// Whether `slot` holds a Scythe EQ.
+/// Whether `slot` holds a ScyEQ-Pro.
 pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
     slot.raw.iter().any(|n| {
         matches!(n, scythe_core::rpp::Node::Chunk(c)
@@ -39,7 +41,7 @@ pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
     })
 }
 
-/// The values stored in a Scythe EQ slot.
+/// The values stored in a ScyEQ-Pro slot.
 pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
     use base64::Engine as _;
     let chunk = slot.raw.iter().find_map(|n| match n {
@@ -58,7 +60,7 @@ pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
     params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?)
 }
 
-/// A new slot holding a Scythe EQ with `state` (the default when `None`).
+/// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
 pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
     use base64::Engine as _;
     use scythe_core::rpp::{Chunk, Node};

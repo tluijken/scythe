@@ -733,8 +733,13 @@ fn fx(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
 }
 
 /// Whether REAPER's FX lookup by name finds `query` in a plugin called `full`: a
-/// case-insensitive match of the name, with or without its `VST3:`-style prefix.
+/// case-insensitive match of the name, with or without its `VST3:`-style prefix, or of Scythe's
+/// own name for a stock plugin (`ScyComp`).
 pub(crate) fn fx_name_matches(full: &str, query: &str) -> bool {
+    let own = scythe_engine::stock::find(full).map(|p| p.own.to_lowercase());
+    if own.is_some_and(|o| !query.trim().is_empty() && o.contains(&query.trim().to_lowercase())) {
+        return true;
+    }
     let (full, query) = (full.to_lowercase(), query.to_lowercase());
     let query = match query.split_once(':') {
         Some((kind, rest)) if !kind.contains(' ') && full.starts_with(&format!("{kind}:")) => rest.trim().to_owned(),
@@ -1425,6 +1430,7 @@ mod tests {
     #[test]
     fn fx_names_match_as_reaper_looks_them_up() {
         assert!(fx_name_matches("VST: ReaEQ (Cockos)", "ReaEQ"));
+        assert!(fx_name_matches("VST: ReaEQ (Cockos)", "ScyEQ"));
         assert!(fx_name_matches("VST: ReaEQ (Cockos)", "vst: reaeq"));
         assert!(!fx_name_matches("VST: ReaEQ (Cockos)", "VST3: ReaEQ"));
         assert!(!fx_name_matches("VST: ReaEQ (Cockos)", "ReaComp"));

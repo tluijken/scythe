@@ -31,14 +31,16 @@ pub type Constructor = fn(&[u8], &StockContext) -> Result<Box<dyn Effect>, Strin
 
 /// One stock plugin as REAPER names and stores it.
 pub struct StockPlugin {
-    /// The name in the FX browser, e.g. `ReaComp`.
+    /// REAPER's name for it, e.g. `ReaComp`, which projects store.
     pub name: &'static str,
+    /// Scythe's own name for its implementation, e.g. `ScyComp`, shown everywhere else.
+    pub own: &'static str,
     /// Library file REAPER loads it from.
     pub file: &'static str,
     /// The VST 2 unique id and the class guid REAPER writes after it.
     pub vst_id: u32,
     pub guid: &'static str,
-    /// Shown as the slot's status.
+    /// What it is, shown as the slot's status.
     pub status: &'static str,
     pub create: Constructor,
 }
@@ -61,8 +63,8 @@ impl StockPlugin {
 const INSTRUMENTS: &[&str] = &["ReaSamplOmatic5000", "ReaSynth", "ReaSynDr"];
 
 macro_rules! stock {
-    ($name:literal, $file:literal, $id:literal, $guid:literal, $status:literal, $create:expr) => {
-        StockPlugin { name: $name, file: $file, vst_id: $id, guid: $guid, status: $status, create: $create }
+    ($name:literal, $own:literal, $file:literal, $id:literal, $guid:literal, $status:literal, $create:expr) => {
+        StockPlugin { name: $name, own: $own, file: $file, vst_id: $id, guid: $guid, status: $status, create: $create }
     };
 }
 
@@ -71,35 +73,33 @@ fn boxed<E: Effect + 'static>(e: Option<E>, what: &str) -> Result<Box<dyn Effect
 }
 
 pub static PLUGINS: &[StockPlugin] = &[
-    stock!(
-        "ReaEQ",
-        "reaeq.vst.so",
-        1919247729,
-        "56535472656571726561657100000000",
-        "ReaEQ-compatible EQ",
-        |chunk, cx| boxed(crate::reaeq::ReaEqCompat::from_chunk(chunk, cx.sample_rate), "ReaEQ")
-    ),
+    stock!("ReaEQ", "ScyEQ", "reaeq.vst.so", 1919247729, "56535472656571726561657100000000", "EQ", |chunk, cx| boxed(
+        crate::reaeq::ReaEqCompat::from_chunk(chunk, cx.sample_rate),
+        "ScyEQ"
+    )),
     stock!(
         "ReaSamplOmatic5000",
+        "ScySampler",
         "reasamplomatic.vst.so",
         1920167789,
         "56535472736F6D72656173616D706C6F",
-        "ReaSamplOmatic5000-compatible sampler",
+        "sampler",
         |chunk, cx| {
             use crate::sampler::{Rs5kCompat, Rs5kSettings};
-            let settings = Rs5kSettings::parse(chunk).ok_or("unreadable ReaSamplOmatic5000 settings")?;
+            let settings = Rs5kSettings::parse(chunk).ok_or("unreadable ScySampler settings")?;
             Ok(Box::new(Rs5kCompat::new(settings, cx.sample_rate, cx.project_dir)?))
         }
     ),
     stock!(
         "ReaDelay",
+        "ScyDelay",
         "readelay.vst.so",
         1919247468,
         "5653547265646C72656164656C617900",
-        "ReaDelay-compatible delay",
+        "delay",
         |chunk, cx| {
             use crate::delay::{ReaDelayCompat, ReaDelaySettings};
-            let settings = ReaDelaySettings::parse(chunk).ok_or("unreadable ReaDelay settings")?;
+            let settings = ReaDelaySettings::parse(chunk).ok_or("unreadable ScyDelay settings")?;
             let mut delay = ReaDelayCompat::new(settings, cx.sample_rate);
             delay.chunk = chunk.to_vec();
             Ok(Box::new(delay))
@@ -107,45 +107,50 @@ pub static PLUGINS: &[StockPlugin] = &[
     ),
     stock!(
         "ReaLimit",
+        "ScyLimit",
         "realimit.vst.so",
         1919708532,
         "565354726C6D747265616C696D697400",
-        "ReaLimit-compatible limiter",
-        |chunk, cx| boxed(realimit::Limiter::from_realimit(chunk, cx.sample_rate), "ReaLimit")
+        "limiter",
+        |chunk, cx| boxed(realimit::Limiter::from_realimit(chunk, cx.sample_rate), "ScyLimit")
     ),
     stock!(
         "ReaGate",
+        "ScyGate",
         "reagate.vst.so",
         1919248244,
         "56535472656774726561676174650000",
-        "ReaGate-compatible gate",
-        |chunk, cx| boxed(reagate::Gate::from_reagate(chunk, cx.sample_rate), "ReaGate")
+        "gate",
+        |chunk, cx| boxed(reagate::Gate::from_reagate(chunk, cx.sample_rate), "ScyGate")
     ),
     stock!(
         "ReaComp",
+        "ScyComp",
         "reacomp.vst.so",
         1919247213,
         "5653547265636D726561636F6D700000",
-        "ReaComp-compatible compressor",
-        |chunk, cx| boxed(reacomp::Compressor::from_reacomp(chunk, cx.sample_rate), "ReaComp")
+        "compressor",
+        |chunk, cx| boxed(reacomp::Compressor::from_reacomp(chunk, cx.sample_rate), "ScyComp")
     ),
     stock!(
         "ReaXcomp",
+        "ScyXcomp",
         "reaxcomp.vst.so",
         1919252579,
         "5653547265786372656178636F6D7000",
-        "ReaXcomp-compatible multiband compressor",
-        |chunk, cx| boxed(reaxcomp::MultibandCompressor::from_reaxcomp(chunk, cx.sample_rate), "ReaXcomp")
+        "multiband compressor",
+        |chunk, cx| boxed(reaxcomp::MultibandCompressor::from_reaxcomp(chunk, cx.sample_rate), "ScyXcomp")
     ),
     stock!(
         "ReaVerb",
+        "ScyVerb",
         "reaverb.vst.so",
         1919252066,
         "56535472657662726561766572620000",
-        "ReaVerb-compatible convolution",
+        "convolution reverb",
         |chunk, cx| {
             use crate::reaverb::{ReaVerbCompat, ReaVerbSettings};
-            let settings = ReaVerbSettings::parse(chunk).ok_or("unreadable ReaVerb settings")?;
+            let settings = ReaVerbSettings::parse(chunk).ok_or("unreadable ScyVerb settings")?;
             let mut verb = ReaVerbCompat::new(settings, cx.sample_rate, cx.project_dir)?;
             verb.set_chunk(chunk.to_vec());
             Ok(Box::new(verb))
@@ -153,43 +158,48 @@ pub static PLUGINS: &[StockPlugin] = &[
     ),
     stock!(
         "ReaVerbate",
+        "ScyVerbate",
         "reaverbate.vst.so",
         1920361016,
         "56535472766238726561766572626174",
-        "ReaVerbate-compatible reverb",
-        |chunk, cx| boxed(reaverbate::Reverb::from_reaverbate(chunk, cx.sample_rate), "ReaVerbate")
+        "algorithmic reverb",
+        |chunk, cx| boxed(reaverbate::Reverb::from_reaverbate(chunk, cx.sample_rate), "ScyVerbate")
     ),
     stock!(
         "ReaSynth",
+        "ScySynth",
         "reasynth.vst.so",
         1919251321,
         "5653547265737972656173796E746800",
-        "ReaSynth-compatible synth",
-        |chunk, cx| boxed(reasynth::Synth::from_reasynth(chunk, cx.sample_rate), "ReaSynth")
+        "synth",
+        |chunk, cx| boxed(reasynth::Synth::from_reasynth(chunk, cx.sample_rate), "ScySynth")
     ),
     stock!(
         "ReaControlMIDI",
+        "ScyControlMIDI",
         "reacontrolmidi.vst.so",
         1919118692,
         "56535472636D64726561636F6E74726F",
-        "ReaControlMIDI-compatible MIDI control",
-        |chunk, _| boxed(reacontrolmidi::ControlMidi::from_chunk(chunk), "ReaControlMIDI")
+        "MIDI control",
+        |chunk, _| boxed(reacontrolmidi::ControlMidi::from_chunk(chunk), "ScyControlMIDI")
     ),
     stock!(
         "ReaFir (FFT EQ+Dynamics Processor)",
+        "ScyFir",
         "reafir.vst.so",
         1919247986,
         "56535472656672726561666972666674",
-        "ReaFIR-compatible FFT EQ",
+        "FFT EQ",
         |chunk, cx| Ok(Box::new(reafir::Fir::from_reafir(chunk, cx.sample_rate)?))
     ),
     stock!(
         "ReaInsert",
+        "ScyInsert",
         "reainsert.vst.so",
         1919250281,
         "56535472656F69726561696E73657274",
-        "ReaInsert-compatible hardware insert",
-        |chunk, cx| boxed(reainsert::Insert::new(chunk, cx.hardware.cloned(), cx.sample_rate), "ReaInsert")
+        "hardware insert",
+        |chunk, cx| boxed(reainsert::Insert::new(chunk, cx.hardware.cloned(), cx.sample_rate), "ScyInsert")
     ),
 ];
 
@@ -198,15 +208,28 @@ pub fn find(display: &str) -> Option<&'static StockPlugin> {
     PLUGINS.iter().find(|p| p.matches(display))
 }
 
+/// The name a slot titled `title` goes by in Scythe: its own name for a stock plugin Scythe
+/// implements (`ScyComp`) and for ScyEQ-Pro, the title otherwise. Projects keep REAPER's title.
+pub fn shown_name(title: &str) -> std::borrow::Cow<'_, str> {
+    use crate::scythe_eq;
+    if title == scythe_eq::DISPLAY || title == scythe_eq::OLD_DISPLAY {
+        return scythe_eq::NAME.into();
+    }
+    match find(title) {
+        Some(p) => p.own.into(),
+        None => title.into(),
+    }
+}
+
 /// Whether a `VST` slot with these arguments holds ReaGate or ReaComp, whose states REAPER
 /// only reads with its sidechain header (see `builtin::sidechain_vst_lines`).
 pub fn takes_sidechain_header(args: &[String]) -> bool {
     args.first().and_then(|d| find(d)).is_some_and(|p| matches!(p.name, "ReaGate" | "ReaComp"))
 }
 
-/// The stock plugin called `name` (`ReaComp`).
+/// The stock plugin called `name`, by REAPER's name (`ReaComp`) or Scythe's (`ScyComp`).
 pub fn by_name(name: &str) -> Option<&'static StockPlugin> {
-    PLUGINS.iter().find(|p| p.name == name)
+    PLUGINS.iter().find(|p| p.name == name || p.own == name)
 }
 
 /// ReaGate and ReaComp chunks: two 0xdeadbeef/0xdeadf00d marker words, then every parameter

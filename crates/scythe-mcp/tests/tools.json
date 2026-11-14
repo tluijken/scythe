@@ -3090,7 +3090,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds, removes or retypes a band of a ReaEQ (the built-in equalizer).\n\nControl API command `fx.eq_band`.",
+    "description": "Adds, removes or retypes a band of a ScyEQ (the built-in equalizer).\n\nControl API command `fx.eq_band`.",
     "inputSchema": {
       "properties": {
         "action": {
@@ -3240,7 +3240,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds, removes or changes a tap of a ReaDelay (the built-in delay).\n\nControl API command `fx.delay_tap`.",
+    "description": "Adds, removes or changes a tap of a ScyDelay (the built-in delay).\n\nControl API command `fx.delay_tap`.",
     "inputSchema": {
       "properties": {
         "action": {
@@ -3414,7 +3414,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Replaces the curve of a ReaFIR (the built-in FFT EQ) in its EQ mode: points of\nfrequency in Hz and gain in dB.\n\nControl API command `fx.fir_points`.",
+    "description": "Replaces the curve of a ScyFir (the built-in FFT EQ) in its EQ mode: points of\nfrequency in Hz and gain in dB.\n\nControl API command `fx.fir_points`.",
     "inputSchema": {
       "properties": {
         "chain": {
@@ -13490,7 +13490,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Proposes a few EQ bands (smoothed, limited gain) that bring `mix`'s tonal balance\ntowards `reference`'s, with advice on compression and limiting for its loudness and\npeaks. With `apply`, the bands go onto that track (or the master) as a new ReaEQ in one\nundo step once the job is done.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.match_eq`.",
+    "description": "Proposes a few EQ bands (smoothed, limited gain) that bring `mix`'s tonal balance\ntowards `reference`'s, with advice on compression and limiting for its loudness and\npeaks. With `apply`, the bands go onto that track (or the master) as a new ScyEQ in one\nundo step once the job is done.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.match_eq`.",
     "inputSchema": {
       "properties": {
         "apply": {
@@ -13784,7 +13784,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds a ReaEQ with these bands to a track's (or the master's) effects, as one undo step.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.apply_eq`.",
+    "description": "Adds a ScyEQ with these bands to a track's (or the master's) effects, as one undo step.\n\nMeasuring commands start a job and answer `{\"job\", \"status\": \"running\"}` (or `\"done\"` with\nthe `result` when it was measured before); `analysis.job` gives the result once done. MCP\ntools wait for the job themselves.\n\nControl API command `analysis.apply_eq`.",
     "inputSchema": {
       "properties": {
         "bands": {
@@ -14325,7 +14325,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Turns the Neural Amp Modeler slot at `index` into a rig, together with a ReaGate right\nbefore it and the ReaVerb (impulse response) and ReaEQ right after it. The stages it\nlacks are added switched off, so the sound stays the same.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.convert`.",
+    "description": "Turns the Neural Amp Modeler slot at `index` into a rig, together with a ScyGate right\nbefore it and the ScyVerb (impulse response) and ScyEQ right after it. The stages it\nlacks are added switched off, so the sound stays the same.\n\nGuitar rigs: a gate, a Neural Amp Modeler amp, a cabinet impulse response (with an optional\nsecond one to blend), an EQ with low and high cut and an output level, kept as one REAPER\nFX container named \"Rig: <amp> + <cab>\". Rigs are addressed by track and, when a track has\nmore than one, by the rig's position in the track's effect chain.\n\nControl API command `rig.convert`.",
     "inputSchema": {
       "properties": {
         "index": {
@@ -15289,7 +15289,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Every Scythe EQ in the project, input, take and monitoring chains and containers\nincluded: track, chain (with `item` and `take` for a take), `index` and `inside` as\n`eq.get` takes them, name, phase mode and the bands in use.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.instances`.",
+    "description": "Every ScyEQ-Pro in the project, input, take and monitoring chains and containers\nincluded: track, chain (with `item` and `take` for a take), `index` and `inside` as\n`eq.get` takes them, name, phase mode and the bands in use.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.instances`.",
     "inputSchema": {
       "properties": {},
       "type": "object"
@@ -15302,7 +15302,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "One Scythe EQ's global settings and its bands in use, with each dynamic band's current\ngain change.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.get`.",
+    "description": "One ScyEQ-Pro's global settings and its bands in use, with each dynamic band's current\ngain change.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.get`.",
     "inputSchema": {
       "properties": {
         "chain": {
@@ -15386,7 +15386,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Adds a band (with `band` left out in the first free slot, with `band` naming a free\nslot in that one) or changes a band in use; fields left out stay as they are, and a new\nband starts from the defaults. `remove` takes a band in use out. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
+    "description": "Adds a band (with `band` left out in the first free slot, with `band` naming a free\nslot in that one) or changes a band in use; fields left out stay as they are, and a new\nband starts from the defaults. `remove` takes a band in use out. One undo step.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.band`.",
     "inputSchema": {
       "properties": {
         "attack_ms": {
@@ -15628,7 +15628,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "Changes global settings; fields left out stay as they are. One undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.set`.",
+    "description": "Changes global settings; fields left out stay as they are. One undo step.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.set`.",
     "inputSchema": {
       "properties": {
         "auto_gain": {
@@ -15798,7 +15798,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "What this Scythe EQ puts out next to what a track, the master or another instance\nplays, on third-octave bands, with the ranges where they collide (both loud and within\n6 dB). It reads the last third of a second of audio, so ask while the part plays; the\nfirst call after a pause starts listening and may answer `live: false`.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.compare`.",
+    "description": "What this ScyEQ-Pro puts out next to what a track, the master or another instance\nplays, on third-octave bands, with the ranges where they collide (both loud and within\n6 dB). It reads the last third of a second of audio, so ask while the part plays; the\nfirst call after a pause starts listening and may answer `live: false`.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.compare`.",
     "inputSchema": {
       "properties": {
         "chain": {
@@ -15878,7 +15878,7 @@
             },
             "index": {
               "default": null,
-              "description": "With `track`: the Scythe EQ at this position of the track's chain instead, its output.",
+              "description": "With `track`: the ScyEQ-Pro at this position of the track's chain instead, its output.",
               "format": "uint",
               "minimum": 0,
               "type": [
@@ -15929,7 +15929,7 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
-    "description": "EQ Match: bells and shelves that move this Scythe EQ's input towards the spectrum of\na track, the master, another instance or an audio file. Live sources are read over the\nlast third of a second, so ask while the part plays. With `apply` the bands go into\nfree band slots as one undo step.\n\nScythe EQ, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.match`.",
+    "description": "EQ Match: bells and shelves that move this ScyEQ-Pro's input towards the spectrum of\na track, the master, another instance or an audio file. Live sources are read over the\nlast third of a second, so ask while the part plays. With `apply` the bands go into\nfree band slots as one undo step.\n\nScyEQ-Pro, Scythe's own dynamic equalizer (24 bands, dynamic and spectral bands, mid/side\nper band, zero latency, natural or linear phase). Every value can also be read and set as\na plain parameter with `fx.params` / `fx.param`; these commands address bands by number and\nshape by name.\n\nControl API command `eq.match`.",
     "inputSchema": {
       "properties": {
         "amount": {
@@ -16010,7 +16010,7 @@
             },
             "index": {
               "default": null,
-              "description": "With `track`: the Scythe EQ at this position of the track's chain instead, its output.",
+              "description": "With `track`: the ScyEQ-Pro at this position of the track's chain instead, its output.",
               "format": "uint",
               "minimum": 0,
               "type": [

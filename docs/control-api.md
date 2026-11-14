@@ -300,7 +300,7 @@ a bus that only plays through hardware outputs has it off.
 
 Send entries (in `send.list` and track snapshots) carry the audio routing as `src`, `src_count`, `dst`
 and `dst_mono` (channels from 1; `src` is null for a MIDI-only send). A sidechain: give the
-receiving track four channels and send into 3/4, where its effects (a Scythe EQ band with
+receiving track four channels and send into 3/4, where its effects (a ScyEQ-Pro band with
 `external_sidechain`, a compressor's detector) listen without the key reaching the track's own
 1/2:
 
@@ -369,7 +369,7 @@ itself).
 | `fx.param` | `track`, `index`, `param` (an id from `fx.params`), `value` (clamped to the range) | the parameter |
 | `fx.meters` | `track`, `index` | `{"input_db", "output_db", "reduction_db", "detector_db", "gate_open", "band_reduction_db"}`; measuring runs for about two seconds after each call, so the first can read nothing |
 | `fx.eq_band` | `track`, `index`, `action` (`add`, `remove`, `set`), `band`, `kind` (`low_shelf`, `high_shelf`, `band`, `notch`, `low_pass`, `high_pass`, `band_pass`, `all_pass`), `freq`, `gain_db`, `width` | `{"bands"}`; one undo step |
-| `eq.band` | `track`, `index` (a Scythe EQ), `band?` (0-23), `remove?`, `shape?`, `freq?`, `gain_db?`, `q?`, `slope?`, `stereo?`, `enabled?`, `dynamic?`, `range_db?`, `threshold_db?`, `auto_threshold?`, `attack_ms?`, `release_ms?`, `external_sidechain?` | the band; one undo step. Bands are 24 fixed slots: without `band` a new band goes into the first free slot, a `band` that is free is added there (from the defaults, then the fields given), a `band` in use is changed. `remove` of a band not in use answers `invalid` naming the bands in use |
+| `eq.band` | `track`, `index` (a ScyEQ-Pro), `band?` (0-23), `remove?`, `shape?`, `freq?`, `gain_db?`, `q?`, `slope?`, `stereo?`, `enabled?`, `dynamic?`, `range_db?`, `threshold_db?`, `auto_threshold?`, `attack_ms?`, `release_ms?`, `external_sidechain?` | the band; one undo step. Bands are 24 fixed slots: without `band` a new band goes into the first free slot, a `band` that is free is added there (from the defaults, then the fields given), a `band` in use is changed. `remove` of a band not in use answers `invalid` naming the bands in use |
 | `fx.delay_tap` | `track`, `index`, `action`, `tap`, `time_ms`, `musical`, `feedback_db`, `volume_db`, `pan`, `lowpass`, `highpass`, `enabled` | `{"taps"}`; one undo step |
 | `fx.fir_points` | `track`, `index`, `points` (`[[hz, db], …]`) | `{"points"}`; one undo step |
 | `fx.wet` | `track`, `index`, `wet?` (0-1), `delta?` (play only the difference the effect makes) | the chain |
@@ -387,9 +387,9 @@ project unsaved and are stored on save, but are not undo steps.
 
 ### Guitar rigs
 
-A rig is one FX container named "Rig: <amp> + <cab>" holding a ReaGate, the Neural Amp Modeler
-slot, the cab (a fully wet ReaVerb with the impulse response, and a parallel second ReaVerb when
-two responses blend), a ReaEQ with low cut, bass, mid, treble and high cut, and a ReaEQ whose
+A rig is one FX container named "Rig: <amp> + <cab>" holding a ScyGate, the Neural Amp Modeler
+slot, the cab (a fully wet ScyVerb with the impulse response, and a parallel second ScyVerb when
+two responses blend), a ScyEQ with low cut, bass, mid, treble and high cut, and a ScyEQ whose
 only band is off for the output level. REAPER opens it as the container it is. `track` names
 the track, `index?` the rig's position in its chain (the track's first rig when left out). Every
 answer but `rig.presets` and `rig.delete_preset` is the rig: `{"track", "track_name", "index",
@@ -403,7 +403,7 @@ answer but `rig.presets` and `rig.delete_preset` is the rig: `{"track", "track_n
 | `rig.list` | | `{"rigs", "presets"}` |
 | `rig.get` | `track`, `index?` | the rig |
 | `rig.create` | `track`, `preset?` | a new rig at the end of the chain |
-| `rig.convert` | `track`, `index` (a NAM slot) | the NAM slot with a ReaGate right before it and the ReaVerb(s) and ReaEQ right after it as a rig; stages it lacks are added switched off, so it sounds the same |
+| `rig.convert` | `track`, `index` (a NAM slot) | the NAM slot with a ScyGate right before it and the ScyVerb(s) and ScyEQ right after it as a rig; stages it lacks are added switched off, so it sounds the same |
 | `rig.set_amp` | `track`, `index?`, `model?`, `gear?` (when the file does not say), `input_db?`, `output_db?` | the rig; a capture with a cabinet (`amp_cab`, `full_rig`, TONE3000's `amp-cab`) switches the cab off, an amp-only one on, while `cab.auto` is set |
 | `rig.set_cab` | `track`, `index?`, `ir?`, `ir2?` (`""` removes it), `blend?` (0-1), `level_db?`, `enabled?` (by hand, which clears `auto`), `auto?` | the rig |
 | `rig.stage` | `track`, `index?`, `stage` (`gate`, `amp`, `cab`, `eq`), `enabled` | the rig |
@@ -836,7 +836,7 @@ range, so a reference is measured once; nothing leaves the machine.
 | `analysis.job` | `job` | the job's state; a finished `match_eq` with `apply` applies its EQ now (once) and reports it as `applied` |
 | `analysis.compare` | `reference`, `mix`: each a subject | `{"reference", "mix"}` (the measurements without bands) and `comparison` |
 | `analysis.match_eq` | `reference`, `mix`, `apply?` (track or `"master"`), `max_bands?` (6, at most 12), `max_gain_db?` (6, at most 12), `min_hz?`, `max_hz?` (30 to 16000) | `{"bands": [{"kind", "freq", "gain_db", "bandwidth"}], "max_error_before_db", "max_error_after_db", "rms_error_before_db", "rms_error_after_db", "curve": [{"hz", "target_db", "eq_db"}], "dynamics", "loudness_lufs", "true_peak_dbtp"}` |
-| `analysis.apply_eq` | `track`, `bands` (as `match_eq` gives them; gains within ±12 dB) | not a job: adds a ReaEQ with these bands at the end of the chain, one undo step (`Match EQ`): `{"track", "fx_index", "bands"}` |
+| `analysis.apply_eq` | `track`, `bands` (as `match_eq` gives them; gains within ±12 dB) | not a job: adds a ScyEQ with these bands at the end of the chain, one undo step (`Match EQ`): `{"track", "fx_index", "bands"}` |
 | `analysis.masking` | `groups?` (name to a list of tracks by id or name; a listed folder or bus brings what feeds it; by default every track with items is grouped under the top-level track, folder or bus, through which it reaches the master), `start?`, `end?` (project time; the whole project by default), `margin_db?` (3), `importance_db?` (12), `frame_ms?` (100) | `{"frame_ms", "margin_db", "importance_db", "duration", "bands_hz", "pairs": [{"buried", "by", "region", "from_hz", "to_hz", "share_pct", "together_seconds", "buried_seconds", "longest": {"start", "end"}}], "pairs_left_out", "groups": [{"name", "tracks", "plays_seconds", "level_db"}], "summary"}`; see below |
 | `analysis.segments` | `path` or `item` (its active take's file, in project time), `threshold_db?` (-50), `min_silence?` (2 s), `min_length?` (5 s), `markers?`, `name?` ("Song") | `{"duration", "segments": [{"start", "end", "length", "peak_db", "loudness_lufs", "onsets", "bpm"}], "ignored", "markers": [{"position", "name"}], "added"}`; the proposed markers are a song marker at each start and a `!1016` stop marker just after each end; with `markers` they are added as one undo step (`Song markers`) at once, without a job |
 
@@ -860,7 +860,7 @@ end, low mids, mids, presence, air: average tonal difference), `bands` (`diff_db
 `side_diff_db`), `max_tonal_diff_db` (40 Hz to 16 kHz) and `summary`: what stands out, in
 plain sentences.
 
-`match_eq` fits low and high shelves and peaks (ReaEQ's filters, the response computed from the
+`match_eq` fits low and high shelves and peaks (ScyEQ's filters, the response computed from the
 same design) greedily, then refines their gains together, stopping when what is left is under
 0.25 dB or a band no longer helps; the level is left to the fader. `dynamics` advises:
 `loudness_gap_lu`, `limiter_drive_db` (at most 6 dB per step), `limiter_ceiling_db` (-1 to -2
@@ -961,7 +961,7 @@ setlist being played. Songs in `songs` are an index from `setlist.songs`, or the
     "id": 12, "index": 0, "guid": "{…}", "name": "Vox", "color": "#66d9ef",
     "volume": 0.6, "volume_db": -4.4, "pan": 0.0, "muted": false, "solo": false,
     "armed": true, "monitor": true, "record_mode": "input", "monitor_mode": "on", "input": 1024, "folder_depth": 0, "level": 0, "folder_compact": 0, "mixer_collapsed": false, "channels": 2,
-    "fx": [{"index": 0, "name": "VST: ReaComp (Cockos)", "enabled": true, "running": true}],
+    "fx": [{"index": 0, "name": "ScyComp", "enabled": true, "running": true}],
     "sends": [{"index": 0, "dest": 15, "volume": 1.0, "volume_db": 0.0, "pan": 0.0, "muted": false,
                "mode": "post_fader", "mono": false, "phase": false, "audio": true,
                "src": 1, "src_count": 2, "dst": 1, "dst_mono": false, "midi": null}],
