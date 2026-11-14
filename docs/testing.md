@@ -8,6 +8,7 @@ drive the app the way a user, a tablet or an AI agent does and take a few minute
 | `devbox run test` | unit tests of every crate and the in-process server tests (`cargo test --workspace`) | a few minutes, most of it building |
 | `devbox run itest` | the UI tests, the end-to-end process tests and the corpus (below) | about five minutes after a build |
 | `scripts/cargo.sh run --release -p scythe-engine --example null_check -- x.RPP …` | the null set: probe projects rendered by Scythe against REAPER 7.73's renders of them (see [verification](verification.md)) | minutes |
+| `devbox run -- scripts/reaper-compare.sh` | ScyEQ-Pro in REAPER, with the plugin, against Scythe (below) | a few minutes after a build |
 
 `devbox run itest [filter]` passes the filter to both `cargo test` runs, so
 `devbox run itest setlist` runs every integration test with "setlist" in its name.
@@ -79,3 +80,63 @@ these tests print `SKIPPED …` and pass. The binaries come from `target/debug` 
   condition)`, never a fixed sleep.
 - An end-to-end test starts a process with `Scythe::server(...)` or `Scythe::app(...)` from
   `scythe_itest` and speaks to it with `s.ok(command)`, `http` and the WebSocket client `s.ws(token)`.
+
+## ScyEQ-Pro in REAPER (`scripts/reaper-compare.sh`)
+
+A local check, run by hand on each platform before a release of the ScyEQ-Pro plugin: REAPER is
+not on CI. It needs REAPER, and on Linux Xvfb (from `PATH`, `SCYTHE_XVFB` or nixpkgs).
+
+```sh
+devbox run -- scripts/reaper-compare.sh [song.RPP]     # Linux
+scripts/reaper-compare.sh [song.RPP]                     # Windows, in Git Bash
+```
+
+On Windows the default REAPER is `C:\Program Files\REAPER (x64)\reaper.exe`; in the VM, copy the
+tree to `C:\src\scyeq-win` and plugin-format to `C:\src\plugin-format`, point
+`crates/scyeq-plugin/Cargo.toml` at the latter, copy the song's `.RPP` over and run the script
+from Git Bash (over `ssh winvm` too: REAPER renders without a desktop).
+
+1. It builds the plugin with plugin-format's `scripts/bundle.sh` into a temporary folder, and
+   `scythe-server` and the `reaper_projects` example of `scyeq-plugin`
+   (`crates/scyeq-plugin/tests/reaper/projects.rs`).
+2. `reaper_projects write` writes the test projects, each a 48 kHz track of noise whose level
+   steps (so dynamic bands move) through one ScyEQ-Pro CLAP slot: the plugin's defaults, each
+   band shape, a dynamic, a spectral and a sidechain band (keyed from a second track on channels
+   3/4), every shape with all three band kinds in each phase mode (also rendered from frame
+   1013, off the processing grid and REAPER's 512-frame blocks), and a band's gain and frequency
+   automated, as REAPER writes those envelopes.
+3. REAPER renders each project with `-renderproject`, with a configuration of its own
+   (`-cfgfile` in the temporary folder, its own `HOME` on Linux) whose CLAP and VST3 paths hold
+   only the fresh plugin, on the dummy audio device at 48 kHz and 512 frames (Linux
+   `linux_audio_mode=2`, Windows `[audioconfig] mode=5`; without a device REAPER for Windows asks
+   for one and renders nothing). Nothing is installed and your REAPER settings are not touched.
+4. `scythe-server --null-audio` renders the same projects through the control API
+   (`project.open`, `render.settings` with another file name, `render.project`).
+5. `reaper_projects compare` compares the renders sample by sample and fails when one differs by
+   more than -120 dBFS peak, or when Scythe's render is the dry signal.
+6. The song (Song 2 when it is there) is copied without its items and with every other effect
+   offline (each missing plugin or file would stop REAPER at a window), opened in REAPER, and a
+   ReaScript checks that each ScyEQ-Pro instance in it loaded and is online.
+
+`KEEP=1` keeps the folder with the projects, renders and REAPER's configuration;
+`reaper_projects compare <dir> [limit]` compares again. `REAPER` and `PLUGIN_FORMAT` point at
+another REAPER or plugin-format checkout.
+
+On NixOS a plugin built in the devbox shell links devbox's newer glibc, which a REAPER from the
+system's nixpkgs cannot load (`GLIBC_2.43 not found`, and REAPER lists the plugin as missing).
+When REAPER comes from the Nix store the script builds the plugin with the system nixpkgs'
+toolchain instead (`PLUGIN_TOOLCHAIN`, its own target folder `target/reaper-compare`), as the
+released plugin is built on an older glibc.
+
+Two REAPER behaviours shape the projects: a project rendered at another rate than the audio
+device's is resampled twice unless it forces its own rate (`SAMPLERATE 48000 1 0`), and REAPER's
+first block of a render takes a parameter's stored value or its envelope's, not the same one
+every run, so the envelopes start at the stored value.
+
+Results on 2026-11-14 (REAPER 7.73 on Linux, 7.85 on Windows): every fixed-settings project
+within -120 dBFS on both (exact, natural phase at -144.5 dBFS at most), Song 2's 30 instances
+loaded on both, and the two automated projects off by -16.7 and -12.3 dBFS, because Scythe's
+built-in ScyEQ-Pro reads an envelope at the start of each 512-frame block while REAPER gives the
+plugin the value at the block's last frame, and reads a `PARMENV` value as a normalised position
+mapped logarithmically for frequency, Q, attack and release where REAPER passes the CLAP plugin
+the value in its own units.
