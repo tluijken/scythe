@@ -11,6 +11,7 @@ pub mod clap_presets;
 pub mod convolve;
 mod cues;
 pub mod delay;
+mod denormals;
 pub mod devices;
 pub mod disc;
 pub mod editor;
