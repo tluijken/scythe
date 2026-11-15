@@ -15,7 +15,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream};
 use symphonia::core::meta::MetadataOptions;
 
 /// The file types offered when picking a reference file for EQ Match.
-pub const REFERENCE_EXTENSIONS: &[&str] = &["wav", "flac", "mp3", "ogg", "aif", "aiff"];
+pub const REFERENCE_EXTENSIONS: &[&str] = &["wav", "flac", "mp3", "ogg", "opus", "aif", "aiff"];
 
 /// Decoded audio, planar, one `Vec` per channel.
 #[derive(Debug, Clone, PartialEq)]
@@ -290,6 +290,12 @@ fn starts_with_info_frame(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picker offers Ogg Opus, which `decode_reference` reads, under its own extension too.
+    #[test]
+    fn the_reference_picker_offers_opus() {
+        assert!(REFERENCE_EXTENSIONS.contains(&"opus"));
+    }
 
     #[test]
     fn lowers_only_lsf_mid_side_granules() {
