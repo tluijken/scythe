@@ -57,9 +57,12 @@ jobs:
       - name: macOS targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      # A prebuilt binary or nothing: without `fallback: none` an unsupported platform would
+      # silently fetch the tool through cargo-binstall instead.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.0
+          fallback: none
       - uses: taiki-e/install-action@v2
         if: runner.os == 'Windows'
         with:
