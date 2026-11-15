@@ -604,11 +604,26 @@ fn apply_audio(a: &mut m::AudioControl, s: &AudioSpec) {
     }
 }
 
+/// Gives a link from a CLAP or VST3 parameter that parameter's id, as REAPER names it
+/// (`PLINK 1 0:-1 3:7 0 ""`), when the source effect's parameters are known.
+fn name_link_param(session: &Session, target: Target, own: usize, link: &mut ParamLink) {
+    let Some(fx) = link.source_fx(own) else { return };
+    let LinkSource::Fx { param, id, .. } = &mut link.source else { return };
+    if id.is_some() {
+        return;
+    }
+    let Some(source) = target.get(&session.project).and_then(|t| t.fx.get(fx)) else { return };
+    let Ok(index) = usize::try_from(*param) else { return };
+    let (params, _) = super::envelope::listed_params(session, target, fx, source);
+    *id = scythe_engine::fx::envelope_spec(source, params.as_deref(), index)
+        .and_then(|spec| spec.split_once(':').and_then(|(_, id)| id.parse().ok()));
+}
+
 fn apply_link(md: &mut ParamModulation, s: &LinkSpec, own: usize) -> Result<(), ApiError> {
     let link = md.link.get_or_insert_with(|| ParamLink {
         scale: 1.0,
         offset: 0.0,
-        source: LinkSource::Fx { fx: "-1".into(), param: -1 },
+        source: LinkSource::Fx { fx: "-1".into(), param: -1, id: None },
         tail: String::new(),
     });
     if let Some(v) = s.scale {
@@ -633,11 +648,12 @@ fn apply_link(md: &mut ParamModulation, s: &LinkSpec, own: usize) -> Result<(), 
         }
         (None, Some(fx)) => {
             let param = s.param.map_or(0, |p| p as i64);
-            link.source = LinkSource::Fx { fx: ParamLink::fx_token(fx, own), param };
+            link.source = LinkSource::Fx { fx: ParamLink::fx_token(fx, own), param, id: None };
         }
         (None, None) => {
-            if let (Some(p), LinkSource::Fx { param, .. }) = (s.param, &mut link.source) {
+            if let (Some(p), LinkSource::Fx { param, id, .. }) = (s.param, &mut link.source) {
                 *param = p as i64;
+                *id = None;
             }
         }
     }
@@ -718,6 +734,9 @@ pub fn execute(session: &mut Session, command: ModulationCommand) -> Result<Valu
             }
             if let Some(s) = &link {
                 apply_link(&mut md, s, index)?;
+                if let Some(l) = md.link.as_mut() {
+                    name_link_param(session, target, index, l);
+                }
             }
             let info = modulation_info(&md, index);
             session.edit("Parameter modulation", |p| {

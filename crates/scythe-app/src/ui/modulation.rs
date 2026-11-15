@@ -266,7 +266,7 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
         md.link_active = active;
         if active && md.link.is_none() {
             let source = if w.fx > 0 {
-                LinkSource::Fx { fx: ParamLink::fx_token(w.fx - 1, w.fx), param: 0 }
+                LinkSource::Fx { fx: ParamLink::fx_token(w.fx - 1, w.fx), param: 0, id: None }
             } else {
                 LinkSource::Midi { bus: 0, channel: 0, status: 0xb0, data1: 1 }
             };
@@ -293,17 +293,18 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
             }
             for (i, name) in chain.iter().enumerate().filter(|(i, _)| *i != w.fx) {
                 if ui.selectable_label(l.source_fx(w.fx) == Some(i), format!("{}: {name}", i + 1)).clicked() {
-                    l.source = LinkSource::Fx { fx: ParamLink::fx_token(i, w.fx), param: 0 };
+                    l.source = LinkSource::Fx { fx: ParamLink::fx_token(i, w.fx), param: 0, id: None };
                 }
             }
         });
         ui.end_row();
         match &mut l.source {
-            LinkSource::Fx { param, .. } => {
+            LinkSource::Fx { param, id, .. } => {
                 ui.label("Parameter");
                 let mut p = (*param).max(0) as usize;
                 if ui.add(egui::DragValue::new(&mut p).range(0..=1023).prefix("#")).changed() {
                     *param = p as i64;
+                    *id = None;
                 }
                 ui.end_row();
             }

@@ -2395,6 +2395,73 @@ fn clap_parameter_modulation_and_learn_are_named_by_id() {
     assert!(text.contains("PARMLEARN 0:7 "), "{text}");
 }
 
+/// A link from a CLAP parameter names it by index and id, as REAPER 7.73 wrote one
+/// (`PLINK 0.5 0:-1 3:3 0.1 ""`).
+#[test]
+fn a_link_from_a_clap_parameter_names_it_by_index_and_id() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    ok(
+        &mut s,
+        json!({"cmd": "fx.modulation.set", "track": t, "index": 1, "param": 3, "link": {"fx": 0, "param": 1, "scale": 0.5}}),
+    );
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("PLINK 0.5 0:-1 1:9 0 \"\""), "{text}");
+}
+
+/// The workspace's `vst3-test-plugin` laid out as a `.vst3` bundle in `dir`, scanned.
+fn vst3_test_plugins(dir: &std::path::Path) -> Option<Vec<scythe_engine::vst3_host::Vst3Info>> {
+    let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+    let lib = ["debug", "release"]
+        .iter()
+        .map(|p| target.join(p).join(format!("{DLL_PREFIX}vst3_test_plugin{DLL_SUFFIX}")))
+        .find(|p| p.exists())?;
+    let contents = dir.join("Scythe Test.vst3/Contents");
+    let (bin, file) = if cfg!(windows) {
+        (contents.join(format!("{}-win", std::env::consts::ARCH)), "Scythe Test.vst3")
+    } else if cfg!(target_os = "macos") {
+        (contents.join("MacOS"), "Scythe Test")
+    } else {
+        (contents.join(format!("{}-linux", std::env::consts::ARCH)), "Scythe Test.so")
+    };
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::copy(lib, bin.join(file)).unwrap();
+    Some(scythe_engine::vst3_host::scan(&[dir.to_path_buf()]))
+}
+
+/// REAPER 7.73 names a VST3 parameter's modulation, learn and envelope by index and parameter
+/// id, as for CLAP (measured: `PARMLEARN 17:22`, `<PROGRAMENV 18:23`, `<PARMENV 17:22 0 1`).
+#[test]
+fn vst3_parameter_modulation_learn_and_envelopes_are_named_by_index_and_id() {
+    let dir = std::env::temp_dir().join(format!("scythe-vst3-learn-{}", std::process::id()));
+    let Some(plugins) = vst3_test_plugins(&dir) else {
+        eprintln!("vst3-test-plugin not built; skipping");
+        return;
+    };
+    let catalog = scythe_engine::plugin_scan::Catalog::fixed();
+    catalog.set_vst3(plugins);
+    let mut s = session();
+    s.engine.set_plugin_catalog(catalog);
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "vst3:Test Gain"}));
+    ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 0, "param": 0, "base": 0.5}));
+    ok(
+        &mut s,
+        json!({"cmd": "fx.learn.set", "track": t, "index": 0, "param": 0, "midi": {"type": "cc", "number": 7, "channel": 1}}),
+    );
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:0", "time": 1.0, "value": 0.25}));
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(text.contains("<PROGRAMENV 0:0 0"), "{text}");
+    assert!(text.contains("PARMLEARN 0:0 1968 0"), "{text}");
+    assert!(text.contains("<PARMENV 0:0 0 1 "), "{text}");
+}
+
 /// A Scythe project from before the format revision holds the boost's envelope and modulation
 /// baseline on 0..1; opening it moves them to the boost's 0..4, also in an offline slot, once
 /// and before any undo step. The same file from REAPER stays as it is.

@@ -1930,13 +1930,14 @@ pub(crate) fn is_clap(slot: &FxSlot) -> bool {
     slot_plugin(slot).is_some_and(|c| c.name() == "CLAP")
 }
 
-/// How REAPER names parameter `index` of `slot` in `PARMENV`: `<index>:<id>` for a CLAP plugin,
-/// given the parameters it lists; `None` where the index alone names it.
+/// How REAPER names parameter `index` of `slot` in `PARMENV`, `<PROGRAMENV` and `PARMLEARN`:
+/// `<index>:<id>` for a CLAP or VST3 plugin, given the parameters it lists; `None` where the
+/// index alone names it.
 pub fn envelope_spec(slot: &FxSlot, params: Option<&[ParamInfo]>, index: usize) -> Option<String> {
     if crate::scythe_eq::is_slot(slot) {
         return crate::scythe_eq::envelope_spec(slot, index);
     }
-    is_clap(slot).then_some(())?;
+    (is_clap(slot) || is_vst3(slot)).then_some(())?;
     params?.get(index).map(|p| format!("{index}:{}", p.id))
 }
 
