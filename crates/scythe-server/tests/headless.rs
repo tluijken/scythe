@@ -64,6 +64,7 @@ fn starts_without_a_display_serves_and_stops_on_sigterm() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn installs_a_user_service_running_the_same_session() {
     let dir = std::env::temp_dir().join(format!("scythe-service-{}", std::process::id()));
