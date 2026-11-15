@@ -2894,9 +2894,11 @@ mod tests {
             counting: 1.9,
         };
         let played = e.play_counting_in(&count_in);
+        let playing = e.transport().count_in_clicks();
         e.stop();
         assert!((played.length - 15_360.0 / 8000.0).abs() < 1e-9, "{played:?}");
         assert!((played.first - 160.0 / 8000.0).abs() < 1e-9, "{played:?}");
+        assert_eq!((playing.frames, playing.first, playing.audible), (15_360, 160.0, 15_360), "the audio thread's");
         std::fs::remove_dir_all(&dir).ok();
     }
 
