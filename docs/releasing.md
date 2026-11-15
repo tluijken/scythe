@@ -47,7 +47,8 @@ Windows build plays through WASAPI.
 
 A failed run makes no release. Fix the cause on `main`, then move the tag to the fixed commit
 (`git tag -f -a v0.2.0 -m "Scythe 0.2.0"`, `git push -f origin v0.2.0`) or release the next
-version.
+version. When only the last job, `publish`, failed (a hiccup uploading, say), re-running that job
+alone is enough: it replaces the files of a draft it already made.
 
 The ScyEQ-Pro plugin depends on [plugin-format](https://github.com/tluijken/plugin-format) at a
 tag; `PLUGIN_FORMAT_TAG` in `.github/workflows/scyeq-plugin.yml` names the same tag, for its

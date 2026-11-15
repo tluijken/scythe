@@ -108,9 +108,11 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Run again on its own, the job also downloads the SHA256SUMS of its first run.
       - name: Checksums
         working-directory: dist
         run: |
+          rm -f SHA256SUMS
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
       - uses: actions/upload-artifact@v7
@@ -118,6 +120,7 @@ jobs:
         with:
           path: dist/SHA256SUMS
           archive: false
+          overwrite: true
           if-no-files-found: error
       - name: Draft release
         if: github.event_name == 'push'
@@ -125,4 +128,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.version.outputs.version }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Scythe $VERSION" dist/*
+        # A run again of this job alone finds the draft its first run made, and replaces the files.
+        run: |
+          draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null || true)
+          case "$draft" in
+            true) gh release upload "$GITHUB_REF_NAME" --clobber dist/* ;;
+            false) echo "$GITHUB_REF_NAME is already published" >&2; exit 1 ;;
+            *) gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Scythe $VERSION" dist/* ;;
+          esac
