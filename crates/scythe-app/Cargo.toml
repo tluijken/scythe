@@ -11,6 +11,7 @@ itest = ["dep:egui_kittest"]
 
 [dependencies]
 scyeq-ui.workspace = true
+scythe-chooser.workspace = true
 scythe-core.workspace = true
 scythe-decode.workspace = true
 scythe-engine.workspace = true

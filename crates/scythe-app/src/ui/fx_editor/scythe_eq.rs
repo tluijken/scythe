@@ -10,6 +10,7 @@ use scyeq_ui::{
     CompareSource, EqHost, InstanceControls, InstanceList, ReferenceAudio, ReferenceError, ViewState, WindowFn,
     WindowSpec,
 };
+use scythe_chooser::Shown;
 use scythe_core::FxSlot;
 use scythe_engine::fx::FxOwner;
 use scythe_engine::media::MediaError;
@@ -133,7 +134,18 @@ impl EqHost for Host<'_, '_> {
     }
 
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+        let dialog = rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+        let shown = crate::file_dialog::show(|| dialog.pick_file());
+        self.cx.ed.no_dialog = matches!(shown, Shown::NoDialog);
+        shown.picked()
+    }
+
+    fn notice(&self) -> Option<String> {
+        self.cx.ed.no_dialog.then(|| scythe_chooser::NO_DIALOG.to_owned())
+    }
+
+    fn match_closed(&mut self) {
+        self.cx.ed.no_dialog = false;
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
@@ -408,6 +420,53 @@ mod tests {
         app.edit("Add FX", |p| p.tracks[0].fx.push(scythe_eq::slot(None)));
         let labels: Vec<String> = project_instances(&app).iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, ["Vocals · 1", "Vocals · 2"]);
+    }
+
+    #[test]
+    fn eq_match_says_when_no_file_dialog_can_open() {
+        use crate::file_dialog::{Fake, fake};
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
+        app.edit("Add track", |p| {
+            let mut track = scythe_core::Track::new("Vocals");
+            track.fx.push(scythe_eq::slot(None));
+            p.tracks.push(track);
+        });
+        let owner = FxOwner::Track(app.project.tracks[0].id);
+        super::super::toggle_at(&mut app, &owner, &[0]);
+        let mut ed = app.view.fx_editors.pop().expect("the editor opens");
+        let slots = chain_slots(&app, &owner);
+        let slot = slot_at(&slots, &[0]).unwrap();
+        let inst = app.engine.fx().instance_at(&owner, &slots, &[0]).expect("the EQ runs");
+        let meters = inst.with(|e| e.as_any_mut()?.downcast_mut::<ScytheEq>().map(|eq| eq.meters().clone()));
+        let meters = meters.flatten().unwrap();
+        let mut cx = super::super::Ctx {
+            app: &mut app,
+            ed: &mut ed,
+            inst,
+            slot,
+            params: Vec::new(),
+            values: Default::default(),
+        };
+        let mut host = Host {
+            cx: &mut cx,
+            values: Vec::new(),
+            meters,
+            latency: 0,
+            sample_rate: 48_000.0,
+            view: Default::default(),
+        };
+
+        fake(Some(Fake::NoDialog));
+        assert_eq!(host.pick_reference(), None);
+        assert_eq!(host.notice().as_deref(), Some(scythe_chooser::NO_DIALOG));
+        host.match_closed();
+        assert_eq!(host.notice(), None, "gone once EQ Match closed");
+        host.pick_reference();
+        fake(Some(Fake::Cancelled));
+        assert_eq!(host.pick_reference(), None);
+        assert_eq!(host.notice(), None, "gone once a dialog showed");
+        fake(None);
+        assert!(!crate::file_dialog::missed(), "told in the editor, not as a toast");
     }
 
     #[test]

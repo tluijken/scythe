@@ -14,6 +14,7 @@ use scythe_engine::devices::{
 };
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW};
 use crate::ui::widgets::{self, switch, text_pill};
 use crate::ui::window::{WindowKind, scythe_window};
@@ -733,7 +734,7 @@ fn map_editor(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) {
     let dir = scythe_session::preferences_path().with_file_name("ChanMaps");
     if text_pill(ui, pill(270.0), "Load...", font.clone(), RAISED, TEXT).clicked()
         && let Some(path) =
-            rfd::FileDialog::new().add_filter("ChanMap files", &["ReaperChanMap"]).set_directory(&dir).pick_file()
+            rfd::FileDialog::new().add_filter("ChanMap files", &["ReaperChanMap"]).set_directory(&dir).ask_file()
     {
         match std::fs::read_to_string(&path).ok().and_then(|t| ChannelAliases::from_chanmap(&t)) {
             Some(loaded) => {
@@ -746,7 +747,7 @@ fn map_editor(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) {
     if text_pill(ui, pill(360.0), "Save...", font, RAISED, TEXT).clicked() {
         let _ = std::fs::create_dir_all(&dir);
         if let Some(path) =
-            rfd::FileDialog::new().add_filter("ChanMap files", &["ReaperChanMap"]).set_directory(&dir).save_file()
+            rfd::FileDialog::new().add_filter("ChanMap files", &["ReaperChanMap"]).set_directory(&dir).ask_save_file()
         {
             let path = path.with_extension("ReaperChanMap");
             if let Err(e) = std::fs::write(&path, map.to_chanmap()) {

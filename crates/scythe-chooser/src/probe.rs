@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 /// Whether rfd has a file dialog to show: zenity on the `PATH`, or a file chooser portal on the
 /// session bus.
-pub(crate) fn available() -> bool {
+pub fn available() -> bool {
     std::env::var_os("PATH").is_some_and(|path| on_path(&path, "zenity")) || file_chooser_portal(None)
 }
 

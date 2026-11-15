@@ -3,6 +3,7 @@ mod commands;
 mod demo;
 mod dialog;
 mod editor_host;
+mod file_dialog;
 mod fx_preset;
 mod keys;
 mod live;

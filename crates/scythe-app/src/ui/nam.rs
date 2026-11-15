@@ -8,6 +8,7 @@ use egui::{Align2, Color32, CornerRadius, Id, Key, Modifiers, Rect, Sense, Ui, p
 use scythe_engine::fx::nam_settings;
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::nam::library::{Entry, Filter, Kind, Place};
 use crate::nam::preview::Stage;
 use crate::nam::snapshots::SNAPSHOTS;
@@ -344,7 +345,7 @@ pub(crate) fn controls(app: &mut ScytheApp, ui: &mut Ui, target: &Target, snapsh
         if let Some(d) = dir {
             dialog = dialog.set_directory(d);
         }
-        if let Some(path) = dialog.pick_file() {
+        if let Some(path) = dialog.ask_file() {
             app.nam_open(target, path);
         }
     }
@@ -613,7 +614,7 @@ fn library_filters(app: &mut ScytheApp, ui: &mut Ui, pick_kind: bool) {
                 });
             }
             if ui.button("Add folder…").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder()
+                if let Some(dir) = rfd::FileDialog::new().ask_folder()
                     && app.nam.library.add_folder(dir)
                 {
                     app.nam.rescan();

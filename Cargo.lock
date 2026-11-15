@@ -4161,6 +4161,7 @@ dependencies = [
  "rfd",
  "scyeq-dsp",
  "scyeq-ui",
+ "scythe-chooser",
  "scythe-decode",
  "serde_json",
  "vst3",
@@ -4193,6 +4194,7 @@ dependencies = [
  "realfft",
  "rfd",
  "scyeq-ui",
+ "scythe-chooser",
  "scythe-core",
  "scythe-decode",
  "scythe-engine",
@@ -4206,6 +4208,13 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "scythe-chooser"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

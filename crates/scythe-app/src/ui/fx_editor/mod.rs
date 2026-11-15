@@ -254,6 +254,8 @@ pub struct FxEditor {
     band: usize,
     /// ScyEQ-Pro's own view state.
     pub(crate) eq: Option<Box<scyeq_ui::EditorState>>,
+    /// EQ Match asked for a file and no file dialog could open.
+    pub(crate) no_dialog: bool,
 }
 
 impl std::fmt::Debug for FxEditor {
@@ -298,6 +300,7 @@ impl FxEditor {
             dragging: None,
             band: 0,
             eq: None,
+            no_dialog: false,
         }
     }
 

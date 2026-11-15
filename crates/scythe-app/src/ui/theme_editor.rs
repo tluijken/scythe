@@ -5,6 +5,7 @@ use egui::{RichText, Ui, vec2};
 use scythe_core::theme::{Rgb, Slot, Theme};
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{self, TEXT_DIM};
 use crate::ui::window::{WindowKind, scythe_window};
 
@@ -20,9 +21,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Import REAPER theme…").clicked()
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("REAPER theme", &["ReaperTheme", "ReaperThemeZip"])
-                        .pick_file()
+                    && let Some(path) =
+                        rfd::FileDialog::new().add_filter("REAPER theme", &["ReaperTheme", "ReaperThemeZip"]).ask_file()
                 {
                     match app.session.load_theme_file(&path) {
                         Ok(slots) => app.notify(format!("Imported {} colours from {}", slots.len(), path.display())),
@@ -30,7 +30,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                     }
                 }
                 if ui.button("Load…").clicked()
-                    && let Some(path) = rfd::FileDialog::new().add_filter("Scythe theme", &["ScytheTheme"]).pick_file()
+                    && let Some(path) = rfd::FileDialog::new().add_filter("Scythe theme", &["ScytheTheme"]).ask_file()
                     && let Err(e) = app.session.load_theme_file(&path)
                 {
                     app.notify(e);
@@ -39,7 +39,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                     && let Some(path) = rfd::FileDialog::new()
                         .add_filter("Scythe theme", &["ScytheTheme"])
                         .set_file_name("My theme.ScytheTheme")
-                        .save_file()
+                        .ask_save_file()
                     && let Err(e) = app.session.save_theme_file(&path)
                 {
                     app.notify(e);

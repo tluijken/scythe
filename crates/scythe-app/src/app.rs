@@ -13,6 +13,7 @@ use scythe_session::{LoaderMsg, RenderedItems, Session};
 
 pub use scythe_session::{AutoTarget, Selection};
 
+use crate::file_dialog::Ask;
 use crate::palette::PaletteState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,7 +415,7 @@ impl ScytheApp {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("MIDI", &["mid"])
             .set_file_name(format!("{}.mid", if stem.is_empty() { "item" } else { &stem }))
-            .save_file()
+            .ask_save_file()
         else {
             return;
         };
@@ -465,7 +466,7 @@ impl ScytheApp {
     }
 
     pub fn open_tab_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).pick_file() {
+        if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).ask_file() {
             let _ = self.session.open_in_new_tab(&path);
             self.follow_session();
         }
@@ -510,7 +511,7 @@ impl ScytheApp {
     }
 
     pub fn open_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).pick_file() {
+        if let Some(path) = rfd::FileDialog::new().add_filter("REAPER project", &["rpp", "RPP"]).ask_file() {
             self.open_path(&path);
         }
     }
@@ -528,7 +529,7 @@ impl ScytheApp {
         let dialog = rfd::FileDialog::new()
             .add_filter("REAPER project", &["rpp"])
             .set_file_name(format!("{}.rpp", self.project.name()));
-        if let Some(path) = dialog.save_file() {
+        if let Some(path) = dialog.ask_save_file() {
             let _ = self.save_to(&path);
         }
     }
@@ -539,7 +540,7 @@ impl ScytheApp {
                 "Media",
                 &["wav", "flac", "mp3", "ogg", "opus", "wv", "aif", "aiff", "m4a", "caf", "mid", "midi"],
             )
-            .pick_files();
+            .ask_files();
         if let Some(files) = files {
             let at = self.project.cursor;
             self.session.import_files(files, self.sel.track, at);
@@ -595,7 +596,7 @@ impl ScytheApp {
                 }
             }
         } else if kind == RenderKind::Stems {
-            let Some(dir) = rfd::FileDialog::new().set_title("Folder for the stems").pick_folder() else { return };
+            let Some(dir) = rfd::FileDialog::new().set_title("Folder for the stems").ask_folder() else { return };
             (0..self.project.tracks.len())
                 .filter(|&i| !self.project.tracks[i].items.is_empty())
                 .map(|i| {
@@ -612,7 +613,7 @@ impl ScytheApp {
                 .collect()
         } else {
             let dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{name}.wav"));
-            let Some(path) = dialog.save_file() else { return };
+            let Some(path) = dialog.ask_save_file() else { return };
             vec![(self.project.clone(), path)]
         };
         let rate = encoding.sample_rate().unwrap_or_else(|| {
@@ -1188,7 +1189,7 @@ impl ScytheApp {
         let Some(path) = resource_dialog("presets")
             .add_filter("REAPER preset library", &["RPL", "rpl"])
             .set_file_name("presets.RPL")
-            .save_file()
+            .ask_save_file()
         else {
             return;
         };
@@ -1201,7 +1202,7 @@ impl ScytheApp {
     /// Adds the presets of a REAPER preset library to a track's effect's preset file,
     /// replacing presets of the same name.
     pub fn import_fx_presets(&mut self, track: TrackId, index: usize) {
-        let Some(path) = resource_dialog("presets").add_filter("REAPER preset library", &["RPL", "rpl"]).pick_file()
+        let Some(path) = resource_dialog("presets").add_filter("REAPER preset library", &["RPL", "rpl"]).ask_file()
         else {
             return;
         };
@@ -1278,7 +1279,7 @@ impl ScytheApp {
     }
 
     pub fn run_script_dialog(&mut self) {
-        let Some(path) = resource_dialog("Scripts").add_filter("ReaScript", &["lua", "eel", "py"]).pick_file() else {
+        let Some(path) = resource_dialog("Scripts").add_filter("ReaScript", &["lua", "eel", "py"]).ask_file() else {
             return;
         };
         self.run_script(&path);
@@ -1481,7 +1482,7 @@ impl ScytheApp {
         let name = if track.name.is_empty() { "chain".to_owned() } else { track.name.clone() };
         let dialog =
             resource_dialog("FXChains").add_filter("FX chain", &["RfxChain"]).set_file_name(format!("{name}.RfxChain"));
-        let Some(path) = dialog.save_file() else { return };
+        let Some(path) = dialog.ask_save_file() else { return };
         match std::fs::write(&path, text) {
             Ok(()) => self.notify(format!("Saved {}", path.display())),
             Err(e) => self.notify(format!("Could not save: {e}")),
@@ -1494,7 +1495,7 @@ impl ScytheApp {
             self.notify("Select a track first");
             return;
         };
-        let Some(path) = resource_dialog("FXChains").add_filter("FX chain", &["RfxChain"]).pick_file() else { return };
+        let Some(path) = resource_dialog("FXChains").add_filter("FX chain", &["RfxChain"]).ask_file() else { return };
         let slots = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|t| scythe_core::rpp::fx_chain_from_text(&t).map_err(|e| e.to_string()));
@@ -1525,7 +1526,7 @@ impl ScytheApp {
         let dialog = resource_dialog("TrackTemplates")
             .add_filter("Track template", &["RTrackTemplate"])
             .set_file_name(format!("{name}.RTrackTemplate"));
-        let Some(path) = dialog.save_file() else { return };
+        let Some(path) = dialog.ask_save_file() else { return };
         match std::fs::write(&path, text) {
             Ok(()) => self.notify(format!("Saved {}", path.display())),
             Err(e) => self.notify(format!("Could not save: {e}")),
@@ -1534,8 +1535,7 @@ impl ScytheApp {
 
     /// Inserts the tracks of a `.RTrackTemplate` after the selected track.
     pub fn insert_track_template(&mut self) {
-        let Some(path) =
-            resource_dialog("TrackTemplates").add_filter("Track template", &["RTrackTemplate"]).pick_file()
+        let Some(path) = resource_dialog("TrackTemplates").add_filter("Track template", &["RTrackTemplate"]).ask_file()
         else {
             return;
         };
