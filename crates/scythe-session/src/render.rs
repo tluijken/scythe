@@ -14,7 +14,7 @@ use crate::Session;
 /// Renders the project file with its own render settings and saved selection; a queued copy
 /// writes the files it was queued with. Returns the files written.
 pub fn render_project_file(path: &Path) -> Result<Vec<PathBuf>, String> {
-    let project = scythe_core::rpp::read_project(path).map_err(|e| e.to_string())?;
+    let project = scythe_engine::upgrade::read_project(path).map_err(|e| e.to_string())?;
     render_project(&project, &RenderSelection::saved(&project))
 }
 

@@ -12,21 +12,24 @@
 //! shows a slot is old, which REAPER never writes; its baselines are then converted with it.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use scythe_core::fx_chain::ParamEnvelope;
 use scythe_core::model::{SCYTHE_FORMAT, Writer};
+use scythe_core::rpp::ProjectIoError;
 use scythe_core::{Envelope, FxSlot, Project};
 
 use crate::clap_host::ParamInfo;
-use crate::fx::{FxOwner, slot_key};
+use crate::fx::{FxOwner, FxRegistry, slot_key};
 use crate::scythe_eq::params;
 
 /// The first format revision that stores CLAP automation in the parameters' units.
 const UNITS_FORMAT: u32 = 2;
 
 /// The parameters a hosted plugin lists, for the slot at a chain key (as `FxRegistry` keys its
-/// instances); `None` when they cannot be known.
-pub type SlotParams<'a> = dyn FnMut(&FxOwner, &str, &FxSlot) -> Option<Vec<ParamInfo>> + 'a;
+/// instances): its running instance's, or with the last argument set those of an instance made
+/// for the question; `None` when they cannot be known.
+pub type SlotParams<'a> = dyn FnMut(&FxOwner, &str, &FxSlot, bool) -> Option<Vec<ParamInfo>> + 'a;
 
 /// A parameter's range in its own units, and how the value an older Scythe stored maps into it.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -40,7 +43,7 @@ struct Units {
 
 impl Units {
     fn moves(&self) -> bool {
-        (self.min, self.max) != (0.0, 1.0) && self.max > self.min
+        (self.min, self.max) != (0.0, 1.0) && self.min.is_finite() && self.max.is_finite() && self.max > self.min
     }
 
     fn old_to_units(&self, v: f64) -> f64 {
@@ -68,7 +71,7 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
         Writer::Scythe(format) => format < UNITS_FORMAT,
         Writer::Unknown => false,
     };
-    let mut pass = Pass { all, params, pooled: Vec::new() };
+    let mut pass = Pass { all, params, pooled: Vec::new(), made: HashMap::new() };
     let mut changed = pass.chain(&FxOwner::Master, &mut project.master.fx, "");
     for track in &mut project.tracks {
         let id = track.id;
@@ -100,12 +103,29 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
     changed
 }
 
+/// [`upgrade_project`] for a project rendered without a session, with `fx`, a registry of its
+/// own that runs none of its plugins.
+pub fn upgrade_read(project: &mut Project, fx: &FxRegistry) -> bool {
+    upgrade_project(project, &mut |owner, key, slot, create| fx.slot_params(owner, key, slot, create))
+}
+
+/// Reads a project file to render it without a session, converted as opening it converts it.
+pub fn read_project(path: &Path) -> Result<Project, ProjectIoError> {
+    let mut project = scythe_core::rpp::read_project(path)?;
+    // Parameter ranges do not depend on the rate.
+    upgrade_read(&mut project, &FxRegistry::new(48_000));
+    Ok(project)
+}
+
 struct Pass<'p, 'a> {
     /// Whether every baseline is old, not only those of slots with an old envelope.
     all: bool,
     params: &'p mut SlotParams<'a>,
     /// Pools played by the envelopes converted, with how their values move.
     pooled: Vec<(i64, Units)>,
+    /// The parameters of plugins made for the question, by CLAP id: one instance each per pass,
+    /// also when making it failed.
+    made: HashMap<String, Option<Vec<ParamInfo>>>,
 }
 
 impl Pass<'_, '_> {
@@ -161,7 +181,8 @@ impl Pass<'_, '_> {
     }
 
     /// The units of each parameter of the slot's plugin, by index: ScyEQ-Pro's own, or a hosted
-    /// CLAP plugin's; `None` for other formats, whose envelopes REAPER keeps on 0..1 too.
+    /// CLAP plugin's; `None` for other formats, whose envelopes REAPER keeps on 0..1 too. A hosted
+    /// plugin no instance runs is made only in an old file, once per plugin id.
     fn units(&mut self, owner: &FxOwner, key: &str, slot: &FxSlot) -> Option<Vec<Option<Units>>> {
         if crate::scythe_eq::is_clap_slot(slot) {
             return Some(
@@ -173,7 +194,18 @@ impl Pass<'_, '_> {
         if crate::scythe_eq::is_slot(slot) || !crate::fx::is_clap(slot) {
             return None;
         }
-        let list = (self.params)(owner, key, slot)?;
+        let list = match (self.params)(owner, key, slot, false) {
+            Some(list) => list,
+            None if self.all => {
+                let id = crate::fx::clap_id(slot)?;
+                if !self.made.contains_key(&id) {
+                    let made = (self.params)(owner, key, slot, true);
+                    self.made.insert(id.clone(), made);
+                }
+                self.made[&id].clone()?
+            }
+            None => return None,
+        };
         Some(list.iter().map(|p| Some(Units { id: p.id, min: p.min, max: p.max, scyeq: false })).collect())
     }
 }
@@ -289,7 +321,7 @@ mod tests {
         slot.parameter_envelope(spec).unwrap().envelope.points.iter().map(|p| p.value).collect()
     }
 
-    fn hosted(_: &FxOwner, _: &str, slot: &FxSlot) -> Option<Vec<ParamInfo>> {
+    fn hosted(_: &FxOwner, _: &str, slot: &FxSlot, _: bool) -> Option<Vec<ParamInfo>> {
         (!crate::scythe_eq::is_slot(slot)).then(gain_params)
     }
 
@@ -338,8 +370,56 @@ mod tests {
         }
 
         let mut unknown = project(Writer::Scythe(1), both.clone());
-        assert!(!upgrade_project(&mut unknown, &mut |_, _, _| None), "the plugin's ranges are unknown");
+        assert!(!upgrade_project(&mut unknown, &mut |_, _, _, _| None), "the plugin's ranges are unknown");
         assert_eq!(unknown.tracks[0].fx[0], both);
+    }
+
+    /// A plugin without a running instance (offline, an inactive take) is made only for an old
+    /// file, once per plugin; elsewhere a 0..1 envelope, which stays 0..1 on a 0..1 parameter
+    /// for good, would make one on every load.
+    #[test]
+    fn plugins_are_made_only_for_old_files_and_once_per_plugin() {
+        let slot = |guid: &str| {
+            let mut s = clap_slot(&format!("{OLD_BOOST}{OLD_BASE}"));
+            s.raw[2] = Node::Line(format!("FXID {guid}"));
+            s
+        };
+        let two = |writer| {
+            let mut p = project(writer, slot("{A}"));
+            p.tracks[0].fx.push(slot("{B}"));
+            p
+        };
+        for writer in [Writer::Other, Writer::Unknown, Writer::Scythe(SCYTHE_FORMAT)] {
+            let mut p = two(writer);
+            let mut made = 0;
+            upgrade_project(&mut p, &mut |_, _, _, create| {
+                made += usize::from(create);
+                None
+            });
+            assert_eq!(made, 0, "{writer:?}");
+        }
+
+        let mut p = two(Writer::Scythe(1));
+        let mut asked = Vec::new();
+        assert!(upgrade_project(&mut p, &mut |_, key, _, create| {
+            asked.push((key.to_owned(), create));
+            create.then(gain_params)
+        }));
+        assert_eq!(asked, [("{A}".into(), false), ("{A}".into(), true), ("{B}".into(), false)]);
+        assert!(p.tracks[0].fx.iter().all(|s| values(s, "1") == [1.0, 3.0] && base(s, 1) == 2.0));
+    }
+
+    /// A parameter whose range is not finite has no units to move to.
+    #[test]
+    fn an_infinite_range_is_left_alone() {
+        let mut p = project(Writer::Scythe(1), clap_slot(&format!("{OLD_BOOST}{OLD_BASE}")));
+        let before = p.tracks[0].fx[0].clone();
+        assert!(!upgrade_project(&mut p, &mut |_, _, _, _| {
+            let mut list = gain_params();
+            list[1].max = f64::INFINITY;
+            Some(list)
+        }));
+        assert_eq!(p.tracks[0].fx[0], before);
     }
 
     /// A 0..1 parameter reads the same either way, and other plugin formats keep REAPER's
@@ -362,7 +442,7 @@ mod tests {
             }
         }
         let mut p = project(Writer::Scythe(1), vst.clone());
-        assert!(!upgrade_project(&mut p, &mut |_, _, _| Some(gain_params())));
+        assert!(!upgrade_project(&mut p, &mut |_, _, _, _| Some(gain_params())));
         assert_eq!(p.tracks[0].fx[0], vst);
     }
 
@@ -384,9 +464,9 @@ mod tests {
         let (id, item) = (p.tracks[0].id, p.tracks[0].items[0].id);
 
         let mut asked = Vec::new();
-        assert!(upgrade_project(&mut p, &mut |owner, key, slot| {
-            asked.push((owner.clone(), key.to_owned()));
-            hosted(owner, key, slot)
+        assert!(upgrade_project(&mut p, &mut |owner, key, slot, create| {
+            asked.push((owner.clone(), key.to_owned(), create));
+            hosted(owner, key, slot, create)
         }));
         let converted = |slot: &FxSlot| values(slot, "1") == [1.0, 3.0] && base(slot, 1) == 2.0;
         let track = &p.tracks[0];
@@ -398,10 +478,10 @@ mod tests {
         assert_eq!(
             asked,
             [
-                (FxOwner::Master, "{5}".to_owned()),
-                (FxOwner::Track(id), format!("{container_key}/{{5}}")),
-                (FxOwner::Input(id), "{5}".to_owned()),
-                (FxOwner::Take(item, 0), "{5}".to_owned()),
+                (FxOwner::Master, "{5}".to_owned(), false),
+                (FxOwner::Track(id), format!("{container_key}/{{5}}"), false),
+                (FxOwner::Input(id), "{5}".to_owned(), false),
+                (FxOwner::Take(item, 0), "{5}".to_owned(), false),
             ]
         );
     }
@@ -432,7 +512,7 @@ mod tests {
             p.automation_pools.push(pool);
         }
 
-        assert!(upgrade_project(&mut p, &mut |_, _, _| None));
+        assert!(upgrade_project(&mut p, &mut |_, _, _, _| None));
         let slot = &p.tracks[0].fx[0];
         assert_eq!(values(slot, "2"), [params::from_normalized(freq, 0.5)]);
         assert!((base(slot, 2) - params::from_normalized(freq, 0.25)).abs() < 1e-4, "stored as REAPER rounds it");
@@ -443,9 +523,38 @@ mod tests {
         assert_eq!(kept, [0.5, 1.0], "the volume envelope plays it too");
 
         let upgraded = p.clone();
-        assert!(!upgrade_project(&mut p, &mut |_, _, _| None), "a second load changes nothing");
+        assert!(!upgrade_project(&mut p, &mut |_, _, _, _| None), "a second load changes nothing");
         assert_eq!(p, upgraded);
     }
 
     use scythe_core::Envelope;
+}
+
+#[cfg(test)]
+mod read_tests {
+    /// Renders that read a file convert it as opening it does; REAPER's files stay as they are.
+    #[test]
+    fn a_file_read_to_render_is_converted_by_its_writer() {
+        let mut project = scythe_core::Project::default();
+        let mut track = scythe_core::Track::new("Vox");
+        let mut slot = crate::scythe_eq::slot(None);
+        let mut m = scythe_core::modulation::ParamModulation::new("2", "Freq", 0.25);
+        m.lfo.active = true;
+        scythe_core::modulation::set_modulation(&mut slot, &m);
+        track.fx.push(slot);
+        project.tracks.push(track);
+        let text = scythe_core::rpp::project_to_rpp(&project);
+        let header = text.lines().next().unwrap().to_owned();
+        let dir = std::env::temp_dir().join(format!("scythe-read-upgrade-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = |version: &str| {
+            let path = dir.join(format!("{}.RPP", version.len()));
+            std::fs::write(&path, text.replacen(&header, &format!("<REAPER_PROJECT 0.1 \"{version}\" 0"), 1)).unwrap();
+            let p = super::read_project(&path).unwrap();
+            scythe_core::modulation::modulation(&p.tracks[0].fx[0], 2).unwrap().base
+        };
+        assert!((base("scythe-0.1.0") - 74.0).abs() < 0.1, "{}", base("scythe-0.1.0"));
+        assert_eq!(base("7.73/linux-x86_64"), 0.25);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

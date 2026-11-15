@@ -320,8 +320,8 @@ impl Session {
         self.sync();
         // After the first sync, so the hosted plugins whose ranges the conversion needs run.
         let fx = self.engine.fx();
-        if scythe_engine::upgrade::upgrade_project(&mut self.project, &mut |owner, key, slot| {
-            fx.slot_params(owner, key, slot)
+        if scythe_engine::upgrade::upgrade_project(&mut self.project, &mut |owner, key, slot, create| {
+            fx.slot_params(owner, key, slot, create)
         }) {
             self.sync();
         }

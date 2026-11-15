@@ -474,3 +474,20 @@ fn a_clap_parameter_counts_in_its_own_units_as_reaper_automates_it() {
     );
     assert!((l[900] - 1.0).abs() < 1e-3, "baseline 2 plays {}", l[900] / 0.5);
 }
+
+/// A project rendered straight from a file converts as opening it does: an old Scythe file's
+/// baseline on the boost, in an offline slot whose plugin runs nowhere, moves to the boost's units.
+#[test]
+fn a_project_read_to_render_converts_old_clap_baselines() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let text = "<REAPER_PROJECT 0.1 scythe-0.1.0 0\n  <TRACK\n    <FXCHAIN\n      BYPASS 0 1 0\n      <CLAP \"CLAP: Test Gain (Scythe)\" org.scythe.test-gain \"\"\n        CFG 4 0 0 \"\"\n        <STATE\n          AACAPg==\n        >\n      >\n      FXID {11111111-2222-3333-4444-555555555555}\n      <PROGRAMENV 1 0 \"Boost\"\n        PARAMBASE 0.5\n        LFO 1\n        LFOWT 0.1 1\n      >\n      WAK 0 0\n    >\n  >\n>\n";
+    let mut project = scythe_core::rpp::project_from_rpp(text).unwrap();
+    let mut fx = scythe_engine::fx::FxRegistry::new(48_000);
+    fx.set_clap_plugins(ClapLibrary::load(&path).unwrap().descriptors());
+    assert!(scythe_engine::upgrade::upgrade_read(&mut project, &fx));
+    let m = scythe_core::modulation::modulation(&project.tracks[0].fx[0], 1).unwrap();
+    assert_eq!(m.base, 2.0);
+}

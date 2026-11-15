@@ -963,13 +963,18 @@ impl FxRegistry {
         self.entries.get(&(owner.clone(), key.to_owned())).and_then(|e| e.instance.clone())
     }
 
-    /// The parameters the plugin of `slot` lists: its running instance's, or for a slot that
-    /// runs none (offline, bypassed, not played) those of one made for the question.
-    pub fn slot_params(&self, owner: &FxOwner, key: &str, slot: &FxSlot) -> Option<Vec<ParamInfo>> {
+    /// The parameters the plugin of `slot` lists: its running instance's, or when `create` is set
+    /// and none runs (offline, bypassed, not played) those of one made for the question, without
+    /// the slot's state, which an offline plugin may crash on.
+    pub fn slot_params(&self, owner: &FxOwner, key: &str, slot: &FxSlot, create: bool) -> Option<Vec<ParamInfo>> {
         if let Some(inst) = self.instance_by_key(owner, key) {
             return inst.with(|e| e.params());
         }
-        crate::plugin_thread::run(|| self.create_here(slot, 2).ok().map(|(mut e, _)| e.params()))
+        if !create {
+            return None;
+        }
+        let bare = without_state(slot);
+        crate::plugin_thread::run(|| self.create_here(&bare, 2).ok().map(|(mut e, _)| e.params()))
     }
 
     pub fn instance(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<FxInstance>> {
@@ -1872,6 +1877,29 @@ pub fn clap_slot(desc: &ClapDescriptor) -> FxSlot {
     }
 }
 
+/// The plugin id of a CLAP slot (`<CLAP "name" <id> "">`).
+pub(crate) fn clap_id(slot: &FxSlot) -> Option<String> {
+    slot_plugin(slot).filter(|c| c.name() == "CLAP")?.args().get(1).cloned()
+}
+
+/// `slot` with its plugin's saved state (`<STATE`) left out.
+fn without_state(slot: &FxSlot) -> FxSlot {
+    let mut bare = slot.clone();
+    for node in &mut bare.raw {
+        if let Node::Chunk(c) = node
+            && c.name() == "CLAP"
+        {
+            c.children.retain(|n| !matches!(n, Node::Chunk(s) if s.name() == "STATE"));
+        }
+    }
+    bare
+}
+
+/// A CLAP parameter's range when it is one values can be mapped over: finite and rising.
+fn clap_range(p: &ParamInfo) -> Option<(f64, f64)> {
+    (p.min.is_finite() && p.max.is_finite() && p.max > p.min).then_some((p.min, p.max))
+}
+
 /// Whether `slot` holds a CLAP plugin.
 pub(crate) fn is_clap(slot: &FxSlot) -> bool {
     slot_plugin(slot).is_some_and(|c| c.name() == "CLAP")
@@ -2111,18 +2139,20 @@ impl Effect for ClapEffect {
 
     fn set_normalized(&mut self, index: usize, value: f64) -> bool {
         let Some(p) = self.params.get(index) else { return false };
-        self.plugin.set_param(p.id, p.min + value.clamp(0.0, 1.0) * (p.max - p.min));
+        let Some((min, max)) = clap_range(p) else { return false };
+        self.plugin.set_param(p.id, min + value.clamp(0.0, 1.0) * (max - min));
         true
     }
 
     fn normalized(&mut self, index: usize) -> Option<f64> {
         let p = self.params.get(index)?;
+        let (min, max) = clap_range(p)?;
         let v = self.plugin.param_value(p.id)?;
-        Some(if p.max > p.min { ((v - p.min) / (p.max - p.min)).clamp(0.0, 1.0) } else { 0.0 })
+        Some(((v - min) / (max - min)).clamp(0.0, 1.0))
     }
 
     fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
-        self.params.get(index).map(|p| (p.min, p.max))
+        self.params.get(index).and_then(clap_range)
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
@@ -2916,5 +2946,42 @@ mod scyeq_state_tests {
     fn a_clap_state_holding_no_eq_state_is_kept() {
         use base64::Engine as _;
         survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+}
+
+#[cfg(test)]
+mod clap_range_tests {
+    use super::*;
+
+    fn info(min: f64, max: f64) -> ParamInfo {
+        ParamInfo { id: 1, name: "P".into(), min, max, default: 0.0, log: false }
+    }
+
+    #[test]
+    fn a_clap_range_counts_only_when_finite_and_rising() {
+        assert_eq!(clap_range(&info(0.0, 4.0)), Some((0.0, 4.0)));
+        assert_eq!(clap_range(&info(0.0, f64::INFINITY)), None);
+        assert_eq!(clap_range(&info(f64::NEG_INFINITY, 0.0)), None);
+        assert_eq!(clap_range(&info(0.0, f64::NAN)), None);
+        assert_eq!(clap_range(&info(1.0, 1.0)), None);
+    }
+
+    /// A plugin made only to list its parameters gets no state: an offline slot may hold one it
+    /// crashes on.
+    #[test]
+    fn a_plugin_made_for_its_parameters_leaves_its_state_out() {
+        let mut slot = clap_slot(&ClapDescriptor {
+            id: "org.scythe.test-gain".into(),
+            name: "Test Gain".into(),
+            vendor: "Scythe".into(),
+            features: Vec::new(),
+            path: PathBuf::new(),
+        });
+        let Some(Node::Chunk(chunk)) = slot.raw.get_mut(1) else { panic!() };
+        chunk.push_chunk(Chunk::new("STATE", &[]));
+        assert!(clap_state(slot_plugin(&slot).unwrap()).is_some());
+        let bare = without_state(&slot);
+        assert!(slot_plugin(&bare).unwrap().chunks("STATE").next().is_none());
+        assert_eq!(clap_id(&bare).as_deref(), Some("org.scythe.test-gain"));
     }
 }

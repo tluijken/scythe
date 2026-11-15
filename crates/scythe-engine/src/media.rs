@@ -73,7 +73,7 @@ fn decode_subproject(path: &Path) -> Result<AudioData, MediaError> {
 pub fn render_subproject(path: &Path) -> Result<(), MediaError> {
     static RENDERING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     let decode_err = |message: String| MediaError::Decode { path: path.to_owned(), message };
-    let project = scythe_core::rpp::read_project(path).map_err(|e| decode_err(e.to_string()))?;
+    let project = crate::upgrade::read_project(path).map_err(|e| decode_err(e.to_string()))?;
     let rate = project.sample_rate.unwrap_or(48_000);
     {
         let mut rendering = RENDERING.lock().unwrap();
