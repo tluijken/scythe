@@ -156,7 +156,10 @@ pub(crate) fn window(cx: &mut Cx, ui: &mut Ui, view: &mut View, values: &[f64], 
         && let Ok(result) = rx.try_recv()
     {
         match result {
-            Ok(levels) => panel.file = Some(levels),
+            Ok(levels) => {
+                panel.file = Some(levels);
+                panel.error = None;
+            }
             Err(e) => panel.error = Some(e),
         }
         panel.job = None;
@@ -208,6 +211,8 @@ fn match_body(
             for o in others {
                 if reference_entry(ui, panel.reference == Target::Source(o.clone()), o).clicked() {
                     panel.reference = Target::Source(o.clone());
+                    panel.job = None;
+                    panel.error = None;
                     panel.other = vec![0.0; POINTS];
                     panel.other_frames = 0;
                     view.other = Some(o.id);
@@ -224,6 +229,7 @@ fn match_body(
             && let Some(path) = picked.or_else(|| cx.host.picked_reference())
         {
             panel.file = None;
+            panel.error = None;
             panel.job = Some(measure_file(decode, path.clone()));
             panel.reference = Target::File(path);
         }

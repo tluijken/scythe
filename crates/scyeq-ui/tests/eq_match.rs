@@ -266,3 +266,120 @@ fn the_chosen_reference_shows_its_colour() {
     assert!(h.query_by_label("Compare Bass (ScyEQ-Pro)").is_some(), "compared too");
     assert_eq!(dots(&h, [40, 200, 40]), 2, "on the compare choice and the reference");
 }
+
+fn decode_by_name(path: &Path) -> Result<ReferenceAudio, String> {
+    match path.file_name().and_then(|n| n.to_str()) {
+        Some("good.wav") => Ok(ReferenceAudio { channels: vec![vec![0.1; 4800]], sample_rate: 48_000 }),
+        _ => Err("unsupported feature: core (probe): no suitable format reader found".to_owned()),
+    }
+}
+
+/// Answers each pick at once with the next file, and offers one other instance, "Bass".
+struct Picks {
+    eq: ScytheEq,
+    view: ViewState,
+    files: Vec<PathBuf>,
+}
+
+impl EqHost for Picks {
+    fn values(&self) -> &[f64] {
+        self.eq.values()
+    }
+    fn begin(&mut self, _: u32) {}
+    fn set(&mut self, id: u32, value: f64) {
+        self.eq.set(id, value);
+    }
+    fn end(&mut self, _: u32) {}
+    fn edit(&mut self, _: &str, f: &mut dyn FnMut(&mut ScytheEq)) {
+        f(&mut self.eq);
+    }
+    fn meters(&self) -> Option<Arc<Meters>> {
+        None
+    }
+    fn probe(&self) -> Option<Arc<FxProbe>> {
+        None
+    }
+    fn latency(&self) -> usize {
+        0
+    }
+    fn sample_rate(&self) -> f64 {
+        48_000.0
+    }
+    fn instances(&self) -> Vec<Instance> {
+        vec![Instance { id: bass(), label: "Bass".to_owned(), color: None }]
+    }
+    fn compare_sources(&self) -> Vec<CompareSource> {
+        Vec::new()
+    }
+    fn source_probe(&self, _: Id) -> Option<Arc<FxProbe>> {
+        None
+    }
+    fn pick_reference(&mut self) -> Option<PathBuf> {
+        (!self.files.is_empty()).then(|| self.files.remove(0))
+    }
+    fn decode_reference(&self) -> Option<DecodeFn> {
+        Some(decode_by_name)
+    }
+    fn view(&mut self) -> &mut ViewState {
+        &mut self.view
+    }
+}
+
+fn picks(files: &[&str]) -> Harness<'static, (Picks, EditorState)> {
+    let host = Picks {
+        eq: ScytheEq::new(48_000),
+        view: ViewState::default(),
+        files: files.iter().map(|f| PathBuf::from("/music").join(f)).collect(),
+    };
+    let mut h = Harness::builder()
+        .with_size(vec2(1180.0, 680.0))
+        .with_step_dt(1.0 / 30.0)
+        .with_context_setup(scyeq_ui::theme::install)
+        .build_ui_state(
+            |ui, (host, state): &mut (Picks, EditorState)| scyeq_ui::show(ui, host, state),
+            (host, EditorState::default()),
+        );
+    h.step();
+    h.get_by_label("Match").click();
+    h.run_steps(2);
+    h
+}
+
+/// Picks the next file through the reference menu, then waits for its measurement.
+fn pick_next(h: &mut Harness<'static, (Picks, EditorState)>, current: &str) {
+    h.get_by_value(current).click();
+    h.run_steps(2);
+    h.get_by_label("Audio file…").click();
+    for _ in 0..200 {
+        h.run_steps(1);
+        if h.query_by_label_contains("Measuring the file").is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("the file was never measured");
+}
+
+const RAW: &str = "unsupported feature: core (probe): no suitable format reader found";
+
+#[test]
+fn a_file_measured_after_one_that_failed_clears_the_error() {
+    let mut h = picks(&["notes.txt", "good.wav"]);
+    pick_next(&mut h, "Choose…");
+    assert!(h.query_by_label_contains(RAW).is_some(), "the failed file's error");
+    pick_next(&mut h, "notes.txt");
+    assert!(h.query_by_value("good.wav").is_some());
+    assert!(h.query_by_label_contains(RAW).is_none(), "the error stays after a good file");
+}
+
+#[test]
+fn choosing_an_instance_after_a_failed_file_clears_the_error() {
+    let mut h = picks(&["notes.txt"]);
+    pick_next(&mut h, "Choose…");
+    assert!(h.query_by_label_contains(RAW).is_some());
+    h.get_by_value("notes.txt").click();
+    h.run_steps(2);
+    h.get_by_label("Bass (ScyEQ-Pro)").click();
+    h.run_steps(2);
+    assert!(h.query_by_label_contains(RAW).is_none(), "the error stays with an instance as reference");
+}
