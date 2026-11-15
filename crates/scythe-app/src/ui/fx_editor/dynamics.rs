@@ -94,7 +94,7 @@ fn curve_handles(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, threshold: f64, out_at_
                 None
             }
         });
-        cx.ed.focus = cx.ed.dragging.map(|h| if h == 0 { thr_id } else { ratio_id });
+        cx.ed.controls.focus = cx.ed.dragging.map(|h| if h == 0 { thr_id } else { ratio_id });
     }
     if resp.dragged()
         && let Some(p) = pointer
@@ -132,7 +132,8 @@ fn curve_handles(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, threshold: f64, out_at_
             ui.menu_button("Knee", |ui| super::param_menu(cx, ui, knee_id));
         }
     });
-    let hot = |h: usize| cx.ed.dragging == Some(h) || cx.ed.focus == Some(if h == 0 { thr_id } else { ratio_id });
+    let hot =
+        |h: usize| cx.ed.dragging == Some(h) || cx.ed.controls.focus == Some(if h == 0 { thr_id } else { ratio_id });
     handle(ui, plot.rect, thr, ACCENT, hot(0), "");
     handle(ui, plot.rect, ratio, theme::YELLOW, hot(1), "");
     let tip = format!(
@@ -350,7 +351,7 @@ pub fn gate(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
                 None
             }
         });
-        cx.ed.focus = cx.ed.dragging.map(|h| if h == 0 { 0 } else { 12 });
+        cx.ed.controls.focus = cx.ed.dragging.map(|h| if h == 0 { 0 } else { 12 });
     }
     if resp.dragged()
         && let Some(p) = resp.interact_pointer_pos()
@@ -428,7 +429,7 @@ pub fn limit(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
             if let Some(info) = info {
                 cx.set(id, db.clamp(info.min, info.max));
             }
-            cx.ed.focus = Some(id);
+            cx.ed.controls.focus = Some(id);
         }
         if resp.drag_stopped() {
             cx.end();
@@ -577,7 +578,7 @@ pub fn xcomp(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     {
         cx.edit_once("Remove ScyXcomp band", |x: &mut MultibandCompressor| x.remove_band(k));
         cx.ed.band = k.saturating_sub(1);
-        cx.ed.sel = None;
+        cx.ed.controls.sel = None;
         return;
     }
     let (knob_area, switch_area) = split_top(rest, rest.height() - 26.0, 0.0);
@@ -616,7 +617,7 @@ fn crossovers(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[BandView]) {
             Stroke::new(1.5, theme::with_alpha(color, 200)),
         );
         let knob = pos2(x, plot.rect.top() + 12.0);
-        handle(ui, plot.rect, knob, color, cx.ed.sel == Some(b), "");
+        handle(ui, plot.rect, knob, color, cx.ed.controls.sel == Some(b), "");
         painter.text(
             pos2(x + 9.0, plot.rect.top() + 4.0),
             Align2::LEFT_TOP,
@@ -636,8 +637,8 @@ fn crossovers(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[BandView]) {
     };
     if resp.drag_started() || resp.clicked() {
         let origin = widgets::drag_origin(ui, &resp);
-        cx.ed.sel = origin.and_then(near);
-        if let Some(b) = cx.ed.sel {
+        cx.ed.controls.sel = origin.and_then(near);
+        if let Some(b) = cx.ed.controls.sel {
             cx.ed.band = b;
         } else if let Some(p) = origin {
             let (hz, _) = plot.values(p);
@@ -645,7 +646,7 @@ fn crossovers(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[BandView]) {
         }
     }
     if resp.dragged()
-        && let (Some(b), Some(p)) = (cx.ed.sel, resp.interact_pointer_pos())
+        && let (Some(b), Some(p)) = (cx.ed.controls.sel, resp.interact_pointer_pos())
     {
         let (hz, _) = plot.values(p);
         let lo = if b == 0 { 20.0 } else { bands[b - 1].top * 1.05 };
@@ -656,18 +657,18 @@ fn crossovers(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, bands: &[BandView]) {
         cx.end();
     }
     if resp.hovered()
-        && let Some(b) = cx.ed.sel
+        && let Some(b) = cx.ed.controls.sel
         && b < n
     {
         let (l, r) = ui.input(|i| (i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight)));
         if l || r {
             let id = b as u32 * reaxcomp::BAND_PARAMS + reaxcomp::TOP;
             cx.set(id, bands[b].top * 2f64.powf(if r { 1.0 / 12.0 } else { -1.0 / 12.0 }));
-            cx.ed.key_gesture = true;
+            cx.ed.controls.key_gesture = true;
         }
     }
     resp.context_menu(|ui| {
-        if let Some(b) = cx.ed.sel.filter(|b| *b < n) {
+        if let Some(b) = cx.ed.controls.sel.filter(|b| *b < n) {
             super::param_menu(cx, ui, b as u32 * reaxcomp::BAND_PARAMS + reaxcomp::TOP);
         } else {
             ui.label(egui::RichText::new("Drag a crossover line").color(TEXT_DIM));

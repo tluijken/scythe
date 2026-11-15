@@ -74,6 +74,12 @@ impl Detector {
 
     /// Runs a block of detector samples; returns the gain change in dB at its end.
     pub fn run(&mut self, input: &[f64], b: Ballistics, threshold: f64, auto: bool, range: f64, fs: f64) -> f64 {
+        self.feed(input, b, fs);
+        self.settle(threshold, auto, range)
+    }
+
+    /// Follows detector samples without ending the block, so a block may arrive in pieces.
+    pub fn feed(&mut self, input: &[f64], b: Ballistics, fs: f64) {
         let avg = (-1.0 / (AUTO_SECONDS * fs)).exp();
         let mut avg_db = self.average_db;
         for &x in input {
@@ -87,6 +93,10 @@ impl Detector {
             }
         }
         self.average_db = avg_db;
+    }
+
+    /// Ends a block: returns the gain change in dB at its end.
+    pub fn settle(&mut self, threshold: f64, auto: bool, range: f64) -> f64 {
         self.state.flush();
         if self.env < 1e-30 {
             self.env = 0.0;
@@ -121,7 +131,7 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scythe_eq::filters::Shape;
+    use crate::filters::Shape;
 
     #[test]
     fn gain_computer_has_a_soft_knee_and_stops_at_the_range() {

@@ -101,7 +101,7 @@ fn render_headless(
     out: &std::path::Path,
     range: Option<scythe_core::TimeRange>,
 ) -> Result<(), String> {
-    let project = scythe_core::rpp::read_project(project).map_err(|e| e.to_string())?;
+    let project = scythe_engine::upgrade::read_project(project).map_err(|e| e.to_string())?;
     let rate = scythe_core::render_settings::RenderSettings::from_project(&project).render_rate(&project);
     let pool = scythe_session::render::load_media(&project, rate, Default::default());
     let range = range.unwrap_or_else(|| scythe_core::TimeRange::new(0.0, project.length()));

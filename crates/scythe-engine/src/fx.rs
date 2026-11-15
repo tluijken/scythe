@@ -297,7 +297,7 @@ pub trait Effect: Send {
     }
 
     /// Parameter `index` (REAPER's order) in its own units, for effects whose parameters REAPER
-    /// does not count from 0 to 1 (JSFX sliders); `None` for 0..1.
+    /// does not count from 0 to 1 (JSFX sliders, CLAP plugins); `None` for 0..1.
     fn param_range(&mut self, _index: usize) -> Option<(f64, f64)> {
         None
     }
@@ -378,6 +378,14 @@ pub(crate) fn parameter_envelopes(
     slot: &FxSlot,
     ctx: &scythe_core::automation_item::AutomationContext,
 ) -> Vec<ParamAutomation> {
+    let mut upgraded = None;
+    if crate::scythe_eq::is_slot(slot) {
+        let mut copy = slot.clone();
+        if crate::scythe_eq::upgrade_envelopes(&mut copy) {
+            upgraded = Some(copy);
+        }
+    }
+    let slot = upgraded.as_ref().unwrap_or(slot);
     slot.raw
         .iter()
         .filter_map(|n| match n {
@@ -804,6 +812,9 @@ pub struct FxRegistry {
     pub monitor_fx: Vec<FxSlot>,
     /// The live engine's audio device, for hardware inserts.
     pub hardware: Option<Arc<crate::hardware_io::HardwareIo>>,
+    /// Runs ScyEQ-Pro slots through the installed ScyEQ-Pro plugin rather than the built-in EQ,
+    /// to compare the two.
+    pub host_scyeq_plugin: bool,
 }
 
 impl FxRegistry {
@@ -820,6 +831,7 @@ impl FxRegistry {
             nam_preloaded: Default::default(),
             monitor_fx: Vec::new(),
             hardware: None,
+            host_scyeq_plugin: false,
         }
     }
 
@@ -951,6 +963,20 @@ impl FxRegistry {
         self.entries.get(&(owner.clone(), key.to_owned())).and_then(|e| e.instance.clone())
     }
 
+    /// The parameters the plugin of `slot` lists: its running instance's, or when `create` is set
+    /// and none runs (offline, bypassed, not played) those of one made for the question, without
+    /// the slot's state, which an offline plugin may crash on.
+    pub fn slot_params(&self, owner: &FxOwner, key: &str, slot: &FxSlot, create: bool) -> Option<Vec<ParamInfo>> {
+        if let Some(inst) = self.instance_by_key(owner, key) {
+            return inst.with(|e| e.params());
+        }
+        if !create {
+            return None;
+        }
+        let bare = without_state(slot);
+        crate::plugin_thread::run(|| self.create_here(&bare, 2).ok().map(|(mut e, _)| e.params()))
+    }
+
     pub fn instance(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<FxInstance>> {
         let owner = track.map_or(Owner::Master, Owner::Track);
         self.entries.get(&(owner, slot_key(slot, index))).and_then(|e| e.instance.clone())
@@ -1068,7 +1094,18 @@ impl FxRegistry {
                     Node::Chunk(_) => None,
                 })
                 .collect();
-            let mut new_lines = match ReaperVstState::decode(&lines) {
+            let built_in_eq = crate::scythe_eq::is_vst3_chunk(chunk)
+                && self.entries.get(&entry).is_some_and(|e| e.status == FxStatus::Native(crate::scythe_eq::STATUS));
+            let decoded = ReaperVstState::decode(&lines);
+            let state = match &decoded {
+                Some(old) if built_in_eq => {
+                    let Some(state) = crate::vst3_host::with_component(&old.chunk, &state) else { return };
+                    state
+                }
+                None if built_in_eq => return,
+                _ => state,
+            };
+            let mut new_lines = match decoded {
                 Some(old) if old.chunk == state => lines.clone(),
                 Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
                     crate::builtin::sidechain_vst_lines(id, &state)
@@ -1334,11 +1371,11 @@ impl FxRegistry {
         let (Some(Node::Chunk(old)), Some(Node::Chunk(new))) = (entry.state.first(), state.first()) else {
             return false;
         };
-        let is_eq = |c: &Chunk| c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == crate::scythe_eq::CLAP_ID);
-        if !is_eq(old) || !is_eq(new) {
+        let built_in = entry.status == FxStatus::Native(crate::scythe_eq::STATUS);
+        if !built_in || old.name() != new.name() || !crate::scythe_eq::is_chunk(new) {
             return false;
         }
-        let Some(chunk) = clap_state(new) else { return false };
+        let Ok(Some(chunk)) = crate::scythe_eq::chunk_state(new) else { return false };
         let Some(latency) = inst.with(|e| e.update_state(&chunk).then(|| e.latency())).flatten() else {
             return false;
         };
@@ -1355,6 +1392,16 @@ impl FxRegistry {
 
     fn create_here(&self, slot: &FxSlot, channels: usize) -> Result<(Box<dyn Effect>, FxStatus), String> {
         let plugin = slot_plugin(slot).ok_or("no plugin data")?;
+        if crate::scythe_eq::is_chunk(plugin) && !self.host_scyeq_plugin {
+            let eq = match crate::scythe_eq::chunk_state(plugin)? {
+                Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
+                    .ok_or("unreadable ScyEQ-Pro state")?,
+                None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
+            };
+            let eq: Box<dyn Effect> =
+                if plugin.name() == "VST" { Box::new(crate::scythe_eq::Vst3Eq(eq)) } else { Box::new(eq) };
+            return Ok((eq, FxStatus::Native(crate::scythe_eq::STATUS)));
+        }
         let plugin_chunk = plugin;
         let args = plugin.args();
         let lines: Vec<String> = plugin
@@ -1385,16 +1432,14 @@ impl FxRegistry {
                         })
                         .ok_or_else(|| format!("{file} is not installed as a Linux VST 3 plugin"))?;
                     let module = self.vst3_module(&info.path)?;
-                    let mut plugin = crate::vst3_host::Vst3Plugin::new(
+                    let plugin = crate::vst3_host::Vst3Plugin::new(
                         module,
                         &info,
                         self.sample_rate as f64,
                         crate::render::RenderScratch::MAX_BLOCK,
                         channels,
+                        state.as_ref().map(|s| &s.chunk[..]),
                     )?;
-                    if let Some(state) = state {
-                        plugin.load_state(&state.chunk);
-                    }
                     return Ok((Box::new(Vst3Effect::new(plugin)), FxStatus::Hosted(info.path.clone())));
                 }
                 let file = args.get(1).cloned().unwrap_or_default();
@@ -1487,31 +1532,29 @@ impl FxRegistry {
             }
             "CLAP" => {
                 let id = args.get(1).cloned().ok_or("CLAP slot without a plugin id")?;
-                if id == crate::scythe_eq::CLAP_ID {
-                    let eq = match clap_state(plugin_chunk) {
-                        Some(state) => crate::scythe_eq::ScytheEq::from_state(&state, self.sample_rate)
-                            .ok_or("unreadable ScyEQ-Pro state")?,
-                        None => crate::scythe_eq::ScytheEq::new(self.sample_rate),
-                    };
-                    return Ok((Box::new(eq), FxStatus::Native(crate::scythe_eq::STATUS)));
-                }
                 let desc = self
                     .find_installed(|s| s.clap.iter().find(|d| d.id == id).cloned())
                     .ok_or_else(|| format!("CLAP plugin {id} is not installed"))?;
                 let lib = ClapLibrary::load(&desc.path).map_err(|e| e.to_string())?;
-                let mut plugin = ClapPlugin::create(
+                let plugin = ClapPlugin::create_with_state(
                     lib,
                     &id,
                     self.sample_rate as f64,
                     crate::render::RenderScratch::MAX_BLOCK as u32,
+                    clap_state(plugin_chunk).as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-                if let Some(state) = clap_state(plugin_chunk) {
-                    plugin.load_state(&state);
-                }
                 let instrument = desc.is_instrument();
+                let params = plugin.params();
                 Ok((
-                    Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new(), presets: None }),
+                    Box::new(ClapEffect {
+                        plugin,
+                        params,
+                        instrument,
+                        expected: None,
+                        long: Vec::new(),
+                        presets: None,
+                    }),
                     FxStatus::Hosted(desc.path),
                 ))
             }
@@ -1803,7 +1846,7 @@ fn store_learned_bases(inst: &FxInstance, slot: &mut FxSlot) {
 }
 
 /// Plugin state saved in a `<STATE` child chunk of a `<CLAP` slot, base64 encoded.
-fn clap_state(c: &Chunk) -> Option<Vec<u8>> {
+pub(crate) fn clap_state(c: &Chunk) -> Option<Vec<u8>> {
     use base64::Engine as _;
     let state = c.chunks("STATE").next()?;
     let text: String = state
@@ -1832,6 +1875,44 @@ pub fn clap_slot(desc: &ClapDescriptor) -> FxSlot {
             Node::Line("WAK 0 0".into()),
         ],
     }
+}
+
+/// The plugin id of a CLAP slot (`<CLAP "name" <id> "">`).
+pub(crate) fn clap_id(slot: &FxSlot) -> Option<String> {
+    slot_plugin(slot).filter(|c| c.name() == "CLAP")?.args().get(1).cloned()
+}
+
+/// `slot` with its plugin's saved state (`<STATE`) left out.
+fn without_state(slot: &FxSlot) -> FxSlot {
+    let mut bare = slot.clone();
+    for node in &mut bare.raw {
+        if let Node::Chunk(c) = node
+            && c.name() == "CLAP"
+        {
+            c.children.retain(|n| !matches!(n, Node::Chunk(s) if s.name() == "STATE"));
+        }
+    }
+    bare
+}
+
+/// A CLAP parameter's range when it is one values can be mapped over: finite and rising.
+fn clap_range(p: &ParamInfo) -> Option<(f64, f64)> {
+    (p.min.is_finite() && p.max.is_finite() && p.max > p.min).then_some((p.min, p.max))
+}
+
+/// Whether `slot` holds a CLAP plugin.
+pub(crate) fn is_clap(slot: &FxSlot) -> bool {
+    slot_plugin(slot).is_some_and(|c| c.name() == "CLAP")
+}
+
+/// How REAPER names parameter `index` of `slot` in `PARMENV`: `<index>:<id>` for a CLAP plugin,
+/// given the parameters it lists; `None` where the index alone names it.
+pub fn envelope_spec(slot: &FxSlot, params: Option<&[ParamInfo]>, index: usize) -> Option<String> {
+    if crate::scythe_eq::is_slot(slot) {
+        return crate::scythe_eq::envelope_spec(slot, index);
+    }
+    is_clap(slot).then_some(())?;
+    params?.get(index).map(|p| format!("{index}:{}", p.id))
 }
 
 /// A new slot for an LV2 plugin, named the way REAPER names it (`LV2i:` for instruments).
@@ -2000,6 +2081,9 @@ pub fn slot_id(slot: &FxSlot) -> Option<String> {
 
 struct ClapEffect {
     plugin: ClapPlugin,
+    /// The parameters as the plugin listed them when it was created: their ranges are asked for
+    /// on the main thread only, and automation needs them on the audio thread.
+    params: Vec<ParamInfo>,
     instrument: bool,
     /// Where the next block should start if playback is continuous.
     expected: Option<i64>,
@@ -2053,7 +2137,26 @@ impl Effect for ClapEffect {
         self.plugin.save_state()
     }
 
+    fn set_normalized(&mut self, index: usize, value: f64) -> bool {
+        let Some(p) = self.params.get(index) else { return false };
+        let Some((min, max)) = clap_range(p) else { return false };
+        self.plugin.set_param(p.id, min + value.clamp(0.0, 1.0) * (max - min));
+        true
+    }
+
+    fn normalized(&mut self, index: usize) -> Option<f64> {
+        let p = self.params.get(index)?;
+        let (min, max) = clap_range(p)?;
+        let v = self.plugin.param_value(p.id)?;
+        Some(((v - min) / (max - min)).clamp(0.0, 1.0))
+    }
+
+    fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
+        self.params.get(index).and_then(clap_range)
+    }
+
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(left.len() as i64, ctx);
         self.plugin.process(left, right);
     }
@@ -2070,6 +2173,7 @@ impl Effect for ClapEffect {
             }
             return;
         }
+        self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(range.len() as i64, ctx);
         self.plugin.process_channels(bufs, range);
     }
@@ -2695,10 +2799,189 @@ mod nam_tests {
         let first = registry.chain(None, std::slice::from_ref(&first_slot))[0].clone();
         let mut values = params::defaults();
         values[(GLOBAL + global::PHASE) as usize] = 2.0;
-        let mut linear = crate::scythe_eq::slot(Some(&params::encode(&values)));
+        let mut linear = crate::scythe_eq::slot(Some(&params::encode(&values, &[], params::VERSION)));
         linear.raw[2] = first_slot.raw[2].clone();
         let second = registry.chain(None, &[linear])[0].clone();
         assert!(Arc::ptr_eq(&first, &second));
         assert_eq!(second.with(|e| e.latency()), Some(2048));
+    }
+}
+
+#[cfg(test)]
+mod scyeq_automation_tests {
+    use super::*;
+    use crate::scythe_eq::{ScytheEq, Vst3Eq, params};
+
+    const RATE: u32 = 48_000;
+
+    /// A ScyEQ-Pro slot with the plugin block `plugin` and one envelope, as REAPER writes them.
+    fn slot(plugin: &str, envelope: &str) -> FxSlot {
+        let text = format!("<FXCHAIN\n  BYPASS 0 0 0\n{plugin}  WAK 0 0\n{envelope}>\n");
+        let chain = scythe_core::rpp::parse(&text).unwrap();
+        FxSlot { name: "ScyEQ-Pro".into(), enabled: true, raw: chain.children }
+    }
+
+    fn clap() -> String {
+        format!("  <CLAP \"{}\" {} \"\"\n  >\n", crate::scythe_eq::DISPLAY, crate::scythe_eq::CLAP_ID)
+    }
+
+    fn vst3() -> String {
+        let cid = crate::vst3_host::cid_hex(&crate::scythe_eq::VST3_CLASS_ID);
+        format!("  <VST \"{}\" ScyEQ-Pro.vst3 0 \"\" 1{{{cid}}} \"\"\n  >\n", crate::scythe_eq::VST3_DISPLAY)
+    }
+
+    /// Plays the slot's envelopes into `fx` for the 512-frame block at `frame`.
+    fn automate(fx: &mut dyn Effect, slot: &FxSlot, frame: usize) {
+        let automation = parameter_envelopes(slot, &Default::default());
+        assert_eq!(automation.len(), 1);
+        apply_automation(fx, &automation, frame as f64 / RATE as f64, 512, RATE, &|_| false);
+    }
+
+    fn ramp(header: &str, from: f64, to: f64) -> String {
+        format!("  <PARMENV {header}\n    ACT 1 -1\n    PT 0 {from} 0\n    PT 1 {to} 0\n  >\n")
+    }
+
+    /// A CLAP slot's envelope is in the parameter's own units on a linear range, read at the last
+    /// frame of each block, as REAPER automates the CLAP plugin.
+    #[test]
+    fn clap_slot_envelopes_are_plain_and_read_at_the_block_end() {
+        let mut eq = ScytheEq::new(RATE);
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&clap(), &ramp("2:2 10 30000 15005", 100.0, 4900.0)), 0);
+        let end = 100.0 + 4800.0 * 511.0 / RATE as f64;
+        assert!((eq.value(freq) - end).abs() < 1e-9, "{} against {end}", eq.value(freq));
+        let gain = params::band_param(0, params::band::GAIN);
+        automate(&mut eq, &slot(&clap(), &ramp("3:3 -30 30 0", -12.0, 12.0)), 1024);
+        let end = -12.0 + 24.0 * 1535.0 / RATE as f64;
+        assert!((eq.value(gain) - end).abs() < 1e-9, "{} against {end}", eq.value(gain));
+    }
+
+    /// A VST3 slot's envelope holds VST3 normalised values, mapped as the plugin's VST3 wrapper
+    /// maps them: logarithmic for a frequency.
+    #[test]
+    fn vst3_slot_envelopes_are_vst3_normalised() {
+        let mut eq = Vst3Eq(ScytheEq::new(RATE));
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&vst3(), &ramp("2:2 0 1 0.5", 0.5, 0.5)), 0);
+        assert!((eq.0.value(freq) - 10.0 * 3000f64.sqrt()).abs() < 1e-9, "{}", eq.0.value(freq));
+    }
+
+    /// Envelopes Scythe stored before, 0..1 mapped logarithmically, play as they did.
+    #[test]
+    fn old_clap_slot_envelopes_play_as_before() {
+        let mut eq = ScytheEq::new(RATE);
+        let freq = params::band_param(0, params::band::FREQ);
+        automate(&mut eq, &slot(&clap(), &ramp("2 0 1 0.5", 0.5, 0.5)), 0);
+        assert!((eq.value(freq) - params::from_normalized(freq, 0.5)).abs() < 1e-9, "{}", eq.value(freq));
+    }
+}
+
+#[cfg(test)]
+mod scyeq_state_tests {
+    use super::*;
+
+    /// A project whose one track holds `plugin`, a ScyEQ-Pro block, as its slot.
+    fn project(plugin: &str) -> Project {
+        let text = format!(
+            "<FXCHAIN\n  BYPASS 0 0 0\n{plugin}  FXID {{4D1D3BD8-4B1B-4B4F-9C2B-5E0C9C7C0E01}}\n  WAK 0 0\n>\n"
+        );
+        let chain = scythe_core::rpp::parse(&text).unwrap();
+        let mut track = scythe_core::Track::new("Vocals");
+        track.fx.push(FxSlot { name: "ScyEQ-Pro".into(), enabled: true, raw: chain.children });
+        let mut project = Project::default();
+        project.tracks.push(track);
+        project
+    }
+
+    fn vst3(lines: &[String]) -> String {
+        let cid = crate::vst3_host::cid_hex(&crate::scythe_eq::VST3_CLASS_ID);
+        let body: String = lines.iter().map(|l| format!("    {l}\n")).collect();
+        format!("  <VST \"{}\" ScyEQ-Pro.vst3 0 \"\" 1{{{cid}}} \"\"\n{body}  >\n", crate::scythe_eq::VST3_DISPLAY)
+    }
+
+    fn clap(state: &str) -> String {
+        let (display, id) = (crate::scythe_eq::DISPLAY, crate::scythe_eq::CLAP_ID);
+        format!("  <CLAP \"{display}\" {id} \"\"\n    CFG 4 0 0 \"\"\n    <STATE\n      {state}\n    >\n  >\n")
+    }
+
+    /// Loads `project` into a registry that runs ScyEQ-Pro built in and saves it: the EQ is not
+    /// made, and the slot comes back as it was.
+    fn survives(plugin: &str) {
+        let mut project = project(plugin);
+        let before = scythe_core::rpp::project_to_rpp(&project);
+        let mut registry = FxRegistry::new(48_000);
+        let track = &project.tracks[0];
+        registry.chain(Some(track.id), &track.fx);
+        let status = registry.status(Some(track.id), &track.fx[0], 0).cloned();
+        assert!(matches!(status, Some(FxStatus::Unavailable(_))), "{status:?}");
+        registry.store_states(&mut project);
+        assert_eq!(scythe_core::rpp::project_to_rpp(&project), before);
+    }
+
+    #[test]
+    fn an_undecodable_vst3_block_is_kept() {
+        survives(&vst3(&["not base64 at all!".into(), "AAAA".into()]));
+    }
+
+    #[test]
+    fn a_vst3_block_whose_component_does_not_fit_is_kept() {
+        let mut chunk = 9_999u32.to_le_bytes().to_vec();
+        chunk.extend([0; 4]);
+        chunk.extend(b"short");
+        survives(&vst3(&crate::builtin::vst_lines(1, &chunk)));
+    }
+
+    #[test]
+    fn a_vst3_block_holding_no_eq_state_is_kept() {
+        let component = b"no ScyEQ-Pro state";
+        survives(&vst3(&crate::builtin::vst_lines(1, &crate::vst3_host::reaper_state(component, &[]))));
+    }
+
+    #[test]
+    fn an_undecodable_clap_state_is_kept() {
+        survives(&clap("not base64 at all!"));
+    }
+
+    #[test]
+    fn a_clap_state_holding_no_eq_state_is_kept() {
+        use base64::Engine as _;
+        survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+}
+
+#[cfg(test)]
+mod clap_range_tests {
+    use super::*;
+
+    fn info(min: f64, max: f64) -> ParamInfo {
+        ParamInfo { id: 1, name: "P".into(), min, max, default: 0.0, log: false }
+    }
+
+    #[test]
+    fn a_clap_range_counts_only_when_finite_and_rising() {
+        assert_eq!(clap_range(&info(0.0, 4.0)), Some((0.0, 4.0)));
+        assert_eq!(clap_range(&info(0.0, f64::INFINITY)), None);
+        assert_eq!(clap_range(&info(f64::NEG_INFINITY, 0.0)), None);
+        assert_eq!(clap_range(&info(0.0, f64::NAN)), None);
+        assert_eq!(clap_range(&info(1.0, 1.0)), None);
+    }
+
+    /// A plugin made only to list its parameters gets no state: an offline slot may hold one it
+    /// crashes on.
+    #[test]
+    fn a_plugin_made_for_its_parameters_leaves_its_state_out() {
+        let mut slot = clap_slot(&ClapDescriptor {
+            id: "org.scythe.test-gain".into(),
+            name: "Test Gain".into(),
+            vendor: "Scythe".into(),
+            features: Vec::new(),
+            path: PathBuf::new(),
+        });
+        let Some(Node::Chunk(chunk)) = slot.raw.get_mut(1) else { panic!() };
+        chunk.push_chunk(Chunk::new("STATE", &[]));
+        assert!(clap_state(slot_plugin(&slot).unwrap()).is_some());
+        let bare = without_state(&slot);
+        assert!(slot_plugin(&bare).unwrap().chunks("STATE").next().is_none());
+        assert_eq!(clap_id(&bare).as_deref(), Some("org.scythe.test-gain"));
     }
 }

@@ -2,3 +2,4 @@
 * text=auto eol=lf
 # REAPER writes these with CRLF; they stay as REAPER wrote them.
 crates/scythe-core/testdata/reaper-config/** -text
+crates/scythe-engine/tests/fixtures/*.RPP -text

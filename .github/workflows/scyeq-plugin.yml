@@ -1,0 +1,104 @@
+name: ScyEQ-Pro plugin
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # release.yml collects the zips from here.
+  workflow_call:
+
+# Called from release.yml, github.workflow is the caller's name, which keeps a release run from
+# cancelling this workflow's own run on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-scyeq-plugin-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS runner minutes count ten times against a private repository's quota, so pull
+        # requests build on Linux and Windows only. Linux is 22.04 for its older glibc, so the
+        # plugin loads in hosts on older distributions too.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-22.04", "windows-latest"]') || fromJSON('["ubuntu-22.04", "windows-latest", "macos-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      PLUGIN_FORMAT_TAG: v0.1.0
+    steps:
+      - uses: actions/checkout@v4
+      # bundle.sh and validate.sh, at the tag scyeq-plugin depends on.
+      - uses: actions/checkout@v4
+        with:
+          repository: tluijken/plugin-format
+          ref: ${{ env.PLUGIN_FORMAT_TAG }}
+          path: plugin-format
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev libx11-dev libxcb1-dev libxcb-icccm4-dev libxcb-dri2-0-dev libxkbcommon-dev libgl1-mesa-dev libx11-xcb-dev libxcursor-dev xvfb
+      - uses: dtolnay/rust-toolchain@stable
+      # The bundle is universal: both architectures, whichever the runner is.
+      - name: macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.0
+      - name: Version
+        shell: bash
+        run: echo "VERSION=$(cargo pkgid -p scyeq-plugin | sed -e 's/.*[#@]//')" >> "$GITHUB_ENV"
+      # The tests load the library from the profile directory, where only a build puts it.
+      - name: Build the plugin
+        run: cargo build -p scyeq-plugin --lib
+      - name: Host tests
+        if: runner.os != 'Linux'
+        run: cargo test -p scyeq-plugin --no-fail-fast
+      - name: Host tests under Xvfb
+        if: runner.os == 'Linux'
+        run: xvfb-run -a cargo test -p scyeq-plugin --no-fail-fast
+      - name: Null test against Scythe's built-in ScyEQ-Pro
+        run: cargo test -p scythe-engine --test scyeq_plugin_null --no-fail-fast
+        env:
+          SCYTHE_SYSTEM_PLUGINS: "0"
+      - name: Bundle
+        shell: bash
+        run: |
+          plugin-format/scripts/bundle.sh scyeq-plugin ScyEQ-Pro com.scythe.scyeq-pro bundle "$VERSION"
+          find bundle
+      # Both validators are built from source on first use, which takes minutes.
+      - name: Validator cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/validators
+          key: validators-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin-format/scripts/validators.env') }}
+      - name: Validate
+        shell: bash
+        env:
+          VALIDATORS_DIR: ${{ runner.temp }}/validators
+        run: plugin-format/scripts/validate.sh bundle
+      - name: Zip
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux) os=linux ;;
+            Windows) os=windows ;;
+            macOS) os=macos ;;
+          esac
+          zip_name="ScyEQ-Pro-$VERSION-$os"
+          echo "ZIP_NAME=$zip_name" >> "$GITHUB_ENV"
+          scripts/release/notices.sh bundle scyeq-plugin "$os"
+          files=(ScyEQ-Pro.clap ScyEQ-Pro.vst3 LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md Inter-OFL.txt JetBrainsMono-OFL.txt CRATE_LICENSES.md)
+          if [ "$RUNNER_OS" = Windows ]; then
+            (cd bundle && 7z a -tzip "../$zip_name.zip" "${files[@]}")
+          else
+            (cd bundle && zip -r -y "../$zip_name.zip" "${files[@]}")
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}.zip
+          if-no-files-found: error

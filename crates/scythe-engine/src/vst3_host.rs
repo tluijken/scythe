@@ -698,6 +698,26 @@ pub fn reaper_state(component: &[u8], controller: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The component and controller states of a VST 3 state in REAPER's layout.
+pub fn split_reaper_state(data: &[u8]) -> Option<(&[u8], &[u8])> {
+    let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
+    let len = u32_at(0)?;
+    let component = data.get(8..8 + len)?;
+    let controller = u32_at(8 + len).and_then(|n| data.get(16 + len..16 + len + n)).unwrap_or(&[]);
+    Some((component, controller))
+}
+
+/// `data`, a VST 3 state in REAPER's layout, with `component` as its component state and the
+/// rest kept as it was.
+pub fn with_component(data: &[u8], component: &[u8]) -> Option<Vec<u8>> {
+    let (old, _) = split_reaper_state(data)?;
+    let mut out = (component.len() as u32).to_le_bytes().to_vec();
+    out.extend(&data[4..8]);
+    out.extend(component);
+    out.extend(&data[8 + old.len()..]);
+    Some(out)
+}
+
 // ---- instances ---------------------------------------------------------------------------
 
 pub struct ParamDesc {
@@ -799,13 +819,15 @@ fn midi_controller(bytes: [u8; 3]) -> Option<(u8, usize, f64)> {
 unsafe impl Send for Vst3Plugin {}
 
 impl Vst3Plugin {
-    /// An instance whose audio buses are set up for a track of `channels` channels.
+    /// An instance whose audio buses are set up for a track of `channels` channels, with `state`
+    /// (in REAPER's layout) loaded before it is activated.
     pub fn new(
         module: Arc<Vst3Module>,
         info: &Vst3Info,
         sample_rate: f64,
         block: usize,
         channels: usize,
+        state: Option<&[u8]>,
     ) -> Result<Self, String> {
         let host = ComWrapper::new(HostApp);
         let host_unknown = host.as_com_ref::<FUnknown>().map_or(std::ptr::null_mut(), |r| r.as_ptr());
@@ -906,16 +928,6 @@ impl Vst3Plugin {
             if component.getBusCount(event, input) > 0 {
                 component.activateBus(event, input, 0, 1);
             }
-            let mut setup = ProcessSetup {
-                processMode: ProcessModes_::kRealtime as int32,
-                symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
-                maxSamplesPerBlock: block as int32,
-                sampleRate: sample_rate,
-            };
-            processor.setupProcessing(&mut setup);
-            component.setActive(1);
-            processor.setProcessing(1);
-
             let mut midi_map = vec![None; 16 * MIDI_CONTROLLERS];
             if let Some(mapping) = controller.as_ref().and_then(|c| c.cast::<IMidiMapping>()) {
                 for (i, slot) in midi_map.iter_mut().enumerate() {
@@ -954,7 +966,18 @@ impl Vst3Plugin {
                 _module: module,
             };
             plugin.wire_buses();
-            plugin.sync_controller();
+            if !state.is_some_and(|state| plugin.load_state(state)) {
+                plugin.sync_controller();
+            }
+            let mut setup = ProcessSetup {
+                processMode: ProcessModes_::kRealtime as int32,
+                symbolicSampleSize: SymbolicSampleSizes_::kSample32 as int32,
+                maxSamplesPerBlock: block as int32,
+                sampleRate: sample_rate,
+            };
+            plugin.processor.setupProcessing(&mut setup);
+            plugin.component.setActive(1);
+            plugin.processor.setProcessing(1);
             Ok(plugin)
         }
     }
@@ -1035,10 +1058,7 @@ impl Vst3Plugin {
     }
 
     pub fn load_state(&mut self, data: &[u8]) -> bool {
-        let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize);
-        let Some(len) = u32_at(0) else { return false };
-        let Some(component) = data.get(8..8 + len) else { return false };
-        let controller = u32_at(8 + len).and_then(|n| data.get(16 + len..16 + len + n)).unwrap_or(&[]);
+        let Some((component, controller)) = split_reaper_state(data) else { return false };
         let stream = stream_with(component);
         // SAFETY: the streams outlive the calls.
         unsafe {

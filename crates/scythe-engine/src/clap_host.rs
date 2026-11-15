@@ -10,7 +10,9 @@ use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
     CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI, CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
-    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value, clap_input_events, clap_output_events,
+    CLAP_EVENT_TRANSPORT, CLAP_TRANSPORT_HAS_SECONDS_TIMELINE, CLAP_TRANSPORT_HAS_TEMPO, CLAP_TRANSPORT_IS_PLAYING,
+    clap_event_header, clap_event_midi, clap_event_note, clap_event_param_value, clap_event_transport,
+    clap_input_events, clap_output_events,
 };
 #[cfg(target_os = "macos")]
 use clap_sys::ext::gui::CLAP_WINDOW_API_COCOA;
@@ -27,12 +29,14 @@ use clap_sys::ext::posix_fd_support::{
 use clap_sys::ext::state::{CLAP_EXT_STATE, clap_plugin_state};
 use clap_sys::ext::timer_support::{CLAP_EXT_TIMER_SUPPORT, clap_host_timer_support, clap_plugin_timer_support};
 use clap_sys::factory::plugin_factory::{CLAP_PLUGIN_FACTORY_ID, clap_plugin_factory};
+use clap_sys::fixedpoint::CLAP_SECTIME_FACTOR;
 use clap_sys::host::clap_host;
 use clap_sys::id::clap_id;
 use clap_sys::plugin::{clap_plugin, clap_plugin_descriptor};
 use clap_sys::process::clap_process;
 use clap_sys::stream::{clap_istream, clap_ostream};
 use clap_sys::version::{CLAP_VERSION, clap_version_is_compatible};
+pub use scyeq_dsp::ParamInfo;
 
 use crate::editor::{Editor, POLL_ERROR, POLL_READ, Timers, ready_fds};
 
@@ -453,17 +457,6 @@ unsafe extern "C" fn events_get(list: *const clap_input_events, index: u32) -> *
     events.get(index as usize).copied().unwrap_or(std::ptr::null())
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParamInfo {
-    pub id: u32,
-    pub name: String,
-    pub min: f64,
-    pub max: f64,
-    pub default: f64,
-    /// Edit on a logarithmic scale (frequencies, times).
-    pub log: bool,
-}
-
 /// A note event for `process`, `offset` frames into the block.
 pub fn note_event(on: bool, offset: u32, channel: u8, key: u8, velocity: u8) -> clap_event_note {
     clap_event_note {
@@ -559,6 +552,9 @@ pub struct ClapPlugin {
     pending_params: Vec<clap_event_param_value>,
     /// All events of a `process` call in time order, as handed to the plugin.
     order: Vec<*const clap_event_header>,
+    sample_rate: f64,
+    /// Where the next block plays, from [`ClapPlugin::set_transport`].
+    transport: Option<clap_event_transport>,
 }
 
 // SAFETY: the engine serialises access; audio-thread calls (`process`) never overlap
@@ -567,6 +563,18 @@ unsafe impl Send for ClapPlugin {}
 
 impl ClapPlugin {
     pub fn create(lib: Arc<ClapLibrary>, id: &str, sample_rate: f64, max_frames: u32) -> Result<Self, ClapError> {
+        Self::create_with_state(lib, id, sample_rate, max_frames, None)
+    }
+
+    /// Like [`ClapPlugin::create`], with `state` loaded before activating, so the plugin starts
+    /// out with it and reports the latency it has with it.
+    pub fn create_with_state(
+        lib: Arc<ClapLibrary>,
+        id: &str,
+        sample_rate: f64,
+        max_frames: u32,
+        state: Option<&[u8]>,
+    ) -> Result<Self, ClapError> {
         let factory = lib.factory().ok_or_else(|| ClapError::NoPlugin(id.into(), lib.path.clone()))?;
         let host_data = Arc::new(HostData::default());
         let host = Box::new(clap_host {
@@ -588,7 +596,7 @@ impl ClapPlugin {
         if plugin.is_null() {
             return Err(ClapError::NoPlugin(id.into(), lib.path.clone()));
         }
-        let me = Self {
+        let mut me = Self {
             plugin,
             _host: host,
             host_data,
@@ -606,16 +614,21 @@ impl ClapPlugin {
             sysex: Vec::with_capacity(16),
             pending_params: Vec::with_capacity(64),
             order: Vec::with_capacity(1100),
+            sample_rate,
+            transport: None,
         };
         // SAFETY: plugin is valid; init and activate are main-thread calls made once.
         let p = unsafe { &*plugin };
         if !p.init.is_some_and(|f| unsafe { f(plugin) }) {
             return Err(ClapError::Plugin(id.into(), "initialise"));
         }
+        me.select_stereo();
+        if let Some(state) = state {
+            me.load_state(state);
+        }
         if !p.activate.is_some_and(|f| unsafe { f(plugin, sample_rate, 1, max_frames) }) {
             return Err(ClapError::Plugin(id.into(), "activate"));
         }
-        let mut me = me;
         let (ins, outs) = (me.port_layout(true), me.port_layout(false));
         me.inputs = vec![vec![0.0; max_frames as usize]; ins.iter().sum()];
         me.outputs = vec![vec![0.0; max_frames as usize]; outs.iter().sum()];
@@ -642,6 +655,44 @@ impl ClapPlugin {
         me.in_ports = ports(&ins, &mut me.in_ptrs);
         me.out_ports = ports(&outs, &mut me.out_ptrs);
         Ok(me)
+    }
+
+    /// Moves a plugin whose main input is not stereo to a stereo in, stereo out configuration
+    /// when it offers one, keeping at least as many input ports (its sidechain): the tracks it
+    /// plays on are stereo, and on a mono input it would hear only the left channel.
+    fn select_stereo(&self) {
+        let ports = self.port_layout(true);
+        if ports.first() == Some(&2) {
+            return;
+        }
+        use clap_sys::ext::audio_ports_config::{
+            CLAP_EXT_AUDIO_PORTS_CONFIG, clap_audio_ports_config, clap_plugin_audio_ports_config,
+        };
+        let Some(get) = self.raw().get_extension else { return };
+        // SAFETY: the extension id is a C string; the result has that type or is null.
+        let ext = unsafe {
+            (get(self.plugin, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()) as *const clap_plugin_audio_ports_config).as_ref()
+        };
+        let Some((count, config, select)) = ext.and_then(|e| Some((e.count?, e.get?, e.select?))) else { return };
+        // SAFETY: main-thread calls on an inactive plugin, with a zeroed struct to fill.
+        let stereo: Vec<clap_audio_ports_config> = unsafe {
+            (0..count(self.plugin))
+                .filter_map(|index| {
+                    let mut c: clap_audio_ports_config = std::mem::zeroed();
+                    (config(self.plugin, index, &mut c)
+                        && c.has_main_input
+                        && c.main_input_channel_count == 2
+                        && c.has_main_output
+                        && c.main_output_channel_count == 2)
+                        .then_some(c)
+                })
+                .collect()
+        };
+        let keeps_ports = stereo.iter().find(|c| c.input_port_count as usize >= ports.len());
+        if let Some(c) = keeps_ports.or(stereo.first()) {
+            // SAFETY: as above.
+            unsafe { select(self.plugin, c.id) };
+        }
     }
 
     /// Channels of each input or output port, from the audio-ports extension; a stereo pair
@@ -836,6 +887,36 @@ impl ClapPlugin {
         unsafe { load(self.plugin, &stream) }
     }
 
+    /// Where the next blocks play: the project frame of their first sample, whether the
+    /// transport runs and the tempo there, on a seconds timeline.
+    pub fn set_transport(&mut self, position: i64, playing: bool, bpm: f64) {
+        let flags = CLAP_TRANSPORT_HAS_TEMPO
+            | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE
+            | if playing { CLAP_TRANSPORT_IS_PLAYING } else { 0 };
+        self.transport = Some(clap_event_transport {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_transport>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_TRANSPORT,
+                flags: 0,
+            },
+            flags,
+            song_pos_beats: 0,
+            song_pos_seconds: (position as f64 / self.sample_rate * CLAP_SECTIME_FACTOR as f64).round() as i64,
+            tempo: bpm,
+            tempo_inc: 0.0,
+            loop_start_beats: 0,
+            loop_end_beats: 0,
+            loop_start_seconds: 0,
+            loop_end_seconds: 0,
+            bar_start: 0,
+            bar_number: 0,
+            tsig_num: 0,
+            tsig_denom: 0,
+        });
+    }
+
     /// Processes a stereo block in place.
     /// Processes a stereo block in place on the main ports; other inputs get silence.
     pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -909,7 +990,7 @@ impl ClapPlugin {
         let process = clap_process {
             steady_time: -1,
             frames_count: n as u32,
-            transport: std::ptr::null(),
+            transport: self.transport.as_ref().map_or(std::ptr::null(), |t| t as *const clap_event_transport),
             audio_inputs: self.in_ports.as_ptr(),
             audio_outputs: self.out_ports.as_mut_ptr(),
             audio_inputs_count: self.in_ports.len() as u32,

@@ -4,21 +4,24 @@
 //! parameter rows stay one tab away. Every change goes through `Session::fx_gesture`, so a
 //! drag is one undo step.
 
-pub mod analyzer;
 mod delay;
 mod dynamics;
 mod eq;
-pub mod eq_match;
 mod fir;
 mod misc;
-pub mod model;
 pub mod scythe_eq;
+
+pub use scyeq_ui::model;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{Align2, Color32, CornerRadius, Id, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
+pub(crate) use scyeq_ui::controls::{Axis, interact, param_menu, start_typing_param, typing_box, value_box, wheel};
+use scyeq_ui::controls::{Controls, Params, Typing};
+pub(crate) use scyeq_ui::theme::band_color;
+pub(crate) use scyeq_ui::widgets::{card, split_left, split_top};
 use scythe_core::{FxSlot, TrackId};
 use scythe_engine::clap_host::ParamInfo;
 use scythe_engine::fx::{FxInstance, FxOwner, FxStatus};
@@ -209,20 +212,16 @@ pub fn toggle_at(app: &mut ScytheApp, owner: &FxOwner, path: &[usize]) {
 
 /// Whether an editor takes the arrow keys: the pointer is over it and something is selected.
 pub fn takes_keys(app: &ScytheApp) -> bool {
-    app.view.fx_editors.iter().any(|e| e.hovered && (e.sel.is_some() || e.focus.is_some()) || e.typing.is_some())
+    app.view.fx_editors.iter().any(|e| {
+        let c = &e.controls;
+        c.hovered && (c.sel.is_some() || c.focus.is_some()) || c.typing.is_some()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Editor,
     Parameters,
-}
-
-/// What a typed value goes to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Typing {
-    Param(u32),
-    Field(u64),
 }
 
 /// One open editor window.
@@ -246,21 +245,15 @@ pub struct FxEditor {
     /// A gate's opening per frame.
     gate: History,
     bands: Vec<Ballistic>,
-    /// The selected band, tap or point.
-    sel: Option<usize>,
-    /// The parameter arrow keys nudge.
-    focus: Option<u32>,
-    typing: Option<(Typing, String, bool)>,
-    /// Arrow keys held change the effect as one gesture.
-    key_gesture: bool,
+    /// The selection, the focused parameter, typing and whether the pointer is over it.
+    pub(crate) controls: Controls,
     last: Instant,
-    hovered: bool,
     /// A handle being dragged (editors' own drags).
     dragging: Option<usize>,
     /// The ReaXcomp band shown.
     band: usize,
     /// ScyEQ-Pro's own view state.
-    pub(crate) eq: Option<Box<scythe_eq::EqView>>,
+    pub(crate) eq: Option<Box<scyeq_ui::EditorState>>,
 }
 
 impl std::fmt::Debug for FxEditor {
@@ -300,12 +293,8 @@ impl FxEditor {
             history: History::new(360),
             gate: History::new(360),
             bands: Vec::new(),
-            sel: None,
-            focus: None,
-            typing: None,
-            key_gesture: false,
+            controls: Controls::default(),
             last: Instant::now(),
-            hovered: false,
             dragging: None,
             band: 0,
             eq: None,
@@ -434,6 +423,44 @@ impl Ctx<'_> {
     }
 }
 
+impl Params for Ctx<'_> {
+    fn param_info(&self, id: u32) -> Option<ParamInfo> {
+        self.info(id).cloned()
+    }
+
+    fn param_value(&self, id: u32) -> f64 {
+        self.value(id)
+    }
+
+    fn param_text(&self, id: u32) -> String {
+        self.text(id)
+    }
+
+    fn set_param(&mut self, id: u32, v: f64) {
+        self.set(id, v);
+    }
+
+    fn end_gesture(&mut self) {
+        self.end();
+    }
+
+    fn can_modulate(&self) -> bool {
+        self.ed.track_fx().is_some()
+    }
+
+    fn modulate(&mut self, id: u32) {
+        Ctx::modulate(self, id);
+    }
+
+    fn controls(&mut self) -> &mut Controls {
+        &mut self.ed.controls
+    }
+
+    fn id_salt(&self) -> Id {
+        Id::unique(("fx-ed", &self.ed.owner, &self.ed.path))
+    }
+}
+
 /// Whose effect a window shows, for its title.
 fn owner_name(app: &ScytheApp, owner: &FxOwner, nested: bool) -> String {
     let track = |t: &TrackId| app.project.track(*t).map_or_else(|| "Track".to_owned(), |t| t.name.clone());
@@ -490,17 +517,22 @@ fn window(app: &mut ScytheApp, ui: &mut Ui, ed: &mut FxEditor) -> bool {
     .id(Id::unique(("fx-editor", &ed.owner, &ed.path)))
     .default_size(ed.kind.default_size())
     .min_size(vec2(380.0, 280.0))
-    .escape_closes(ed.typing.is_none())
+    .escape_closes(ed.controls.typing.is_none())
     .show(&ctx, &mut open, |ui| {
         let mut cx = Ctx { app, ed, inst, slot, params, values };
         body(&mut cx, ui);
     });
     if let Some(s) = shown {
         let pointer = ctx.input(|i| i.pointer.hover_pos());
-        ed.hovered = pointer.is_some_and(|p| s.response.rect.contains(p));
+        ed.controls.hovered = pointer.is_some_and(|p| s.response.rect.contains(p));
     }
-    if !open && app.session.in_gesture() {
-        app.end_gesture();
+    if !open {
+        if let Some(eq) = ed.eq.as_mut() {
+            eq.end_gesture(|_| app.end_gesture());
+        }
+        if app.session.in_gesture() {
+            app.end_gesture();
+        }
     }
     open
 }
@@ -527,8 +559,8 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
         .clicked()
         {
             cx.ed.tab = tab;
-            cx.ed.focus = None;
-            cx.ed.typing = None;
+            cx.ed.controls.focus = None;
+            cx.ed.controls.typing = None;
         }
         x += w + 6.0;
     }
@@ -559,35 +591,8 @@ fn body(cx: &mut Ctx, ui: &mut Ui) {
             Kind::ScytheEq => scythe_eq::show(cx, ui, content),
         },
     }
-    keys(cx, ui);
-}
-
-/// Arrow keys nudge the focused control; held keys make one gesture.
-fn keys(cx: &mut Ctx, ui: &Ui) {
-    if cx.ed.typing.is_some() || !cx.ed.hovered {
-        return;
-    }
-    let (up, down, held, fine) = ui.input(|i| {
-        (
-            i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowRight),
-            i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowLeft),
-            [egui::Key::ArrowUp, egui::Key::ArrowDown, egui::Key::ArrowLeft, egui::Key::ArrowRight]
-                .iter()
-                .any(|k| i.key_down(*k)),
-            i.modifiers.shift,
-        )
-    });
-    if let Some(id) = cx.ed.focus
-        && (up || down)
-        && let Some(info) = cx.info(id).cloned()
-    {
-        let v = model::nudge(&info, cx.value(id), if up { 1.0 } else { -1.0 }, fine, model::is_switch(&cx.text(id)));
-        cx.set(id, v);
-        cx.ed.key_gesture = true;
-    }
-    if cx.ed.key_gesture && !held {
-        cx.ed.key_gesture = false;
-        cx.end();
+    if cx.ed.kind != Kind::ScytheEq {
+        scyeq_ui::controls::keys(cx, ui);
     }
 }
 
@@ -614,7 +619,7 @@ fn parameters(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
 fn param_row(cx: &mut Ctx, ui: &mut Ui, r: Rect, id: u32) {
     let Some(info) = cx.info(id).cloned() else { return };
     let resp = ui.interact(r, Id::unique(("fx-ed-row", &cx.ed.owner, &cx.ed.path, id)), Sense::click_and_drag());
-    let focused = cx.ed.focus == Some(id);
+    let focused = cx.ed.controls.focus == Some(id);
     let painter = ui.painter();
     painter.rect_filled(r, CornerRadius::same(10), if resp.hovered() || resp.dragged() { RAISED_HI } else { RAISED });
     if focused {
@@ -660,102 +665,6 @@ pub(crate) fn fraction(info: &ParamInfo, v: f64) -> f32 {
     .clamp(0.0, 1.0) as f32
 }
 
-/// Which way a control is dragged, and over how many points the full range lies.
-#[derive(Clone, Copy)]
-pub(crate) enum Axis {
-    Vertical(f32),
-    Horizontal(f32),
-}
-
-/// What every parameter control does: drag (Shift for fine), wheel, click to take the arrow
-/// keys, double-click to type a value, right-click for a menu with reset and modulation.
-pub(crate) fn interact(cx: &mut Ctx, ui: &Ui, resp: &egui::Response, id: u32, axis: Axis) {
-    let Some(info) = cx.info(id).cloned() else { return };
-    let fine = ui.input(|i| i.modifiers.shift);
-    if resp.clicked() || resp.drag_started() {
-        cx.ed.focus = Some(id);
-        cx.ed.sel = None;
-    }
-    if resp.dragged() {
-        let d = resp.drag_delta();
-        let v = cx.value(id);
-        let nv = match axis {
-            Axis::Vertical(span) => model::drag(&info, v, d.y, span, fine),
-            Axis::Horizontal(span) => model::drag(&info, v, -d.x, span, fine),
-        };
-        if nv != v {
-            cx.set(id, nv);
-        }
-    }
-    if resp.drag_stopped() {
-        cx.end();
-    }
-    if resp.hovered() {
-        let wheel = wheel(ui);
-        if wheel != 0.0 {
-            let v = model::nudge(&info, cx.value(id), wheel.signum() as f64, fine, model::is_switch(&cx.text(id)));
-            cx.set_once(id, v);
-        }
-    }
-    if resp.double_clicked() {
-        start_typing_param(cx, id);
-    }
-    resp.context_menu(|ui| param_menu(cx, ui, id));
-}
-
-pub(crate) fn start_typing_param(cx: &mut Ctx, id: u32) {
-    let shown = cx.text(id);
-    let number: String = shown.split_whitespace().next().unwrap_or("").trim_start_matches('+').to_owned();
-    cx.ed.typing = Some((Typing::Param(id), number, true));
-}
-
-pub(crate) fn param_menu(cx: &mut Ctx, ui: &mut Ui, id: u32) {
-    let name = cx.info(id).map(|p| p.name.clone()).unwrap_or_default();
-    ui.label(egui::RichText::new(name).color(TEXT_DIM));
-    if ui.button("Type a value…").clicked() {
-        start_typing_param(cx, id);
-        ui.close();
-    }
-    if ui.button("Reset to default").clicked() {
-        if let Some(d) = cx.info(id).map(|p| p.default) {
-            cx.set_once(id, d);
-        }
-        ui.close();
-    }
-    if cx.ed.track_fx().is_some() && ui.button("Modulate/Learn…").clicked() {
-        cx.modulate(id);
-        ui.close();
-    }
-}
-
-/// The text field of a value being typed, when it is `id`'s; true while it shows.
-pub(crate) fn typing_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32) -> bool {
-    let Some((Typing::Param(at), mut text, first)) = cx.ed.typing.clone() else { return false };
-    if at != id {
-        return false;
-    }
-    let edit = egui::TextEdit::singleline(&mut text).font(theme::mono(12.0)).desired_width(rect.width());
-    let resp = ui.put(rect.shrink2(vec2(0.0, (rect.height() - 22.0).max(0.0) / 2.0)), edit);
-    if first {
-        resp.request_focus();
-    }
-    let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
-    if escape {
-        cx.ed.typing = None;
-    } else if enter || (resp.lost_focus() && !first) {
-        if let Some(v) = model::parse_value(&text, &cx.text(id))
-            && let Some(info) = cx.info(id)
-        {
-            let v = v.clamp(info.min.min(info.max), info.max.max(info.min));
-            cx.set_once(id, v);
-        }
-        cx.ed.typing = None;
-    } else {
-        cx.ed.typing = Some((Typing::Param(id), text, false));
-    }
-    true
-}
-
 /// A rotary control for parameter `id`.
 pub(crate) fn knob(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label: &str) {
     let Some(info) = cx.info(id).cloned() else { return };
@@ -786,7 +695,7 @@ pub(crate) fn knob(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label: &str) 
         [centre + vec2(a.cos(), a.sin()) * (r * 0.35), centre + vec2(a.cos(), a.sin()) * (r - 6.0)],
         Stroke::new(2.0, TEXT),
     );
-    if cx.ed.focus == Some(id) {
+    if cx.ed.controls.focus == Some(id) {
         painter.circle_stroke(centre, r + 2.0, Stroke::new(1.0, theme::with_alpha(ACCENT, 140)));
     }
     if cx.controlled(id) {
@@ -850,48 +759,6 @@ pub(crate) fn switch_param(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label
         cx.set_once(id, if on { 0.0 } else { 1.0 });
     }
     resp.context_menu(|ui| param_menu(cx, ui, id));
-}
-
-/// A compact value field: label, value, drag sideways, double-click to type.
-pub(crate) fn value_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, id: u32, label: &str) {
-    if cx.info(id).is_none() {
-        return;
-    }
-    let resp = ui.interact(rect, Id::unique(("fx-ed-box", &cx.ed.owner, &cx.ed.path, id)), Sense::click_and_drag());
-    let painter = ui.painter();
-    let hot = resp.hovered() || resp.dragged();
-    painter.rect_filled(rect, CornerRadius::same(8), if hot { RAISED_HI } else { BG });
-    if cx.ed.focus == Some(id) {
-        painter.rect_stroke(rect, CornerRadius::same(8), Stroke::new(1.0, ACCENT), egui::StrokeKind::Inside);
-    }
-    let needed =
-        widgets::text_width(ui, label, theme::regular(11.0)) + widgets::text_width(ui, &cx.text(id), theme::mono(11.0));
-    if needed + 24.0 <= rect.width() {
-        ui.painter().text(
-            rect.left_center() + vec2(8.0, 0.0),
-            Align2::LEFT_CENTER,
-            label,
-            theme::regular(11.0),
-            TEXT_DIM,
-        );
-    }
-    let value_rect = Rect::from_min_max(pos2(rect.left() + rect.width() * 0.4, rect.top()), rect.max - vec2(6.0, 0.0));
-    if !typing_box(cx, ui, value_rect, id) {
-        ui.painter().text(
-            rect.right_center() - vec2(8.0, 0.0),
-            Align2::RIGHT_CENTER,
-            cx.text(id),
-            theme::mono(11.0),
-            TEXT,
-        );
-    }
-    let resp = if label.is_empty() { resp } else { resp.on_hover_text(label) };
-    interact(cx, ui, &resp, id, Axis::Horizontal(240.0));
-}
-
-/// A rounded card behind a section.
-pub(crate) fn card(ui: &Ui, rect: Rect) {
-    ui.painter().rect_filled(rect, CornerRadius::same(12), RAISED);
 }
 
 pub(crate) fn section_title(ui: &Ui, rect: Rect, text: &str) {
@@ -1058,40 +925,6 @@ pub(crate) fn handle(ui: &Ui, clip: Rect, at: Pos2, color: Color32, selected: bo
     }
 }
 
-/// Colours that tell bands apart.
-pub(crate) const BAND_COLORS: [Color32; 8] = [
-    Color32::from_rgb(0xfd, 0x97, 0x1f),
-    Color32::from_rgb(0x66, 0xd9, 0xef),
-    Color32::from_rgb(0xa6, 0xe2, 0x2e),
-    Color32::from_rgb(0xae, 0x81, 0xff),
-    Color32::from_rgb(0xf9, 0x26, 0x72),
-    Color32::from_rgb(0xe6, 0xdb, 0x74),
-    Color32::from_rgb(0x4e, 0xc9, 0xb0),
-    Color32::from_rgb(0xff, 0x8c, 0xc6),
-];
-
-pub(crate) fn band_color(k: usize) -> Color32 {
-    BAND_COLORS[k % BAND_COLORS.len()]
-}
-
-/// Splits `rect` into a left part `w` wide and the rest, with a gap.
-pub(crate) fn split_left(rect: Rect, w: f32, gap: f32) -> (Rect, Rect) {
-    let w = w.min(rect.width());
-    (
-        Rect::from_min_size(rect.min, vec2(w, rect.height())),
-        Rect::from_min_max(pos2((rect.left() + w + gap).min(rect.right()), rect.top()), rect.max),
-    )
-}
-
-/// Splits `rect` into a top part `h` tall and the rest, with a gap.
-pub(crate) fn split_top(rect: Rect, h: f32, gap: f32) -> (Rect, Rect) {
-    let h = h.min(rect.height());
-    (
-        Rect::from_min_size(rect.min, vec2(rect.width(), h)),
-        Rect::from_min_max(pos2(rect.left(), (rect.top() + h + gap).min(rect.bottom())), rect.max),
-    )
-}
-
 /// A value that is not a parameter (a delay tap's time, a curve point), shown in a
 /// [`field_box`].
 pub(crate) struct Field {
@@ -1122,7 +955,7 @@ pub(crate) fn field_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, f: &Field, label:
         painter.text(rect.left_center() + vec2(7.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(10.0), TEXT_DIM);
     }
     let mut out = FieldChange { value: None, done: false };
-    if let Some((Typing::Field(key), mut text, first)) = cx.ed.typing.clone()
+    if let Some((Typing::Field(key), mut text, first)) = cx.ed.controls.typing.clone()
         && key == f.key
     {
         let edit = egui::TextEdit::singleline(&mut text).font(theme::mono(11.0)).desired_width(rect.width());
@@ -1132,13 +965,13 @@ pub(crate) fn field_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, f: &Field, label:
         }
         let (enter, escape) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
         if escape {
-            cx.ed.typing = None;
+            cx.ed.controls.typing = None;
         } else if enter || (r.lost_focus() && !first) {
             out.value = model::parse_value(&text, &f.text).map(|v| v.clamp(f.min, f.max));
             out.done = true;
-            cx.ed.typing = None;
+            cx.ed.controls.typing = None;
         } else {
-            cx.ed.typing = Some((Typing::Field(f.key), text, false));
+            cx.ed.controls.typing = Some((Typing::Field(f.key), text, false));
         }
         return out;
     }
@@ -1160,22 +993,9 @@ pub(crate) fn field_box(cx: &mut Ctx, ui: &mut Ui, rect: Rect, f: &Field, label:
     }
     if resp.double_clicked() {
         let number = f.text.split_whitespace().next().unwrap_or("").trim_start_matches('+').to_owned();
-        cx.ed.typing = Some((Typing::Field(f.key), number, true));
+        cx.ed.controls.typing = Some((Typing::Field(f.key), number, true));
     }
     out
-}
-
-/// Wheel notches turned this frame, up positive.
-pub(crate) fn wheel(ui: &Ui) -> f32 {
-    ui.input(|i| {
-        i.events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::MouseWheel { delta, .. } => Some(delta.y.signum()),
-                _ => None,
-            })
-            .sum()
-    })
 }
 
 /// Keys an editor takes while [`takes_keys`]: the arrows nudge, Delete removes.

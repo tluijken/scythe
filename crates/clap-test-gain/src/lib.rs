@@ -3,7 +3,8 @@
 //! key number as a constant level (key / 128) so tests can read note timing exactly, and a
 //! delay that reports its delay as latency. The gain offers two factory presets through preset
 //! discovery, loaded with the preset-load extension, from a provider with the plugin's id; a
-//! second provider with another id lists one more, which REAPER never asks for.
+//! second provider with another id lists one more, which REAPER never asks for. The gain offers
+//! port configurations, and comes a second time starting on a mono input.
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -183,14 +184,88 @@ static DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descrip
     features: FEATURES.0.as_ptr(),
 });
 
+/// The gain starting on its mono input with the sidechain.
+const MONO_ID: &CStr = c"org.scythe.test-gain-mono";
+
+static MONO_DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_descriptor {
+    clap_version: CLAP_VERSION,
+    id: MONO_ID.as_ptr(),
+    name: c"Test Gain Mono".as_ptr(),
+    vendor: c"Scythe".as_ptr(),
+    url: c"".as_ptr(),
+    manual_url: c"".as_ptr(),
+    support_url: c"".as_ptr(),
+    version: c"1.0".as_ptr(),
+    description: c"The gain, starting on a mono input".as_ptr(),
+    features: FEATURES.0.as_ptr(),
+});
+
 struct Gain {
     plugin: clap_plugin,
     gain: AtomicU32,
+    /// A factor on top of the gain, the parameter whose range is not 0..1. Not in the state.
+    boost: AtomicU32,
     host: *const clap_host,
     gui: std::sync::Mutex<Option<Gui>>,
     /// Host timer ticks seen while the editor is open.
     ticks: AtomicU32,
+    /// The selected entry of `CONFIGS`.
+    config: AtomicU32,
 }
+
+/// The port configurations the gain offers: name, input ports, main input channels. It starts
+/// on the last, ahead of which a plain stereo one comes without the sidechain.
+const CONFIGS: [(&CStr, u32, u32); 3] =
+    [(c"Stereo", 1, 2), (c"Mono with sidechain", 2, 1), (c"Stereo with sidechain", 2, 2)];
+
+unsafe fn config_of(p: *const clap_plugin) -> (&'static CStr, u32, u32) {
+    // SAFETY: as in `gain_of`.
+    CONFIGS[unsafe { gain_of(p) }.config.load(Ordering::Relaxed) as usize]
+}
+
+unsafe extern "C" fn configs_count(_p: *const clap_plugin) -> u32 {
+    CONFIGS.len() as u32
+}
+
+unsafe extern "C" fn configs_get(
+    _p: *const clap_plugin,
+    index: u32,
+    out: *mut clap_sys::ext::audio_ports_config::clap_audio_ports_config,
+) -> bool {
+    use clap_sys::ext::audio_ports::{CLAP_PORT_MONO, CLAP_PORT_STEREO};
+    let Some(&(name, ports, channels)) = CONFIGS.get(index as usize) else { return false };
+    // SAFETY: the host passes a writable config struct.
+    let out = unsafe { &mut *out };
+    out.id = index;
+    for (d, &c) in out.name.iter_mut().zip(name.to_bytes_with_nul()) {
+        *d = c as c_char;
+    }
+    out.input_port_count = ports;
+    out.output_port_count = 1;
+    out.has_main_input = true;
+    out.main_input_channel_count = channels;
+    out.main_input_port_type = if channels == 1 { CLAP_PORT_MONO.as_ptr() } else { CLAP_PORT_STEREO.as_ptr() };
+    out.has_main_output = true;
+    out.main_output_channel_count = 2;
+    out.main_output_port_type = CLAP_PORT_STEREO.as_ptr();
+    true
+}
+
+unsafe extern "C" fn configs_select(p: *const clap_plugin, id: u32) -> bool {
+    if id as usize >= CONFIGS.len() {
+        return false;
+    }
+    // SAFETY: as in `gain_of`.
+    unsafe { gain_of(p) }.config.store(id, Ordering::Relaxed);
+    true
+}
+
+static CONFIGS_EXT: clap_sys::ext::audio_ports_config::clap_plugin_audio_ports_config =
+    clap_sys::ext::audio_ports_config::clap_plugin_audio_ports_config {
+        count: Some(configs_count),
+        get: Some(configs_get),
+        select: Some(configs_select),
+    };
 
 unsafe fn gain_of<'a>(plugin: *const clap_plugin) -> &'a Gain {
     // SAFETY: plugin_data points at the boxed Gain created in `create_plugin`.
@@ -220,8 +295,10 @@ unsafe fn apply_params(p: *const clap_plugin, events: *const clap_sys::events::c
             let e = &*(events.get.unwrap())(events, i);
             if e.type_ == clap_sys::events::CLAP_EVENT_PARAM_VALUE {
                 let pv = &*(e as *const _ as *const clap_sys::events::clap_event_param_value);
-                if pv.param_id == GAIN_PARAM {
-                    gain_of(p).gain.store((pv.value as f32).to_bits(), Ordering::Relaxed);
+                match pv.param_id {
+                    GAIN_PARAM => gain_of(p).gain.store((pv.value as f32).to_bits(), Ordering::Relaxed),
+                    BOOST_PARAM => gain_of(p).boost.store((pv.value as f32).to_bits(), Ordering::Relaxed),
+                    _ => {}
                 }
             }
         }
@@ -232,7 +309,8 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
     // SAFETY: the host passes valid buffers for `frames_count` frames.
     unsafe {
         apply_params(p, (*process).in_events);
-        let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed));
+        let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed))
+            * f32::from_bits(gain_of(p).boost.load(Ordering::Relaxed));
         let pr = &*process;
         let (input, output) = (&*pr.audio_inputs, &*pr.audio_outputs);
         // A second input port is a sidechain, added to the output.
@@ -249,20 +327,21 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
     CLAP_PROCESS_CONTINUE
 }
 
-unsafe extern "C" fn ports_count(_p: *const clap_plugin, is_input: bool) -> u32 {
-    if is_input { 2 } else { 1 }
+unsafe extern "C" fn ports_count(p: *const clap_plugin, is_input: bool) -> u32 {
+    if is_input { unsafe { config_of(p) }.1 } else { 1 }
 }
 
 unsafe extern "C" fn ports_get(
-    _p: *const clap_plugin,
+    p: *const clap_plugin,
     index: u32,
     is_input: bool,
     info: *mut clap_sys::ext::audio_ports::clap_audio_port_info,
 ) -> bool {
-    use clap_sys::ext::audio_ports::{CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_STEREO};
-    if index >= unsafe { ports_count(_p, is_input) } {
+    use clap_sys::ext::audio_ports::{CLAP_AUDIO_PORT_IS_MAIN, CLAP_PORT_MONO, CLAP_PORT_STEREO};
+    if index >= unsafe { ports_count(p, is_input) } {
         return false;
     }
+    let channels = if is_input && index == 0 { unsafe { config_of(p) }.2 } else { 2 };
     // SAFETY: the host passes a writable info struct.
     let info = unsafe { &mut *info };
     info.id = index;
@@ -271,8 +350,8 @@ unsafe extern "C" fn ports_get(
         *d = c as c_char;
     }
     info.flags = if index == 0 { CLAP_AUDIO_PORT_IS_MAIN } else { 0 };
-    info.channel_count = 2;
-    info.port_type = CLAP_PORT_STEREO.as_ptr();
+    info.channel_count = channels;
+    info.port_type = if channels == 1 { CLAP_PORT_MONO.as_ptr() } else { CLAP_PORT_STEREO.as_ptr() };
     info.in_place_pair = clap_sys::id::CLAP_INVALID_ID;
     true
 }
@@ -305,9 +384,13 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, stream: *const clap_istre
 static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
 
 const GAIN_PARAM: u32 = 7;
+const BOOST_PARAM: u32 = 9;
+/// Id, name, range and default of each parameter.
+const PARAMS_INFO: [(u32, &CStr, f64, f64, f64); 2] =
+    [(GAIN_PARAM, c"Gain", 0.0, 1.0, 0.5), (BOOST_PARAM, c"Boost", 0.0, 4.0, 1.0)];
 
 unsafe extern "C" fn params_count(_p: *const clap_plugin) -> u32 {
-    1
+    PARAMS_INFO.len() as u32
 }
 
 unsafe extern "C" fn params_info(
@@ -315,18 +398,16 @@ unsafe extern "C" fn params_info(
     index: u32,
     info: *mut clap_sys::ext::params::clap_param_info,
 ) -> bool {
-    if index != 0 {
-        return false;
-    }
+    let Some(&(id, name, min, max, default)) = PARAMS_INFO.get(index as usize) else { return false };
     // SAFETY: the host passes a writable info struct.
     unsafe {
         let info = &mut *info;
-        info.id = GAIN_PARAM;
+        info.id = id;
         info.flags = clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE;
-        info.min_value = 0.0;
-        info.max_value = 1.0;
-        info.default_value = 0.5;
-        for (d, s) in info.name.iter_mut().zip(c"Gain".to_bytes_with_nul()) {
+        info.min_value = min;
+        info.max_value = max;
+        info.default_value = default;
+        for (d, s) in info.name.iter_mut().zip(name.to_bytes_with_nul()) {
             *d = *s as c_char;
         }
     }
@@ -336,10 +417,12 @@ unsafe extern "C" fn params_info(
 unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64) -> bool {
     // SAFETY: valid plugin and out pointer.
     unsafe {
-        if id != GAIN_PARAM {
-            return false;
-        }
-        *out = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed)) as f64;
+        let value = match id {
+            GAIN_PARAM => &gain_of(p).gain,
+            BOOST_PARAM => &gain_of(p).boost,
+            _ => return false,
+        };
+        *out = f32::from_bits(value.load(Ordering::Relaxed)) as f64;
     }
     true
 }
@@ -527,6 +610,8 @@ unsafe extern "C" fn get_extension(_p: *const clap_plugin, id: *const c_char) ->
         &TIMER as *const _ as *const c_void
     } else if id == clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS {
         &PORTS as *const _ as *const c_void
+    } else if id == clap_sys::ext::audio_ports_config::CLAP_EXT_AUDIO_PORTS_CONFIG {
+        &CONFIGS_EXT as *const _ as *const c_void
     } else if id == CLAP_EXT_PRESET_LOAD || id == CLAP_EXT_PRESET_LOAD_COMPAT {
         &PRESET_LOAD as *const _ as *const c_void
     } else {
@@ -600,13 +685,14 @@ unsafe extern "C" fn delay_extension(_p: *const clap_plugin, id: *const c_char) 
 }
 
 unsafe extern "C" fn count(_f: *const clap_plugin_factory) -> u32 {
-    3
+    4
 }
 unsafe extern "C" fn descriptor(_f: *const clap_plugin_factory, i: u32) -> *const clap_plugin_descriptor {
     match i {
         0 => &DESCRIPTOR.0,
         1 => &SYNTH_DESCRIPTOR.0,
         2 => &DELAY_DESCRIPTOR.0,
+        3 => &MONO_DESCRIPTOR.0,
         _ => std::ptr::null(),
     }
 }
@@ -667,12 +753,14 @@ unsafe extern "C" fn create_plugin(
             &(*boxed).plugin
         };
     }
-    if id != ID {
-        return std::ptr::null();
-    }
+    let (desc, config) = match id {
+        id if id == ID => (&DESCRIPTOR.0, 2),
+        id if id == MONO_ID => (&MONO_DESCRIPTOR.0, 1),
+        _ => return std::ptr::null(),
+    };
     let boxed = Box::into_raw(Box::new(Gain {
         plugin: clap_plugin {
-            desc: &DESCRIPTOR.0,
+            desc,
             plugin_data: std::ptr::null_mut(),
             init: Some(init),
             destroy: Some(destroy),
@@ -686,9 +774,11 @@ unsafe extern "C" fn create_plugin(
             on_main_thread: Some(nop),
         },
         gain: AtomicU32::new(0.5f32.to_bits()),
+        boost: AtomicU32::new(1.0f32.to_bits()),
         host: _host,
         gui: std::sync::Mutex::new(None),
         ticks: AtomicU32::new(0),
+        config: AtomicU32::new(config),
     }));
     // SAFETY: the box was just leaked and is valid.
     unsafe {

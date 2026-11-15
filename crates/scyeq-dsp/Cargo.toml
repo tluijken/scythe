@@ -1,0 +1,8 @@
+[package]
+name = "scyeq-dsp"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+realfft.workspace = true

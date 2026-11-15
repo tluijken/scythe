@@ -188,7 +188,7 @@ fn finish(app: &mut ScytheApp, ui: &mut Ui, full: Rect) {
     gfx_view::show(app, ui);
     nam::show(app, ui);
     fx_editor::show(app, ui);
-    fx_editor::eq_match::instances_window(app, ui);
+    fx_editor::scythe_eq::instances_window(app, ui);
     arrange::color_picker(app, ui);
     toast(app, ui, full);
     script_console(app, ui);

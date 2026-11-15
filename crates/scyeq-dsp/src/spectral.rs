@@ -28,7 +28,7 @@ pub struct SpectralBand {
     pub release_ms: f64,
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 struct BandState {
     config: Option<SpectralBand>,
     /// Bins the band touches and their weights.
@@ -39,7 +39,6 @@ struct BandState {
     mean_db: f32,
 }
 
-#[derive(Clone)]
 pub struct Spectral {
     n: usize,
     hop: usize,
@@ -58,6 +57,8 @@ pub struct Spectral {
     det: [Vec<Complex32>; 2],
     /// Gain change in dB per placement (stereo, left, right, mid, side) and bin.
     gains: [Vec<f32>; 5],
+    fft_scratch: Vec<Complex32>,
+    ifft_scratch: Vec<Complex32>,
 }
 
 impl Spectral {
@@ -69,20 +70,28 @@ impl Spectral {
         let bins = n / 2 + 1;
         let window =
             (0..n).map(|i| (0.5 - 0.5 * (2.0 * std::f64::consts::PI * i as f64 / n as f64).cos()) as f32).collect();
+        let (fft, ifft) = (planner.plan_fft_forward(n), planner.plan_fft_inverse(n));
         Self {
             n,
             hop,
             fs,
             window,
-            fft: planner.plan_fft_forward(n),
-            ifft: planner.plan_fft_inverse(n),
+            fft_scratch: vec![Complex32::default(); fft.get_scratch_len()],
+            ifft_scratch: vec![Complex32::default(); ifft.get_scratch_len()],
+            fft,
+            ifft,
             input: [vec![0.0; n], vec![0.0; n]],
             side: [vec![0.0; n], vec![0.0; n]],
             acc: [vec![0.0; n], vec![0.0; n]],
             ready: [vec![0.0; hop], vec![0.0; hop]],
             fill: 0,
             bands: (0..bands)
-                .map(|_| BandState { env: vec![-120.0; bins], average: vec![-120.0; bins], ..Default::default() })
+                .map(|_| BandState {
+                    bins: Vec::with_capacity(n / 2),
+                    env: vec![-120.0; bins],
+                    average: vec![-120.0; bins],
+                    ..Default::default()
+                })
                 .collect(),
             time: vec![0.0; n],
             spec: [vec![Complex32::default(); bins], vec![Complex32::default(); bins]],
@@ -144,6 +153,34 @@ impl Spectral {
         self.fill = 0;
     }
 
+    /// Back to the state `new` makes, without allocating.
+    pub fn clear(&mut self) {
+        self.reset();
+        for b in &mut self.bands {
+            b.config = None;
+            b.bins.clear();
+            b.average.fill(-120.0);
+        }
+    }
+
+    /// Takes over `other`'s state, without allocating; both have the same sample rate.
+    pub fn copy_from(&mut self, other: &Spectral) {
+        let dst = self.input.iter_mut().chain(&mut self.side).chain(&mut self.acc).chain(&mut self.ready);
+        let src = other.input.iter().chain(&other.side).chain(&other.acc).chain(&other.ready);
+        for (dst, src) in dst.zip(src) {
+            dst.copy_from_slice(src);
+        }
+        self.fill = other.fill;
+        for (dst, src) in self.bands.iter_mut().zip(&other.bands) {
+            dst.config = src.config;
+            dst.bins.clear();
+            dst.bins.extend_from_slice(&src.bins);
+            dst.env.copy_from_slice(&src.env);
+            dst.average.copy_from_slice(&src.average);
+            dst.mean_db = src.mean_db;
+        }
+    }
+
     /// One frame through the stage: `x` the signal, `sc` the detector's (the signal itself,
     /// or the external sidechain aligned with it).
     #[inline]
@@ -168,11 +205,11 @@ impl Spectral {
             for ((t, x), w) in self.time.iter_mut().zip(&self.input[ch]).zip(&self.window) {
                 *t = x * w;
             }
-            let _ = self.fft.process(&mut self.time, &mut self.spec[ch]);
+            let _ = self.fft.process_with_scratch(&mut self.time, &mut self.spec[ch], &mut self.fft_scratch);
             for ((t, x), w) in self.time.iter_mut().zip(&self.side[ch]).zip(&self.window) {
                 *t = x * w;
             }
-            let _ = self.fft.process(&mut self.time, &mut self.det[ch]);
+            let _ = self.fft.process_with_scratch(&mut self.time, &mut self.det[ch], &mut self.fft_scratch);
         }
         for g in &mut self.gains {
             g.fill(0.0);
@@ -228,7 +265,7 @@ impl Spectral {
             let last = self.spec[ch].len() - 1;
             self.spec[ch][0].im = 0.0;
             self.spec[ch][last].im = 0.0;
-            let _ = self.ifft.process(&mut self.spec[ch], &mut self.time);
+            let _ = self.ifft.process_with_scratch(&mut self.spec[ch], &mut self.time, &mut self.ifft_scratch);
             for ((a, t), w) in self.acc[ch].iter_mut().zip(&self.time).zip(&self.window) {
                 *a += t * w * norm;
             }

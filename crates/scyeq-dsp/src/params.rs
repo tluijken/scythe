@@ -1,7 +1,7 @@
 //! ScyEQ-Pro's parameters and the state it stores: a flat table of values in their own units
 //! (Hz, dB, ms), `BAND_STRIDE` per band followed by the globals.
 
-use crate::clap_host::ParamInfo;
+use crate::ParamInfo;
 
 use super::filters::{SLOPES, Shape, slope_label};
 
@@ -292,28 +292,43 @@ pub fn format(id: u32, v: f64) -> String {
 }
 
 const MAGIC: &[u8; 4] = b"SCEQ";
-const VERSION: u32 = 1;
+pub const VERSION: u32 = 1;
 
 /// Not stored: soloing and auditioning are momentary.
-fn transient(id: u32) -> bool {
+pub fn transient(id: u32) -> bool {
     id < GLOBAL && matches!(id % BAND_STRIDE, band::SOLO | band::AUDITION)
 }
 
+/// A stored state: the values this version knows, those a newer version adds (kept so they
+/// survive a save), and the version that wrote it.
+pub struct Decoded {
+    pub values: Vec<f64>,
+    pub extra: Vec<f64>,
+    pub version: u32,
+    /// Known values stored outside this version's range, as stored: a newer version may have
+    /// widened it. `values` holds them clamped.
+    pub unclamped: Vec<(u32, f64)>,
+}
+
 /// The stored state: magic, version, value count, then every value as an f64.
-pub fn encode(values: &[f64]) -> Vec<u8> {
-    let mut d = Vec::with_capacity(12 + values.len() * 8);
+/// A state a newer version wrote keeps its version.
+pub fn encode(values: &[f64], extra: &[f64], version: u32) -> Vec<u8> {
+    let mut d = Vec::with_capacity(12 + (values.len() + extra.len()) * 8);
     d.extend(MAGIC);
-    d.extend(VERSION.to_le_bytes());
-    d.extend((values.len() as u32).to_le_bytes());
+    d.extend(version.max(VERSION).to_le_bytes());
+    d.extend(((values.len() + extra.len()) as u32).to_le_bytes());
     for (id, v) in values.iter().enumerate() {
         let v = if transient(id as u32) { 0.0 } else { *v };
+        d.extend(v.to_le_bytes());
+    }
+    for v in extra {
         d.extend(v.to_le_bytes());
     }
     d
 }
 
-/// Values from a stored state; values a newer version adds take their defaults.
-pub fn decode(data: &[u8]) -> Option<Vec<f64>> {
+/// Values from a stored state; values missing from an older version take their defaults.
+pub fn decode(data: &[u8]) -> Option<Decoded> {
     if data.get(..4)? != MAGIC {
         return None;
     }
@@ -324,12 +339,35 @@ pub fn decode(data: &[u8]) -> Option<Vec<f64>> {
     }
     let n = word(8)? as usize;
     let mut values = defaults();
+    let mut extra = Vec::new();
+    let mut unclamped = Vec::new();
     for (i, b) in data.get(12..)?.as_chunks::<8>().0.iter().take(n).enumerate() {
-        if let Some(slot) = values.get_mut(i) {
-            *slot = clamp(i as u32, f64::from_le_bytes(*b));
+        let v = f64::from_le_bytes(*b);
+        match values.get_mut(i) {
+            Some(slot) => {
+                *slot = clamp(i as u32, v);
+                if slot.to_bits() != v.to_bits() {
+                    unclamped.push((i as u32, v));
+                }
+            }
+            None => extra.push(v),
         }
     }
-    Some(values)
+    Some(Decoded { values, extra, version, unclamped })
+}
+
+/// `values` as they are stored: a value decoding clamped goes back as it was stored while it still
+/// holds what it was clamped to.
+pub fn unclamp(values: &[f64], unclamped: &[(u32, f64)]) -> Vec<f64> {
+    let mut stored = values.to_vec();
+    for &(id, v) in unclamped {
+        if let Some(slot) = stored.get_mut(id as usize)
+            && slot.to_bits() == clamp(id, v).to_bits()
+        {
+            *slot = v;
+        }
+    }
+    stored
 }
 
 pub fn defaults() -> Vec<f64> {
@@ -346,7 +384,7 @@ mod tests {
         v[band_param(3, band::GAIN) as usize] = 4.5;
         v[band_param(3, band::SOLO) as usize] = 1.0;
         v[(GLOBAL + global::PHASE) as usize] = 2.0;
-        let back = decode(&encode(&v)).unwrap();
+        let back = decode(&encode(&v, &[], VERSION)).unwrap().values;
         assert_eq!(back[band_param(3, band::GAIN) as usize], 4.5);
         assert_eq!(back[band_param(3, band::SOLO) as usize], 0.0);
         assert_eq!(back[(GLOBAL + global::PHASE) as usize], 2.0);

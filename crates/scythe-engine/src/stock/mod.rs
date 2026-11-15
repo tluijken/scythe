@@ -212,7 +212,7 @@ pub fn find(display: &str) -> Option<&'static StockPlugin> {
 /// implements (`ScyComp`) and for ScyEQ-Pro, the title otherwise. Projects keep REAPER's title.
 pub fn shown_name(title: &str) -> std::borrow::Cow<'_, str> {
     use crate::scythe_eq;
-    if title == scythe_eq::DISPLAY || title == scythe_eq::OLD_DISPLAY {
+    if [scythe_eq::DISPLAY, scythe_eq::OLD_DISPLAY, scythe_eq::VST3_DISPLAY].contains(&title) {
         return scythe_eq::NAME.into();
     }
     match find(title) {

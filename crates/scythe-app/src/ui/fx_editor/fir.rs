@@ -25,8 +25,8 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let Some((points, sr, gain_db)) = cx.read(|f: &mut Fir| (f.points().to_vec(), f.sample_rate(), f.gain_db())) else {
         return;
     };
-    if cx.ed.sel.is_some_and(|k| k >= points.len()) {
-        cx.ed.sel = None;
+    if cx.ed.controls.sel.is_some_and(|k| k >= points.len()) {
+        cx.ed.controls.sel = None;
     }
     let (graph_rect, bottom) = split_top(rect, rect.height() - 104.0, 8.0);
     let top = (sr / 2.0).min(22000.0);
@@ -43,10 +43,10 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     polyline(ui, graph_rect, line, Stroke::new(2.5, TEXT));
     let at: Vec<Pos2> = points.iter().map(|&(hz, db)| plot.point(hz as f64, db as f64)).collect();
     for (k, p) in at.iter().enumerate() {
-        handle(ui, graph_rect, *p, ACCENT, cx.ed.sel == Some(k), "");
+        handle(ui, graph_rect, *p, ACCENT, cx.ed.controls.sel == Some(k), "");
     }
     input(cx, ui, &plot, &points, &at, top);
-    if let Some(k) = cx.ed.sel
+    if let Some(k) = cx.ed.controls.sel
         && let (Some(&(hz, db)), Some(&p)) = (points.get(k), at.get(k))
     {
         let tip = format!("{} · {db:+.1} dB", hz_text(hz as f64));
@@ -101,9 +101,9 @@ fn input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, points: &[(f32, f32)], at: &[Po
     };
     if resp.drag_started() || resp.clicked() || resp.secondary_clicked() {
         let origin = widgets::drag_origin(ui, &resp);
-        cx.ed.sel = origin.and_then(near);
-        cx.ed.dragging = if resp.drag_started() { cx.ed.sel } else { None };
-        cx.ed.focus = None;
+        cx.ed.controls.sel = origin.and_then(near);
+        cx.ed.dragging = if resp.drag_started() { cx.ed.controls.sel } else { None };
+        cx.ed.controls.focus = None;
     }
     if resp.dragged()
         && let (Some(k), Some(p)) = (cx.ed.dragging, resp.interact_pointer_pos())
@@ -123,21 +123,21 @@ fn input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, points: &[(f32, f32)], at: &[Po
                 let mut next = points.to_vec();
                 next.remove(k);
                 set_points(cx, next, true);
-                cx.ed.sel = None;
+                cx.ed.controls.sel = None;
             }
             None => {
                 let (hz, db) = plot.values(p);
                 let mut next = points.to_vec();
                 next.push((hz.clamp(10.0, top) as f32, db.clamp(DB_LO, DB_HI) as f32));
                 set_points(cx, next, true);
-                cx.ed.sel = Some(points.len());
+                cx.ed.controls.sel = Some(points.len());
             }
         }
     }
     if resp.hovered()
-        && let Some(k) = cx.ed.sel
+        && let Some(k) = cx.ed.controls.sel
         && let Some(&(hz, db)) = points.get(k)
-        && cx.ed.typing.is_none()
+        && cx.ed.controls.typing.is_none()
     {
         let (l, r, u, d, del, fine) = ui.input(|i| {
             (
@@ -154,23 +154,23 @@ fn input(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, points: &[(f32, f32)], at: &[Po
             let hz = hz as f64 * 2f64.powf(side as f64 * if fine { 0.01 } else { 1.0 / 12.0 });
             let db = db as f64 + vert as f64 * if fine { 0.1 } else { 0.5 };
             set_points(cx, moved(points, k, hz, db, top), false);
-            cx.ed.key_gesture = true;
+            cx.ed.controls.key_gesture = true;
         }
         if del {
             let mut next = points.to_vec();
             next.remove(k);
             set_points(cx, next, true);
-            cx.ed.sel = None;
+            cx.ed.controls.sel = None;
         }
     }
     let menu_at = resp.interact_pointer_pos().or(resp.hover_pos());
-    resp.context_menu(|ui| match cx.ed.sel.filter(|k| *k < points.len()) {
+    resp.context_menu(|ui| match cx.ed.controls.sel.filter(|k| *k < points.len()) {
         Some(k) => {
             if ui.button("Remove point").clicked() {
                 let mut next = points.to_vec();
                 next.remove(k);
                 set_points(cx, next, true);
-                cx.ed.sel = None;
+                cx.ed.controls.sel = None;
                 ui.close();
             }
             if ui.button("Set to 0 dB").clicked() {

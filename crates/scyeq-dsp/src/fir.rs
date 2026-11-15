@@ -7,8 +7,8 @@
 //! dynamic amount, so the response stays linear (or natural) phase while it moves.
 //!
 //! Latency is `latency()` frames: the kernel's centre (`delay`) plus one partition of input
-//! buffering. Everything is allocated in `new` and `ensure_dynamic`; `process` and `rebuild`
-//! only use what is there.
+//! buffering. Everything is allocated in `new`, every band's correction kernels included;
+//! `process` and `rebuild` only use what is there.
 
 use std::sync::Arc;
 
@@ -41,12 +41,20 @@ struct KernelSet {
     layout: Layout,
     parts: [Vec<Vec<Complex32>>; 4],
     silent: bool,
+    /// A band's correction kernels are in use.
+    on: bool,
 }
 
 impl KernelSet {
     fn new(parts: usize, bins: usize) -> Self {
         let make = || vec![vec![Complex32::default(); bins]; parts];
-        Self { layout: Layout::Scalar, parts: [make(), make(), make(), make()], silent: true }
+        Self { layout: Layout::Scalar, parts: [make(), make(), make(), make()], silent: true, on: false }
+    }
+
+    fn clear(&mut self) {
+        self.layout = Layout::Scalar;
+        self.silent = true;
+        self.parts.iter_mut().flatten().for_each(|part| part.fill(Complex32::default()));
     }
 }
 
@@ -81,7 +89,7 @@ pub struct FirEngine {
     main: [KernelSet; 2],
     active: usize,
     fade_pending: bool,
-    dynamic: Vec<Option<KernelSet>>,
+    dynamic: Vec<KernelSet>,
     /// Output of the last block: main, then per dynamic band.
     out: [Vec<f32>; 2],
     fade: Vec<f32>,
@@ -91,6 +99,9 @@ pub struct FirEngine {
     spec: Vec<Complex32>,
     design_spec: Vec<Complex64>,
     design_time: Vec<f64>,
+    fft_scratch: Vec<Complex32>,
+    ifft_scratch: Vec<Complex32>,
+    design_scratch: Vec<Complex64>,
 }
 
 impl FirEngine {
@@ -140,15 +151,18 @@ impl FirEngine {
             main: [KernelSet::new(parts, bins), KernelSet::new(parts, bins)],
             active: 0,
             fade_pending: false,
-            dynamic: (0..bands).map(|_| None).collect(),
+            dynamic: (0..bands).map(|_| KernelSet::new(parts, bins)).collect(),
             out: [vec![0.0; p], vec![0.0; p]],
             fade: vec![0.0; p],
-            dyn_out: (0..bands).map(|_| [Vec::new(), Vec::new()]).collect(),
+            dyn_out: (0..bands).map(|_| [vec![0.0; p], vec![0.0; p]]).collect(),
             acc: vec![Complex32::default(); bins],
             time: vec![0.0; 2 * p],
             spec: vec![Complex32::default(); bins],
             design_spec: vec![Complex64::default(); n / 2 + 1],
             design_time: vec![0.0; n],
+            fft_scratch: vec![Complex32::default(); fft.get_scratch_len()],
+            ifft_scratch: vec![Complex32::default(); ifft.get_scratch_len()],
+            design_scratch: vec![Complex64::default(); design_ifft.get_scratch_len()],
             fft,
             ifft,
             design_ifft,
@@ -167,24 +181,21 @@ impl FirEngine {
         self.delay + self.p
     }
 
-    /// Makes room for band `b`'s correction kernel (or drops it).
-    pub fn ensure_dynamic(&mut self, b: usize, on: bool) {
-        let parts = self.taps.div_ceil(self.p);
-        match (on, self.dynamic[b].is_some()) {
-            (true, false) => {
-                self.dynamic[b] = Some(KernelSet::new(parts, self.p + 1));
-                self.dyn_out[b] = [vec![0.0; self.p], vec![0.0; self.p]];
-            }
-            (false, true) => {
-                self.dynamic[b] = None;
-                self.dyn_out[b] = [Vec::new(), Vec::new()];
-            }
-            _ => {}
+    /// Turns band `b`'s correction kernel on (silent until `set_dynamic`) or off.
+    pub fn use_dynamic(&mut self, b: usize, on: bool) {
+        let set = &mut self.dynamic[b];
+        if set.on == on {
+            return;
+        }
+        set.on = on;
+        if on {
+            set.clear();
+            self.dyn_out[b].iter_mut().for_each(|out| out.fill(0.0));
         }
     }
 
     pub fn has_dynamic(&self, b: usize) -> bool {
-        self.dynamic.get(b).is_some_and(|d| d.is_some())
+        self.dynamic.get(b).is_some_and(|d| d.on)
     }
 
     /// Sets the main kernels from the response matrix on the design grid (`n / 2 + 1` bins
@@ -197,11 +208,14 @@ impl FirEngine {
         self.fade_pending = true;
     }
 
-    /// Sets band `b`'s correction kernels; the band must have room (`ensure_dynamic`).
+    /// Sets band `b`'s correction kernels; the band must use them (`use_dynamic`).
     pub fn set_dynamic(&mut self, b: usize, layout: Layout, resp: &[Vec<C64>; 4]) {
-        let Some(mut set) = self.dynamic[b].take() else { return };
+        if !self.has_dynamic(b) {
+            return;
+        }
+        let mut set = std::mem::replace(&mut self.dynamic[b], KernelSet::new(0, 0));
         self.design(&mut set, layout, resp);
-        self.dynamic[b] = Some(set);
+        self.dynamic[b] = set;
     }
 
     fn design(&mut self, set: &mut KernelSet, layout: Layout, resp: &[Vec<C64>; 4]) {
@@ -225,7 +239,11 @@ impl FirEngine {
             }
             self.design_spec[0].im = 0.0;
             self.design_spec[n / 2].im = 0.0;
-            let _ = self.design_ifft.process(&mut self.design_spec, &mut self.design_time);
+            let _ = self.design_ifft.process_with_scratch(
+                &mut self.design_spec,
+                &mut self.design_time,
+                &mut self.design_scratch,
+            );
             for (pi, part) in set.parts[k].iter_mut().enumerate() {
                 self.time.fill(0.0);
                 for j in 0..self.p {
@@ -234,7 +252,7 @@ impl FirEngine {
                         self.time[j] = (self.design_time[t] * scale * self.window[t]) as f32;
                     }
                 }
-                let _ = self.fft.process(&mut self.time, part);
+                let _ = self.fft.process_with_scratch(&mut self.time, part, &mut self.fft_scratch);
             }
         }
     }
@@ -270,8 +288,8 @@ impl FirEngine {
         let (mut ol, mut or) = (self.out[0][i], self.out[1][i]);
         for (b, k) in amounts.iter().enumerate() {
             if *k != 0.0
+                && self.dynamic[b].on
                 && let [dl, dr] = &self.dyn_out[b]
-                && !dl.is_empty()
             {
                 ol += k * dl[i];
                 or += k * dr[i];
@@ -292,7 +310,7 @@ impl FirEngine {
         for ch in 0..2 {
             self.time.copy_from_slice(&self.input[ch]);
             let head = self.head;
-            let _ = self.fft.process(&mut self.time, &mut self.fdl[ch][head]);
+            let _ = self.fft.process_with_scratch(&mut self.time, &mut self.fdl[ch][head], &mut self.fft_scratch);
             self.input[ch].copy_within(p.., 0);
         }
         let fade = self.fade_pending;
@@ -317,7 +335,7 @@ impl FirEngine {
             self.fade_pending = false;
         }
         for b in 0..self.dynamic.len() {
-            if self.dynamic[b].is_none() {
+            if !self.dynamic[b].on {
                 continue;
             }
             for ch in 0..2 {
@@ -333,8 +351,8 @@ impl FirEngine {
         let set = match which {
             Which::Main(i) => &self.main[i],
             Which::Dynamic(b) => match &self.dynamic[b] {
-                Some(s) => s,
-                None => return,
+                s if s.on => s,
+                _ => return,
             },
         };
         if set.silent {
@@ -365,7 +383,7 @@ impl FirEngine {
         self.spec[p].im = 0.0;
         let mut time = std::mem::take(&mut self.time);
         time.resize(2 * p, 0.0);
-        let _ = self.ifft.process(&mut self.spec, &mut time);
+        let _ = self.ifft.process_with_scratch(&mut self.spec, &mut time, &mut self.ifft_scratch);
         let norm = 1.0 / (2 * p) as f32;
         for (o, t) in out.iter_mut().zip(&time[p..]) {
             *o = t * norm;

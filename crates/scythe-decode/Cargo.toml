@@ -1,0 +1,9 @@
+[package]
+name = "scythe-decode"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Audio files decoded with Symphonia the way REAPER reads them, for Scythe and the ScyEQ-Pro plugin"
+
+[dependencies]
+symphonia.workspace = true

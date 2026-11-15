@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use realfft::RealFftPlanner;
-use realfft::num_complex::Complex32;
-use scythe_engine::probe::{FxProbe, RING, Side};
+use scyeq_dsp::probe::{FxProbe, RING, Side};
+use scyeq_dsp::realfft::RealFftPlanner;
+use scyeq_dsp::realfft::num_complex::Complex32;
 
 /// Points of the display grid, log spaced from `LO` to `HI` Hz.
 pub const POINTS: usize = 560;
@@ -172,7 +172,7 @@ struct Work {
     sum: Vec<f64>,
     logsum: Vec<f64>,
     level: Vec<f32>,
-    fft: Arc<dyn realfft::RealToComplex<f32>>,
+    fft: Arc<dyn scyeq_dsp::realfft::RealToComplex<f32>>,
 }
 
 impl Work {

@@ -2040,13 +2040,18 @@ fn fold_value(op: Op, a: f64, b: f64) -> f64 {
     }
 }
 
+/// x86's default NaN, which its arithmetic gives for an invalid operation on operands that are
+/// not NaN (`0 / 0`, `inf - inf`). ARM's is positive, and `sign` tells them apart.
+const X86_NAN: f64 = f64::from_bits(0xfff8_0000_0000_0000);
+
 fn arith(op: Op, a: f64, b: f64) -> f64 {
-    match op {
+    let r = match op {
         Op::Add => a + b,
         Op::Sub => a - b,
         Op::Mul => a * b,
         _ => a / b,
-    }
+    };
+    if r.is_nan() && !a.is_nan() && !b.is_nan() { X86_NAN } else { r }
 }
 
 /// The operators that run and fold alike. Comparisons follow x86's unordered flags: a NaN
@@ -2406,6 +2411,18 @@ mod tests {
         let v: Vec<f64> = ["a", "b", "c", "d", "e", "f", "g", "h"].iter().map(|n| var(&m, n)).collect();
         assert_eq!(v, [1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 2.0]);
         assert_eq!((var(&m, "i"), var(&m, "j"), var(&m, "k")), (i64::MIN as f64, 1.0, -1.0));
+    }
+
+    #[test]
+    fn invalid_operations_give_the_x86_default_nan() {
+        let x86 = 0xfff8_0000_0000_0000u64;
+        let inf = f64::INFINITY;
+        for (op, a, b) in [(Op::Div, 0.0, 0.0), (Op::Sub, inf, inf), (Op::Add, inf, -inf), (Op::Mul, 0.0, inf)] {
+            assert_eq!(binop(op, a, b).to_bits(), x86, "{op:?}");
+            assert_eq!(fold_value(op, a, b).to_bits(), x86, "{op:?} folded");
+        }
+        let positive = f64::from_bits(0x7ff8_0000_0000_0000);
+        assert_eq!(binop(Op::Add, positive, 1.0).to_bits(), positive.to_bits(), "a NaN operand passes through");
     }
 
     #[test]

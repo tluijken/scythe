@@ -102,6 +102,25 @@
                                 Value='"[Bin]scythe-app.exe" "%1"'/>
                         </Component>
                     </Directory>
+                    <!-- scripts/release/notices.sh writes these to target\notices before the MSI is made. -->
+                    <Component Id='LicenseMit' Guid='*'>
+                        <File Id='LicenseMitFile' Name='LICENSE-MIT' DiskId='1' Source='$(var.CargoTargetDir)\notices\LICENSE-MIT' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='LicenseApache' Guid='*'>
+                        <File Id='LicenseApacheFile' Name='LICENSE-APACHE' DiskId='1' Source='$(var.CargoTargetDir)\notices\LICENSE-APACHE' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='ThirdPartyNotices' Guid='*'>
+                        <File Id='ThirdPartyNoticesFile' Name='THIRD_PARTY_NOTICES.md' DiskId='1' Source='$(var.CargoTargetDir)\notices\THIRD_PARTY_NOTICES.md' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='InterOfl' Guid='*'>
+                        <File Id='InterOflFile' Name='Inter-OFL.txt' DiskId='1' Source='$(var.CargoTargetDir)\notices\Inter-OFL.txt' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='JetBrainsMonoOfl' Guid='*'>
+                        <File Id='JetBrainsMonoOflFile' Name='JetBrainsMono-OFL.txt' DiskId='1' Source='$(var.CargoTargetDir)\notices\JetBrainsMono-OFL.txt' KeyPath='yes'/>
+                    </Component>
+                    <Component Id='CrateLicenses' Guid='*'>
+                        <File Id='CrateLicensesFile' Name='CRATE_LICENSES.md' DiskId='1' Source='$(var.CargoTargetDir)\notices\CRATE_LICENSES.md' KeyPath='yes'/>
+                    </Component>
                 </Directory>
             </Directory>
             <Directory Id='ProgramMenuFolder'/>
@@ -119,6 +138,12 @@
             <ComponentRef Id='App'/>
             <ComponentRef Id='Server'/>
             <ComponentRef Id='Mcp'/>
+            <ComponentRef Id='LicenseMit'/>
+            <ComponentRef Id='LicenseApache'/>
+            <ComponentRef Id='ThirdPartyNotices'/>
+            <ComponentRef Id='InterOfl'/>
+            <ComponentRef Id='JetBrainsMonoOfl'/>
+            <ComponentRef Id='CrateLicenses'/>
 
             <Feature
                 Id='Environment'

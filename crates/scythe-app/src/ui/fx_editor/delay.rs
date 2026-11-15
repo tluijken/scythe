@@ -38,8 +38,8 @@ pub(crate) fn span_ms(taps: &[Tap], bpm: f64) -> f64 {
 pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
     let Some(taps) = cx.read(|d: &mut ReaDelayCompat| d.taps()) else { return };
     let bpm = cx.app.project.tempo.bpm_at(cx.app.engine.transport().position_seconds());
-    if cx.ed.sel.is_some_and(|k| k >= taps.len()) {
-        cx.ed.sel = None;
+    if cx.ed.controls.sel.is_some_and(|k| k >= taps.len()) {
+        cx.ed.controls.sel = None;
     }
     let list_h = (taps.len() as f32 * 30.0 + 40.0).min(rect.height() * 0.4).max(70.0);
     let (top, list) = split_top(rect, rect.height() - list_h - 8.0, 8.0);
@@ -134,7 +134,7 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
             graph,
             *p,
             if taps[k].enabled { band_color(k) } else { theme::SWITCH_OFF },
-            cx.ed.sel == Some(k),
+            cx.ed.controls.sel == Some(k),
             &(k + 1).to_string(),
         );
     }
@@ -149,9 +149,9 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
     };
     if resp.drag_started() || resp.clicked() || resp.secondary_clicked() {
         let origin = widgets::drag_origin(ui, &resp);
-        cx.ed.sel = origin.and_then(near);
-        cx.ed.dragging = if resp.drag_started() { cx.ed.sel } else { None };
-        cx.ed.focus = None;
+        cx.ed.controls.sel = origin.and_then(near);
+        cx.ed.dragging = if resp.drag_started() { cx.ed.controls.sel } else { None };
+        cx.ed.controls.focus = None;
     }
     if resp.dragged()
         && let (Some(k), Some(p)) = (cx.ed.dragging, resp.interact_pointer_pos())
@@ -186,9 +186,9 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
         }
     }
     if resp.hovered()
-        && let Some(k) = cx.ed.sel
+        && let Some(k) = cx.ed.controls.sel
         && let Some(tap) = taps.get(k)
-        && cx.ed.typing.is_none()
+        && cx.ed.controls.typing.is_none()
     {
         let (l, r, u, d, fine) = ui.input(|i| {
             (
@@ -205,11 +205,11 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
             t.time_ms = (t.time_ms + side as f64 * if fine { 1.0 } else { 10.0 }).clamp(0.0, 10_000.0);
             t.volume = gain((db(t.volume) + vert as f64 * if fine { 0.1 } else { 1.0 }).clamp(-60.0, 6.0));
             cx.edit("Change delay tap", |d: &mut ReaDelayCompat| d.set_tap(k, t));
-            cx.ed.key_gesture = true;
+            cx.ed.controls.key_gesture = true;
         }
     }
     resp.context_menu(|ui| {
-        if let Some(k) = cx.ed.sel.filter(|k| *k < taps.len()) {
+        if let Some(k) = cx.ed.controls.sel.filter(|k| *k < taps.len()) {
             if ui.button(if taps[k].enabled { "Disable tap" } else { "Enable tap" }).clicked() {
                 let mut t = taps[k];
                 t.enabled = !t.enabled;
@@ -218,7 +218,7 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
             }
             if taps.len() > 1 && ui.button("Remove tap").clicked() {
                 cx.edit_once("Remove delay tap", |d: &mut ReaDelayCompat| d.remove_tap(k));
-                cx.ed.sel = None;
+                cx.ed.controls.sel = None;
                 ui.close();
             }
             if k == 0 && cx.ed.track_fx().is_some() {
@@ -242,7 +242,7 @@ fn timeline(cx: &mut Ctx, ui: &mut Ui, plot: &Plot, taps: &[Tap], bpm: f64) {
 
 fn add_tap(cx: &mut Ctx, t: Tap) {
     if let Some(k) = cx.edit_once("Add delay tap", |d: &mut ReaDelayCompat| d.add_tap(t)) {
-        cx.ed.sel = Some(k);
+        cx.ed.controls.sel = Some(k);
     }
 }
 
@@ -349,7 +349,7 @@ fn tap_list(cx: &mut Ctx, ui: &mut Ui, rect: Rect, taps: &[Tap], bpm: f64) {
     egui::ScrollArea::vertical().id_salt(("fx-delay-taps", &cx.ed.owner, &cx.ed.path)).show(&mut child, |ui| {
         for (k, tap) in taps.iter().enumerate() {
             let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-            let selected = cx.ed.sel == Some(k);
+            let selected = cx.ed.controls.sel == Some(k);
             if selected {
                 ui.painter().rect_stroke(
                     row,
@@ -367,7 +367,7 @@ fn tap_list(cx: &mut Ctx, ui: &mut Ui, rect: Rect, taps: &[Tap], bpm: f64) {
             );
             ui.painter().text(chip.center(), Align2::CENTER_CENTER, (k + 1).to_string(), theme::semibold(10.0), BG);
             if resp.clicked() {
-                cx.ed.sel = Some(k);
+                cx.ed.controls.sel = Some(k);
             }
             let sw = Rect::from_min_size(pos2(chip.right() + 6.0, row.top() + 4.0), vec2(30.0, 18.0));
             if widgets::switch(ui, sw, tap.enabled, band_color(k)).on_hover_text("Tap on or off").clicked() {
@@ -397,7 +397,7 @@ fn tap_list(cx: &mut Ctx, ui: &mut Ui, rect: Rect, taps: &[Tap], bpm: f64) {
                     .clicked()
             {
                 cx.edit_once("Remove delay tap", |d: &mut ReaDelayCompat| d.remove_tap(k));
-                cx.ed.sel = None;
+                cx.ed.controls.sel = None;
                 return;
             }
             ui.add_space(2.0);

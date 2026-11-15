@@ -35,7 +35,7 @@ pub mod perf;
 pub mod plugin_scan;
 pub mod plugin_thread;
 pub mod preview;
-pub mod probe;
+pub use scyeq_dsp::probe;
 mod r8brain;
 pub mod reaeq;
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -58,6 +58,7 @@ pub mod stock;
 pub mod stretch;
 pub mod synth;
 pub mod turtle;
+pub mod upgrade;
 pub mod video;
 pub mod vst2;
 pub mod vst3_host;

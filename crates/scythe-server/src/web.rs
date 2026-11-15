@@ -16,7 +16,7 @@ macro_rules! font {
     ($($file:literal),* $(,)?) => {
         &[$((
             concat!("fonts/", $file),
-            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../scythe-app/assets/fonts/", $file)) as &[u8],
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../scyeq-ui/assets/fonts/", $file)) as &[u8],
         )),*]
     };
 }

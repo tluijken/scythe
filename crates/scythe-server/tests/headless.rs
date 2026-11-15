@@ -68,6 +68,9 @@ fn starts_without_a_display_serves_and_stops_on_sigterm() {
 fn installs_a_user_service_running_the_same_session() {
     let dir = std::env::temp_dir().join(format!("scythe-service-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // The server sees the directory it runs in with its links resolved (macOS's temp dir is
+    // under the /var link to /private/var).
+    let dir = dir.canonicalize().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_scythe-server"))
         .args(["--install-service", "set.RPP", "--output-device", "Scarlett", "--null-audio"])
         .current_dir(&dir)

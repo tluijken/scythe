@@ -3,22 +3,24 @@
 //! placement, dynamic and spectral dynamic bands with internal or external sidechain, a
 //! character stage, auto gain and an output section.
 //!
-//! It is stored as a CLAP slot (`<CLAP "CLAP: ScyEQ-Pro (Scythe)" scythe.eq "">` with its
-//! state in `<STATE`), a block REAPER keeps byte for byte when it does not know the plugin.
+//! The DSP on its own, without a host: Scythe runs it as one of its effects, a plugin build
+//! wraps it for other hosts.
 
 pub mod dynamics;
 pub mod filters;
 pub mod fir;
 pub mod matching;
 pub mod params;
+pub mod probe;
+pub mod reference;
 pub mod spectral;
+
+pub use realfft;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::clap_host::ParamInfo;
-use crate::fx::{Effect, ProcessContext};
-use crate::probe::FxProbe;
+use probe::FxProbe;
 
 use dynamics::{Ballistics, Detector};
 use filters::{BRICKWALL, C64, Cascade, CascadeState, Design, Prototype, Shape};
@@ -26,66 +28,19 @@ use fir::{FirEngine, Layout, Timing};
 use params::{BAND_STRIDE, BANDS, GLOBAL, PhaseMode, Placement, band, global};
 use spectral::{Spectral, SpectralBand};
 
-pub const NAME: &str = "ScyEQ-Pro";
-pub const CLAP_ID: &str = "scythe.eq";
-pub const DISPLAY: &str = "CLAP: ScyEQ-Pro (Scythe)";
-/// The title projects saved before the EQ had its name carry; the slot is found by `CLAP_ID`.
-pub const OLD_DISPLAY: &str = "CLAP: Scythe EQ (Scythe)";
-pub const STATUS: &str = "parametric EQ";
-
-/// Whether `slot` holds a ScyEQ-Pro.
-pub fn is_slot(slot: &scythe_core::FxSlot) -> bool {
-    slot.raw.iter().any(|n| {
-        matches!(n, scythe_core::rpp::Node::Chunk(c)
-            if c.name() == "CLAP" && c.args().get(1).is_some_and(|id| id == CLAP_ID))
-    })
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// Edit on a logarithmic scale (frequencies, times).
+    pub log: bool,
 }
 
-/// The values stored in a ScyEQ-Pro slot.
-pub fn slot_values(slot: &scythe_core::FxSlot) -> Option<Vec<f64>> {
-    use base64::Engine as _;
-    let chunk = slot.raw.iter().find_map(|n| match n {
-        scythe_core::rpp::Node::Chunk(c) if c.name() == "CLAP" => Some(c),
-        _ => None,
-    })?;
-    let state = chunk.chunks("STATE").next()?;
-    let text: String = state
-        .children
-        .iter()
-        .filter_map(|n| match n {
-            scythe_core::rpp::Node::Line(l) => Some(l.trim()),
-            scythe_core::rpp::Node::Chunk(_) => None,
-        })
-        .collect();
-    params::decode(&base64::engine::general_purpose::STANDARD.decode(text).ok()?)
-}
-
-/// A new slot holding a ScyEQ-Pro with `state` (the default when `None`).
-pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
-    use base64::Engine as _;
-    use scythe_core::rpp::{Chunk, Node};
-    let state = state.map_or_else(|| params::encode(&params::defaults()), <[u8]>::to_vec);
-    let mut chunk = Chunk::new("CLAP", &[DISPLAY, CLAP_ID, ""]);
-    chunk.line(["CFG", "4", "0", "0", ""]);
-    let mut st = Chunk::new("STATE", &[]);
-    let text = base64::engine::general_purpose::STANDARD.encode(&state);
-    for line in text.as_bytes().chunks(128) {
-        st.line([String::from_utf8_lossy(line)]);
-    }
-    chunk.push_chunk(st);
-    scythe_core::FxSlot {
-        name: DISPLAY.into(),
-        enabled: true,
-        raw: vec![
-            Node::Line("BYPASS 0 0 0".into()),
-            Node::Chunk(chunk),
-            Node::Line(format!("FXID {}", scythe_core::model::new_guid())),
-            Node::Line("WAK 0 0".into()),
-        ],
-    }
-}
-
-/// Frames between parameter updates of the zero-latency filters and the detectors.
+/// Frames between parameter updates of the zero-latency filters and the detectors. The cells
+/// lie on multiples of the sample position, so the output does not depend on the block sizes.
 const SUB: usize = 32;
 const SMOOTH_SECONDS: f64 = 0.015;
 const FADE_SECONDS: f64 = 0.01;
@@ -194,6 +149,18 @@ impl BandSettings {
         if self.dynamic == 1 { self.design.moved(0.0) } else { self.design }
     }
 
+    fn spectral(&self) -> Option<SpectralBand> {
+        (self.active() && self.dynamic == 2).then_some(SpectralBand {
+            design: self.design,
+            placement: self.placement,
+            range: self.range,
+            threshold: self.threshold,
+            auto: self.auto_threshold,
+            attack_ms: self.attack,
+            release_ms: self.release,
+        })
+    }
+
     fn structure(&self) -> (Shape, usize, bool) {
         let shape = if self.dynamic == 1 { self.design.moved(0.0).shape } else { self.design.shape };
         (shape, self.design.slope, self.design.gain_q)
@@ -212,6 +179,8 @@ struct Band {
     cascade: Cascade,
     state: [CascadeState; 2],
     mix: f64,
+    /// The mix at the start of the current grid cell.
+    mix_from: f64,
     detector: Detector,
     dynamic_db: f64,
     solo: Cascade,
@@ -241,12 +210,20 @@ struct FirPath {
 pub struct ScytheEq {
     fs: f64,
     values: Vec<f64>,
+    /// Stored values from a newer version, written back unchanged.
+    extra: Vec<f64>,
+    version: u32,
+    /// Known values stored outside the range, written back while left alone.
+    unclamped: Vec<(u32, f64)>,
     settings: Vec<BandSettings>,
     bands: Vec<Band>,
     mode: PhaseMode,
     resolution: usize,
     fir: Option<Box<FirPath>>,
     spectral: Option<Box<Spectral>>,
+    /// Stages for `spectral` and the outgoing processing to take, so spectral bands turning on
+    /// or off do not allocate.
+    spare_spectral: [Option<Box<Spectral>>; 2],
     output_db: f64,
     auto_db: f64,
     auto_target_db: f64,
@@ -258,13 +235,17 @@ pub struct ScytheEq {
     det: Vec<f64>,
     /// Whether audio went through, so a structural change crossfades.
     running: bool,
-    outgoing: Option<Box<Outgoing>>,
+    outgoing: Box<Outgoing>,
+    /// The sample position of the next frame, which places the grid cells.
+    clock: i64,
+    /// A grid cell has started since the last reset.
+    primed: bool,
 }
 
 /// The processing a structural change (phase mode, linear phase resolution, spectral bands on
 /// or off) replaced: it plays on until the new processing has filled its latency, then
 /// crossfades out. Each keeps its own timing, as the chain compensates the new latency only
-/// once the graph is rebuilt.
+/// once the graph is rebuilt. It is fading while `at < len`.
 struct Outgoing {
     /// The old FIR path, when the old processing had one.
     fir: Option<Box<FirPath>>,
@@ -288,7 +269,12 @@ impl ScytheEq {
     }
 
     pub fn from_state(state: &[u8], sample_rate: u32) -> Option<Self> {
-        Some(Self::with_values(params::decode(state)?, sample_rate))
+        let decoded = params::decode(state)?;
+        let mut eq = Self::with_values(decoded.values, sample_rate);
+        eq.extra = decoded.extra;
+        eq.version = decoded.version;
+        eq.unclamped = decoded.unclamped;
+        Some(eq)
     }
 
     pub fn with_values(values: Vec<f64>, sample_rate: u32) -> Self {
@@ -297,11 +283,15 @@ impl ScytheEq {
             fs,
             settings: (0..BANDS).map(|b| BandSettings::read(&values, b)).collect(),
             values,
+            extra: Vec::new(),
+            version: params::VERSION,
+            unclamped: Vec::new(),
             bands: (0..BANDS).map(|_| Band::default()).collect(),
             mode: PhaseMode::ZeroLatency,
             resolution: 1,
             fir: None,
             spectral: None,
+            spare_spectral: std::array::from_fn(|_| Some(Box::new(Spectral::new(fs, BANDS)))),
             output_db: 0.0,
             auto_db: 0.0,
             auto_target_db: 0.0,
@@ -312,7 +302,18 @@ impl ScytheEq {
             buf: [vec![0.0; SUB], vec![0.0; SUB]],
             det: vec![0.0; SUB],
             running: false,
-            outgoing: None,
+            outgoing: Box::new(Outgoing {
+                fir: None,
+                zero: false,
+                shared: false,
+                spectral: None,
+                out: [vec![0.0; SUB], vec![0.0; SUB]],
+                wait: 0,
+                at: 0,
+                len: 0,
+            }),
+            clock: 0,
+            primed: false,
         };
         eq.reconfigure();
         eq.output_db = eq.value(GLOBAL + global::OUTPUT);
@@ -374,8 +375,8 @@ impl ScytheEq {
         self.reconfigure();
     }
 
-    /// Reads the parameter table and makes the processing structures match it; this is the
-    /// only place that allocates.
+    /// Reads the parameter table and makes the processing structures match it. It allocates
+    /// only for a new FIR length: a change of phase mode or linear phase resolution.
     fn reconfigure(&mut self) {
         for b in 0..BANDS {
             self.settings[b] = BandSettings::read(&self.values, b);
@@ -405,52 +406,70 @@ impl ScytheEq {
         }
         if let Some(fir) = &mut self.fir {
             for (b, s) in self.settings.iter().enumerate().take(BANDS) {
-                fir.engine.ensure_dynamic(b, s.active() && s.dynamic == 1);
+                fir.engine.use_dynamic(b, s.active() && s.dynamic == 1);
             }
             fir.dirty = true;
         }
-        let spectral: Vec<Option<SpectralBand>> = self
-            .settings
-            .iter()
-            .map(|s| {
-                (s.active() && s.dynamic == 2).then_some(SpectralBand {
-                    design: s.design,
-                    placement: s.placement,
-                    range: s.range,
-                    threshold: s.threshold,
-                    auto: s.auto_threshold,
-                    attack_ms: s.attack,
-                    release_ms: s.release,
-                })
-            })
-            .collect();
-        let wants_spectral = spectral.iter().any(Option::is_some);
+        let wants_spectral = self.settings.iter().any(|s| s.spectral().is_some());
         let spectral_change = wants_spectral != self.spectral.is_some();
         let fade = self.running && (core_change || spectral_change);
+        if fade && let Some(stage) = self.outgoing.spectral.take() {
+            self.keep_spectral(stage);
+        }
         let old_spectral = match (&self.spectral, wants_spectral) {
             (Some(_), false) => self.spectral.take(),
-            (Some(s), true) if fade => Some(s.clone()),
+            (Some(_), true) if fade => {
+                let mut copy = self.spare_spectral();
+                copy.copy_from(self.spectral.as_deref().unwrap());
+                Some(copy)
+            }
             _ => None,
         };
         if wants_spectral {
-            let stage = self.spectral.get_or_insert_with(|| Box::new(Spectral::new(self.fs, BANDS)));
-            for (b, c) in spectral.into_iter().enumerate() {
-                stage.configure(b, c);
+            if self.spectral.is_none() {
+                self.spectral = Some(self.spare_spectral());
+            }
+            let stage = self.spectral.as_deref_mut().unwrap();
+            for (b, s) in self.settings.iter().enumerate() {
+                stage.configure(b, s.spectral());
             }
         }
         if fade {
             let latency =
                 self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency());
-            self.outgoing = Some(Box::new(Outgoing {
-                fir: old_fir,
-                zero: core_change && was_zero,
-                shared: !core_change,
-                spectral: old_spectral,
-                out: [vec![0.0; SUB], vec![0.0; SUB]],
-                wait: latency + 2 * SUB,
-                at: 0,
-                len: (SWITCH_FADE_SECONDS * self.fs) as usize,
-            }));
+            let o = &mut *self.outgoing;
+            o.fir = old_fir;
+            o.zero = core_change && was_zero;
+            o.shared = !core_change;
+            o.spectral = old_spectral;
+            o.out.iter_mut().for_each(|out| out.fill(0.0));
+            o.wait = latency + 2 * SUB;
+            o.at = 0;
+            o.len = (SWITCH_FADE_SECONDS * self.fs) as usize;
+        } else if let Some(stage) = old_spectral {
+            self.keep_spectral(stage);
+        }
+    }
+
+    /// A spectral stage as `Spectral::new` makes it, from the spares when there is one.
+    fn spare_spectral(&mut self) -> Box<Spectral> {
+        match self.spare_spectral.iter_mut().find_map(Option::take) {
+            Some(mut stage) => {
+                stage.clear();
+                stage
+            }
+            None => {
+                debug_assert!(false, "no spare spectral stage");
+                Box::new(Spectral::new(self.fs, BANDS))
+            }
+        }
+    }
+
+    fn keep_spectral(&mut self, stage: Box<Spectral>) {
+        if let Some(slot) = self.spare_spectral.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(stage);
+        } else {
+            debug_assert!(false, "no room for a spare spectral stage");
         }
     }
 
@@ -489,18 +508,17 @@ impl ScytheEq {
         if self.value(GLOBAL + global::AUTO_GAIN) < 0.5 {
             return 0.0;
         }
-        let protos: Vec<(Prototype, f64)> = self
-            .settings
-            .iter()
-            .filter(|s| s.active())
-            .map(|s| {
-                let w = match s.placement {
-                    Placement::Stereo | Placement::Mid => 1.0,
-                    _ => 0.5,
-                };
-                (Prototype::design(&s.rest()), w)
-            })
-            .collect();
+        let mut protos = [(Prototype::default(), 0.0); BANDS];
+        let mut count = 0;
+        for s in self.settings.iter().filter(|s| s.active()) {
+            let w = match s.placement {
+                Placement::Stereo | Placement::Mid => 1.0,
+                _ => 0.5,
+            };
+            protos[count] = (Prototype::design(&s.rest()), w);
+            count += 1;
+        }
+        let protos = &protos[..count];
         auto_gain_db(|hz| protos.iter().map(|(p, w)| p.magnitude(hz).powf(2.0 * w)).product())
     }
 
@@ -576,7 +594,9 @@ impl ScytheEq {
         *dirty = false;
     }
 
-    fn run_detectors(&mut self, frames: usize, ctx: &ProcessContext, at: usize) {
+    /// Feeds the detectors `frames` frames; at the `end` of a grid cell they set the bands'
+    /// dynamic gain, which the next cell uses.
+    fn run_detectors(&mut self, frames: usize, aux: Option<(&[f32], &[f32])>, at: usize, end: bool) {
         let fs = self.fs;
         for b in 0..BANDS {
             let s = self.settings[b];
@@ -594,7 +614,7 @@ impl ScytheEq {
             band.detector.retune(&listen, fs);
             for i in 0..frames {
                 let (l, r) = if s.external {
-                    ctx.aux.map_or((0.0, 0.0), |(al, ar)| {
+                    aux.map_or((0.0, 0.0), |(al, ar)| {
                         (al.get(at + i).copied().unwrap_or(0.0) as f64, ar.get(at + i).copied().unwrap_or(0.0) as f64)
                     })
                 } else {
@@ -614,20 +634,22 @@ impl ScytheEq {
                     Placement::Side => 0.5 * (l - r),
                 };
             }
-            let ballistics = Ballistics::new(s.attack, s.release, fs);
-            band.dynamic_db =
-                band.detector.run(&self.det[..frames], ballistics, s.threshold, s.auto_threshold, s.range, fs);
+            band.detector.feed(&self.det[..frames], Ballistics::new(s.attack, s.release, fs), fs);
+            if end {
+                band.dynamic_db = band.detector.settle(s.threshold, s.auto_threshold, s.range);
+            }
         }
     }
 
-    /// Runs the zero-latency bands over `buf`.
-    fn run_bands(&mut self, frames: usize) {
+    /// Moves the zero-latency bands on by a grid cell: their smoothing, fades and designs.
+    fn step_bands(&mut self) {
         let fs = self.fs;
-        let k = 1.0 - (-(frames as f64) / (SMOOTH_SECONDS * fs)).exp();
-        let fade_step = frames as f64 / (FADE_SECONDS * fs);
+        let k = 1.0 - (-(SUB as f64) / (SMOOTH_SECONDS * fs)).exp();
+        let fade_step = SUB as f64 / (FADE_SECONDS * fs);
         for b in 0..BANDS {
             let s = self.settings[b];
             let band = &mut self.bands[b];
+            band.mix_from = band.mix;
             let want = if s.active() { 1.0 } else { 0.0 };
             if band.mix == 0.0 && want == 0.0 {
                 continue;
@@ -644,6 +666,7 @@ impl ScytheEq {
                 band.log_q = s.design.q.ln();
                 band.state.iter_mut().for_each(CascadeState::reset);
                 band.last = None;
+                band.mix_from = 0.0;
                 continue;
             }
             let snap = |cur: &mut f64, target: f64| {
@@ -664,10 +687,21 @@ impl ScytheEq {
                 band.cascade = Cascade::matched(&Prototype::design(&design), fs);
                 band.last = Some(design);
             }
-            let (m0, m1) = (from, band.mix);
+        }
+    }
+
+    /// Runs the zero-latency bands over `buf[..frames]`, `phase` frames into the grid cell.
+    fn run_bands(&mut self, phase: usize, frames: usize, end: bool) {
+        for b in 0..BANDS {
+            let s = self.settings[b];
+            let band = &mut self.bands[b];
+            let (m0, m1) = (band.mix_from, band.mix);
+            if m0 == 0.0 && m1 == 0.0 {
+                continue;
+            }
             let [bl, br] = &mut self.buf;
             for i in 0..frames {
-                let m = m0 + (m1 - m0) * (i + 1) as f64 / frames as f64;
+                let m = m0 + (m1 - m0) * (phase + i + 1) as f64 / SUB as f64;
                 let (l, r) = (bl[i], br[i]);
                 let (nl, nr) = match s.placement {
                     Placement::Stereo => (band.state[0].run(&band.cascade, l), band.state[1].run(&band.cascade, r)),
@@ -687,12 +721,14 @@ impl ScytheEq {
                 bl[i] = l + m * (nl - l);
                 br[i] = r + m * (nr - r);
             }
-            band.state.iter_mut().for_each(CascadeState::flush);
+            if end {
+                band.state.iter_mut().for_each(CascadeState::flush);
+            }
         }
     }
 
     /// The signal of a soloed band or an auditioned detector over `buf`, when any.
-    fn run_solo(&mut self, frames: usize, ctx: &ProcessContext, at: usize) -> bool {
+    fn run_solo(&mut self, frames: usize, aux: Option<(&[f32], &[f32])>, at: usize, end: bool) -> bool {
         let Some(b) = self.settings.iter().position(|s| s.used && (s.solo || s.audition)) else { return false };
         let s = self.settings[b];
         let band = &mut self.bands[b];
@@ -703,7 +739,7 @@ impl ScytheEq {
         }
         for i in 0..frames {
             let (l, r) = if s.audition && s.external {
-                ctx.aux.map_or((0.0, 0.0), |(al, ar)| {
+                aux.map_or((0.0, 0.0), |(al, ar)| {
                     (al.get(at + i).copied().unwrap_or(0.0) as f64, ar.get(at + i).copied().unwrap_or(0.0) as f64)
                 })
             } else {
@@ -712,7 +748,9 @@ impl ScytheEq {
             self.buf[0][i] = band.solo_state[0].run(&band.solo, l);
             self.buf[1][i] = band.solo_state[1].run(&band.solo, r);
         }
-        band.solo_state.iter_mut().for_each(CascadeState::flush);
+        if end {
+            band.solo_state.iter_mut().for_each(CascadeState::flush);
+        }
         true
     }
 
@@ -851,10 +889,21 @@ fn character(kind: usize, x: f64, dc: &mut (f64, f64), fs: f64) -> f64 {
     }
 }
 
-impl Effect for ScytheEq {
-    fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+impl ScytheEq {
+    /// Processes a block whose first frame is at sample `position`; without one (a stopped
+    /// transport) the grid carries on from the previous block.
+    pub fn process_block(
+        &mut self,
+        left: &mut [f32],
+        right: &mut [f32],
+        aux: Option<(&[f32], &[f32])>,
+        position: Option<i64>,
+    ) {
         let frames = left.len().min(right.len());
         self.running = true;
+        if let Some(p) = position {
+            self.clock = p;
+        }
         if self.auto_dirty {
             self.auto_target_db = self.auto_target();
             self.auto_dirty = false;
@@ -868,31 +917,40 @@ impl Effect for ScytheEq {
         let smooth = 1.0 - (-1.0 / (SMOOTH_SECONDS * fs)).exp();
         let mut at = 0;
         while at < frames {
-            let n = (frames - at).min(SUB);
+            let phase = self.clock.rem_euclid(SUB as i64) as usize;
+            let n = (frames - at).min(SUB - phase);
+            // A cell entered part way (the first after a reset) starts where it is entered.
+            let start = phase == 0 || !self.primed;
+            let end = phase + n == SUB;
+            self.primed = true;
             for i in 0..n {
                 self.inp[0][i] = left[at + i] as f64;
                 self.inp[1][i] = right[at + i] as f64;
             }
             self.buf[0][..n].copy_from_slice(&self.inp[0][..n]);
             self.buf[1][..n].copy_from_slice(&self.inp[1][..n]);
-            self.run_detectors(n, ctx, at);
-            let solo = self.run_solo(n, ctx, at);
-            let fading = !solo && self.outgoing.as_ref().is_some_and(|o| o.at < o.len);
-            if fading && self.outgoing.as_ref().is_some_and(|o| o.zero) {
-                self.run_bands(n);
-                let o = self.outgoing.as_deref_mut().unwrap();
+            let solo = self.run_solo(n, aux, at, end);
+            let fading = !solo && self.outgoing.at < self.outgoing.len;
+            let old_bands = fading && self.outgoing.zero;
+            if start && !solo && (old_bands || self.fir.is_none()) {
+                self.step_bands();
+            }
+            self.run_detectors(n, aux, at, end);
+            if old_bands {
+                self.run_bands(phase, n, end);
+                let o = &mut *self.outgoing;
                 for c in 0..2 {
                     o.out[c][..n].copy_from_slice(&self.buf[c][..n]);
                     self.buf[c][..n].copy_from_slice(&self.inp[c][..n]);
                 }
-            } else if fading
-                && let Some(o) = self.outgoing.as_deref_mut()
-                && let Some(fir) = o.fir.as_deref_mut()
-            {
-                for i in 0..n {
-                    let (l, r) = fir.engine.push(self.inp[0][i] as f32, self.inp[1][i] as f32, &fir.amounts);
-                    o.out[0][i] = l as f64;
-                    o.out[1][i] = r as f64;
+            } else if fading {
+                let o = &mut *self.outgoing;
+                if let Some(fir) = o.fir.as_deref_mut() {
+                    for i in 0..n {
+                        let (l, r) = fir.engine.push(self.inp[0][i] as f32, self.inp[1][i] as f32, &fir.amounts);
+                        o.out[0][i] = l as f64;
+                        o.out[1][i] = r as f64;
+                    }
                 }
             }
             if let Some(fir) = self.fir.as_deref() {
@@ -903,21 +961,11 @@ impl Effect for ScytheEq {
                 }
                 let fir = self.fir.as_deref_mut().unwrap();
                 fir.hold = fir.hold.saturating_sub(n);
-                let slots = fir.delay[0].len();
-                for (b, s) in self.settings.iter().enumerate() {
-                    let ring = &mut fir.delay[b];
-                    let k = if s.active() && s.dynamic == 1 {
-                        let gs = 10f64.powf(s.design.gain_db / 20.0);
-                        let gf = 10f64.powf((s.design.gain_db + s.range) / 20.0);
-                        let gt = 10f64.powf((s.design.gain_db + self.bands[b].dynamic_db) / 20.0);
-                        if (gf - gs).abs() > 1e-12 { ((gt - gs) / (gf - gs)) as f32 } else { 0.0 }
-                    } else {
-                        0.0
-                    };
-                    fir.amounts[b] = ring[fir.delay_at];
-                    ring[fir.delay_at] = k;
+                if start {
+                    for (amount, ring) in fir.amounts.iter_mut().zip(&fir.delay) {
+                        *amount = ring[fir.delay_at];
+                    }
                 }
-                fir.delay_at = (fir.delay_at + 1) % slots;
                 if !solo {
                     for i in 0..n {
                         let (l, r) = fir.engine.push(self.buf[0][i] as f32, self.buf[1][i] as f32, &fir.amounts);
@@ -925,10 +973,24 @@ impl Effect for ScytheEq {
                         self.buf[1][i] = r as f64;
                     }
                 }
+                if end {
+                    for (b, s) in self.settings.iter().enumerate() {
+                        fir.delay[b][fir.delay_at] = if s.active() && s.dynamic == 1 {
+                            let gs = 10f64.powf(s.design.gain_db / 20.0);
+                            let gf = 10f64.powf((s.design.gain_db + s.range) / 20.0);
+                            let gt = 10f64.powf((s.design.gain_db + self.bands[b].dynamic_db) / 20.0);
+                            if (gf - gs).abs() > 1e-12 { ((gt - gs) / (gf - gs)) as f32 } else { 0.0 }
+                        } else {
+                            0.0
+                        };
+                    }
+                    fir.delay_at = (fir.delay_at + 1) % fir.delay[0].len();
+                }
             } else if !solo {
-                self.run_bands(n);
+                self.run_bands(phase, n, end);
             }
-            if fading && let Some(o) = self.outgoing.as_deref_mut() {
+            if fading {
+                let o = &mut *self.outgoing;
                 if o.shared {
                     for c in 0..2 {
                         o.out[c][..n].copy_from_slice(&self.buf[c][..n]);
@@ -950,7 +1012,7 @@ impl Effect for ScytheEq {
                 for i in 0..n {
                     let x = (self.buf[0][i] as f32, self.buf[1][i] as f32);
                     let mut sc = x;
-                    if externals && let Some((al, ar)) = ctx.aux {
+                    if externals && let Some((al, ar)) = aux {
                         let raw = (al.get(at + i).copied().unwrap_or(0.0), ar.get(at + i).copied().unwrap_or(0.0));
                         sc = match self.fir.as_deref_mut() {
                             Some(fir) if !fir.aux[0].is_empty() => {
@@ -969,7 +1031,8 @@ impl Effect for ScytheEq {
                     self.buf[1][i] = r as f64;
                 }
             }
-            if fading && let Some(o) = self.outgoing.as_deref_mut() {
+            if fading {
+                let o = &mut *self.outgoing;
                 for i in 0..n {
                     let (new, old) = if o.wait > 0 {
                         o.wait -= 1;
@@ -1006,16 +1069,15 @@ impl Effect for ScytheEq {
                 right[at + i] = r as f32;
             }
             at += n;
-        }
-        if let Some(sc) = ctx.aux
-            && self.meters.sidechain.active()
-        {
-            self.meters.sidechain.tap(crate::probe::Side::Pre, sc.0, sc.1, ctx.sample_rate);
+            self.clock += n as i64;
         }
         self.publish();
     }
+}
 
-    fn reset(&mut self) {
+impl ScytheEq {
+    /// Clears what the processing remembers of earlier audio, as after a seek.
+    pub fn reset(&mut self) {
         for b in &mut self.bands {
             b.state.iter_mut().for_each(CascadeState::reset);
             b.solo_state.iter_mut().for_each(CascadeState::reset);
@@ -1030,53 +1092,30 @@ impl Effect for ScytheEq {
         if let Some(sp) = &mut self.spectral {
             sp.reset();
         }
-        if let Some(o) = &mut self.outgoing {
-            o.at = o.len;
-        }
+        self.outgoing.at = self.outgoing.len;
         self.dc = [(0.0, 0.0); 2];
+        self.clock = 0;
+        self.primed = false;
     }
 
-    fn latency(&mut self) -> usize {
+    /// Frames the output lags the input.
+    pub fn latency(&self) -> usize {
         self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency())
     }
 
-    fn params(&mut self) -> Vec<ParamInfo> {
-        params::automatable().filter_map(params::info).collect()
+    /// The stored state, with any values from a newer version written back unchanged.
+    pub fn state(&self) -> Vec<u8> {
+        params::encode(&params::unclamp(&self.values, &self.unclamped), &self.extra, self.version)
     }
 
-    fn param(&mut self, id: u32) -> Option<(f64, String)> {
-        params::spec_of(id)?;
-        let v = self.value(id);
-        Some((v, params::format(id, v)))
-    }
-
-    fn set_param(&mut self, id: u32, value: f64) {
-        self.set(id, value);
-    }
-
-    fn set_normalized(&mut self, index: usize, value: f64) -> bool {
-        let Some(id) = params::automatable().nth(index) else { return false };
-        self.set(id, params::from_normalized(id, value));
+    /// Recalls a stored state; false (and nothing changed) when `chunk` is not one.
+    pub fn load_state(&mut self, chunk: &[u8]) -> bool {
+        let Some(decoded) = params::decode(chunk) else { return false };
+        self.set_all(&decoded.values);
+        self.extra = decoded.extra;
+        self.version = decoded.version;
+        self.unclamped = decoded.unclamped;
         true
-    }
-
-    fn normalized(&mut self, index: usize) -> Option<f64> {
-        let id = params::automatable().nth(index)?;
-        Some(params::to_normalized(id, self.value(id)))
-    }
-
-    fn save_state(&mut self) -> Option<Vec<u8>> {
-        Some(params::encode(&self.values))
-    }
-
-    fn update_state(&mut self, chunk: &[u8]) -> bool {
-        let Some(values) = params::decode(chunk) else { return false };
-        self.set_all(&values);
-        true
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
     }
 }
 

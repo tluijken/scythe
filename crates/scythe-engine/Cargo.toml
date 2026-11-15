@@ -12,6 +12,7 @@ rubberband = []
 asio = ["cpal/asio"]
 
 [dependencies]
+scyeq-dsp.workspace = true
 scythe-core.workspace = true
 thiserror.workspace = true
 arc-swap.workspace = true
@@ -27,6 +28,7 @@ realfft.workspace = true
 rustfft.workspace = true
 base64.workspace = true
 cpal.workspace = true
+scythe-decode.workspace = true
 symphonia.workspace = true
 opus-pure.workspace = true
 hound.workspace = true
@@ -48,4 +50,5 @@ mach2.workspace = true
 jack.workspace = true
 
 [dev-dependencies]
+scyeq-plugin.workspace = true
 x11rb.workspace = true

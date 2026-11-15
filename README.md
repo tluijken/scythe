@@ -26,6 +26,9 @@ A from-scratch digital audio workstation in Rust, strongly inspired by the fanta
 
 ## Quick start
 
+Ready-made builds for Linux, Windows and macOS (beta) are on the
+[Releases](https://github.com/tluijken/scythe/releases) page ([how they are made](docs/releasing.md)).
+
 Scythe builds with [devbox](https://www.jetify.com/devbox), which brings Rust and the audio
 libraries:
 
@@ -81,10 +84,12 @@ with `--audio-host ASIO`. The installer is an MSI made with
 
 ```powershell
 cargo build --release -p scythe-app -p scythe-server -p scythe-mcp --features scythe-app/asio
+bash scripts/release/notices.sh target/notices scythe-app windows   # licenses; needs cargo-about
 cargo wix -p scythe-app --no-build --nocapture   # target\wix\scythe-app-<version>-x86_64.msi
 ```
 
-It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry;
+It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry,
+and the licenses in its install folder;
 adding them to `PATH` and opening `.RPP` files with Scythe are features to pick in the setup (the
 file association is off by default). The installer is not signed, so SmartScreen warns before it
 runs.
@@ -94,7 +99,13 @@ runs.
 On macOS Scythe builds with rustup's stable toolchain and the Xcode Command Line Tools, and plays
 through Core Audio. It finds CLAP, VST 3, VST 2 and LV2 plugins in `/Library/Audio/Plug-Ins` and
 `~/Library/Audio/Plug-Ins`, and keeps its settings in `~/Library/Application Support/scythe`.
-Plugin editors do not open yet, and there is no app bundle or installer.
+Plugin editors do not open yet.
+
+Releases have `Scythe.app` for Apple silicon and Intel as a beta, with `scythe-server` and
+`scythe-mcp` inside it in `Scythe.app/Contents/MacOS`. It is signed ad hoc and not notarized, so
+macOS blocks it the first time: allow it under System Settings > Privacy & Security, or run
+`xattr -dr com.apple.quarantine /Applications/Scythe.app`. `scripts/release/package.sh` builds
+the bundle from source ([docs/releasing.md](docs/releasing.md)); there is no installer.
 
 ## Features
 
@@ -121,6 +132,15 @@ Projects keep it as a CLAP slot that REAPER keeps byte for byte, and agents set 
 `eq.band` over the control API and MCP. [More](docs/features.md#effects-and-plugins).
 
 ![ScyEQ-Pro on a vocal: bands, a dynamic band moving, the analyzer and the piano strip](docs/screenshots/scyeq-pro.png)
+
+#### ScyEQ-Pro plugin
+
+ScyEQ-Pro also runs outside Scythe, as a CLAP and VST 3 plugin for Linux, Windows and macOS
+(beta), with the same sound, editor and state: a project made in REAPER with the CLAP plugin
+opens in Scythe with the built-in ScyEQ-Pro, and back. The `ScyEQ-Pro plugin` workflow builds it
+as `ScyEQ-Pro-<version>-<os>.zip` for all three on `main` and when run by hand, and for Linux and
+Windows on pull requests; [crates/scyeq-plugin/README.md](crates/scyeq-plugin/README.md) says
+where to install it.
 
 ### Arrange and editing
 

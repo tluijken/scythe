@@ -39,7 +39,7 @@
       ],
       "test": [
         ". scripts/env.sh",
-        "cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin",
+        "cargo build -p clap-test-gain -p lv2-test-plugins -p vst3-test-plugin -p vst2-test-plugin -p scyeq-plugin",
         "SCYTHE_SYSTEM_PLUGINS=0 cargo test --workspace"
       ],
       "itest": [
