@@ -52,7 +52,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-exec 3< <("$xvfb" -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp 2>/dev/null)
+# Left to choose, Xvfb can take :0 from a desktop whose Xwayland it does not see as running.
+for display in $(seq 300 399); do
+    [ -e "/tmp/.X$display-lock" ] || [ -e "/tmp/.X11-unix/X$display" ] || break
+done
+exec 3< <("$xvfb" ":$display" -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp 2>/dev/null)
 pids+=($!)
 read -r -t 20 display <&3 || { echo "Xvfb did not start" >&2; exit 1; }
 export DISPLAY=:$display
