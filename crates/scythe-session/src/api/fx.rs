@@ -566,10 +566,13 @@ fn params(session: &Session, loc: Loc, at: &ChainAt, index: usize) -> Result<Vec
     let inst = instance(session, loc, at, index)?;
     let values = inst
         .with(|e| {
-            e.params()
+            let params = e.params();
+            let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+            params
                 .into_iter()
-                .map(|p| {
-                    let (value, text) = e.param(p.id).unwrap_or((p.default, String::new()));
+                .zip(e.param_values(&ids))
+                .map(|(p, v)| {
+                    let (value, text) = v.unwrap_or((p.default, String::new()));
                     ParamValue { id: p.id, name: p.name, value, text, min: p.min, max: p.max, default: p.default }
                 })
                 .collect()

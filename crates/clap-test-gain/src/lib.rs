@@ -211,6 +211,25 @@ struct Gain {
     ticks: AtomicU32,
     /// The selected entry of `CONFIGS`.
     config: AtomicU32,
+    /// The thread the host created it on, its main thread.
+    main: std::thread::ThreadId,
+}
+
+/// Calls of `clap_plugin_params` main-thread functions made on another thread than the
+/// instance's main thread, by any instance.
+static OFF_MAIN_PARAM_CALLS: AtomicU32 = AtomicU32::new(0);
+
+fn on_main(p: *const clap_plugin) {
+    // SAFETY: called with the plugin the host passed.
+    if std::thread::current().id() != unsafe { gain_of(p) }.main {
+        OFF_MAIN_PARAM_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// How many `clap_plugin_params` main-thread calls came on another thread, for a host's tests.
+#[unsafe(no_mangle)]
+pub extern "C" fn clap_test_gain_off_main_param_calls() -> u32 {
+    OFF_MAIN_PARAM_CALLS.load(Ordering::Relaxed)
 }
 
 /// The port configurations the gain offers: name, input ports, main input channels. It starts
@@ -415,6 +434,7 @@ unsafe extern "C" fn params_info(
 }
 
 unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64) -> bool {
+    on_main(p);
     // SAFETY: valid plugin and out pointer.
     unsafe {
         let value = match id {
@@ -427,7 +447,8 @@ unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64)
     true
 }
 
-unsafe extern "C" fn params_text(_p: *const clap_plugin, _id: u32, value: f64, out: *mut c_char, cap: u32) -> bool {
+unsafe extern "C" fn params_text(p: *const clap_plugin, _id: u32, value: f64, out: *mut c_char, cap: u32) -> bool {
+    on_main(p);
     let text = format!("{value:.2}\0");
     // SAFETY: writes at most `cap` bytes into the host buffer.
     unsafe {
@@ -779,6 +800,7 @@ unsafe extern "C" fn create_plugin(
         gui: std::sync::Mutex::new(None),
         ticks: AtomicU32::new(0),
         config: AtomicU32::new(config),
+        main: std::thread::current().id(),
     }));
     // SAFETY: the box was just leaked and is valid.
     unsafe {

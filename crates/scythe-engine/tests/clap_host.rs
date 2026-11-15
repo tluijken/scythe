@@ -491,3 +491,39 @@ fn a_project_read_to_render_converts_old_clap_baselines() {
     let m = scythe_core::modulation::modulation(&project.tracks[0].fx[0], 1).unwrap();
     assert_eq!(m.base, 2.0);
 }
+
+/// CLAP wants a parameter's value and text asked on the plugin's main thread: for Scythe the
+/// plugin thread hosted plugins are made on. Scythe's window, its control API and scripts ask
+/// from their own threads, modulation from the audio thread.
+#[test]
+fn parameters_are_asked_on_the_plugin_thread_only() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let off_main = || {
+        // SAFETY: the test plugin's own counter, a plain function without arguments.
+        unsafe {
+            let lib = libloading::Library::new(&path).unwrap();
+            lib.get::<unsafe extern "C" fn() -> u32>(b"clap_test_gain_off_main_param_calls").unwrap()()
+        }
+    };
+    let mut registry = scythe_engine::fx::FxRegistry::new(48_000);
+    registry.set_clap_plugins(lib.descriptors());
+    let slot = scythe_engine::fx::clap_slot(&lib.descriptors()[0]);
+    let chain = registry.chain(None, std::slice::from_ref(&slot));
+    let before = off_main();
+    let read = chain[0]
+        .with(|e| {
+            e.set_param(9, 3.0);
+            (e.param(7), e.param_values(&[9, 99]), e.normalized(1), scythe_engine::modulation::normalized(e, 0))
+        })
+        .unwrap();
+    let inst = chain[0].clone();
+    let elsewhere = std::thread::spawn(move || inst.with(|e| e.param(7)).flatten()).join().unwrap();
+    assert_eq!(off_main() - before, 0, "asked off the plugin thread");
+    let three = Some((3.0, "3.00".into()));
+    assert_eq!(read, (Some((0.5, "0.50".into())), vec![three, None], Some(0.75), Some(0.5)));
+    assert_eq!(elsewhere, Some((0.5, "0.50".into())));
+}

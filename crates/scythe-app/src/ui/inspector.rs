@@ -1225,13 +1225,9 @@ fn fx_params(
     };
     let params = inst
         .with(|e| {
-            e.params()
-                .into_iter()
-                .map(|p| {
-                    let v = e.param(p.id);
-                    (p, v)
-                })
-                .collect::<Vec<_>>()
+            let params = e.params();
+            let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+            params.into_iter().zip(e.param_values(&ids)).collect::<Vec<_>>()
         })
         .unwrap_or_default();
     if params.is_empty() {
