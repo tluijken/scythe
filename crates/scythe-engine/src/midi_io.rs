@@ -470,6 +470,35 @@ impl OutMessage {
 
 pub const ALL_PORTS: u8 = u8::MAX;
 
+/// The audio callback's end of the queue to the MIDI sender. A block rendered late, in a burst
+/// that works off a stall, is stamped with a "heard" instant before what earlier blocks
+/// queued, so its messages would overtake theirs; they are held back to the latest due
+/// instant of the earlier blocks instead, which keeps them in order.
+pub struct OutQueue {
+    tx: rtrb::Producer<OutMessage>,
+    floor: Option<std::time::Instant>,
+    latest: Option<std::time::Instant>,
+}
+
+impl OutQueue {
+    pub fn new(tx: rtrb::Producer<OutMessage>) -> Self {
+        Self { tx, floor: None, latest: None }
+    }
+
+    /// Starts the messages of the next block.
+    pub fn next_block(&mut self) {
+        self.floor = self.latest;
+    }
+
+    pub fn push(&mut self, mut m: OutMessage) -> Result<(), rtrb::PushError<OutMessage>> {
+        if let Some(floor) = self.floor {
+            m.due = m.due.max(floor);
+        }
+        self.latest = Some(self.latest.map_or(m.due, |l| l.max(m.due)));
+        self.tx.push(m)
+    }
+}
+
 /// "All notes off" on each of the 16 channels.
 const ALL_NOTES_OFF: [[u8; 3]; 16] = {
     let mut msgs = [[0xb0, 0x7b, 0]; 16];
@@ -510,7 +539,7 @@ pub struct MidiSender {
 impl MidiSender {
     /// Opens the outputs in `devices` (device number and port name; ports that fail to open
     /// are left out) and returns the sender with the queue the audio callback writes to.
-    pub fn open(devices: &[(u8, String)]) -> Result<(Self, rtrb::Producer<OutMessage>), String> {
+    pub fn open(devices: &[(u8, String)]) -> Result<(Self, OutQueue), String> {
         let mut by_number: Vec<Option<MidiOut>> = (0..128).map(|_| None).collect();
         let mut ports = Vec::new();
         for (number, name) in devices {
@@ -557,7 +586,7 @@ impl MidiSender {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok((Self { stop, thread: Some(thread), ports }, tx))
+        Ok((Self { stop, thread: Some(thread), ports }, OutQueue::new(tx)))
     }
 
     /// Names of the open outputs.
@@ -693,6 +722,24 @@ mod tests {
         assert_eq!(OutMessage::new(now, 0, &full).message(), &full);
         assert_eq!(message_len(0xf2), 3);
         assert_eq!(message_len(0xf8), 1);
+    }
+
+    #[test]
+    fn a_block_rendered_late_does_not_overtake_the_one_before() {
+        let (tx, mut rx) = rtrb::RingBuffer::<OutMessage>::new(16);
+        let mut q = OutQueue::new(tx);
+        let t = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        q.next_block();
+        q.push(OutMessage::new(t + ms(9), 0, &[0xf1, 0x10])).unwrap();
+        // Rendered right after the first block instead of a block later.
+        q.next_block();
+        q.push(OutMessage::new(t + ms(8), 0, &[0xf1, 0x20])).unwrap();
+        q.push(OutMessage::new(t + ms(10), 0, &[0xf1, 0x30])).unwrap();
+        q.next_block();
+        q.push(OutMessage::new(t + ms(30), 0, &[0xf1, 0x40])).unwrap();
+        let due: Vec<_> = std::iter::from_fn(|| rx.pop().ok()).map(|m| m.due - t).collect();
+        assert_eq!(due, [ms(9), ms(9), ms(10), ms(30)]);
     }
 
     #[test]

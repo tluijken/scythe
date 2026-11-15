@@ -577,7 +577,7 @@ pub struct LiveInput<'a> {
 /// Where hardware MIDI goes, and when a project frame is heard.
 #[derive(Clone, Copy)]
 pub struct MidiOutClock<'a> {
-    pub queue: &'a std::sync::Mutex<rtrb::Producer<OutMessage>>,
+    pub queue: &'a std::sync::Mutex<crate::midi_io::OutQueue>,
     /// The master frame `frame` leaves the speakers at `at`.
     pub at: std::time::Instant,
     pub frame: i64,
