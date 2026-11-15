@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
-      PLUGIN_FORMAT_TAG: v0.1.1
+      PLUGIN_FORMAT_TAG: v0.1.2
     steps:
       - uses: actions/checkout@v4
       # bundle.sh and validate.sh, at the tag scyeq-plugin depends on.
