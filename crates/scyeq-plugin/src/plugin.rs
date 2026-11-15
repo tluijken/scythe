@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
@@ -8,7 +7,7 @@ use scyeq_dsp::probe::{FxProbe, Side};
 use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::ViewState;
 
-use crate::host::Editor;
+use crate::host::{Editor, Picked};
 use crate::registry::{self, Registration};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -42,9 +41,19 @@ pub struct ScyEqShared {
     /// Kept for the next editor while none is open; not part of the state.
     view: Mutex<ViewState>,
     /// The answer of the EQ Match file dialog while it is open, for whichever editor is open then.
-    picking: Mutex<Option<Receiver<Option<PathBuf>>>>,
-    /// The last file dialog asked for was refused: the library could not be kept loaded for it.
-    pick_refused: AtomicBool,
+    picking: Mutex<Option<Receiver<Picked>>>,
+    /// Why the last file dialog asked for did not open.
+    pick_notice: Mutex<Option<PickNotice>>,
+}
+
+/// Why a file dialog asked for did not open.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PickNotice {
+    /// The library could not be kept loaded for it.
+    Refused,
+    /// The last one is still open, maybe behind the host's window.
+    AlreadyOpen,
+    NoDialog,
 }
 
 /// Values a newer version stored, written back unchanged, the known values stored outside their
@@ -73,7 +82,7 @@ impl ScyEqShared {
             sample_rate: AtomicU32::new(0),
             view: Mutex::new(ViewState::default()),
             picking: Mutex::new(None),
-            pick_refused: AtomicBool::new(false),
+            pick_notice: Mutex::new(None),
         }
     }
 
@@ -95,14 +104,19 @@ impl ScyEqShared {
     }
 
     /// Tells the user when the loaded state was written by a newer ScyEQ-Pro than this one, or
-    /// when the file dialog could not be opened.
+    /// when the file dialog did not open.
     pub fn notice(&self) -> Option<String> {
         if self.version() > params::VERSION {
             return Some("Made with a newer ScyEQ-Pro; update to hear every setting.".to_string());
         }
-        self.pick_refused
-            .load(Ordering::Relaxed)
-            .then(|| "The file dialog cannot open: the plugin could not stay loaded for it.".to_string())
+        let text = match (*self.pick_notice.lock().unwrap_or_else(|e| e.into_inner()))? {
+            PickNotice::Refused => "The file dialog cannot open: the plugin could not stay loaded for it.",
+            PickNotice::AlreadyOpen => "A file dialog is already open; it may be behind the host's window.",
+            PickNotice::NoDialog => {
+                "No file dialog can open: install a desktop file chooser portal (xdg-desktop-portal) or zenity."
+            }
+        };
+        Some(text.to_string())
     }
 
     pub fn track(&self) -> TrackInfo {
@@ -139,12 +153,12 @@ impl ScyEqShared {
         *self.view.lock().unwrap_or_else(|e| e.into_inner()) = view;
     }
 
-    pub(crate) fn picking(&self) -> &Mutex<Option<Receiver<Option<PathBuf>>>> {
+    pub(crate) fn picking(&self) -> &Mutex<Option<Receiver<Picked>>> {
         &self.picking
     }
 
-    pub(crate) fn set_pick_refused(&self, refused: bool) {
-        self.pick_refused.store(refused, Ordering::Relaxed);
+    pub(crate) fn set_pick_notice(&self, notice: Option<PickNotice>) {
+        *self.pick_notice.lock().unwrap_or_else(|e| e.into_inner()) = notice;
     }
 }
 

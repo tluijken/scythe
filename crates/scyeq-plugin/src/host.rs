@@ -11,9 +11,11 @@ use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ReferenceError, ViewState};
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use crate::chooser;
 #[cfg(unix)]
 use crate::owner;
-use crate::plugin::ScyEqShared;
+use crate::plugin::{PickNotice, ScyEqShared};
 use crate::registry;
 
 /// One open editor window.
@@ -164,16 +166,12 @@ impl EqHost for PluginHost<'_> {
     /// thread when it closes the window; on Windows the dialog's modal loop would paint the
     /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        let kept = keep_loaded();
-        self.shared.set_pick_refused(!kept);
-        if kept {
-            pick(self.shared.picking(), file_dialog);
-        }
+        ask(self.shared, keep_loaded(), file_dialog);
         None
     }
 
     fn picked_reference(&mut self) -> Option<PathBuf> {
-        take_picked(&mut self.shared.picking().lock().unwrap_or_else(|e| e.into_inner()))
+        answer(self.shared)
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
@@ -268,44 +266,88 @@ fn set(shared: &ScyEqShared, cx: &GuiContext, id: u32, value: f64) {
 /// Made in the frame, so it belongs to the window the user just clicked in, and shown on the
 /// pick's thread.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
+fn file_dialog() -> impl FnOnce() -> Picked + Send + 'static {
     let mut dialog = rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
     if let Some(owner) = owner::active() {
         dialog = dialog.set_parent(&owner);
     }
-    move || dialog.pick_file()
+    move || {
+        if !chooser::available() {
+            return Picked::NoDialog;
+        }
+        dialog.pick_file().map_or(Picked::Cancelled, Picked::File)
+    }
 }
 
 /// Without an owner: the owner would be on the editor's thread and the dialog on the pick's,
 /// and a modal dialog across threads disables the host's window from the outside.
 #[cfg(windows)]
-fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
-    || rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+fn file_dialog() -> impl FnOnce() -> Picked + Send + 'static {
+    || {
+        let dialog = rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+        dialog.pick_file().map_or(Picked::Cancelled, Picked::File)
+    }
 }
 
 /// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet on
 /// the window the user just clicked in, it returns at once, and its answer is waited for on the
 /// pick's thread.
 #[cfg(target_os = "macos")]
-fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
+fn file_dialog() -> impl FnOnce() -> Picked + Send + 'static {
     let mut dialog = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
     if let Some(owner) = owner::active() {
         dialog = dialog.set_parent(&owner);
     }
     let picked = dialog.pick_file();
-    move || block_on(picked).map(|file| file.path().to_path_buf())
+    move || block_on(picked).map_or(Picked::Cancelled, |file| Picked::File(file.path().to_path_buf()))
+}
+
+/// How a file dialog ended.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Picked {
+    File(PathBuf),
+    Cancelled,
+    /// None could show: on Linux, neither a file chooser portal nor zenity is there.
+    NoDialog,
+}
+
+/// Opens the dialog `open` makes for `shared` once the library is `kept` loaded, and tells the
+/// user why when it does not open.
+fn ask<D>(shared: &ScyEqShared, kept: bool, open: impl FnOnce() -> D)
+where
+    D: FnOnce() -> Picked + Send + 'static,
+{
+    let notice = if !kept {
+        Some(PickNotice::Refused)
+    } else if pick(shared.picking(), open) {
+        None
+    } else {
+        Some(PickNotice::AlreadyOpen)
+    };
+    shared.set_pick_notice(notice);
+}
+
+/// The file picked for `shared`, once its dialog closed with one.
+fn answer(shared: &ScyEqShared) -> Option<PathBuf> {
+    let picked = take_picked(&mut shared.picking().lock().unwrap_or_else(|e| e.into_inner()))?;
+    shared.set_pick_notice((picked == Picked::NoDialog).then_some(PickNotice::NoDialog));
+    match picked {
+        Picked::File(path) => Some(path),
+        Picked::Cancelled | Picked::NoDialog => None,
+    }
 }
 
 /// Opens the dialog `open` makes, unless the instance's last one is still open: an editor
 /// closed and opened again meanwhile takes that one's answer rather than open a second.
-fn pick<D>(picking: &Mutex<Option<Receiver<Option<PathBuf>>>>, open: impl FnOnce() -> D)
+/// False when one was still open.
+fn pick<D>(picking: &Mutex<Option<Receiver<Picked>>>, open: impl FnOnce() -> D) -> bool
 where
-    D: FnOnce() -> Option<PathBuf> + Send + 'static,
+    D: FnOnce() -> Picked + Send + 'static,
 {
     let answer = {
         let mut picking = picking.lock().unwrap_or_else(|e| e.into_inner());
         if picking.is_some() {
-            return;
+            return false;
         }
         let (answer, receiver) = mpsc::channel();
         *picking = Some(receiver);
@@ -316,6 +358,7 @@ where
     std::thread::spawn(move || {
         let _ = answer.send(dialog());
     });
+    true
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -337,16 +380,15 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
     }
 }
 
-/// The file picked, once the dialog closed; `None` while it is open, and after it closed
-/// without one.
-fn take_picked(picking: &mut Option<Receiver<Option<PathBuf>>>) -> Option<PathBuf> {
+/// How the dialog ended, once it closed; `None` while it is open.
+fn take_picked(picking: &mut Option<Receiver<Picked>>) -> Option<Picked> {
     let picked = match picking.as_ref()?.try_recv() {
         Err(TryRecvError::Empty) => return None,
-        Ok(path) => path,
-        Err(TryRecvError::Disconnected) => None,
+        Ok(picked) => picked,
+        Err(TryRecvError::Disconnected) => Picked::Cancelled,
     };
     *picking = None;
-    picked
+    Some(picked)
 }
 
 /// A reference file for EQ Match, decoded as Scythe decodes it.
@@ -484,8 +526,8 @@ mod tests {
         let mut picking = Some(rx);
         assert_eq!(take_picked(&mut picking), None, "still open");
         assert!(picking.is_some());
-        tx.send(Some(PathBuf::from("/music/reference.wav"))).unwrap();
-        assert_eq!(take_picked(&mut picking), Some(PathBuf::from("/music/reference.wav")));
+        tx.send(Picked::File(PathBuf::from("/music/reference.wav"))).unwrap();
+        assert_eq!(take_picked(&mut picking), Some(Picked::File(PathBuf::from("/music/reference.wav"))));
         assert!(picking.is_none(), "taken once");
         assert_eq!(take_picked(&mut picking), None);
     }
@@ -494,13 +536,13 @@ mod tests {
     fn a_dialog_closed_without_a_file_or_gone_ends_the_pick() {
         let (tx, rx) = mpsc::channel();
         let mut picking = Some(rx);
-        tx.send(None).unwrap();
-        assert_eq!(take_picked(&mut picking), None);
+        tx.send(Picked::Cancelled).unwrap();
+        assert_eq!(take_picked(&mut picking), Some(Picked::Cancelled));
         assert!(picking.is_none());
-        let (tx, rx) = mpsc::channel::<Option<PathBuf>>();
+        let (tx, rx) = mpsc::channel::<Picked>();
         let mut picking = Some(rx);
         drop(tx);
-        assert_eq!(take_picked(&mut picking), None);
+        assert_eq!(take_picked(&mut picking), Some(Picked::Cancelled));
         assert!(picking.is_none());
     }
 
@@ -513,23 +555,23 @@ mod tests {
         pick(shared.picking(), || {
             move || {
                 wait.recv().unwrap();
-                Some(PathBuf::from("/music/reference.wav"))
+                Picked::File(PathBuf::from("/music/reference.wav"))
             }
         });
         let mut second = false;
         pick(shared.picking(), || {
             second = true;
-            || None
+            || Picked::Cancelled
         });
         assert!(!second, "a second dialog opened");
         release.send(()).unwrap();
         let picked = loop {
-            if let Some(path) = take_picked(&mut shared.picking().lock().unwrap()) {
-                break path;
+            if let Some(picked) = take_picked(&mut shared.picking().lock().unwrap()) {
+                break picked;
             }
             std::thread::yield_now();
         };
-        assert_eq!(picked, PathBuf::from("/music/reference.wav"));
+        assert_eq!(picked, Picked::File(PathBuf::from("/music/reference.wav")));
     }
 
     #[test]
@@ -542,7 +584,7 @@ mod tests {
             move || {
                 assert_ne!(std::thread::current().id(), caller);
                 wait.recv().unwrap();
-                Some(PathBuf::from("/music/reference.wav"))
+                Picked::File(PathBuf::from("/music/reference.wav"))
             }
         });
         let mut picking = slot.into_inner().unwrap();
@@ -550,14 +592,73 @@ mod tests {
         release.send(()).unwrap();
         let picked = loop {
             match take_picked(&mut picking) {
-                Some(path) => break path,
+                Some(picked) => break picked,
                 None => {
-                    assert!(picking.is_some(), "the pick ended without a file");
+                    assert!(picking.is_some(), "the pick ended without an answer");
                     std::thread::yield_now();
                 }
             }
         };
-        assert_eq!(picked, PathBuf::from("/music/reference.wav"));
+        assert_eq!(picked, Picked::File(PathBuf::from("/music/reference.wav")));
+    }
+
+    fn shared() -> Arc<ScyEqShared> {
+        <crate::ScyEqPlugin as plugin_format::Plugin>::new().1
+    }
+
+    /// Answers until the pick ends, as the editor asks every frame.
+    fn answer_of(shared: &ScyEqShared) -> Option<PathBuf> {
+        loop {
+            let answer = answer(shared);
+            if answer.is_some() || shared.picking().lock().unwrap().is_none() {
+                break answer;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn a_second_pick_while_the_dialog_is_open_says_so() {
+        let shared = shared();
+        let (release, wait) = mpsc::channel::<()>();
+        ask(&shared, true, || {
+            move || {
+                wait.recv().unwrap();
+                Picked::Cancelled
+            }
+        });
+        assert_eq!(shared.notice(), None);
+        ask(&shared, true, || || Picked::Cancelled);
+        let notice = shared.notice().expect("a notice");
+        assert!(notice.contains("already open"), "{notice}");
+        assert!(notice.contains("behind"), "{notice}");
+        release.send(()).unwrap();
+        assert_eq!(answer_of(&shared), None);
+        assert_eq!(shared.notice(), None, "the dialog closed");
+    }
+
+    #[test]
+    fn a_dialog_that_cannot_show_says_what_is_missing() {
+        let shared = shared();
+        ask(&shared, true, || || Picked::NoDialog);
+        assert_eq!(answer_of(&shared), None);
+        let notice = shared.notice().expect("a notice");
+        assert!(notice.contains("file chooser portal") && notice.contains("zenity"), "{notice}");
+        ask(&shared, true, || || Picked::File(PathBuf::from("/music/reference.wav")));
+        assert_eq!(answer_of(&shared), Some(PathBuf::from("/music/reference.wav")));
+        assert_eq!(shared.notice(), None, "a dialog showed");
+    }
+
+    #[test]
+    fn a_pick_the_library_cannot_stay_loaded_for_opens_no_dialog() {
+        let shared = shared();
+        let mut opened = false;
+        ask(&shared, false, || {
+            opened = true;
+            || Picked::Cancelled
+        });
+        assert!(!opened);
+        assert!(shared.notice().is_some_and(|n| n.contains("could not stay loaded")));
     }
 
     #[test]
