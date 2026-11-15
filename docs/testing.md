@@ -104,7 +104,8 @@ from Git Bash (over `ssh winvm` too: REAPER renders without a desktop).
    band shape, a dynamic, a spectral and a sidechain band (keyed from a second track on channels
    3/4), every shape with all three band kinds in each phase mode (also rendered from frame
    1013, off the processing grid and REAPER's 512-frame blocks), and a band's gain and frequency
-   automated, as REAPER writes those envelopes, the gain also beside a dynamic band.
+   automated, as REAPER writes those envelopes, the gain also beside a dynamic band, and a dynamic
+   band switched off and on.
 3. REAPER renders each project with `-renderproject`, with a configuration of its own
    (`-cfgfile` in the temporary folder, its own `HOME` on Linux) whose CLAP and VST3 paths hold
    only the fresh plugin, on the dummy audio device at 48 kHz and 512 frames (Linux
