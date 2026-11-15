@@ -12,13 +12,21 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 scyeq-dsp.workspace = true
 scyeq-ui.workspace = true
-plugin-format = { git = "https://github.com/tluijken/plugin-format", tag = "v0.1.1" }
+plugin-format = { git = "https://github.com/tluijken/plugin-format", tag = "v0.1.2" }
 # The portal (or zenity) on Linux, not GTK: a plugin must not run a GTK loop inside the host.
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 scythe-decode.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+raw-window-handle = "0.6.2"
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+x11rb.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.0"
+objc2-app-kit = { version = "0.3.0", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSWindow"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
@@ -29,6 +37,7 @@ clap-sys.workspace = true
 egui_kittest = "0.37.0"
 hound.workspace = true
 libloading.workspace = true
+opus-pure.workspace = true
 serde_json.workspace = true
 vst3.workspace = true
 

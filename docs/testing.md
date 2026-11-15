@@ -9,6 +9,7 @@ drive the app the way a user, a tablet or an AI agent does and take a few minute
 | `devbox run itest` | the UI tests, the end-to-end process tests and the corpus (below) | about five minutes after a build |
 | `scripts/cargo.sh run --release -p scythe-engine --example null_check -- x.RPP …` | the null set: probe projects rendered by Scythe against REAPER 7.73's renders of them (see [verification](verification.md)) | minutes |
 | `devbox run -- scripts/reaper-compare.sh` | ScyEQ-Pro in REAPER, with the plugin, against Scythe (below) | a few minutes after a build |
+| `devbox run -- scripts/reaper-count-in.sh` | count-in and pre-roll in REAPER on a private JACK dummy server, against the starts Scythe models ([verification](verification.md)); `BLOCK` sets the block size (1024), `ONLY` picks cases | about six minutes |
 
 `devbox run itest [filter]` passes the filter to both `cargo test` runs, so
 `devbox run itest setlist` runs every integration test with "setlist" in its name.
@@ -104,7 +105,8 @@ from Git Bash (over `ssh winvm` too: REAPER renders without a desktop).
    band shape, a dynamic, a spectral and a sidechain band (keyed from a second track on channels
    3/4), every shape with all three band kinds in each phase mode (also rendered from frame
    1013, off the processing grid and REAPER's 512-frame blocks), and a band's gain and frequency
-   automated, as REAPER writes those envelopes.
+   automated, as REAPER writes those envelopes, the gain also beside a dynamic band, and a dynamic
+   band switched off and on.
 3. REAPER renders each project with `-renderproject`, with a configuration of its own
    (`-cfgfile` in the temporary folder, its own `HOME` on Linux) whose CLAP and VST3 paths hold
    only the fresh plugin, on the dummy audio device at 48 kHz and 512 frames (Linux

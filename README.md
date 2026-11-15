@@ -84,7 +84,7 @@ with `--audio-host ASIO`. The installer is an MSI made with
 
 ```powershell
 cargo build --release -p scythe-app -p scythe-server -p scythe-mcp --features scythe-app/asio
-bash scripts/release/notices.sh target/notices scythe-app windows   # licenses; needs cargo-about
+bash scripts/release/notices.sh target/notices scythe-app windows asio   # licenses, ASIO's too; needs cargo-about
 cargo wix -p scythe-app --no-build --nocapture   # target\wix\scythe-app-<version>-x86_64.msi
 ```
 

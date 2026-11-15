@@ -2,14 +2,17 @@
 //! parameter gestures through the instance's `GuiContext`.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::{Arc, Once};
+use std::sync::{Arc, Mutex};
 
 use plugin_format::{GuiContext, Shared, egui};
 use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ViewState};
 
+#[cfg(unix)]
+use crate::owner;
 use crate::plugin::ScyEqShared;
 use crate::registry;
 
@@ -19,8 +22,6 @@ pub(crate) struct Editor {
     cx: GuiContext,
     state: EditorState,
     themed: bool,
-    /// A reference file being picked on a thread of its own.
-    picking: Option<Receiver<Option<PathBuf>>>,
     /// A gesture begun in the instance list, on this instance or another: the context it went
     /// through and the parameter.
     listed_gesture: Option<(GuiContext, u32)>,
@@ -28,21 +29,17 @@ pub(crate) struct Editor {
 
 impl Editor {
     pub(crate) fn new(shared: Arc<ScyEqShared>, cx: GuiContext) -> Self {
-        Self { shared, cx, state: EditorState::default(), themed: false, picking: None, listed_gesture: None }
+        Self { shared, cx, state: EditorState::default(), themed: false, listed_gesture: None }
     }
 
     pub(crate) fn frame(&mut self, root: &mut egui::Ui) {
         if !std::mem::replace(&mut self.themed, true) {
             scyeq_ui::theme::install(root.ctx());
         }
+        let pointer = root.ctx().input(|i| i.pointer.hover_pos());
+        self.state.controls.hovered = pointer.is_some_and(|p| root.max_rect().contains(p));
         let view = self.shared.view();
-        let mut host = PluginHost {
-            shared: &self.shared,
-            cx: &self.cx,
-            values: self.shared.values(),
-            view,
-            picking: &mut self.picking,
-        };
+        let mut host = PluginHost { shared: &self.shared, cx: &self.cx, values: self.shared.values(), view };
         egui::CentralPanel::default().show(root, |ui| scyeq_ui::show(ui, &mut host, &mut self.state));
         if host.view.instances {
             let ctx = root.ctx().clone();
@@ -77,7 +74,6 @@ struct PluginHost<'a> {
     cx: &'a GuiContext,
     values: Vec<f64>,
     view: ViewState,
-    picking: &'a mut Option<Receiver<Option<PathBuf>>>,
 }
 
 impl EqHost for PluginHost<'_> {
@@ -168,15 +164,16 @@ impl EqHost for PluginHost<'_> {
     /// thread when it closes the window; on Windows the dialog's modal loop would paint the
     /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        keep_loaded();
-        if self.picking.is_none() {
-            *self.picking = Some(start_pick(file_dialog()));
+        let kept = keep_loaded();
+        self.shared.set_pick_refused(!kept);
+        if kept {
+            pick(self.shared.picking(), file_dialog);
         }
         None
     }
 
     fn picked_reference(&mut self) -> Option<PathBuf> {
-        take_picked(self.picking)
+        take_picked(&mut self.shared.picking().lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
@@ -236,18 +233,6 @@ impl InstanceList for Instances<'_> {
         self.find(id).map(|s| s.values())
     }
 
-    fn instance_enabled(&self, _id: egui::Id) -> bool {
-        true
-    }
-
-    fn toggle_instance_bypass(&mut self, _id: egui::Id) {}
-
-    fn instance_open(&self, id: egui::Id) -> bool {
-        self.all.first().is_some_and(|me| registry::id_of(me) == id)
-    }
-
-    fn toggle_instance_open(&mut self, _id: egui::Id) {}
-
     fn begin_instance(&mut self, id: egui::Id, param: u32) {
         let Some(cx) = self.cx_of(id) else { return };
         if let Some((unfinished, unfinished_param)) = self.gesture.take() {
@@ -268,10 +253,6 @@ impl InstanceList for Instances<'_> {
         cx.end(param);
         *self.gesture = None;
     }
-
-    fn controls_instances(&self) -> bool {
-        false
-    }
 }
 
 /// Sets `id` on `shared` through its context, so the host records it; solo and audition, which
@@ -284,26 +265,57 @@ fn set(shared: &ScyEqShared, cx: &GuiContext, id: u32, value: f64) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Made in the frame, so it belongs to the window the user just clicked in, and shown on the
+/// pick's thread.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
+    let mut dialog = rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+    if let Some(owner) = owner::active() {
+        dialog = dialog.set_parent(&owner);
+    }
+    move || dialog.pick_file()
+}
+
+/// Without an owner: the owner would be on the editor's thread and the dialog on the pick's,
+/// and a modal dialog across threads disables the host's window from the outside.
+#[cfg(windows)]
 fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
     || rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
 }
 
-/// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet,
-/// it returns at once, and its answer is waited for on the pick's thread.
+/// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet on
+/// the window the user just clicked in, it returns at once, and its answer is waited for on the
+/// pick's thread.
 #[cfg(target_os = "macos")]
 fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
-    let picked = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file();
+    let mut dialog = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+    if let Some(owner) = owner::active() {
+        dialog = dialog.set_parent(&owner);
+    }
+    let picked = dialog.pick_file();
     move || block_on(picked).map(|file| file.path().to_path_buf())
 }
 
-/// Runs `dialog` on a thread of its own; its answer arrives through the receiver.
-fn start_pick(dialog: impl FnOnce() -> Option<PathBuf> + Send + 'static) -> Receiver<Option<PathBuf>> {
-    let (tx, rx) = mpsc::channel();
+/// Opens the dialog `open` makes, unless the instance's last one is still open: an editor
+/// closed and opened again meanwhile takes that one's answer rather than open a second.
+fn pick<D>(picking: &Mutex<Option<Receiver<Option<PathBuf>>>>, open: impl FnOnce() -> D)
+where
+    D: FnOnce() -> Option<PathBuf> + Send + 'static,
+{
+    let answer = {
+        let mut picking = picking.lock().unwrap_or_else(|e| e.into_inner());
+        if picking.is_some() {
+            return;
+        }
+        let (answer, receiver) = mpsc::channel();
+        *picking = Some(receiver);
+        answer
+    };
+    // Should `open` panic, the dropped sender ends the pick.
+    let dialog = open();
     std::thread::spawn(move || {
-        let _ = tx.send(dialog());
+        let _ = answer.send(dialog());
     });
-    rx
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -339,32 +351,37 @@ fn take_picked(picking: &mut Option<Receiver<Option<PathBuf>>>) -> Option<PathBu
 
 /// A reference file for EQ Match, decoded as Scythe decodes it.
 fn load_reference(path: &Path) -> Result<ReferenceAudio, String> {
-    let audio = scythe_decode::decode(path, false).map_err(|e| e.to_string())?;
+    let audio = scythe_decode::decode_reference(path).map_err(|e| e.to_string())?;
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 
 /// Keeps this library loaded until the process ends. The file dialog and the reference decode
 /// run on threads that cannot be stopped or waited for (the dialog stays open as long as the
 /// user leaves it), so a host that unloads the plugin meanwhile must not unmap their code.
-/// Called before either starts.
-fn keep_loaded() {
-    static PINNED: Once = Once::new();
-    PINNED.call_once(|| unsafe { pin(keep_loaded as *const ()) });
+/// Called before either starts, which they do only once it is kept: false until then.
+fn keep_loaded() -> bool {
+    static PINNED: AtomicBool = AtomicBool::new(false);
+    if !PINNED.load(Ordering::Acquire) && unsafe { pin(keep_loaded as *const ()) } {
+        PINNED.store(true, Ordering::Release);
+    }
+    PINNED.load(Ordering::Acquire)
 }
 
+/// Keeps the library that holds `code` loaded for good; false when it could not.
 #[cfg(unix)]
-unsafe fn pin(code: *const ()) {
+pub(crate) unsafe fn pin(code: *const ()) -> bool {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
-        if libc::dladdr(code.cast(), &mut info) != 0 && !info.dli_fname.is_null() {
-            // Never closed: with RTLD_NODELETE the library outlives every dlclose.
-            libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NODELETE);
+        if libc::dladdr(code.cast(), &mut info) == 0 || info.dli_fname.is_null() {
+            return false;
         }
+        // Never closed: with RTLD_NODELETE the library outlives every dlclose.
+        !libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NODELETE).is_null()
     }
 }
 
 #[cfg(windows)]
-unsafe fn pin(code: *const ()) {
+pub(crate) unsafe fn pin(code: *const ()) -> bool {
     use windows_sys::Win32::System::LibraryLoader::{
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
     };
@@ -374,7 +391,7 @@ unsafe fn pin(code: *const ()) {
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
             code.cast(),
             &mut module,
-        );
+        ) != 0
     }
 }
 
@@ -416,6 +433,36 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_keeps_its_first_two_channels() {
+        let path = std::env::temp_dir().join(format!("scyeq-plugin-quad-{}.wav", std::process::id()));
+        std::fs::write(&path, wav(48_000, 4, &[16384, -16384, 8192, 4096])).unwrap();
+        let audio = load_reference(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(audio.unwrap().channels, vec![vec![0.5], vec![-0.5]]);
+    }
+
+    #[test]
+    fn an_ogg_opus_reference_decodes() {
+        use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead};
+        let path = std::env::temp_dir().join(format!("scyeq-plugin-reference-{}.ogg", std::process::id()));
+        let tone: Vec<f32> = (0..9600).map(|i| 0.5 * (i as f32 * 0.05).sin()).collect();
+        let mut encoder = OpusEncoder::new(48_000, 1, Application::Audio).unwrap();
+        let head = OpusHead::for_encoder(&encoder, 48_000);
+        let mut writer = OggOpusWriter::new(std::fs::File::create(&path).unwrap(), head).unwrap();
+        let mut packet = vec![0u8; MAX_PACKET_BYTES];
+        for block in tone.as_chunks::<960>().0 {
+            let n = encoder.encode(block, 960, &mut packet).unwrap();
+            writer.write_packet(&packet[..n]).unwrap();
+        }
+        writer.finish().unwrap();
+        let audio = load_reference(&path);
+        std::fs::remove_file(&path).unwrap();
+        let audio = audio.unwrap();
+        assert_eq!((audio.sample_rate, audio.channels.len()), (48_000, 1));
+        assert!(audio.channels[0].iter().any(|s| s.abs() > 0.25));
+    }
+
+    #[test]
     fn a_file_that_is_no_audio_is_an_error() {
         let path = std::env::temp_dir().join(format!("scyeq-plugin-not-audio-{}.wav", std::process::id()));
         std::fs::write(&path, b"not audio").unwrap();
@@ -451,15 +498,48 @@ mod tests {
         assert!(picking.is_none());
     }
 
+    /// The dialog outlives the editor that opened it: the instance's next editor waits for its
+    /// answer instead of opening a second dialog.
+    #[test]
+    fn an_editor_opened_again_takes_the_open_dialogs_answer() {
+        let (_plugin, shared) = <crate::ScyEqPlugin as plugin_format::Plugin>::new();
+        let (release, wait) = mpsc::channel::<()>();
+        pick(shared.picking(), || {
+            move || {
+                wait.recv().unwrap();
+                Some(PathBuf::from("/music/reference.wav"))
+            }
+        });
+        let mut second = false;
+        pick(shared.picking(), || {
+            second = true;
+            || None
+        });
+        assert!(!second, "a second dialog opened");
+        release.send(()).unwrap();
+        let picked = loop {
+            if let Some(path) = take_picked(&mut shared.picking().lock().unwrap()) {
+                break path;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(picked, PathBuf::from("/music/reference.wav"));
+    }
+
     #[test]
     fn a_pick_runs_on_a_thread_of_its_own() {
         let (release, wait) = mpsc::channel::<()>();
         let caller = std::thread::current().id();
-        let mut picking = Some(start_pick(move || {
-            assert_ne!(std::thread::current().id(), caller);
-            wait.recv().unwrap();
-            Some(PathBuf::from("/music/reference.wav"))
-        }));
+        let slot = Mutex::new(None);
+        pick(&slot, || {
+            assert!(slot.try_lock().is_ok(), "the dialog is made with the pick locked");
+            move || {
+                assert_ne!(std::thread::current().id(), caller);
+                wait.recv().unwrap();
+                Some(PathBuf::from("/music/reference.wav"))
+            }
+        });
+        let mut picking = slot.into_inner().unwrap();
         assert_eq!(take_picked(&mut picking), None, "the dialog is still open");
         release.send(()).unwrap();
         let picked = loop {
@@ -492,11 +572,5 @@ mod tests {
             std::task::Poll::Pending
         });
         assert_eq!(block_on(future), 7);
-    }
-
-    #[test]
-    fn keeping_the_library_loaded_can_be_asked_again() {
-        keep_loaded();
-        keep_loaded();
     }
 }

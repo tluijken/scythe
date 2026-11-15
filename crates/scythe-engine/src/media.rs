@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +45,9 @@ fn decode_audio(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
         Some("opus") => decode_opus(path),
         Some("wv") => decode_with_ffmpeg(path),
         Some("rpp") => decode_subproject(path),
-        _ => decode(path, gapless).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) }),
+        _ => {
+            decode(path, gapless).or_else(|e| if scythe_decode::is_ogg_opus(path) { decode_opus(path) } else { Err(e) })
+        }
     }
 }
 
@@ -100,54 +101,9 @@ fn extension(path: &Path) -> Option<String> {
     path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase)
 }
 
-fn is_ogg_opus(path: &Path) -> bool {
-    use std::io::Read;
-    let mut head = [0u8; 64];
-    let n = File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
-    head[..n].starts_with(b"OggS") && head[..n].windows(8).any(|w| w == b"OpusHead")
-}
-
-/// An Ogg Opus file decoded at 48 kHz the way REAPER plays it: the header's pre-skip and the
-/// last page's end trim are applied, its output gain too, and surround streams keep the Vorbis
-/// channel order of the file.
+/// An Ogg Opus file decoded at 48 kHz the way REAPER plays it (`scythe_decode::decode_opus`).
 fn decode_opus(path: &Path) -> Result<AudioData, MediaError> {
-    use opus_pure::{MAX_PACKET_SAMPLES, OggOpusReader, OpusMSDecoder, Trim};
-    let decode_err = |e: opus_pure::Error| MediaError::Decode { path: path.to_owned(), message: e.to_string() };
-    let file = File::open(path).map_err(|source| MediaError::Open { path: path.to_owned(), source })?;
-    let mut reader = OggOpusReader::new(std::io::BufReader::new(file)).map_err(decode_err)?;
-    let head = reader.head().clone();
-    let nch = usize::from(head.channel_count);
-    let mut trim = Trim::new(&head, 48_000, nch).map_err(decode_err)?;
-    let mut buf = vec![0f32; MAX_PACKET_SAMPLES * nch];
-    let mut channels = vec![Vec::new(); nch];
-    let mut keep = |packet: &opus_pure::OggPacket, decoded: &[f32]| {
-        for frame in trim.keep(packet, decoded).chunks_exact(nch) {
-            for (dst, s) in channels.iter_mut().zip(frame) {
-                dst.push(*s);
-            }
-        }
-    };
-    if head.mapping_family == 0 {
-        let mut decoder = head.decoder(48_000).map_err(decode_err)?;
-        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
-            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
-            keep(&packet, &buf[..n * nch]);
-        }
-    } else {
-        let mut decoder = OpusMSDecoder::new(48_000, nch, head.mapping_family).map_err(decode_err)?;
-        for d in decoder.streams_mut() {
-            d.gain_q8 = i32::from(head.output_gain_q8);
-        }
-        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
-            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
-            keep(&packet, &buf[..n * nch]);
-        }
-    }
-    drop(keep);
-    if channels.first().is_none_or(Vec::is_empty) {
-        return Err(MediaError::Decode { path: path.to_owned(), message: "stream contains no audio".into() });
-    }
-    Ok(AudioData { sample_rate: 48_000, channels })
+    from_decoded(path, scythe_decode::decode_opus(path))
 }
 
 /// The first audio stream of a video or WavPack file, decoded by the `ffmpeg` command-line tool.
@@ -184,7 +140,14 @@ pub fn decode_gapless(path: &Path) -> Result<AudioData, MediaError> {
 }
 
 fn decode(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
-    match scythe_decode::decode(path, gapless) {
+    from_decoded(path, scythe_decode::decode(path, gapless))
+}
+
+fn from_decoded(
+    path: &Path,
+    decoded: Result<scythe_decode::Audio, scythe_decode::Error>,
+) -> Result<AudioData, MediaError> {
+    match decoded {
         Ok(audio) => Ok(AudioData { sample_rate: audio.sample_rate, channels: audio.channels }),
         Err(scythe_decode::Error::Open(source)) => Err(MediaError::Open { path: path.to_owned(), source }),
         Err(scythe_decode::Error::Decode(message)) => Err(MediaError::Decode { path: path.to_owned(), message }),

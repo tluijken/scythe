@@ -396,3 +396,77 @@ fn a_value_outside_the_range_is_saved_as_stored() {
     assert!(close(plugin.value(freq), max), "the host and the sound see it clamped");
     assert!(plugin.save() == state, "a newer version's wider range survives this one");
 }
+
+/// The interfaces a host keeps of a plugin.
+type Held = (ComPtr<IComponent>, ComPtr<IAudioProcessor>, ComPtr<IEditController>);
+
+/// A host that sets the plugin up again from inside `restartComponent(kLatencyChanged)`, and
+/// what it saw meanwhile.
+#[derive(Default)]
+struct Reactivating {
+    restarts: RefCell<Vec<int32>>,
+    latencies: RefCell<Vec<uint32>>,
+    plugin: RefCell<Option<Held>>,
+}
+
+impl Class for Reactivating {
+    type Interfaces = (IComponentHandler,);
+}
+
+impl IComponentHandlerTrait for Reactivating {
+    unsafe fn beginEdit(&self, _: ParamID) -> tresult {
+        kResultOk
+    }
+    unsafe fn performEdit(&self, _: ParamID, _: ParamValue) -> tresult {
+        kResultOk
+    }
+    unsafe fn endEdit(&self, _: ParamID) -> tresult {
+        kResultOk
+    }
+    unsafe fn restartComponent(&self, flags: int32) -> tresult {
+        self.restarts.borrow_mut().push(flags);
+        let plugin = self.plugin.borrow().clone();
+        if flags & RestartFlags_::kLatencyChanged as int32 != 0
+            && let Some((component, processor, controller)) = plugin
+        {
+            unsafe {
+                processor.setProcessing(0);
+                assert_eq!(component.setActive(0), kResultOk);
+                self.latencies.borrow_mut().push(processor.getLatencySamples());
+                controller.getParamNormalized(params::GLOBAL + params::global::PHASE);
+                assert_eq!(component.setActive(1), kResultOk);
+                processor.setProcessing(1);
+            }
+        }
+        kResultOk
+    }
+}
+
+/// The latency change announced from `getParamNormalized` reaches a host that reactivates the
+/// plugin right away, inside the call: once, with the new latency, and the plugin plays on.
+#[test]
+fn a_host_may_reactivate_from_inside_a_latency_restart() {
+    use RestartFlags_::kLatencyChanged;
+    let _turn = turn();
+    let plugin = Instance::new();
+    let host = ComWrapper::new(Reactivating::default());
+    *host.plugin.borrow_mut() = Some((plugin.component.clone(), plugin.processor.clone(), plugin.controller.clone()));
+    let handler = host.to_com_ptr::<IComponentHandler>().unwrap();
+    assert_eq!(unsafe { plugin.controller.setComponentHandler(handler.as_ptr()) }, kResultOk);
+    plugin.activate(48_000.0, 256);
+    let phase = params::GLOBAL + params::global::PHASE;
+    unsafe {
+        let linear = plugin.controller.plainParamToNormalized(phase, 2.0);
+        assert_eq!(plugin.controller.setParamNormalized(phase, linear), kResultOk);
+    }
+    plugin.run(&cases::noise(1024, 3), 256);
+    assert!(close(plugin.value(phase), 2.0));
+    let latency_restarts = host.restarts.borrow().iter().filter(|f| **f & kLatencyChanged as int32 != 0).count();
+    assert_eq!(latency_restarts, 1, "{:?}", host.restarts.borrow());
+    assert_eq!(*host.latencies.borrow(), [2048]);
+    assert_eq!(unsafe { plugin.processor.getLatencySamples() }, 2048);
+    let out = plugin.run(&cases::noise(4096, 5), 256);
+    assert!(out.iter().all(|s| s.is_finite()) && out[2048..].iter().any(|s| *s != 0.0));
+    *host.plugin.borrow_mut() = None;
+    plugin.deactivate();
+}

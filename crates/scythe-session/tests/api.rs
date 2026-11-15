@@ -932,12 +932,13 @@ fn count_in_and_metronome_settings() {
     assert_eq!((st["playing"].clone(), st["count_in"]["position"].clone()), (json!(true), Value::Null));
     ok(&mut s, json!({"cmd": "transport.stop"}));
 
-    // At 120 bpm one 4/4 bar is two seconds; the playhead waits at the cursor meanwhile.
+    // At 120 bpm one 4/4 bar is two seconds, padded to whole blocks of the null device; the
+    // playhead waits at the cursor meanwhile.
     ok(&mut s, json!({"cmd": "transport.metronome", "enabled": true}));
     let st = ok(&mut s, json!({"cmd": "transport.play"}));
     assert_eq!(st["playing"], true);
     let position = st["count_in"]["position"].as_f64().unwrap();
-    assert!((-2.0..=-1.5).contains(&position), "{position}");
+    assert!((-2.02..=-1.5).contains(&position), "{position}");
     assert_eq!(st["count_in"]["beats"], 4);
     assert_eq!(st["position"], 3.0);
     std::thread::sleep(Duration::from_millis(150));
@@ -989,6 +990,16 @@ fn preroll_and_count_in_preferences() {
     assert!((-2.0..=-1.8).contains(&lead), "{lead}");
     assert_eq!(st["position"], 0.0);
     ok(&mut s, json!({"cmd": "transport.stop"}));
+
+    // A recording's pre-roll lasts whole blocks of the device, so the recording starts on a
+    // block's first frame: from 5 s, 144000 frames, it becomes 282 of the null device's 512.
+    ok(&mut s, json!({"cmd": "transport.preroll", "record": true}));
+    let until = s.start_playback(5.0, true, false);
+    assert!((until - 144_384.0 / 48_000.0).abs() < 1e-9, "{until}");
+    assert!((s.engine.transport().position_seconds() - (5.0 - until)).abs() < 1e-6);
+    s.stop();
+    assert!((s.start_playback(5.0, false, false) - 3.0).abs() < 1e-9, "playback is not padded");
+    s.stop();
 
     let mut reloaded = session();
     reloaded.load_preferences(file);
@@ -2335,8 +2346,53 @@ fn clap_parameter_envelopes_are_stored_as_reaper_stores_them() {
     ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
     ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
     let text = scythe_core::rpp::project_to_rpp(&s.project);
-    assert!(text.contains("<PARMENV 1:9 0 4 "), "the boost's index and id, and its range: {text}");
+    assert!(text.contains("<PARMENV 1:9 0 4 2 "), "the boost's index and id, its range and its middle: {text}");
     assert!(text.contains("PT 1 3 "), "{text}");
+}
+
+/// An envelope made on an offline CLAP slot spans the parameter's own range too: on 0..1 it
+/// would read as one an older Scythe stored and be converted again on the next load.
+#[test]
+fn clap_parameter_envelopes_on_offline_slots_span_the_parameters_range() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let source = add_track(&mut s, "Source");
+    ok(&mut s, json!({"cmd": "fx.add", "track": source, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": source, "plugin": "builtin:scythe-eq"}));
+    let mut slots = s.project.tracks[0].fx.clone();
+    slots.iter_mut().for_each(|slot| slot.set_offline(true));
+    let t = add_track(&mut s, "Gtr");
+    s.edit("Offline effects", |p| p.tracks[1].fx = slots);
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:1:2", "time": 1.0, "value": 440.0}));
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PARMENV 1:9 0 4 2 "), "the boost's range: {text}");
+    assert!(text.contains("<PARMENV 2:2 10 30000 15005 "), "the band's frequency range: {text}");
+}
+
+/// Modulation and learn on a CLAP plugin's parameter name it by index and id, as REAPER does,
+/// so they stay on the parameter if the plugin lists its parameters in another order.
+#[test]
+fn clap_parameter_modulation_and_learn_are_named_by_id() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 0, "param": 1, "base": 2.0}));
+    ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 1, "param": 2, "base": 440.0}));
+    ok(
+        &mut s,
+        json!({"cmd": "fx.learn.set", "track": t, "index": 0, "param": 0, "midi": {"type": "cc", "number": 7, "channel": 1}}),
+    );
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PROGRAMENV 1:9 0"), "{text}");
+    assert!(text.contains("<PROGRAMENV 2:2 0"), "{text}");
+    assert!(text.contains("PARMLEARN 0:7 "), "{text}");
 }
 
 /// A Scythe project from before the format revision holds the boost's envelope and modulation
@@ -2388,6 +2444,23 @@ fn an_old_project_s_clap_automation_moves_to_the_parameters_units_when_it_opens(
     s.open_path(&reaper).unwrap();
     let before = scythe_core::rpp::read_project(&reaper).unwrap();
     assert_eq!(s.project.tracks[0].fx, before.tracks[0].fx, "REAPER's own file stays as it is");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Opening an older Scythe's project whose CLAP plugin is missing tells which effects' modulation
+/// stays as stored, as nothing marks it as old once the project is saved.
+#[test]
+fn an_old_project_tells_the_modulation_a_missing_plugin_leaves_as_stored() {
+    let mut s = session();
+    let text = "<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 0\n  <TRACK\n    NAME Gtr\n    <FXCHAIN\n      BYPASS 0 0 0\n      <CLAP \"CLAP: Gone (Nobody)\" org.nobody.gone \"\"\n        CFG 4 0 0 \"\"\n      >\n      FXID {11111111-2222-3333-4444-555555555555}\n      <PROGRAMENV 1 0 \"Boost\"\n        PARAMBASE 0.5\n        LFO 1\n      >\n      WAK 0 0\n    >\n  >\n>\n";
+    let dir = std::env::temp_dir().join(format!("scythe-clap-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("old.RPP");
+    std::fs::write(&path, text).unwrap();
+    s.take_notices();
+    s.open_path(&path).unwrap();
+    let notices = s.take_notices();
+    assert!(notices.iter().any(|n| n.starts_with("Modulation of CLAP: Gone (Nobody) stays")), "{notices:?}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

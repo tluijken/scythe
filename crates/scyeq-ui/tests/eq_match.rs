@@ -225,3 +225,44 @@ fn a_host_that_forgets_gone_sources_drops_the_reference() {
 fn a_gone_source_stays_selected_by_default() {
     assert_eq!(reference_after_bass_goes(false), (true, true));
 }
+
+/// How many dots of `color` the last frame drew.
+fn dots(h: &Harness<(Offers, EditorState)>, [r, g, b]: [u8; 3]) -> usize {
+    fn count(shape: &egui::Shape, color: egui::Color32) -> usize {
+        match shape {
+            egui::Shape::Circle(c) => (c.fill == color) as usize,
+            egui::Shape::Vec(shapes) => shapes.iter().map(|s| count(s, color)).sum(),
+            _ => 0,
+        }
+    }
+    h.output().shapes.iter().map(|s| count(&s.shape, egui::Color32::from_rgb(r, g, b))).sum()
+}
+
+/// The reference chosen shows its track's colour, as the compare choice beside it does.
+#[test]
+fn the_chosen_reference_shows_its_colour() {
+    let host = Offers {
+        eq: ScytheEq::new(48_000),
+        view: ViewState::default(),
+        offered: true,
+        forgets: false,
+        asked: Default::default(),
+    };
+    let mut h = Harness::builder()
+        .with_size(vec2(1180.0, 680.0))
+        .with_step_dt(1.0 / 30.0)
+        .with_context_setup(scyeq_ui::theme::install)
+        .build_ui_state(
+            |ui, (host, state): &mut (Offers, EditorState)| scyeq_ui::show(ui, host, state),
+            (host, EditorState::default()),
+        );
+    h.step();
+    h.get_by_label("Match").click();
+    h.run_steps(2);
+    h.get_by_value("Choose…").click();
+    h.run_steps(2);
+    h.get_by_label("Bass (ScyEQ-Pro)").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Compare Bass (ScyEQ-Pro)").is_some(), "compared too");
+    assert_eq!(dots(&h, [40, 200, 40]), 2, "on the compare choice and the reference");
+}

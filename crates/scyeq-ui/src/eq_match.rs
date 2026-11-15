@@ -198,6 +198,12 @@ fn match_body(
                 f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().into_owned())
             }
         };
+        if let Target::Source(source) = &panel.reference
+            && let Some(color) = source.color
+        {
+            let (dot, _) = ui.allocate_exact_size(vec2(8.0, 8.0), egui::Sense::hover());
+            widgets::color_dot(ui.painter(), dot.center(), color);
+        }
         egui::ComboBox::from_id_salt(cx.salt.with("eq-match-ref")).selected_text(current).show_ui(ui, |ui| {
             for o in others {
                 if reference_entry(ui, panel.reference == Target::Source(o.clone()), o).clicked() {

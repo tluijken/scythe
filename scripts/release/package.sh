@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds Scythe (scythe-app, scythe-server and scythe-mcp) in release, without the asio feature,
-# and packs it with the licenses (notices.sh) into <out dir>, as release.yml publishes it:
+# and packs it with the licenses (notices.sh) into <out dir>, as release.yml publishes it, its
+# Linux and macOS programs stripped of their symbols (an MSVC build keeps them apart already):
 #   Linux    scythe-<version>-linux-<arch>.tar.gz
 #   Windows  scythe-<version>-windows-x86_64.msi, made by cargo-wix with WiX 3 from
 #            crates/scythe-app/wix/main.wxs, and scythe-<version>-windows-x86_64.zip
@@ -30,6 +31,7 @@ case "$(uname -s)" in
         mkdir -p "$stage/$name"
         for bin in "${bins[@]}"; do
             cp "$target_dir/release/$bin" "$stage/$name/"
+            strip "$stage/$name/$bin"
         done
         "$here/notices.sh" "$stage/$name" scythe-app linux
         tar -C "$stage" -czf "$out/$name.tar.gz" "$name"
@@ -52,13 +54,17 @@ case "$(uname -s)" in
         ;;
     Darwin)
         name=scythe-$version-macos-universal
+        # Apple silicon's first macOS, for the Intel half too, so the bundle states one minimum.
+        export MACOSX_DEPLOYMENT_TARGET=11.0
         cargo build --release --locked "${packages[@]}" --target aarch64-apple-darwin --target x86_64-apple-darwin
         app=$stage/$name/Scythe.app
-        mkdir -p "$app/Contents/MacOS"
+        mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+        sips -s format icns crates/scythe-app/assets/icon.png --out "$app/Contents/Resources/Scythe.icns" >/dev/null
         for bin in "${bins[@]}"; do
             lipo -create -output "$app/Contents/MacOS/$bin" \
                 "$target_dir/aarch64-apple-darwin/release/$bin" \
                 "$target_dir/x86_64-apple-darwin/release/$bin"
+            strip -x "$app/Contents/MacOS/$bin"
         done
         cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -69,6 +75,8 @@ case "$(uname -s)" in
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>scythe-app</string>
+    <key>CFBundleIconFile</key>
+    <string>Scythe</string>
     <key>CFBundleIdentifier</key>
     <string>com.scythe.scythe</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -81,6 +89,8 @@ case "$(uname -s)" in
     <string>$version</string>
     <key>CFBundleVersion</key>
     <string>$version</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>$MACOSX_DEPLOYMENT_TARGET</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>

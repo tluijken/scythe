@@ -127,8 +127,23 @@ fn unit_dir() -> Option<PathBuf> {
     scythe_core::paths::config_home().map(|c| c.join("systemd").join("user"))
 }
 
+/// Where a systemd user unit does something: Linux. Elsewhere the file would only sit there.
+fn has_systemd(os: &str) -> Result<(), String> {
+    let os = match os {
+        "linux" => return Ok(()),
+        "macos" => "macOS",
+        "windows" => "Windows",
+        other => other,
+    };
+    Err(format!(
+        "--install-service writes a systemd user unit, which {os} does not run; start scythe-server \
+         from {os}'s own service manager instead"
+    ))
+}
+
 /// Writes the user unit for `args` and says how to enable it.
 pub fn install(args: &[String], options: &Options) -> Result<(), String> {
+    has_systemd(std::env::consts::OS)?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let args = service_args(args, &cwd);
@@ -255,6 +270,16 @@ pub fn status_text(hello: &Value, health: &Value, transport: &Value, setlist: &V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_unit_is_written_only_where_systemd_runs() {
+        assert_eq!(has_systemd("linux"), Ok(()));
+        for (os, name) in [("macos", "macOS"), ("windows", "Windows"), ("freebsd", "freebsd")] {
+            let refused = has_systemd(os).unwrap_err();
+            assert!(refused.contains("systemd") && refused.contains(name), "{refused}");
+            assert!(name == os || !refused.contains(os), "{refused}");
+        }
+    }
 
     #[test]
     fn the_unit_restarts_on_failure_within_the_user_limits() {

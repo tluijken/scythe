@@ -473,7 +473,10 @@ pub const ALL_PORTS: u8 = u8::MAX;
 /// The audio callback's end of the queue to the MIDI sender. A block rendered late, in a burst
 /// that works off a stall, is stamped with a "heard" instant before what earlier blocks
 /// queued, so its messages would overtake theirs; they are held back to the latest due
-/// instant of the earlier blocks instead, which keeps them in order.
+/// instant of the earlier blocks instead, which keeps them in order. The hold reaches no
+/// further than the end of the block being stamped: after a latency reading that drops (or
+/// was bogus) earlier messages are due far ahead, and holding every port's later messages to
+/// them would silence the outputs that long.
 pub struct OutQueue {
     tx: rtrb::Producer<OutMessage>,
     floor: Option<std::time::Instant>,
@@ -485,9 +488,9 @@ impl OutQueue {
         Self { tx, floor: None, latest: None }
     }
 
-    /// Starts the messages of the next block.
-    pub fn next_block(&mut self) {
-        self.floor = self.latest;
+    /// Starts the messages of the next block, heard from `heard` for `length`.
+    pub fn next_block(&mut self, heard: std::time::Instant, length: std::time::Duration) {
+        self.floor = self.latest.map(|l| l.min(heard + length));
     }
 
     pub fn push(&mut self, mut m: OutMessage) -> Result<(), rtrb::PushError<OutMessage>> {
@@ -695,15 +698,33 @@ mod tests {
         let mut q = OutQueue::new(tx);
         let t = std::time::Instant::now();
         let ms = std::time::Duration::from_millis;
-        q.next_block();
+        q.next_block(t, ms(10));
         q.push(OutMessage::new(t + ms(9), 0, &[0xf1, 0x10])).unwrap();
         // Rendered right after the first block instead of a block later.
-        q.next_block();
+        q.next_block(t + ms(1), ms(10));
         q.push(OutMessage::new(t + ms(8), 0, &[0xf1, 0x20])).unwrap();
         q.push(OutMessage::new(t + ms(10), 0, &[0xf1, 0x30])).unwrap();
-        q.next_block();
+        q.next_block(t + ms(20), ms(10));
         q.push(OutMessage::new(t + ms(30), 0, &[0xf1, 0x40])).unwrap();
         let due: Vec<_> = std::iter::from_fn(|| rx.pop().ok()).map(|m| m.due - t).collect();
         assert_eq!(due, [ms(9), ms(9), ms(10), ms(30)]);
+    }
+
+    /// A latency reading that drops leaves the messages queued before it due far ahead; the
+    /// next blocks' messages are held no further than their own block's end.
+    #[test]
+    fn a_latency_drop_holds_later_messages_one_block_at_most() {
+        let (tx, mut rx) = rtrb::RingBuffer::<OutMessage>::new(16);
+        let mut q = OutQueue::new(tx);
+        let t = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        q.next_block(t + ms(500), ms(10));
+        q.push(OutMessage::new(t + ms(505), 0, &[0x90, 60, 100])).unwrap();
+        q.next_block(t + ms(10), ms(10));
+        q.push(OutMessage::new(t + ms(12), 1, &[0x90, 62, 100])).unwrap();
+        q.next_block(t + ms(20), ms(10));
+        q.push(OutMessage::new(t + ms(22), 1, &[0x90, 64, 100])).unwrap();
+        let due: Vec<_> = std::iter::from_fn(|| rx.pop().ok()).map(|m| m.due - t).collect();
+        assert_eq!(due, [ms(505), ms(20), ms(30)]);
     }
 }

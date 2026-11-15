@@ -14,6 +14,7 @@ pub mod widgets;
 
 pub use editor::{EditorState, show};
 pub use host::{
-    CompareSource, DecodeFn, EqHost, Instance, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec,
+    CompareSource, DecodeFn, EqHost, Instance, InstanceControls, InstanceList, ReferenceAudio, ViewState, WindowFn,
+    WindowSpec,
 };
 pub use instances::instances_window;

@@ -182,6 +182,9 @@ struct Band {
     /// The mix at the start of the current grid cell.
     mix_from: f64,
     detector: Detector,
+    /// The detector ran in the last block; a band that starts detecting starts afresh. Judged per
+    /// block, not per change, so values set one by one or all at once between two blocks agree.
+    detecting: bool,
     dynamic_db: f64,
     solo: Cascade,
     solo_state: [CascadeState; 2],
@@ -344,8 +347,8 @@ impl ScytheEq {
         self.fs
     }
 
-    pub fn meters(&self) -> Arc<Meters> {
-        self.meters.clone()
+    pub fn meters(&self) -> &Arc<Meters> {
+        &self.meters
     }
 
     pub fn band(&self, b: usize) -> BandSettings {
@@ -389,7 +392,7 @@ impl ScytheEq {
             || self.fir.is_some() == (mode == PhaseMode::ZeroLatency);
         let was_zero = self.fir.is_none();
         let mut old_fir = None;
-        if mode != self.mode || (mode == PhaseMode::Linear && resolution != self.resolution) || self.fir.is_none() {
+        if core_change {
             self.mode = mode;
             self.resolution = resolution;
             let fir = match mode {
@@ -399,7 +402,7 @@ impl ScytheEq {
             old_fir = std::mem::replace(&mut self.fir, fir);
             for b in &mut self.bands {
                 b.detector.reset();
-                if core_change && mode == PhaseMode::ZeroLatency {
+                if mode == PhaseMode::ZeroLatency {
                     b.state.iter_mut().for_each(CascadeState::reset);
                 }
             }
@@ -438,7 +441,11 @@ impl ScytheEq {
             let latency =
                 self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency());
             let o = &mut *self.outgoing;
-            o.fir = old_fir;
+            // A spectral switch keeps an earlier mode switch's FIR path rather than free it on
+            // the audio thread; only a mode switch, which builds a path there anyway, lets it go.
+            if core_change {
+                o.fir = old_fir;
+            }
             o.zero = core_change && was_zero;
             o.shared = !core_change;
             o.spectral = old_spectral;
@@ -603,7 +610,11 @@ impl ScytheEq {
             let band = &mut self.bands[b];
             if !(s.active() && s.dynamic == 1) {
                 band.dynamic_db = 0.0;
+                band.detecting = false;
                 continue;
+            }
+            if !std::mem::replace(&mut band.detecting, true) {
+                band.detector.reset();
             }
             // A dynamic cut listens to what it removes.
             let listen = match s.design.shape {
@@ -943,7 +954,7 @@ impl ScytheEq {
                     o.out[c][..n].copy_from_slice(&self.buf[c][..n]);
                     self.buf[c][..n].copy_from_slice(&self.inp[c][..n]);
                 }
-            } else if fading {
+            } else if fading && !self.outgoing.shared {
                 let o = &mut *self.outgoing;
                 if let Some(fir) = o.fir.as_deref_mut() {
                     for i in 0..n {

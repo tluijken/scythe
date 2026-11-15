@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
-      PLUGIN_FORMAT_TAG: v0.1.1
+      PLUGIN_FORMAT_TAG: v0.1.2
     steps:
       - uses: actions/checkout@v4
       # bundle.sh and validate.sh, at the tag scyeq-plugin depends on.
@@ -45,9 +45,12 @@ jobs:
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      # A prebuilt binary or nothing: without `fallback: none` an unsupported platform would
+      # silently fetch the tool through cargo-binstall instead.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.0
+          fallback: none
       - name: Version
         shell: bash
         run: echo "VERSION=$(cargo pkgid -p scyeq-plugin | sed -e 's/.*[#@]//')" >> "$GITHUB_ENV"
@@ -97,8 +100,9 @@ jobs:
           else
             (cd bundle && zip -r -y "../$zip_name.zip" "${files[@]}")
           fi
-      - uses: actions/upload-artifact@v4
+      # The zip itself as the artifact, not zipped once more.
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}.zip
+          archive: false
           if-no-files-found: error

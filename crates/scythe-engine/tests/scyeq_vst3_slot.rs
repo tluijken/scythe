@@ -1,8 +1,6 @@
 //! A ScyEQ-Pro that REAPER keeps as the VST3 plugin runs in Scythe as the built-in EQ and is
 //! saved back in the same `<VST` block.
 
-use std::path::PathBuf;
-
 use scythe_core::rpp::{Node, project_from_rpp, project_to_rpp};
 use scythe_core::{FxSlot, Project, Track};
 use scythe_engine::fx::{FxRegistry, FxStatus, vst3_slot};
@@ -12,19 +10,10 @@ use scythe_engine::scythe_eq::{self, ScytheEq};
 use scythe_engine::vst2::ReaperVstState;
 use scythe_engine::vst3_host;
 
-const RATE: u32 = 48_000;
+#[path = "../../scyeq-plugin/tests/built/library.rs"]
+mod library;
 
-/// The nearest plugin library above the test: beside it in `deps` with cargo's old build layout,
-/// otherwise the one `cargo build -p scyeq-plugin` put in the profile directory.
-fn plugin_library() -> PathBuf {
-    let file = format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
-    let exe = std::env::current_exe().unwrap();
-    exe.ancestors()
-        .skip(1)
-        .map(|dir| dir.join(&file))
-        .find(|library| library.exists())
-        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
-}
+const RATE: u32 = 48_000;
 
 fn state() -> Vec<u8> {
     let mut v = params::defaults();
@@ -38,7 +27,7 @@ fn state() -> Vec<u8> {
 }
 
 fn installed() -> Vec<vst3_host::Vst3Info> {
-    vst3_host::Vst3Module::load(&plugin_library()).unwrap().classes("ScyEQ-Pro.vst3")
+    vst3_host::Vst3Module::load(&library::library("scyeq_plugin")).unwrap().classes("ScyEQ-Pro.vst3")
 }
 
 /// A registry that hosts the ScyEQ-Pro VST3 plugin when `hosting`, else runs the built-in EQ.

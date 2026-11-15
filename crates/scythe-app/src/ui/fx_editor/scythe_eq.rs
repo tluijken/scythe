@@ -2,10 +2,13 @@
 //! the project offers, and the instance list, every ScyEQ-Pro in one window.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use egui::{Id, Rect, Ui, UiBuilder};
-use scyeq_ui::{CompareSource, EqHost, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec};
+use scyeq_ui::{
+    CompareSource, EqHost, InstanceControls, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec,
+};
 use scythe_core::FxSlot;
 use scythe_engine::fx::FxOwner;
 use scythe_engine::probe::FxProbe;
@@ -23,7 +26,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         .with(|e| {
             let latency = e.latency();
             let eq = e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>())?;
-            Some((eq.values().to_vec(), eq.meters(), latency, eq.sample_rate()))
+            Some((eq.values().to_vec(), eq.meters().clone(), latency, eq.sample_rate()))
         })
         .flatten()
     else {
@@ -102,10 +105,10 @@ impl EqHost for Host<'_, '_> {
     }
 
     fn instances(&self) -> Vec<scyeq_ui::Instance> {
-        all_instances(self.cx.app)
-            .into_iter()
+        project_instances(self.cx.app)
+            .iter()
             .filter(|i| !(i.owner == self.cx.ed.owner && i.path == self.cx.ed.path))
-            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label, color: None })
+            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label.clone(), color: None })
             .collect()
     }
 
@@ -121,7 +124,8 @@ impl EqHost for Host<'_, '_> {
         if let Some((owner, _)) = track_outputs(app).into_iter().find(|(o, _)| source_id(o, &[]) == id) {
             return track_probe(app, &owner);
         }
-        let i = all_instances(app).into_iter().find(|i| source_id(&i.owner, &i.path) == id)?;
+        let instances = project_instances(app);
+        let i = instances.iter().find(|i| source_id(&i.owner, &i.path) == id)?;
         let slots = chain_slots(app, &i.owner);
         app.engine.fx().instance_at(&i.owner, &slots, &i.path).map(|i| i.probe.clone())
     }
@@ -179,7 +183,8 @@ fn track_probe(app: &ScytheApp, owner: &FxOwner) -> Option<Arc<FxProbe>> {
 }
 
 fn decode_file(path: &Path) -> Result<ReferenceAudio, String> {
-    let audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
+    let mut audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
+    audio.channels.truncate(2);
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 
@@ -197,6 +202,24 @@ pub struct Instance {
     pub owner: FxOwner,
     pub path: Vec<usize>,
     pub label: String,
+}
+
+/// The session revision and load count an instance list was made at, and the list.
+pub type Listed = (u64, u64, Rc<Vec<Instance>>);
+
+/// [`all_instances`], listed anew only once the project changed: the editor and the instance
+/// list ask for it every frame.
+pub fn project_instances(app: &ScytheApp) -> Rc<Vec<Instance>> {
+    let at = (app.revision(), app.loads());
+    let mut cache = app.eq_instance_list.borrow_mut();
+    if let Some((revision, loads, list)) = &*cache
+        && (*revision, *loads) == at
+    {
+        return list.clone();
+    }
+    let list = Rc::new(all_instances(app));
+    *cache = Some((at.0, at.1, list.clone()));
+    list
 }
 
 /// Every ScyEQ-Pro in the project, in track order: each track's chain, input chain and take
@@ -268,7 +291,7 @@ pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    let all = all_instances(app);
+    let all = project_instances(app);
     scyeq_ui::instances_window(&ctx, &mut ProjectInstances { app, all }, &mut open);
     if !open {
         app.view.eq_instances = false;
@@ -282,7 +305,7 @@ pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
 /// session.
 struct ProjectInstances<'a> {
     app: &'a mut ScytheApp,
-    all: Vec<Instance>,
+    all: Rc<Vec<Instance>>,
 }
 
 impl ProjectInstances<'_> {
@@ -319,6 +342,30 @@ impl InstanceList for ProjectInstances<'_> {
         Some(running.or_else(|| scythe_eq::slot_values(&slot)).unwrap_or_else(p::defaults))
     }
 
+    fn begin_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn set_instance(&mut self, id: Id, param: u32, value: f64) {
+        let Some(fx) = self.running(id) else { return };
+        let label = if param % p::BAND_STRIDE == band::ENABLED { "Bypass EQ band" } else { "Adjust EQ band gain" };
+        self.app.fx_gesture(label, &fx, |e| e.set_param(param, value));
+    }
+
+    fn end_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn controls(&mut self) -> Option<&mut dyn InstanceControls> {
+        Some(self)
+    }
+
+    fn window(&self) -> WindowFn {
+        panel
+    }
+}
+
+impl InstanceControls for ProjectInstances<'_> {
     fn instance_enabled(&self, id: Id) -> bool {
         self.slot(id).is_some_and(|s| s.enabled)
     }
@@ -336,22 +383,25 @@ impl InstanceList for ProjectInstances<'_> {
         let Some(i) = self.find(id).cloned() else { return };
         super::toggle_at(self.app, &i.owner, &i.path);
     }
+}
 
-    fn begin_instance(&mut self, _id: Id, _param: u32) {
-        self.app.end_gesture();
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn set_instance(&mut self, id: Id, param: u32, value: f64) {
-        let Some(fx) = self.running(id) else { return };
-        let label = if param % p::BAND_STRIDE == band::ENABLED { "Bypass EQ band" } else { "Adjust EQ band gain" };
-        self.app.fx_gesture(label, &fx, |e| e.set_param(param, value));
-    }
-
-    fn end_instance(&mut self, _id: Id, _param: u32) {
-        self.app.end_gesture();
-    }
-
-    fn window(&self) -> WindowFn {
-        panel
+    #[test]
+    fn the_project_is_walked_again_only_after_it_changed() {
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
+        app.edit("Add track", |p| {
+            let mut track = scythe_core::Track::new("Vocals");
+            track.fx.push(scythe_eq::slot(None));
+            p.tracks.push(track);
+        });
+        let first = project_instances(&app);
+        assert_eq!(first.len(), 1);
+        assert!(Rc::ptr_eq(&first, &project_instances(&app)), "listed again without a change");
+        app.edit("Add FX", |p| p.tracks[0].fx.push(scythe_eq::slot(None)));
+        let labels: Vec<String> = project_instances(&app).iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["Vocals · 1", "Vocals · 2"]);
     }
 }

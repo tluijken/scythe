@@ -100,26 +100,30 @@ pub trait InstanceList {
     fn instance_list(&self) -> Vec<Instance>;
     /// An instance's parameter values; `None` leaves it out of the list.
     fn instance_values(&self, id: Id) -> Option<Vec<f64>>;
+    /// A gesture on an instance's parameter, as [`EqHost::begin`], [`EqHost::set`] and
+    /// [`EqHost::end`] are on the editor's own.
+    fn begin_instance(&mut self, id: Id, param: u32);
+    fn set_instance(&mut self, id: Id, param: u32, value: f64);
+    fn end_instance(&mut self, id: Id, param: u32);
+    /// Opening and bypassing the instances, where the list offers them; a plugin can do neither
+    /// for another plugin.
+    fn controls(&mut self) -> Option<&mut dyn InstanceControls> {
+        None
+    }
+    /// How the list's window is framed.
+    fn window(&self) -> WindowFn {
+        egui_window
+    }
+}
+
+/// Opening and bypassing the instances of an [`InstanceList`].
+pub trait InstanceControls {
     /// Whether the instance is on (not bypassed).
     fn instance_enabled(&self, id: Id) -> bool;
     fn toggle_instance_bypass(&mut self, id: Id);
     /// Whether the instance's editor is open.
     fn instance_open(&self, id: Id) -> bool;
     fn toggle_instance_open(&mut self, id: Id);
-    /// A gesture on an instance's parameter, as [`EqHost::begin`], [`EqHost::set`] and
-    /// [`EqHost::end`] are on the editor's own.
-    fn begin_instance(&mut self, id: Id, param: u32);
-    fn set_instance(&mut self, id: Id, param: u32, value: f64);
-    fn end_instance(&mut self, id: Id, param: u32);
-    /// Whether the list offers to open and bypass instances; a plugin can do neither for another
-    /// plugin.
-    fn controls_instances(&self) -> bool {
-        true
-    }
-    /// How the list's window is framed.
-    fn window(&self) -> WindowFn {
-        egui_window
-    }
 }
 
 /// What the host keeps for the editor beyond one editor's life.

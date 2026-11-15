@@ -30,7 +30,6 @@ base64.workspace = true
 cpal.workspace = true
 scythe-decode.workspace = true
 symphonia.workspace = true
-opus-pure.workspace = true
 hound.workspace = true
 flate2.workspace = true
 midir.workspace = true
@@ -50,5 +49,6 @@ mach2.workspace = true
 jack.workspace = true
 
 [dev-dependencies]
+opus-pure.workspace = true
 scyeq-plugin.workspace = true
 x11rb.workspace = true

@@ -132,6 +132,16 @@ fn cases() -> Vec<Case> {
     let frequency =
         envelope("2:2 10 30000 1000", &[(0.0, 1000.0, 0), (0.6, 200.0, 0), (1.0, 5000.0, 1), (1.5, 800.0, 0)]);
     cases.push(Case { envelope: Some(frequency), ..Case::new("automated_frequency", &v) });
+    // A ramp changes the gain every block while a dynamic band follows the noise.
+    dynamic_band(&mut v, 1, 2000.0, 1.0, false);
+    let gain = envelope("3:3 -30 30 0", &[(0.0, 4.0, 0), (0.8, -6.0, 0), (1.4, 6.0, 0), (1.9, 0.0, 0)]);
+    cases.push(Case { envelope: Some(gain), ..Case::new("automated_dynamic", &v) });
+    // A dynamic band switched off for about a block now and then, square: its detector starts
+    // afresh each time it comes back.
+    let mut v = params::defaults();
+    dynamic_band(&mut v, 0, 2000.0, 1.0, false);
+    let toggle = envelope("8:8 0 2 1", &[(0.0, 1.0, 1), (0.8, 0.0, 1), (0.81, 1.0, 1), (1.4, 0.0, 1), (1.6, 1.0, 1)]);
+    cases.push(Case { envelope: Some(toggle), ..Case::new("automated_dynamic_toggle", &v) });
     cases
 }
 

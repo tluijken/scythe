@@ -210,17 +210,17 @@ measured.
   quirks were measured. Unlike SWS, a marker at the spot playback starts from or wraps to does
   not run, and markers just before a loop end are never skipped. The on/off option is not saved
   (SWS keeps `MarkerActionsEnabled` in reaper.ini).
-- Count-in and pre-roll are modelled on REAPER 7.73 and not measured against it yet (REAPER does not
-  play without an audio device): no count-in with the
-  metronome disabled, the count-in before the pre-roll, "Start count-in at start of measure"
-  (`preroll` &8) and "Start pre-roll at start of measure" (stored inverted as `preroll` &4), a
-  start within a tenth of a bar of the next bar line moving onto it. REAPER rounds a count-in
-  up to whole audio blocks; Scythe's is sample-accurate. REAPER's "Record audio during
-  pre-roll" is not there: a pre-roll's audio and MIDI are left out of the take (MIDI only
-  roughly when a repeat range overlaps the pre-roll). A setlist's count-in (Scythe's own)
-  clicks with the metronome off. The click is Scythe's own synthesised one at the metronome's
-  primary volume; REAPER's click sounds, patterns and secondary volume are kept in the project
-  but not played.
+- Count-in and pre-roll were measured against REAPER 7.73 on a JACK dummy device
+  (`scripts/reaper-count-in.sh`, see [verification](verification.md)) at 120 bpm in 4/4 with a
+  count-in of one measure only: other tempos, time signatures, tempo changes and count-in
+  lengths follow the same model unmeasured. REAPER pads the count-in and a recording's pre-roll
+  at their start to whole device blocks; Scythe pads by the block size the device was opened
+  with, or else the last one it delivered, which can differ from REAPER's on a device whose
+  blocks vary in size. REAPER's "Record audio during pre-roll" is not there: a pre-roll's audio
+  and MIDI are left out of the take (MIDI only roughly when a repeat range overlaps the
+  pre-roll). A setlist's count-in (Scythe's own) clicks with the metronome off. The click is
+  Scythe's own synthesised one at the metronome's primary volume; REAPER's click sounds,
+  patterns and secondary volume are kept in the project but not played.
 
 - FX chain graph: a bypass envelope on a container (rather than an effect) is not followed, nor
   REAPER's FX oversampling. Take FX play the item's last sample where REAPER's take-FX path

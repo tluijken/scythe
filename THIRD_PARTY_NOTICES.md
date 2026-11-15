@@ -15,7 +15,8 @@ or is derived from the following third-party work, each under its own license.
 
 Rust crates Scythe depends on are fetched by Cargo and keep their own licenses: almost all MIT
 or Apache-2.0, some BSD, ISC, Zlib, Unicode-3.0 or BSL-1.0, and `symphonia` under MPL-2.0
-(used unchanged). Each crate's license text comes with its source on crates.io.
+(used unchanged). Every release archive carries `CRATE_LICENSES.md`, which lists each crate built
+into what it holds, with the license texts.
 
 The ScyEQ-Pro plugin (`crates/scyeq-plugin`) links its crates statically into one library, among
 them [baseview](https://github.com/RustAudio/baseview) and

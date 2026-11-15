@@ -31,8 +31,8 @@ Windows build plays through WASAPI.
 1. Set the new version under `[workspace.package]` in `Cargo.toml`, let Cargo update
    `Cargo.lock` (`devbox run build`), and commit both on `main`.
 2. Optionally try the builds first: Actions > Release > Run workflow on `main`. A run by hand
-   builds everything and keeps the files, with `SHA256SUMS`, as the run's `release-<version>`
-   artifact; it makes no release.
+   builds everything and keeps each file, and `SHA256SUMS`, as an artifact of the run that
+   downloads as the file itself; it makes no release.
 3. Tag the commit and push the tag:
 
    ```sh
@@ -47,7 +47,8 @@ Windows build plays through WASAPI.
 
 A failed run makes no release. Fix the cause on `main`, then move the tag to the fixed commit
 (`git tag -f -a v0.2.0 -m "Scythe 0.2.0"`, `git push -f origin v0.2.0`) or release the next
-version.
+version. When only the last job, `publish`, failed (a hiccup uploading, say), re-running that job
+alone is enough: it replaces the files of a draft it already made.
 
 The ScyEQ-Pro plugin depends on [plugin-format](https://github.com/tluijken/plugin-format) at a
 tag; `PLUGIN_FORMAT_TAG` in `.github/workflows/scyeq-plugin.yml` names the same tag, for its
@@ -63,8 +64,14 @@ three programs in release and writes the archives for the system it runs on. It 
 devbox run -- scripts/release/package.sh dist   # dist/scythe-<version>-linux-x86_64.tar.gz
 ```
 
-`scripts/release/notices.sh <dir> <crate> <os>` alone writes the licenses and `CRATE_LICENSES.md`
-for one crate, for example to check `about.toml` after adding a dependency.
+What it writes locally is for checking the packaging, not for handing out: built in devbox, the
+Linux programs load their libraries through Nix's dynamic loader under `/nix/store`, so they run
+only on a machine with that store, not on an ordinary distribution. Releases come from the
+workflow, which builds on the runners' own systems.
+
+`scripts/release/notices.sh <dir> <crate> <os> [features]` alone writes the licenses and
+`CRATE_LICENSES.md` for one crate built with those cargo features, for example to check
+`about.toml` after adding a dependency.
 
 ## macOS (beta)
 

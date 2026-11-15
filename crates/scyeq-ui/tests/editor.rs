@@ -23,6 +23,7 @@ struct Fake {
     eq: ScytheEq,
     calls: Vec<Call>,
     view: ViewState,
+    sources: Vec<CompareSource>,
 }
 
 impl Fake {
@@ -33,7 +34,7 @@ impl Fake {
         eq.set(id(band::USED), 1.0);
         eq.set(id(band::FREQ), 1000.0);
         eq.set(id(band::GAIN), 0.0);
-        Self { eq, calls: Vec::new(), view: ViewState::default() }
+        Self { eq, calls: Vec::new(), view: ViewState::default(), sources: Vec::new() }
     }
 
     fn count(&self, call: impl Fn(&Call) -> bool) -> usize {
@@ -65,7 +66,7 @@ impl EqHost for Fake {
     }
 
     fn meters(&self) -> Option<Arc<Meters>> {
-        Some(self.eq.meters())
+        Some(self.eq.meters().clone())
     }
 
     fn probe(&self) -> Option<Arc<FxProbe>> {
@@ -85,7 +86,7 @@ impl EqHost for Fake {
     }
 
     fn compare_sources(&self) -> Vec<CompareSource> {
-        Vec::new()
+        self.sources.clone()
     }
 
     fn source_probe(&self, _id: Id) -> Option<Arc<FxProbe>> {
@@ -188,4 +189,44 @@ fn closing_mid_drag_ends_the_gesture() {
     assert_eq!(host.count(|c| *c == Call::End(freq)), 1, "{:?}", host.calls);
     state.end_gesture(|id| host.end(id));
     assert_eq!(host.count(|c| *c == Call::End(freq)), 1, "a second close ends nothing more");
+}
+
+/// Whether a dot of `color` was drawn in the last frame.
+fn drew_dot(h: &Harness<State>, [r, g, b]: [u8; 3]) -> bool {
+    fn dot(shape: &egui::Shape, color: egui::Color32) -> bool {
+        match shape {
+            egui::Shape::Circle(c) => c.fill == color,
+            egui::Shape::Vec(shapes) => shapes.iter().any(|s| dot(s, color)),
+            _ => false,
+        }
+    }
+    h.output().shapes.iter().any(|s| dot(&s.shape, egui::Color32::from_rgb(r, g, b)))
+}
+
+#[test]
+fn the_compare_choice_shows_a_source_colour() {
+    let green = [40, 200, 40];
+    let mut h = Harness::builder()
+        .with_size(vec2(1180.0, 680.0))
+        .with_step_dt(1.0 / 30.0)
+        .with_context_setup(scyeq_ui::theme::install)
+        .build_ui_state(
+            |ui, (host, state): &mut State| scyeq_ui::show(ui, host, state),
+            (
+                Fake {
+                    sources: vec![CompareSource { id: Id::unique("bass"), label: "Bass".into(), color: Some(green) }],
+                    ..Fake::new()
+                },
+                EditorState::default(),
+            ),
+        );
+    h.step();
+    assert!(!drew_dot(&h, green));
+    h.get_by_label("Compare None").click();
+    h.run_steps(2);
+    assert!(drew_dot(&h, green), "in the list");
+    h.get_by_label("Bass").click();
+    h.run_steps(2);
+    assert!(h.query_by_label("Compare Bass").is_some());
+    assert!(drew_dot(&h, green), "on the choice");
 }

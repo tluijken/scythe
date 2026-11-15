@@ -514,7 +514,7 @@ pub fn execute(session: &mut Session, command: EqCommand) -> Result<Value, ApiEr
             inst.with(|e| {
                 let latency = e.latency();
                 let eq = e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>())?;
-                Some(describe(eq.values(), Some(&eq.meters()), Some(latency)))
+                Some(describe(eq.values(), Some(eq.meters().as_ref()), Some(latency)))
             })
             .flatten()
             .ok_or_else(|| ApiError::failed("the effect is not running"))

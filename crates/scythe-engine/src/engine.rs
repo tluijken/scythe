@@ -119,7 +119,7 @@ impl Transport {
     }
 
     pub fn position_seconds(&self) -> f64 {
-        let pending = self.seek.load(Ordering::Relaxed);
+        let pending = self.seek.load(Ordering::Acquire);
         let frames = if pending != NO_SEEK { pending } else { self.position.load(Ordering::Relaxed) };
         frames as f64 / self.sample_rate as f64 * self.play_rate()
     }
@@ -188,9 +188,12 @@ impl Transport {
     /// seek or loop wrap onto the marker) does not run, so a song started at the stop marker of
     /// the song before it plays.
     fn advance(&self, frames: usize, segments: &mut [(i64, usize, usize); 8], hit: &mut impl FnMut(Hit)) -> usize {
-        let seek = self.seek.swap(NO_SEEK, Ordering::Relaxed);
+        // The position first, so `position_seconds` never finds the seek taken and the old
+        // position still in place; a seek asked for meanwhile stays for the next block.
+        let seek = self.seek.load(Ordering::Relaxed);
         if seek != NO_SEEK {
             self.position.store(seek, Ordering::Relaxed);
+            let _ = self.seek.compare_exchange(seek, NO_SEEK, Ordering::Release, Ordering::Relaxed);
         }
         if !self.is_playing() {
             return 0;
@@ -580,7 +583,7 @@ impl Processor {
         if let Some(queue) = &self.midi_out
             && let Ok(mut q) = queue.try_lock()
         {
-            q.next_block();
+            q.next_block(heard, budget);
             if self.was_playing && n == 0 {
                 let _ = q.push(OutMessage::all_notes_off(heard));
             }
@@ -1853,10 +1856,18 @@ impl Engine {
         self.transport.playing.store(true, Ordering::Relaxed);
     }
 
+    /// Frames the device takes at a time: as opened, else as last delivered (0 before any).
+    pub fn block_frames(&self) -> u32 {
+        self.info.block_size.unwrap_or_else(|| self.transport.block_frames.load(Ordering::Relaxed))
+    }
+
     /// Plays after `count_in`: the playhead waits where it is while the count-in clicks.
-    pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) {
-        self.transport.start_count_in(CountInClicks::from_seconds(count_in, self.info.sample_rate));
+    /// Answers the count-in as it plays, padded to whole blocks of the device.
+    pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) -> scythe_core::metronome::CountIn {
+        let count_in = count_in.padded(self.block_frames(), self.info.sample_rate);
+        self.transport.start_count_in(CountInClicks::from_seconds(&count_in, self.info.sample_rate));
         self.transport.playing.store(true, Ordering::Relaxed);
+        count_in
     }
 
     pub fn stop(&self) {
@@ -2059,6 +2070,31 @@ mod tests {
         assert_eq!(segs_hits(&t, 20), (vec![(0, 0, 20)], vec![(20, 1016, true)]));
         assert_eq!(t.position.load(Ordering::Relaxed), 20);
         assert!(!t.is_playing());
+    }
+
+    /// A seek the audio thread takes up is never seen undone: the playhead it reports moves on
+    /// from the asked position, not back to the one before for a moment.
+    #[test]
+    fn a_seek_taken_up_shows_no_old_position() {
+        let t = Arc::new(Transport::new(100));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (t, done) = (t.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut last = 0.0;
+                while !done.load(Ordering::Relaxed) {
+                    let now = t.position_seconds();
+                    assert!(now >= last, "{now} after {last}");
+                    last = now;
+                }
+            })
+        };
+        for k in 1..200_000 {
+            t.seek.store(k, Ordering::Relaxed);
+            segs(&t, 1);
+        }
+        done.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
     }
 
     #[test]
@@ -2828,15 +2864,41 @@ mod tests {
             first_in_bar: 0,
             beats_per_bar: 4,
             audible: 4.0,
+            counting: 4.0,
         };
-        e.play_counting_in(&count_in);
+        let played = e.play_counting_in(&count_in);
         let (at, beat, beats) = e.transport().count_in().unwrap();
-        assert!((-4.0..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");
+        assert!((-played.length..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");
         e.stop();
         assert_eq!(e.transport().count_in(), None);
         e.play();
         assert_eq!(e.transport().count_in(), None, "plain play does not resume a count-in");
         e.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The null device runs 512 frames a block: 1.9 s at 8 kHz, 15200 frames, counts in for 30
+    /// blocks, the clicks on the same frames before the playhead moves.
+    #[test]
+    fn a_count_in_lasts_whole_blocks() {
+        let (p, pool, dir) = ones_project(0.0);
+        let mut e = Engine::start_offline(Arc::new(pool), 8000);
+        e.sync(&p);
+        let count_in = scythe_core::metronome::CountIn {
+            length: 1.9,
+            beat: 0.5,
+            first: 0.0,
+            first_in_bar: 0,
+            beats_per_bar: 4,
+            audible: 1.9,
+            counting: 1.9,
+        };
+        let played = e.play_counting_in(&count_in);
+        let playing = e.transport().count_in_clicks();
+        e.stop();
+        assert!((played.length - 15_360.0 / 8000.0).abs() < 1e-9, "{played:?}");
+        assert!((played.first - 160.0 / 8000.0).abs() < 1e-9, "{played:?}");
+        assert_eq!((playing.frames, playing.first, playing.audible), (15_360, 160.0, 15_360), "the audio thread's");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -311,6 +311,19 @@ impl Session {
         std::mem::take(&mut self.notices)
     }
 
+    /// Converts the effects of tracks a track template brings in, as an older Scythe may have
+    /// stored their automation in other units (`upgrade::upgrade_tracks`).
+    pub fn upgrade_brought_in(&self, tracks: &mut [scythe_core::Track]) -> bool {
+        let fx = self.engine.fx();
+        scythe_engine::upgrade::upgrade_tracks(tracks, &mut |slot| fx.made_params(slot))
+    }
+
+    /// [`Self::upgrade_brought_in`] for the effects of an FX chain file.
+    pub fn upgrade_brought_in_fx(&self, slots: &mut [scythe_core::FxSlot]) -> bool {
+        let fx = self.engine.fx();
+        scythe_engine::upgrade::upgrade_slots(slots, &mut |slot| fx.made_params(slot))
+    }
+
     fn after_load(&mut self) {
         self.live.list = 0;
         self.live.player = Default::default();
@@ -320,10 +333,18 @@ impl Session {
         self.sync();
         // After the first sync, so the hosted plugins whose ranges the conversion needs run.
         let fx = self.engine.fx();
-        if scythe_engine::upgrade::upgrade_project(&mut self.project, &mut |owner, key, slot, create| {
-            fx.slot_params(owner, key, slot, create)
-        }) {
+        let upgraded =
+            scythe_engine::upgrade::upgrade_project_report(&mut self.project, &mut |owner, key, slot, create| {
+                fx.slot_params(owner, key, slot, create)
+            });
+        if upgraded.changed {
             self.sync();
+        }
+        if !upgraded.unconverted.is_empty() {
+            self.notify(format!(
+                "Modulation of {} stays as an older Scythe stored it: the plugin could not be loaded to convert it",
+                upgraded.unconverted.join(", ")
+            ));
         }
         self.loads += 1;
         self.follow_project_rate();

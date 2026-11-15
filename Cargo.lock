@@ -1171,7 +1171,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading 0.8.9",
+ "libloading 0.7.4",
 ]
 
 [[package]]
@@ -3348,7 +3348,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -3519,8 +3519,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-format"
-version = "0.1.1"
-source = "git+https://github.com/tluijken/plugin-format?tag=v0.1.1#757e2d16936a2727dc2c7dfe2ed0cfee9fb96c1b"
+version = "0.1.2"
+source = "git+https://github.com/tluijken/plugin-format?tag=v0.1.2#4c9b2ad586a17dfac484a08de48296a72d96d7e0"
 dependencies = [
  "clap-sys",
  "egui",
@@ -4153,7 +4153,11 @@ dependencies = [
  "hound",
  "libc",
  "libloading 0.8.9",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "opus-pure",
  "plugin-format",
+ "raw-window-handle",
  "rfd",
  "scyeq-dsp",
  "scyeq-ui",
@@ -4161,6 +4165,7 @@ dependencies = [
  "serde_json",
  "vst3",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]
@@ -4215,6 +4220,7 @@ dependencies = [
 name = "scythe-decode"
 version = "0.1.0"
 dependencies = [
+ "opus-pure",
  "symphonia",
 ]
 
