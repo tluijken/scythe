@@ -100,8 +100,9 @@ jobs:
           else
             (cd bundle && zip -r -y "../$zip_name.zip" "${files[@]}")
           fi
-      - uses: actions/upload-artifact@v4
+      # The zip itself as the artifact, not zipped once more.
+      - uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}.zip
+          archive: false
           if-no-files-found: error

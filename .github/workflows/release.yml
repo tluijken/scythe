@@ -39,11 +39,14 @@ jobs:
           # 22.04 for its older glibc, so the binaries run on most distributions.
           - os: ubuntu-22.04
             name: linux
+            archive: tar.gz
           # Its image ships WiX 3, which cargo-wix needs.
           - os: windows-2022
             name: windows
+            archive: zip
           - os: macos-latest
             name: macos
+            archive: zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     env:
@@ -78,10 +81,17 @@ jobs:
       - name: Package
         shell: bash
         run: scripts/release/package.sh dist
-      - uses: actions/upload-artifact@v4
+      # Each file an artifact of its own, as it is rather than zipped once more.
+      - uses: actions/upload-artifact@v7
         with:
-          name: scythe-${{ needs.version.outputs.version }}-${{ matrix.name }}
-          path: dist/*
+          path: dist/*.${{ matrix.archive }}
+          archive: false
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          path: dist/*.msi
+          archive: false
           if-no-files-found: error
 
   scyeq-plugin:
@@ -94,7 +104,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -103,11 +113,11 @@ jobs:
         run: |
           sha256sum -- * > SHA256SUMS
           cat SHA256SUMS
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: github.event_name != 'push'
         with:
-          name: release-${{ needs.version.outputs.version }}
-          path: dist/*
+          path: dist/SHA256SUMS
+          archive: false
           if-no-files-found: error
       - name: Draft release
         if: github.event_name == 'push'

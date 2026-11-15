@@ -31,8 +31,8 @@ Windows build plays through WASAPI.
 1. Set the new version under `[workspace.package]` in `Cargo.toml`, let Cargo update
    `Cargo.lock` (`devbox run build`), and commit both on `main`.
 2. Optionally try the builds first: Actions > Release > Run workflow on `main`. A run by hand
-   builds everything and keeps the files, with `SHA256SUMS`, as the run's `release-<version>`
-   artifact; it makes no release.
+   builds everything and keeps each file, and `SHA256SUMS`, as an artifact of the run that
+   downloads as the file itself; it makes no release.
 3. Tag the commit and push the tag:
 
    ```sh
