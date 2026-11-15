@@ -338,3 +338,25 @@ fn solo_stays_on_the_instance() {
     assert_eq!(DIRTY_MARKS.load(Ordering::SeqCst), marks, "and the project does not change");
     assert_eq!(params::decode(&soloed[0].save()).unwrap().values[solo as usize], 0.0, "nor is it saved");
 }
+
+#[test]
+fn arrow_keys_move_the_selected_band() {
+    let _turn = turn();
+    let instance = Instance::with_a_band();
+    let freq = params::band_param(0, band::FREQ);
+    let mut h = instance.harness();
+    h.step();
+    h.step();
+    let at = h.get_by_label("Band 1").rect().center();
+    h.event(egui::Event::PointerMoved(at));
+    h.step();
+    button(&mut h, at, true);
+    button(&mut h, at, false);
+    h.key_press(egui::Key::ArrowRight);
+    h.step();
+    let sent = instance.flush();
+    let Some(&Sent::Value(_, moved)) = sent.iter().find(|s| matches!(s, Sent::Value(id, _) if *id == freq)) else {
+        panic!("no frequency change: {sent:?}")
+    };
+    assert!((moved - 1000.0 * 2f64.powf(1.0 / 12.0)).abs() < 1e-6, "{moved}");
+}

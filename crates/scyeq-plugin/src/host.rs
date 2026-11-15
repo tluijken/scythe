@@ -35,6 +35,8 @@ impl Editor {
         if !std::mem::replace(&mut self.themed, true) {
             scyeq_ui::theme::install(root.ctx());
         }
+        let pointer = root.ctx().input(|i| i.pointer.hover_pos());
+        self.state.controls.hovered = pointer.is_some_and(|p| root.max_rect().contains(p));
         let view = self.shared.view();
         let mut host = PluginHost {
             shared: &self.shared,
