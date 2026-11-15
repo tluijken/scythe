@@ -56,6 +56,9 @@ pub trait EqHost {
     fn notice(&self) -> Option<String> {
         None
     }
+    /// EQ Match is closed, so a notice about its file dialog no longer applies; called every
+    /// frame while it is.
+    fn match_closed(&mut self) {}
     /// Whether a parameter's menu offers modulation and learn.
     fn can_modulate(&self) -> bool {
         false
@@ -92,7 +95,15 @@ pub struct ReferenceAudio {
     pub sample_rate: u32,
 }
 
-pub type DecodeFn = fn(&Path) -> Result<ReferenceAudio, String>;
+/// Why a reference file cannot be matched to.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReferenceError {
+    Open(std::io::ErrorKind),
+    /// The file is no audio the host can decode.
+    NotAudio,
+}
+
+pub type DecodeFn = fn(&Path) -> Result<ReferenceAudio, ReferenceError>;
 
 /// Every ScyEQ-Pro the host runs, for the instance list. `id`s are [`Instance::id`]s.
 pub trait InstanceList {
