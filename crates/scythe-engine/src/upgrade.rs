@@ -9,7 +9,9 @@
 //! The project's writer decides: a file REAPER wrote is never converted, and one an older Scythe
 //! wrote is converted wholly. Elsewhere (no marker, or a newer Scythe that could not convert a
 //! slot because its plugin was missing) only a 0..1 envelope on a parameter with another range
-//! shows a slot is old, which REAPER never writes; its baselines are then converted with it.
+//! shows a slot is old, which REAPER never writes; its baselines are then converted with it. A
+//! hosted plugin's envelope named `<index>:<id>` is never old: an older Scythe named them by
+//! index alone.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -215,8 +217,14 @@ impl Pass<'_, '_> {
     }
 
     fn slot(&mut self, owner: &FxOwner, key: &str, slot: &mut FxSlot) -> bool {
-        let old: Vec<ParamEnvelope> =
-            slot.parameter_envelopes().into_iter().filter(|e| (e.min, e.max) == (0.0, 1.0)).collect();
+        // An older Scythe named a hosted CLAP plugin's envelopes by index alone; ScyEQ-Pro's
+        // carried its id already.
+        let hosted_clap = crate::fx::is_clap(slot) && !crate::scythe_eq::is_slot(slot);
+        let old: Vec<ParamEnvelope> = slot
+            .parameter_envelopes()
+            .into_iter()
+            .filter(|e| (e.min, e.max) == (0.0, 1.0) && !(hosted_clap && e.spec.contains(':')))
+            .collect();
         let modulations = scythe_core::modulation::modulations(slot);
         if old.is_empty() && !(self.all && !modulations.is_empty()) {
             return false;
@@ -777,6 +785,20 @@ mod tests {
         assert!(converted(&tracks[0].input_fx()[0]));
         assert!(converted(&tracks[0].items[0].takes[0].fx()[0]));
         assert!(!upgrade_tracks(&mut tracks, &mut |_| None), "a second time changes nothing");
+    }
+
+    /// REAPER and Scythe since format 2 name a CLAP envelope `<index>:<id>`, which an older
+    /// Scythe never wrote for a hosted plugin: such a slot is current and no plugin is made.
+    #[test]
+    fn brought_in_effects_named_by_id_make_no_plugin() {
+        let current = clap_slot("<PARMENV 0:7 0 1 0.5\nACT 1 -1\nPT 0 0.25 0\n>\n");
+        let mut slots = vec![current.clone()];
+        let mut made = 0;
+        assert!(!upgrade_slots(&mut slots, &mut |_| {
+            made += 1;
+            Some(gain_params())
+        }));
+        assert_eq!((made, &slots[0]), (0, &current));
     }
 }
 
