@@ -403,6 +403,27 @@ pub fn param_info(
     Ok((format!("{name} / {}", slot.name), lo, hi, v))
 }
 
+/// A new envelope for parameter `param`, as REAPER writes it: over the parameter's range in its
+/// own units, named by index and, for a CLAP plugin, its id.
+pub fn new_parameter_envelope(
+    session: &Session,
+    target: Target,
+    fx: usize,
+    param: usize,
+) -> Result<ParamEnvelope, ApiError> {
+    let (label, lo, hi, v) = param_info(session, target, fx, param)?;
+    let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
+    let slot = t.fx.get(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
+    let owner = match target {
+        Target::Master => None,
+        Target::Track(id) => Some(id),
+    };
+    let params = session.engine.fx().instance(owner, slot, fx).and_then(|i| i.with(|e| e.params()));
+    let mut pe = ParamEnvelope::new(param, lo, hi, v, &label);
+    pe.spec = scythe_engine::fx::envelope_spec(slot, params.as_deref(), param).unwrap_or(pe.spec);
+    Ok(pe)
+}
+
 /// The envelope as it is, or a new empty one (not stored) when the track has none yet.
 fn read(project: &Project, target: Target, at: &EnvRef) -> Result<Envelope, ApiError> {
     let t = target.get(project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
@@ -463,7 +484,7 @@ pub fn change<R>(
     let target = at.track.resolve(&session.project)?;
     let which = which(at)?;
     let param = match which {
-        Which::Param(fx, param) => Some(param_info(session, target, fx, param)?),
+        Which::Param(fx, param) => Some(new_parameter_envelope(session, target, fx, param)?),
         _ => None,
     };
     let mut project = session.project.clone();
@@ -504,12 +525,10 @@ pub fn change<R>(
         }
         Which::Param(fx, p) => {
             let slot = t.fx.get_mut(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
-            let mut pe = slot.parameter_envelope(&p.to_string()).unwrap_or_else(|| {
-                let (label, lo, hi, v) = param.clone().unwrap_or_default();
-                let mut pe = ParamEnvelope::new(p, lo, hi, v, &label);
-                pe.spec = scythe_engine::scythe_eq::envelope_spec(slot, p).unwrap_or(pe.spec);
-                pe
-            });
+            let mut pe = slot
+                .parameter_envelope(&p.to_string())
+                .or(param)
+                .unwrap_or_else(|| ParamEnvelope::new(p, 0.0, 1.0, 0.0, ""));
             pe.envelope = Envelope { range: Some((pe.min, pe.max)), ..env };
             slot.set_parameter_envelope(&pe);
         }

@@ -319,6 +319,13 @@ impl Session {
         self.engine.stop();
         self.engine.seek(self.project.cursor);
         self.sync();
+        // After the first sync, so the hosted plugins whose ranges the conversion needs run.
+        let fx = self.engine.fx();
+        if scythe_engine::upgrade::upgrade_project(&mut self.project, &mut |owner, key, slot| {
+            fx.slot_params(owner, key, slot)
+        }) {
+            self.sync();
+        }
         self.loads += 1;
         self.follow_project_rate();
         let saved = self.project.saved_selection();

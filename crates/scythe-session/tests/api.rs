@@ -2310,3 +2310,78 @@ fn the_snapshot_tells_the_device_project_and_render_rates_apart() {
     ok(&mut s, json!({"cmd": "render.settings", "sample_rate": 96_000}));
     assert_eq!(rates(&mut s), (json!(48_000), json!(44_100), json!(96_000)));
 }
+
+fn clap_gain_session() -> Option<Session> {
+    let descs = clap_test_gain()?;
+    let catalog = scythe_engine::plugin_scan::Catalog::fixed();
+    catalog.set_clap(descs);
+    let mut s = session();
+    s.engine.set_plugin_catalog(catalog);
+    Some(s)
+}
+
+#[test]
+fn clap_parameter_envelopes_are_stored_as_reaper_stores_them() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PARMENV 1:9 0 4 "), "the boost's index and id, and its range: {text}");
+    assert!(text.contains("PT 1 3 "), "{text}");
+}
+
+/// A Scythe project from before the format revision holds the boost's envelope and modulation
+/// baseline on 0..1; opening it moves them to the boost's 0..4, also in an offline slot, once
+/// and before any undo step. The same file from REAPER stays as it is.
+#[test]
+fn an_old_project_s_clap_automation_moves_to_the_parameters_units_when_it_opens() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let slot = |bypass: &str, guid: &str| {
+        format!(
+            "      BYPASS {bypass}\n      <CLAP \"CLAP: Test Gain (Scythe)\" org.scythe.test-gain \"\"\n        CFG 4 0 0 \"\"\n      >\n      FXID {guid}\n      <PARMENV 1 0 1 0.25 \"Boost\"\n        ACT 1 -1\n        PT 0 0.25 0\n        PT 1 0.75 0\n      >\n      <PROGRAMENV 0 0 \"Gain\"\n        PARAMBASE 0.5\n        LFO 1\n        LFOWT 0.1 1\n      >\n      <PROGRAMENV 1 0 \"Boost\"\n        PARAMBASE 0.5\n        LFO 1\n        LFOWT 0.1 1\n      >\n      WAK 0 0\n"
+        )
+    };
+    let text = |version: &str| {
+        format!(
+            "<REAPER_PROJECT 0.1 \"{version}\" 0\n  <TRACK\n    NAME Gtr\n    <FXCHAIN\n{}{}    >\n  >\n>\n",
+            slot("0 0 0", "{11111111-2222-3333-4444-555555555555}"),
+            slot("0 1 0", "{11111111-2222-3333-4444-666666666666}")
+        )
+    };
+    let dir = std::env::temp_dir().join(format!("scythe-clap-upgrade-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (old, reaper) = (dir.join("old.RPP"), dir.join("reaper.RPP"));
+    std::fs::write(&old, text("scythe-0.1.0")).unwrap();
+    std::fs::write(&reaper, text("7.73/linux-x86_64")).unwrap();
+
+    s.open_path(&old).unwrap();
+    for slot in &s.project.tracks[0].fx {
+        let env = slot.parameter_envelope("1").unwrap();
+        assert_eq!((env.spec.as_str(), env.min, env.max), ("1:9", 0.0, 4.0));
+        let values: Vec<f64> = env.envelope.points.iter().map(|p| p.value).collect();
+        assert_eq!(values, [1.0, 3.0]);
+        let bases: Vec<f64> = scythe_core::modulation::modulations(slot).iter().map(|m| m.base).collect();
+        assert_eq!(bases, [0.5, 2.0], "the 0..1 gain reads the same");
+    }
+    assert_eq!(s.history.undo_label(), None, "the conversion is no undo step");
+    let automation = |p: &scythe_core::Project| -> Vec<_> {
+        let fx = &p.tracks[0].fx;
+        fx.iter().map(|s| (s.parameter_envelopes(), scythe_core::modulation::modulations(s))).collect()
+    };
+    let converted = automation(&s.project);
+    s.save_to(&old).unwrap();
+    s.open_path(&old).unwrap();
+    assert_eq!(automation(&s.project), converted, "a saved project is not converted again");
+
+    s.open_path(&reaper).unwrap();
+    let before = scythe_core::rpp::read_project(&reaper).unwrap();
+    assert_eq!(s.project.tracks[0].fx, before.tracks[0].fx, "REAPER's own file stays as it is");
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -40,7 +40,7 @@ fn hosts_scans_processes_and_restores_state() {
     assert_eq!(l[0], 0.25);
 
     let params = plugin.params();
-    assert_eq!(params.len(), 1);
+    assert_eq!(params.len(), 2);
     assert_eq!((params[0].id, params[0].name.as_str(), params[0].default), (7, "Gain", 0.5));
     assert_eq!(plugin.param_text(7, 0.25).as_deref(), Some("0.25"));
     plugin.set_param(7, 0.75);
@@ -388,4 +388,89 @@ fn port_configurations_end_on_stereo_with_the_sidechain() {
     );
     let mono = ClapPlugin::create(lib, "org.scythe.test-gain-mono", 48000.0, 512).unwrap();
     assert_eq!(mono.pins(), (4, 2), "a mono input moves to stereo, keeping the sidechain");
+}
+
+/// Renders one second of ones at 1 kHz through the test gain slot `fx` (the lines after its
+/// `FXID`) of a project REAPER wrote.
+fn render_ones_through_gain(path: &std::path::Path, fx: &str) -> Vec<f32> {
+    use scythe_core::rpp::project_from_rpp;
+    use scythe_engine::MediaPool;
+    use scythe_engine::fx::FxRegistry;
+    use scythe_engine::render::{MeterRegistry, RenderGraph, RenderScratch};
+
+    let descs = ClapLibrary::load(path).unwrap().descriptors();
+    let dir = std::env::temp_dir().join(format!("scythe-clap-units-{}-{}", std::process::id(), fx.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let ones = dir.join("ones.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 1000,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(&ones, spec).unwrap();
+    for _ in 0..1000 {
+        w.write_sample(1.0f32).unwrap();
+    }
+    w.finalize().unwrap();
+    let rpp = format!(
+        "<REAPER_PROJECT 0.1 \"7.73/linux-x86_64\" 0 0\n  <TRACK\n    <FXCHAIN\n      BYPASS 0 0 0\n      <CLAP \"CLAP: Test Gain (Scythe)\" org.scythe.test-gain \"\"\n        CFG 4 0 0 \"\"\n      >\n      FXID {{44444444-2222-3333-4444-555555555555}}\n{fx}      WAK 0 0\n    >\n    <ITEM\n      POSITION 0\n      LENGTH 1\n      FADEIN 1 0 0 1 0 0 0\n      FADEOUT 1 0 0 1 0 0 0\n      <SOURCE WAVE\n        FILE \"{}\"\n      >\n    >\n  >\n>\n",
+        ones.display()
+    );
+    let project = project_from_rpp(&rpp).unwrap();
+    let pool = MediaPool::default();
+    pool.load(&ones, 1000).unwrap();
+    let mut registry = FxRegistry::new(1000);
+    registry.set_clap_plugins(descs);
+    let graph = RenderGraph::build(&project, &pool, &mut MeterRegistry::default(), &mut registry, 1000);
+    let (mut l, mut r) = (vec![0.0f32; 1000], vec![0.0f32; 1000]);
+    graph.render(0, &mut l, &mut r, &mut RenderScratch::new(4));
+    std::fs::remove_dir_all(&dir).ok();
+    l
+}
+
+#[test]
+fn a_clap_parameter_counts_in_its_own_units_as_reaper_automates_it() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut registry = scythe_engine::fx::FxRegistry::new(48_000);
+    registry.set_clap_plugins(lib.descriptors());
+    let slot = scythe_engine::fx::clap_slot(&lib.descriptors()[0]);
+    let chain = registry.chain(None, std::slice::from_ref(&slot));
+    let (range, base) = chain[0]
+        .with(|e| {
+            e.set_param(9, 2.0);
+            (e.param_range(1), scythe_engine::modulation::normalized(e, 1))
+        })
+        .unwrap();
+    assert_eq!(range, Some((0.0, 4.0)), "the boost's own range");
+    assert_eq!(base, Some(0.5));
+    chain[0].with(|e| assert!(e.set_normalized(1, 0.75))).unwrap();
+    assert_eq!(chain[0].with(|e| e.param(9)).flatten().map(|(v, _)| v), Some(3.0), "linear over the range");
+    assert_eq!(
+        scythe_engine::fx::envelope_spec(&slot, chain[0].with(|e| e.params()).as_deref(), 1).as_deref(),
+        Some("1:9"),
+        "REAPER names a CLAP parameter by index and id"
+    );
+
+    // As REAPER 7.73 wrote it: the boost from 0 to 4 over the second, read at each 512-frame
+    // block's last frame.
+    let l = render_ones_through_gain(
+        &path,
+        "      <PARMENV 1:9 0 4 2 \"Boost / Test Gain\"\n        ACT 1 -1\n        PT 0 0 0\n        PT 1 4 0\n      >\n",
+    );
+    for (t, block_last) in [(100, 511), (600, 999)] {
+        let want = 0.5 * 4.0 * block_last as f32 / 1000.0;
+        assert!((l[t] - want).abs() < 1e-3, "frame {t}: {} for {want}", l[t]);
+    }
+
+    // A modulation baseline in the boost's units: 2 plays 2.
+    let l = render_ones_through_gain(
+        &path,
+        "      <PROGRAMENV 1:9 0 \"Boost / Test Gain\"\n        PARAMBASE 2\n        LFO 1\n        LFOWT 0 1\n        AUDIOCTL 0\n        AUDIOCTLWT 1 1\n        LFOSHAPE 0\n        LFOSYNC 0 0 0\n        LFOSPEED 0.124573 0\n      >\n",
+    );
+    assert!((l[900] - 1.0).abs() < 1e-3, "baseline 2 plays {}", l[900] / 0.5);
 }

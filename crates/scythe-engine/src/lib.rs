@@ -58,6 +58,7 @@ pub mod stock;
 pub mod stretch;
 pub mod synth;
 pub mod turtle;
+pub mod upgrade;
 pub mod video;
 pub mod vst2;
 pub mod vst3_host;

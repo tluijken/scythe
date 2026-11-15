@@ -203,6 +203,8 @@ static MONO_DESCRIPTOR: SyncPtr<clap_plugin_descriptor> = SyncPtr(clap_plugin_de
 struct Gain {
     plugin: clap_plugin,
     gain: AtomicU32,
+    /// A factor on top of the gain, the parameter whose range is not 0..1. Not in the state.
+    boost: AtomicU32,
     host: *const clap_host,
     gui: std::sync::Mutex<Option<Gui>>,
     /// Host timer ticks seen while the editor is open.
@@ -293,8 +295,10 @@ unsafe fn apply_params(p: *const clap_plugin, events: *const clap_sys::events::c
             let e = &*(events.get.unwrap())(events, i);
             if e.type_ == clap_sys::events::CLAP_EVENT_PARAM_VALUE {
                 let pv = &*(e as *const _ as *const clap_sys::events::clap_event_param_value);
-                if pv.param_id == GAIN_PARAM {
-                    gain_of(p).gain.store((pv.value as f32).to_bits(), Ordering::Relaxed);
+                match pv.param_id {
+                    GAIN_PARAM => gain_of(p).gain.store((pv.value as f32).to_bits(), Ordering::Relaxed),
+                    BOOST_PARAM => gain_of(p).boost.store((pv.value as f32).to_bits(), Ordering::Relaxed),
+                    _ => {}
                 }
             }
         }
@@ -305,7 +309,8 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
     // SAFETY: the host passes valid buffers for `frames_count` frames.
     unsafe {
         apply_params(p, (*process).in_events);
-        let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed));
+        let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed))
+            * f32::from_bits(gain_of(p).boost.load(Ordering::Relaxed));
         let pr = &*process;
         let (input, output) = (&*pr.audio_inputs, &*pr.audio_outputs);
         // A second input port is a sidechain, added to the output.
@@ -379,9 +384,13 @@ unsafe extern "C" fn state_load(p: *const clap_plugin, stream: *const clap_istre
 static STATE: clap_plugin_state = clap_plugin_state { save: Some(state_save), load: Some(state_load) };
 
 const GAIN_PARAM: u32 = 7;
+const BOOST_PARAM: u32 = 9;
+/// Id, name, range and default of each parameter.
+const PARAMS_INFO: [(u32, &CStr, f64, f64, f64); 2] =
+    [(GAIN_PARAM, c"Gain", 0.0, 1.0, 0.5), (BOOST_PARAM, c"Boost", 0.0, 4.0, 1.0)];
 
 unsafe extern "C" fn params_count(_p: *const clap_plugin) -> u32 {
-    1
+    PARAMS_INFO.len() as u32
 }
 
 unsafe extern "C" fn params_info(
@@ -389,18 +398,16 @@ unsafe extern "C" fn params_info(
     index: u32,
     info: *mut clap_sys::ext::params::clap_param_info,
 ) -> bool {
-    if index != 0 {
-        return false;
-    }
+    let Some(&(id, name, min, max, default)) = PARAMS_INFO.get(index as usize) else { return false };
     // SAFETY: the host passes a writable info struct.
     unsafe {
         let info = &mut *info;
-        info.id = GAIN_PARAM;
+        info.id = id;
         info.flags = clap_sys::ext::params::CLAP_PARAM_IS_AUTOMATABLE;
-        info.min_value = 0.0;
-        info.max_value = 1.0;
-        info.default_value = 0.5;
-        for (d, s) in info.name.iter_mut().zip(c"Gain".to_bytes_with_nul()) {
+        info.min_value = min;
+        info.max_value = max;
+        info.default_value = default;
+        for (d, s) in info.name.iter_mut().zip(name.to_bytes_with_nul()) {
             *d = *s as c_char;
         }
     }
@@ -410,10 +417,12 @@ unsafe extern "C" fn params_info(
 unsafe extern "C" fn params_value(p: *const clap_plugin, id: u32, out: *mut f64) -> bool {
     // SAFETY: valid plugin and out pointer.
     unsafe {
-        if id != GAIN_PARAM {
-            return false;
-        }
-        *out = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed)) as f64;
+        let value = match id {
+            GAIN_PARAM => &gain_of(p).gain,
+            BOOST_PARAM => &gain_of(p).boost,
+            _ => return false,
+        };
+        *out = f32::from_bits(value.load(Ordering::Relaxed)) as f64;
     }
     true
 }
@@ -765,6 +774,7 @@ unsafe extern "C" fn create_plugin(
             on_main_thread: Some(nop),
         },
         gain: AtomicU32::new(0.5f32.to_bits()),
+        boost: AtomicU32::new(1.0f32.to_bits()),
         host: _host,
         gui: std::sync::Mutex::new(None),
         ticks: AtomicU32::new(0),

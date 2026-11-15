@@ -297,7 +297,7 @@ pub trait Effect: Send {
     }
 
     /// Parameter `index` (REAPER's order) in its own units, for effects whose parameters REAPER
-    /// does not count from 0 to 1 (JSFX sliders); `None` for 0..1.
+    /// does not count from 0 to 1 (JSFX sliders, CLAP plugins); `None` for 0..1.
     fn param_range(&mut self, _index: usize) -> Option<(f64, f64)> {
         None
     }
@@ -963,6 +963,15 @@ impl FxRegistry {
         self.entries.get(&(owner.clone(), key.to_owned())).and_then(|e| e.instance.clone())
     }
 
+    /// The parameters the plugin of `slot` lists: its running instance's, or for a slot that
+    /// runs none (offline, bypassed, not played) those of one made for the question.
+    pub fn slot_params(&self, owner: &FxOwner, key: &str, slot: &FxSlot) -> Option<Vec<ParamInfo>> {
+        if let Some(inst) = self.instance_by_key(owner, key) {
+            return inst.with(|e| e.params());
+        }
+        crate::plugin_thread::run(|| self.create_here(slot, 2).ok().map(|(mut e, _)| e.params()))
+    }
+
     pub fn instance(&self, track: Option<TrackId>, slot: &FxSlot, index: usize) -> Option<Arc<FxInstance>> {
         let owner = track.map_or(Owner::Master, Owner::Track);
         self.entries.get(&(owner, slot_key(slot, index))).and_then(|e| e.instance.clone())
@@ -1531,8 +1540,16 @@ impl FxRegistry {
                 )
                 .map_err(|e| e.to_string())?;
                 let instrument = desc.is_instrument();
+                let params = plugin.params();
                 Ok((
-                    Box::new(ClapEffect { plugin, instrument, expected: None, long: Vec::new(), presets: None }),
+                    Box::new(ClapEffect {
+                        plugin,
+                        params,
+                        instrument,
+                        expected: None,
+                        long: Vec::new(),
+                        presets: None,
+                    }),
                     FxStatus::Hosted(desc.path),
                 ))
             }
@@ -1855,6 +1872,21 @@ pub fn clap_slot(desc: &ClapDescriptor) -> FxSlot {
     }
 }
 
+/// Whether `slot` holds a CLAP plugin.
+pub(crate) fn is_clap(slot: &FxSlot) -> bool {
+    slot_plugin(slot).is_some_and(|c| c.name() == "CLAP")
+}
+
+/// How REAPER names parameter `index` of `slot` in `PARMENV`: `<index>:<id>` for a CLAP plugin,
+/// given the parameters it lists; `None` where the index alone names it.
+pub fn envelope_spec(slot: &FxSlot, params: Option<&[ParamInfo]>, index: usize) -> Option<String> {
+    if crate::scythe_eq::is_slot(slot) {
+        return crate::scythe_eq::envelope_spec(slot, index);
+    }
+    is_clap(slot).then_some(())?;
+    params?.get(index).map(|p| format!("{index}:{}", p.id))
+}
+
 /// A new slot for an LV2 plugin, named the way REAPER names it (`LV2i:` for instruments).
 pub fn lv2_slot(info: &crate::lv2::Lv2Info) -> FxSlot {
     let display = format!("{}: {}", if info.instrument { "LV2i" } else { "LV2" }, info.name);
@@ -2021,6 +2053,9 @@ pub fn slot_id(slot: &FxSlot) -> Option<String> {
 
 struct ClapEffect {
     plugin: ClapPlugin,
+    /// The parameters as the plugin listed them when it was created: their ranges are asked for
+    /// on the main thread only, and automation needs them on the audio thread.
+    params: Vec<ParamInfo>,
     instrument: bool,
     /// Where the next block should start if playback is continuous.
     expected: Option<i64>,
@@ -2072,6 +2107,22 @@ impl Effect for ClapEffect {
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
         self.plugin.save_state()
+    }
+
+    fn set_normalized(&mut self, index: usize, value: f64) -> bool {
+        let Some(p) = self.params.get(index) else { return false };
+        self.plugin.set_param(p.id, p.min + value.clamp(0.0, 1.0) * (p.max - p.min));
+        true
+    }
+
+    fn normalized(&mut self, index: usize) -> Option<f64> {
+        let p = self.params.get(index)?;
+        let v = self.plugin.param_value(p.id)?;
+        Some(if p.max > p.min { ((v - p.min) / (p.max - p.min)).clamp(0.0, 1.0) } else { 0.0 })
+    }
+
+    fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
+        self.params.get(index).map(|p| (p.min, p.max))
     }
 
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
