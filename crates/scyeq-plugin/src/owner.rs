@@ -31,14 +31,6 @@ pub(crate) fn active() -> Option<Owner> {
     Some(Owner(raw_window_handle::XcbWindowHandle::new(window).into()))
 }
 
-/// The active window of the editor's thread, the host's window around the editor.
-#[cfg(windows)]
-pub(crate) fn active() -> Option<Owner> {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetActiveWindow;
-    let window = std::num::NonZeroIsize::new(unsafe { GetActiveWindow() } as isize)?;
-    Some(Owner(raw_window_handle::Win32WindowHandle::new(window).into()))
-}
-
 /// The key window's content view; on the main thread only, where the editor's frame runs.
 #[cfg(target_os = "macos")]
 pub(crate) fn active() -> Option<Owner> {
