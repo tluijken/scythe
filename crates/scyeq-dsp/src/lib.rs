@@ -443,7 +443,11 @@ impl ScytheEq {
             let latency =
                 self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency());
             let o = &mut *self.outgoing;
-            o.fir = old_fir;
+            // A spectral switch keeps an earlier mode switch's FIR path rather than free it on
+            // the audio thread; only a mode switch, which builds a path there anyway, lets it go.
+            if core_change {
+                o.fir = old_fir;
+            }
             o.zero = core_change && was_zero;
             o.shared = !core_change;
             o.spectral = old_spectral;
@@ -948,7 +952,7 @@ impl ScytheEq {
                     o.out[c][..n].copy_from_slice(&self.buf[c][..n]);
                     self.buf[c][..n].copy_from_slice(&self.inp[c][..n]);
                 }
-            } else if fading {
+            } else if fading && !self.outgoing.shared {
                 let o = &mut *self.outgoing;
                 if let Some(fir) = o.fir.as_deref_mut() {
                     for i in 0..n {
