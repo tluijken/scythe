@@ -1856,10 +1856,18 @@ impl Engine {
         self.transport.playing.store(true, Ordering::Relaxed);
     }
 
+    /// Frames the device takes at a time: as opened, else as last delivered (0 before any).
+    pub fn block_frames(&self) -> u32 {
+        self.info.block_size.unwrap_or_else(|| self.transport.block_frames.load(Ordering::Relaxed))
+    }
+
     /// Plays after `count_in`: the playhead waits where it is while the count-in clicks.
-    pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) {
-        self.transport.start_count_in(CountInClicks::from_seconds(count_in, self.info.sample_rate));
+    /// Answers the count-in as it plays, padded to whole blocks of the device.
+    pub fn play_counting_in(&self, count_in: &scythe_core::metronome::CountIn) -> scythe_core::metronome::CountIn {
+        let count_in = count_in.padded(self.block_frames(), self.info.sample_rate);
+        self.transport.start_count_in(CountInClicks::from_seconds(&count_in, self.info.sample_rate));
         self.transport.playing.store(true, Ordering::Relaxed);
+        count_in
     }
 
     pub fn stop(&self) {
@@ -2856,15 +2864,39 @@ mod tests {
             first_in_bar: 0,
             beats_per_bar: 4,
             audible: 4.0,
+            counting: 4.0,
         };
-        e.play_counting_in(&count_in);
+        let played = e.play_counting_in(&count_in);
         let (at, beat, beats) = e.transport().count_in().unwrap();
-        assert!((-4.0..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");
+        assert!((-played.length..=0.0).contains(&at) && beat >= 1 && beats == 8, "{at} {beat}");
         e.stop();
         assert_eq!(e.transport().count_in(), None);
         e.play();
         assert_eq!(e.transport().count_in(), None, "plain play does not resume a count-in");
         e.stop();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The null device runs 512 frames a block: 1.9 s at 8 kHz, 15200 frames, counts in for 30
+    /// blocks, the clicks on the same frames before the playhead moves.
+    #[test]
+    fn a_count_in_lasts_whole_blocks() {
+        let (p, pool, dir) = ones_project(0.0);
+        let mut e = Engine::start_offline(Arc::new(pool), 8000);
+        e.sync(&p);
+        let count_in = scythe_core::metronome::CountIn {
+            length: 1.9,
+            beat: 0.5,
+            first: 0.0,
+            first_in_bar: 0,
+            beats_per_bar: 4,
+            audible: 1.9,
+            counting: 1.9,
+        };
+        let played = e.play_counting_in(&count_in);
+        e.stop();
+        assert!((played.length - 15_360.0 / 8000.0).abs() < 1e-9, "{played:?}");
+        assert!((played.first - 160.0 / 8000.0).abs() < 1e-9, "{played:?}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

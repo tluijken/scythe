@@ -932,12 +932,13 @@ fn count_in_and_metronome_settings() {
     assert_eq!((st["playing"].clone(), st["count_in"]["position"].clone()), (json!(true), Value::Null));
     ok(&mut s, json!({"cmd": "transport.stop"}));
 
-    // At 120 bpm one 4/4 bar is two seconds; the playhead waits at the cursor meanwhile.
+    // At 120 bpm one 4/4 bar is two seconds, padded to whole blocks of the null device; the
+    // playhead waits at the cursor meanwhile.
     ok(&mut s, json!({"cmd": "transport.metronome", "enabled": true}));
     let st = ok(&mut s, json!({"cmd": "transport.play"}));
     assert_eq!(st["playing"], true);
     let position = st["count_in"]["position"].as_f64().unwrap();
-    assert!((-2.0..=-1.5).contains(&position), "{position}");
+    assert!((-2.02..=-1.5).contains(&position), "{position}");
     assert_eq!(st["count_in"]["beats"], 4);
     assert_eq!(st["position"], 3.0);
     std::thread::sleep(Duration::from_millis(150));
@@ -989,6 +990,16 @@ fn preroll_and_count_in_preferences() {
     assert!((-2.0..=-1.8).contains(&lead), "{lead}");
     assert_eq!(st["position"], 0.0);
     ok(&mut s, json!({"cmd": "transport.stop"}));
+
+    // A recording's pre-roll lasts whole blocks of the device, so the recording starts on a
+    // block's first frame: from 5 s, 144000 frames, it becomes 282 of the null device's 512.
+    ok(&mut s, json!({"cmd": "transport.preroll", "record": true}));
+    let until = s.start_playback(5.0, true, false);
+    assert!((until - 144_384.0 / 48_000.0).abs() < 1e-9, "{until}");
+    assert!((s.engine.transport().position_seconds() - (5.0 - until)).abs() < 1e-6);
+    s.stop();
+    assert!((s.start_playback(5.0, false, false) - 3.0).abs() < 1e-9, "playback is not padded");
+    s.stop();
 
     let mut reloaded = session();
     reloaded.load_preferences(file);

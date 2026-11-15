@@ -438,10 +438,13 @@ impl Session {
     /// preferences ask, then the project's count-in, or a count-in in any case with
     /// `force_count_in`. Answers the seconds until the playhead reaches `at`.
     pub fn start_playback(&mut self, at: f64, recording: bool, force_count_in: bool) -> f64 {
-        let start = self.project.metronome.start(&self.prefs, &self.project.tempo, at, recording, force_count_in);
+        let mut start = self.project.metronome.start(&self.prefs, &self.project.tempo, at, recording, force_count_in);
+        if recording {
+            start = start.padded_preroll(at, self.engine.block_frames(), self.engine.sample_rate());
+        }
         self.engine.seek(start.from);
         match &start.count_in {
-            Some(count_in) => self.engine.play_counting_in(count_in),
+            Some(count_in) => start.count_in = Some(self.engine.play_counting_in(count_in)),
             None => self.engine.play(),
         }
         start.until(at)
