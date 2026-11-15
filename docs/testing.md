@@ -9,7 +9,7 @@ drive the app the way a user, a tablet or an AI agent does and take a few minute
 | `devbox run itest` | the UI tests, the end-to-end process tests and the corpus (below) | about five minutes after a build |
 | `scripts/cargo.sh run --release -p scythe-engine --example null_check -- x.RPP …` | the null set: probe projects rendered by Scythe against REAPER 7.73's renders of them (see [verification](verification.md)) | minutes |
 | `devbox run -- scripts/reaper-compare.sh` | ScyEQ-Pro in REAPER, with the plugin, against Scythe (below) | a few minutes after a build |
-| `devbox run -- scripts/reaper-count-in.sh` | count-in and pre-roll in REAPER on a private JACK dummy server, against the starts Scythe models ([verification](verification.md)); `BLOCK` sets the block size (1024), `ONLY` picks cases | about six minutes |
+| `devbox run -- scripts/reaper-count-in.sh` | count-in and pre-roll in REAPER on a private JACK dummy server, against the starts Scythe models ([verification](verification.md)); `BLOCK` sets the block size (1024), `RATE` the sample rate (48000), `ONLY` picks cases | about twelve minutes |
 
 `devbox run itest [filter]` passes the filter to both `cargo test` runs, so
 `devbox run itest setlist` runs every integration test with "setlist" in its name.
