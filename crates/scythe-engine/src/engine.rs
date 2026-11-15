@@ -119,7 +119,7 @@ impl Transport {
     }
 
     pub fn position_seconds(&self) -> f64 {
-        let pending = self.seek.load(Ordering::Relaxed);
+        let pending = self.seek.load(Ordering::Acquire);
         let frames = if pending != NO_SEEK { pending } else { self.position.load(Ordering::Relaxed) };
         frames as f64 / self.sample_rate as f64 * self.play_rate()
     }
@@ -188,9 +188,12 @@ impl Transport {
     /// seek or loop wrap onto the marker) does not run, so a song started at the stop marker of
     /// the song before it plays.
     fn advance(&self, frames: usize, segments: &mut [(i64, usize, usize); 8], hit: &mut impl FnMut(Hit)) -> usize {
-        let seek = self.seek.swap(NO_SEEK, Ordering::Relaxed);
+        // The position first, so `position_seconds` never finds the seek taken and the old
+        // position still in place; a seek asked for meanwhile stays for the next block.
+        let seek = self.seek.load(Ordering::Relaxed);
         if seek != NO_SEEK {
             self.position.store(seek, Ordering::Relaxed);
+            let _ = self.seek.compare_exchange(seek, NO_SEEK, Ordering::Release, Ordering::Relaxed);
         }
         if !self.is_playing() {
             return 0;
@@ -2059,6 +2062,31 @@ mod tests {
         assert_eq!(segs_hits(&t, 20), (vec![(0, 0, 20)], vec![(20, 1016, true)]));
         assert_eq!(t.position.load(Ordering::Relaxed), 20);
         assert!(!t.is_playing());
+    }
+
+    /// A seek the audio thread takes up is never seen undone: the playhead it reports moves on
+    /// from the asked position, not back to the one before for a moment.
+    #[test]
+    fn a_seek_taken_up_shows_no_old_position() {
+        let t = Arc::new(Transport::new(100));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader = {
+            let (t, done) = (t.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut last = 0.0;
+                while !done.load(Ordering::Relaxed) {
+                    let now = t.position_seconds();
+                    assert!(now >= last, "{now} after {last}");
+                    last = now;
+                }
+            })
+        };
+        for k in 1..200_000 {
+            t.seek.store(k, Ordering::Relaxed);
+            segs(&t, 1);
+        }
+        done.store(true, Ordering::Relaxed);
+        reader.join().unwrap();
     }
 
     #[test]
