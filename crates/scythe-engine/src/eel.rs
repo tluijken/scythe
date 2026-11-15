@@ -1944,8 +1944,22 @@ fn invsqrt(x: f64) -> f64 {
     (x * -0.5 * y * y + 1.5) * y
 }
 
-/// The math functions, shared by evaluation and compile-time folding.
+/// The math functions, shared by evaluation and compile-time folding. An argument a function
+/// is not defined for gives the NaN x86 gives (from its C library's functions, measured): the
+/// sign differs per function there, where ARM gives a positive NaN for all, and `sign` tells
+/// them apart. A NaN argument passes through as it is.
 fn math(b: Builtin, x: f64, y: f64) -> f64 {
+    let r = library(b, x, y);
+    if !r.is_nan() || x.is_nan() || y.is_nan() {
+        return r;
+    }
+    match b {
+        Builtin::Log | Builtin::Sin | Builtin::Cos | Builtin::Tan => X86_NAN,
+        _ => f64::from_bits(0x7ff8_0000_0000_0000),
+    }
+}
+
+fn library(b: Builtin, x: f64, y: f64) -> f64 {
     use Builtin::*;
     match b {
         // The library functions run with flush-to-zero too: a result too small to be normal
@@ -2064,7 +2078,7 @@ fn common(op: Op, a: f64, b: f64) -> f64 {
             let d = int(b.abs()) as u64;
             return if d == 0 { 0.0 } else { ((int(a.abs()) as u64) % d) as f64 };
         }
-        Pow => return flush(a.powf(b)),
+        Pow => return math(Builtin::Pow, a, b),
         Or => return (int(a) | int(b)) as f64,
         And => return (int(a) & int(b)) as f64,
         Xor => return (int(a) ^ int(b)) as f64,
@@ -2423,6 +2437,19 @@ mod tests {
         }
         let positive = f64::from_bits(0x7ff8_0000_0000_0000);
         assert_eq!(binop(Op::Add, positive, 1.0).to_bits(), positive.to_bits(), "a NaN operand passes through");
+    }
+
+    /// The C library functions give a NaN of their own sign for an argument they are not defined
+    /// for on x86 and a positive one on ARM; every arch gives x86's, which `sign` shows.
+    #[test]
+    fn functions_give_x86_s_nan_for_an_invalid_argument() {
+        let m = run("m = -1; t = 2; z = 0; a = sign(log(m)); b = sign(sin(1 / z)); c = sign(cos(1 / z)); \
+             d = sign(tan(1 / z)); e = sign(log10(m)); f = sign(asin(t)); g = sign(acos(t)); h = sign(pow(m, 0.5)); \
+             i = sign(m ^ 0.5); j = sign(sqrt(m));");
+        let signs: Vec<f64> = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].iter().map(|v| var(&m, v)).collect();
+        assert_eq!(signs, [-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        let nan = f64::from_bits(0x7ff8_0000_0000_0000);
+        assert_eq!(math(Builtin::Log, nan, 0.0).to_bits(), nan.to_bits(), "a NaN argument passes through");
     }
 
     #[test]
