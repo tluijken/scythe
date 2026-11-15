@@ -282,6 +282,8 @@ struct Picks {
     eq: ScytheEq,
     view: ViewState,
     files: Vec<PathBuf>,
+    /// A notice about the file dialog, until the host hears EQ Match closed.
+    pick_notice: Option<String>,
 }
 
 impl EqHost for Picks {
@@ -323,6 +325,12 @@ impl EqHost for Picks {
     fn decode_reference(&self) -> Option<DecodeFn> {
         Some(decode_by_name)
     }
+    fn notice(&self) -> Option<String> {
+        self.pick_notice.clone()
+    }
+    fn match_closed(&mut self) {
+        self.pick_notice = None;
+    }
     fn view(&mut self) -> &mut ViewState {
         &mut self.view
     }
@@ -333,6 +341,7 @@ fn picks(files: &[&str]) -> Harness<'static, (Picks, EditorState)> {
         eq: ScytheEq::new(48_000),
         view: ViewState::default(),
         files: files.iter().map(|f| PathBuf::from("/music").join(f)).collect(),
+        pick_notice: None,
     };
     let mut h = Harness::builder()
         .with_size(vec2(1180.0, 680.0))
@@ -399,4 +408,15 @@ fn a_file_that_cannot_be_used_is_named_in_a_plain_sentence() {
     assert!(h.query_by_label("locked.wav cannot be opened: no permission to read it.").is_some());
     pick_next(&mut h, "locked.wav");
     assert!(h.query_by_label("busy.wav cannot be opened.").is_some());
+}
+
+#[test]
+fn closing_eq_match_ends_its_pick_notice() {
+    let mut h = picks(&[]);
+    h.state_mut().0.pick_notice = Some("A file dialog is already open".to_owned());
+    h.run_steps(3);
+    assert!(h.state().0.pick_notice.is_some(), "kept while EQ Match is open");
+    h.get_by_label("Match").click();
+    h.run_steps(2);
+    assert_eq!(h.state().0.pick_notice, None);
 }

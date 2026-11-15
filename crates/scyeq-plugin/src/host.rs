@@ -190,6 +190,10 @@ impl EqHost for PluginHost<'_> {
     fn notice(&self) -> Option<String> {
         self.shared.notice()
     }
+
+    fn match_closed(&mut self) {
+        self.shared.set_pick_notice(None);
+    }
 }
 
 /// Every instance in the library, this editor's first: their bands change through their own

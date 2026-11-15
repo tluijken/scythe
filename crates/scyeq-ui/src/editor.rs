@@ -329,6 +329,9 @@ pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     if view.match_panel.is_some() {
         eq_match::window(cx, ui, view, &st.values, &sources);
     }
+    if view.match_panel.is_none() {
+        cx.host.match_closed();
+    }
     controls::keys(cx, ui);
     view.ui_cost = started.elapsed();
     if let Some(t) = view.profile

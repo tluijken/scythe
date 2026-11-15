@@ -56,6 +56,9 @@ pub trait EqHost {
     fn notice(&self) -> Option<String> {
         None
     }
+    /// EQ Match is closed, so a notice about its file dialog no longer applies; called every
+    /// frame while it is.
+    fn match_closed(&mut self) {}
     /// Whether a parameter's menu offers modulation and learn.
     fn can_modulate(&self) -> bool {
         false
