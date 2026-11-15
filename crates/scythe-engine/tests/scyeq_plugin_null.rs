@@ -15,6 +15,9 @@ use scythe_engine::scythe_eq::filters::Shape;
 use scythe_engine::scythe_eq::params::{self, BAND_STRIDE, GLOBAL, band, global};
 use scythe_engine::{scythe_eq, vst3_host};
 
+#[path = "../../scyeq-plugin/tests/built/library.rs"]
+mod library;
+
 struct Counting;
 
 thread_local! {
@@ -50,19 +53,6 @@ const RATE: u32 = 48_000;
 /// position from its host places the cells elsewhere.
 const START: i64 = 1013;
 const FRAMES: usize = 24_000;
-
-/// The nearest plugin library above the test: the one cargo built beside it as a dependency with
-/// its old build layout, otherwise the one `cargo build -p scyeq-plugin` put in the profile
-/// directory (the new layout keeps each unit in a directory of its own).
-fn plugin_library() -> PathBuf {
-    let file = format!("{}scyeq_plugin{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
-    let exe = std::env::current_exe().unwrap();
-    exe.ancestors()
-        .skip(1)
-        .map(|dir| dir.join(&file))
-        .find(|library| library.exists())
-        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
-}
 
 /// Every shape on a band of its own, a dynamic band, a spectral band and a band keyed by the
 /// sidechain, in phase mode `phase`.
@@ -212,7 +202,7 @@ fn registry(host: Host, library: &Path) -> FxRegistry {
 }
 
 fn render(media: &Media, host: Host, state: Option<&[u8]>, block: usize, keyed: bool) -> (Vec<f32>, Vec<f32>) {
-    let library = plugin_library();
+    let library = library::library("scyeq_plugin");
     let mut fx = registry(host, &library);
     let slot = state.map(|state| match host {
         Host::BuiltIn | Host::Clap => scythe_eq::slot(Some(state)),
@@ -290,7 +280,7 @@ fn built_in_and_plugin_null_on_subnormal_results() {
 /// its sidechain on the track's channels 3/4.
 #[test]
 fn hosted_plugin_takes_stereo_and_the_sidechain() {
-    let library = plugin_library();
+    let library = library::library("scyeq_plugin");
     let hosts: &[Host] = if cfg!(target_os = "macos") { &[Host::Clap] } else { &[Host::Clap, Host::Vst3] };
     for &host in hosts {
         let mut fx = registry(host, &library);

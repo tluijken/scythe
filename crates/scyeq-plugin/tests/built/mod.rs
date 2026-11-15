@@ -3,6 +3,10 @@
 
 use std::path::PathBuf;
 
+mod library;
+
+pub use library::library;
+
 pub struct Built {
     /// What a host is given as the plugin's path: the library, or on macOS the bundle.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "a VST3 host needs it on macOS only"))]
@@ -27,19 +31,6 @@ pub fn plugin(name: &str, extension: &str) -> Built {
         let _ = extension;
         Built { path: library.clone(), binary: library }
     }
-}
-
-/// The nearest library `name` above the test: beside it in `deps` with cargo's old build layout,
-/// otherwise the one `cargo build` put in the profile directory (the new layout keeps each unit
-/// in a directory of its own).
-fn library(name: &str) -> PathBuf {
-    let file = format!("{}{name}{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
-    let exe = std::env::current_exe().unwrap();
-    exe.ancestors()
-        .skip(1)
-        .map(|dir| dir.join(&file))
-        .find(|library| library.exists())
-        .unwrap_or_else(|| panic!("{file} not built next to or above {}: cargo build -p scyeq-plugin", exe.display()))
 }
 
 #[cfg(target_os = "macos")]
