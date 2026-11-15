@@ -1,6 +1,9 @@
 //! ScyEQ-Pro, Scythe's EQ, as a CLAP and VST3 plugin: the same DSP and the same state as in
 //! Scythe, so a project sounds the same in either.
 
+#[cfg(all(test, unix))]
+#[path = "../tests/built/library.rs"]
+mod built_library;
 mod host;
 pub mod params;
 mod plugin;

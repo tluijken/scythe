@@ -2,8 +2,9 @@
 //! parameter gestures through the instance's `GuiContext`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::{Arc, Once};
 
 use plugin_format::{GuiContext, Shared, egui};
 use scyeq_dsp::probe::FxProbe;
@@ -170,8 +171,7 @@ impl EqHost for PluginHost<'_> {
     /// thread when it closes the window; on Windows the dialog's modal loop would paint the
     /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        keep_loaded();
-        if self.picking.is_none() {
+        if self.picking.is_none() && keep_loaded() {
             *self.picking = Some(start_pick(file_dialog()));
         }
         None
@@ -348,25 +348,30 @@ fn load_reference(path: &Path) -> Result<ReferenceAudio, String> {
 /// Keeps this library loaded until the process ends. The file dialog and the reference decode
 /// run on threads that cannot be stopped or waited for (the dialog stays open as long as the
 /// user leaves it), so a host that unloads the plugin meanwhile must not unmap their code.
-/// Called before either starts.
-fn keep_loaded() {
-    static PINNED: Once = Once::new();
-    PINNED.call_once(|| unsafe { pin(keep_loaded as *const ()) });
+/// Called before either starts, which they do only once it is kept: false until then.
+fn keep_loaded() -> bool {
+    static PINNED: AtomicBool = AtomicBool::new(false);
+    if !PINNED.load(Ordering::Acquire) && unsafe { pin(keep_loaded as *const ()) } {
+        PINNED.store(true, Ordering::Release);
+    }
+    PINNED.load(Ordering::Acquire)
 }
 
+/// Keeps the library that holds `code` loaded for good; false when it could not.
 #[cfg(unix)]
-unsafe fn pin(code: *const ()) {
+unsafe fn pin(code: *const ()) -> bool {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
-        if libc::dladdr(code.cast(), &mut info) != 0 && !info.dli_fname.is_null() {
-            // Never closed: with RTLD_NODELETE the library outlives every dlclose.
-            libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NODELETE);
+        if libc::dladdr(code.cast(), &mut info) == 0 || info.dli_fname.is_null() {
+            return false;
         }
+        // Never closed: with RTLD_NODELETE the library outlives every dlclose.
+        !libc::dlopen(info.dli_fname, libc::RTLD_NOW | libc::RTLD_NODELETE).is_null()
     }
 }
 
 #[cfg(windows)]
-unsafe fn pin(code: *const ()) {
+unsafe fn pin(code: *const ()) -> bool {
     use windows_sys::Win32::System::LibraryLoader::{
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
     };
@@ -376,7 +381,7 @@ unsafe fn pin(code: *const ()) {
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
             code.cast(),
             &mut module,
-        );
+        ) != 0
     }
 }
 
@@ -496,9 +501,25 @@ mod tests {
         assert_eq!(block_on(future), 7);
     }
 
+    /// What `keep_loaded` does for the plugin, on the library a host would load: the test
+    /// itself runs from an executable, which cannot be pinned so.
+    #[cfg(unix)]
     #[test]
-    fn keeping_the_library_loaded_can_be_asked_again() {
-        keep_loaded();
-        keep_loaded();
+    fn a_pinned_library_outlives_its_last_close() {
+        use std::os::unix::ffi::OsStrExt;
+        let library = crate::built_library::library("scyeq_plugin");
+        let path = std::ffi::CString::new(library.as_os_str().as_bytes()).unwrap();
+        unsafe {
+            let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+            assert!(!handle.is_null());
+            let entry = libc::dlsym(handle, c"clap_entry".as_ptr());
+            assert!(!entry.is_null());
+            assert!(pin(entry as *const ()));
+            assert_eq!(libc::dlclose(handle), 0);
+            let still = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD);
+            assert!(!still.is_null(), "unloaded by its last close");
+            libc::dlclose(still);
+        }
+        assert!(!unsafe { pin(std::ptr::null()) }, "no library holds a null pointer");
     }
 }
