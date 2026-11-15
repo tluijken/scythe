@@ -2,9 +2,9 @@
 //! parameter gestures through the instance's `GuiContext`.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 
 use plugin_format::{GuiContext, Shared, egui};
 use scyeq_dsp::probe::FxProbe;
@@ -20,8 +20,6 @@ pub(crate) struct Editor {
     cx: GuiContext,
     state: EditorState,
     themed: bool,
-    /// A reference file being picked on a thread of its own.
-    picking: Option<Receiver<Option<PathBuf>>>,
     /// A gesture begun in the instance list, on this instance or another: the context it went
     /// through and the parameter.
     listed_gesture: Option<(GuiContext, u32)>,
@@ -29,7 +27,7 @@ pub(crate) struct Editor {
 
 impl Editor {
     pub(crate) fn new(shared: Arc<ScyEqShared>, cx: GuiContext) -> Self {
-        Self { shared, cx, state: EditorState::default(), themed: false, picking: None, listed_gesture: None }
+        Self { shared, cx, state: EditorState::default(), themed: false, listed_gesture: None }
     }
 
     pub(crate) fn frame(&mut self, root: &mut egui::Ui) {
@@ -39,13 +37,7 @@ impl Editor {
         let pointer = root.ctx().input(|i| i.pointer.hover_pos());
         self.state.controls.hovered = pointer.is_some_and(|p| root.max_rect().contains(p));
         let view = self.shared.view();
-        let mut host = PluginHost {
-            shared: &self.shared,
-            cx: &self.cx,
-            values: self.shared.values(),
-            view,
-            picking: &mut self.picking,
-        };
+        let mut host = PluginHost { shared: &self.shared, cx: &self.cx, values: self.shared.values(), view };
         egui::CentralPanel::default().show(root, |ui| scyeq_ui::show(ui, &mut host, &mut self.state));
         if host.view.instances {
             let ctx = root.ctx().clone();
@@ -80,7 +72,6 @@ struct PluginHost<'a> {
     cx: &'a GuiContext,
     values: Vec<f64>,
     view: ViewState,
-    picking: &'a mut Option<Receiver<Option<PathBuf>>>,
 }
 
 impl EqHost for PluginHost<'_> {
@@ -171,14 +162,14 @@ impl EqHost for PluginHost<'_> {
     /// thread when it closes the window; on Windows the dialog's modal loop would paint the
     /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        if self.picking.is_none() && keep_loaded() {
-            *self.picking = Some(start_pick(file_dialog()));
+        if keep_loaded() {
+            pick(self.shared.picking(), file_dialog);
         }
         None
     }
 
     fn picked_reference(&mut self) -> Option<PathBuf> {
-        take_picked(self.picking)
+        take_picked(&mut self.shared.picking().lock().unwrap_or_else(|e| e.into_inner()))
     }
 
     fn decode_reference(&self) -> Option<scyeq_ui::DecodeFn> {
@@ -297,6 +288,18 @@ fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
 fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
     let picked = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file();
     move || block_on(picked).map(|file| file.path().to_path_buf())
+}
+
+/// Opens the dialog `open` makes, unless the instance's last one is still open: an editor
+/// closed and opened again meanwhile takes that one's answer rather than open a second.
+fn pick<D>(picking: &Mutex<Option<Receiver<Option<PathBuf>>>>, open: impl FnOnce() -> D)
+where
+    D: FnOnce() -> Option<PathBuf> + Send + 'static,
+{
+    let mut picking = picking.lock().unwrap_or_else(|e| e.into_inner());
+    if picking.is_none() {
+        *picking = Some(start_pick(open()));
+    }
 }
 
 /// Runs `dialog` on a thread of its own; its answer arrives through the receiver.
@@ -486,6 +489,34 @@ mod tests {
         drop(tx);
         assert_eq!(take_picked(&mut picking), None);
         assert!(picking.is_none());
+    }
+
+    /// The dialog outlives the editor that opened it: the instance's next editor waits for its
+    /// answer instead of opening a second dialog.
+    #[test]
+    fn an_editor_opened_again_takes_the_open_dialogs_answer() {
+        let (_plugin, shared) = <crate::ScyEqPlugin as plugin_format::Plugin>::new();
+        let (release, wait) = mpsc::channel::<()>();
+        pick(shared.picking(), || {
+            move || {
+                wait.recv().unwrap();
+                Some(PathBuf::from("/music/reference.wav"))
+            }
+        });
+        let mut second = false;
+        pick(shared.picking(), || {
+            second = true;
+            || None
+        });
+        assert!(!second, "a second dialog opened");
+        release.send(()).unwrap();
+        let picked = loop {
+            if let Some(path) = take_picked(&mut shared.picking().lock().unwrap()) {
+                break path;
+            }
+            std::thread::yield_now();
+        };
+        assert_eq!(picked, PathBuf::from("/music/reference.wav"));
     }
 
     #[test]

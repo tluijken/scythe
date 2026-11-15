@@ -1,4 +1,6 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, Weak};
 
 use plugin_format::{Block, GuiContext, Info, Layout, ParamInfo, Plugin, Shared, TrackInfo};
@@ -39,6 +41,8 @@ pub struct ScyEqShared {
     sample_rate: AtomicU32,
     /// Kept for the next editor while none is open; not part of the state.
     view: Mutex<ViewState>,
+    /// The answer of the EQ Match file dialog while it is open, for whichever editor is open then.
+    picking: Mutex<Option<Receiver<Option<PathBuf>>>>,
 }
 
 /// Values a newer version stored, written back unchanged, the known values stored outside their
@@ -66,6 +70,7 @@ impl ScyEqShared {
             latency: AtomicU32::new(0),
             sample_rate: AtomicU32::new(0),
             view: Mutex::new(ViewState::default()),
+            picking: Mutex::new(None),
         }
     }
 
@@ -124,6 +129,10 @@ impl ScyEqShared {
 
     pub(crate) fn set_view(&self, view: ViewState) {
         *self.view.lock().unwrap_or_else(|e| e.into_inner()) = view;
+    }
+
+    pub(crate) fn picking(&self) -> &Mutex<Option<Receiver<Option<PathBuf>>>> {
+        &self.picking
     }
 }
 
