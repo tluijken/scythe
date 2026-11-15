@@ -38,12 +38,14 @@ case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*)
         name=scythe-$version-windows-x86_64
         cargo build --release --locked "${packages[@]}"
+        rm -rf "$target_dir/notices"
+        "$here/notices.sh" "$target_dir/notices" scythe-app windows
         cargo wix -p scythe-app --no-build --nocapture --output "$out/$name.msi"
         mkdir -p "$stage/$name"
         for bin in "${bins[@]}"; do
             cp "$target_dir/release/$bin.exe" "$stage/$name/"
         done
-        "$here/notices.sh" "$stage/$name" scythe-app windows
+        cp "$target_dir"/notices/* "$stage/$name/"
         (cd "$stage" && 7z a -tzip "$out/$name.zip" "$name")
         echo "$out/$name.msi"
         echo "$out/$name.zip"

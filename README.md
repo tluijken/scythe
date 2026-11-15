@@ -84,10 +84,12 @@ with `--audio-host ASIO`. The installer is an MSI made with
 
 ```powershell
 cargo build --release -p scythe-app -p scythe-server -p scythe-mcp --features scythe-app/asio
+bash scripts/release/notices.sh target/notices scythe-app windows   # licenses; needs cargo-about
 cargo wix -p scythe-app --no-build --nocapture   # target\wix\scythe-app-<version>-x86_64.msi
 ```
 
-It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry;
+It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry,
+and the licenses in its install folder;
 adding them to `PATH` and opening `.RPP` files with Scythe are features to pick in the setup (the
 file association is off by default). The installer is not signed, so SmartScreen warns before it
 runs.
