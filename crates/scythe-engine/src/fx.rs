@@ -901,8 +901,12 @@ impl FxRegistry {
     ) -> Option<Arc<FxInstance>> {
         let key = (owner.clone(), key);
         let state = plugin_state(slot);
-        let stale =
-            self.entries.get(&key).is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot)));
+        // The built-in EQ in a VST3 slot does not depend on the width, so it is not set up again.
+        let built_in = |e: &Entry| e.status == FxStatus::Native(crate::scythe_eq::STATUS);
+        let stale = self
+            .entries
+            .get(&key)
+            .is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot) && !built_in(e)));
         if stale
             && !self.update_nam(&key, &state)
             && !self.update_stock(&key, &state)
@@ -2946,6 +2950,27 @@ mod scyeq_state_tests {
     fn a_clap_state_holding_no_eq_state_is_kept() {
         use base64::Engine as _;
         survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+
+    /// The built-in EQ in a VST3 slot does not depend on the track's width: a hosted VST3 is
+    /// set up anew when it changes, the built-in one runs on as it is.
+    #[test]
+    fn the_built_in_eq_in_a_vst3_slot_runs_on_when_the_track_widens() {
+        use crate::scythe_eq::{ScytheEq, params};
+        let state = params::encode(&params::defaults(), &[], params::VERSION);
+        let component = crate::vst3_host::reaper_state(&state, &[]);
+        let project = project(&vst3(&crate::builtin::vst_lines(1, &component)));
+        let mut registry = FxRegistry::new(48_000);
+        let track = &project.tracks[0];
+        let freq = params::band_param(0, params::band::FREQ);
+        let eq_value = |inst: &Arc<FxInstance>| {
+            inst.with(|e| e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>()).map(|eq| eq.value(freq))).flatten()
+        };
+        let (two, _) = registry.chain_with_automation(Some(track.id), &track.fx, 2);
+        two[0].with(|e| e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>()).map(|eq| eq.set(freq, 2000.0)));
+        let (four, _) = registry.chain_with_automation(Some(track.id), &track.fx, 4);
+        assert!(Arc::ptr_eq(&two[0], &four[0]));
+        assert_eq!(eq_value(&four[0]), Some(2000.0), "loaded again from the slot");
     }
 }
 
