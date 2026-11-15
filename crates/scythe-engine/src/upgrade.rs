@@ -90,26 +90,7 @@ pub fn upgrade_project_report(project: &mut Project, params: &mut SlotParams) ->
         Writer::Unknown => false,
     };
     let mut pass = Pass { all, make: all, params, pooled: Vec::new(), made: HashMap::new(), unconverted: Vec::new() };
-    let mut changed = pass.chain(&FxOwner::Master, &mut project.master.fx, "");
-    for track in &mut project.tracks {
-        let id = track.id;
-        changed |= pass.chain(&FxOwner::Track(id), &mut track.fx, "");
-        let mut input = track.input_fx();
-        if pass.chain(&FxOwner::Input(id), &mut input, "") {
-            track.set_input_fx(&input);
-            changed = true;
-        }
-        for item in &mut track.items {
-            let item_id = item.id;
-            for (k, take) in item.takes.iter_mut().enumerate() {
-                let mut fx = take.fx();
-                if pass.chain(&FxOwner::Take(item_id, k), &mut fx, "") {
-                    take.set_fx(&fx);
-                    changed = true;
-                }
-            }
-        }
-    }
+    let mut changed = each_chain(project, &mut |owner, slots| pass.chain(owner, slots, ""));
     let pooled = std::mem::take(&mut pass.pooled);
     if upgrade_pools(project, &pooled) {
         project.resolve_automation_items();
@@ -119,6 +100,32 @@ pub fn upgrade_project_report(project: &mut Project, params: &mut SlotParams) ->
         project.writer = Writer::Scythe(SCYTHE_FORMAT);
     }
     Upgraded { changed, unconverted: pass.unconverted }
+}
+
+/// Runs `f` on every effect chain of the project (master, tracks, input effects, takes) and
+/// stores back those it changed; returns whether any changed.
+fn each_chain(project: &mut Project, f: &mut dyn FnMut(&FxOwner, &mut [FxSlot]) -> bool) -> bool {
+    let mut changed = f(&FxOwner::Master, &mut project.master.fx);
+    for track in &mut project.tracks {
+        let id = track.id;
+        changed |= f(&FxOwner::Track(id), &mut track.fx);
+        let mut input = track.input_fx();
+        if f(&FxOwner::Input(id), &mut input) {
+            track.set_input_fx(&input);
+            changed = true;
+        }
+        for item in &mut track.items {
+            let item_id = item.id;
+            for (k, take) in item.takes.iter_mut().enumerate() {
+                let mut fx = take.fx();
+                if f(&FxOwner::Take(item_id, k), &mut fx) {
+                    take.set_fx(&fx);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// Converts the slots of tracks or effects a file brings into a project (an FX chain, a track
@@ -181,7 +188,7 @@ struct Pass<'p, 'a> {
     make: bool,
     params: &'p mut SlotParams<'a>,
     /// Pools played by the envelopes converted, with how their values move.
-    pooled: Vec<(i64, Units)>,
+    pooled: Vec<Pooled>,
     /// The parameters of plugins made for the question, by CLAP id: one instance each per pass,
     /// also when making it failed.
     made: HashMap<String, Option<Vec<ParamInfo>>>,
@@ -231,7 +238,11 @@ impl Pass<'_, '_> {
             (pe.min, pe.max) = (u.min, u.max);
             pe.envelope.range = Some((u.min, u.max));
             pe.spec = format!("{}:{}", pe.param().unwrap_or_default(), u.id);
-            self.pooled.extend(pe.envelope.items.iter().map(|item| (item.pool, u)));
+            self.pooled.extend(pe.envelope.items.iter().map(|item| Pooled {
+                pool: item.pool,
+                units: u,
+                scale: (item.baseline, item.amplitude),
+            }));
             slot.set_parameter_envelope(&pe);
             changed = true;
         }
@@ -276,28 +287,103 @@ impl Pass<'_, '_> {
     }
 }
 
+/// An automation item on an envelope just converted: the pool it plays, how the envelope's
+/// values moved, and the item's baseline and amplitude.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Pooled {
+    pool: i64,
+    units: Units,
+    scale: (f64, f64),
+}
+
 /// Moves the pools whose every instance is on an envelope just converted, the same way; a pool
 /// also played elsewhere keeps its values. Linear moves leave normalised values as they are.
-fn upgrade_pools(project: &mut Project, pooled: &[(i64, Units)]) -> bool {
-    let mut moves: HashMap<i64, (usize, Option<Units>)> = HashMap::new();
-    for &(pool, u) in pooled {
-        let entry = moves.entry(pool).or_insert((0, Some(u)));
+/// An item plays its pool's values scaled around its baseline by its amplitude, which a move
+/// that is not linear does not keep: the scaling goes into the pool's values and the item plays
+/// them as they are, a pool played with several scalings being copied for each. The pool's LFO
+/// settings, which no longer make its points, are dropped.
+fn upgrade_pools(project: &mut Project, pooled: &[Pooled]) -> bool {
+    let mut moves: HashMap<i64, (usize, Option<Units>, Vec<(f64, f64)>)> = HashMap::new();
+    for p in pooled {
+        let entry = moves.entry(p.pool).or_insert((0, Some(p.units), Vec::new()));
         entry.0 += 1;
-        if entry.1 != Some(u) {
+        if entry.1 != Some(p.units) {
             entry.1 = None;
+        }
+        if !entry.2.contains(&p.scale) {
+            entry.2.push(p.scale);
         }
     }
     let uses = pool_uses(project);
+    let mut next = project.automation_pools.iter().map(|p| p.id).max().unwrap_or(0) + 1;
+    let mut remap: HashMap<(i64, u64, u64), i64> = HashMap::new();
+    let mut copies = Vec::new();
     let mut changed = false;
     for pool in &mut project.automation_pools {
-        let Some(&(count, Some(u))) = moves.get(&pool.id) else { continue };
-        if !u.scyeq || uses.get(&pool.id) != Some(&count) {
+        let Some((count, Some(u), scales)) = moves.get(&pool.id) else { continue };
+        if !u.scyeq || uses.get(&pool.id) != Some(count) {
             continue;
         }
-        for p in &mut pool.points {
-            p.value = u.pooled(p.value);
+        let source = std::mem::take(&mut pool.points);
+        let scaled = |(baseline, amplitude): (f64, f64)| -> Vec<scythe_core::EnvPoint> {
+            let mut points = source.clone();
+            for p in &mut points {
+                p.value = u.pooled((baseline + amplitude * (p.value - 0.5)).clamp(0.0, 1.0));
+            }
+            points
+        };
+        pool.lfo = None;
+        for (k, &scale) in scales.iter().enumerate() {
+            let id = if k == 0 {
+                pool.id
+            } else {
+                next += 1;
+                next - 1
+            };
+            if id != pool.id || scale != (0.5, 1.0) {
+                remap.insert((pool.id, scale.0.to_bits(), scale.1.to_bits()), id);
+            }
+            if k == 0 {
+                pool.points = scaled(scale);
+            } else {
+                copies.push(scythe_core::automation_item::AutomationPool { id, points: scaled(scale), ..pool.clone() });
+            }
         }
         changed = true;
+    }
+    project.automation_pools.extend(copies);
+    if !remap.is_empty() {
+        each_chain(project, &mut |_, slots| unscale_items(slots, &remap));
+    }
+    changed
+}
+
+/// Points the items of moved pools at the pool holding their scaling, which they now play as it
+/// is, over the slots and their containers.
+fn unscale_items(slots: &mut [FxSlot], remap: &HashMap<(i64, u64, u64), i64>) -> bool {
+    let mut changed = false;
+    for slot in slots {
+        if slot.is_container() {
+            let mut children = slot.container_children();
+            if unscale_items(&mut children, remap) {
+                slot.set_container_children(&children);
+                changed = true;
+            }
+            continue;
+        }
+        for mut pe in slot.parameter_envelopes() {
+            let mut moved = false;
+            for item in &mut pe.envelope.items {
+                if let Some(&pool) = remap.get(&(item.pool, item.baseline.to_bits(), item.amplitude.to_bits())) {
+                    (item.pool, item.baseline, item.amplitude) = (pool, 0.5, 1.0);
+                    moved = true;
+                }
+            }
+            if moved {
+                slot.set_parameter_envelope(&pe);
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -591,6 +677,46 @@ mod tests {
         let upgraded = p.clone();
         assert!(!upgrade_project(&mut p, &mut |_, _, _, _| None), "a second load changes nothing");
         assert_eq!(p, upgraded);
+    }
+
+    /// An item's baseline and amplitude scale its pool's values before the envelope maps them, so
+    /// a converted ScyEQ-Pro pool takes each item's scaling into its values (one copy of the pool
+    /// per scaling) and the items play them as they are. The LFO settings no longer make the
+    /// points and go.
+    #[test]
+    fn old_scyeq_pooled_items_keep_their_baseline_and_amplitude() {
+        let freq = params::automatable().nth(2).unwrap();
+        let linear = |v: f64| {
+            let s = params::spec_of(freq).unwrap();
+            (v - s.min) / (s.max - s.min)
+        };
+        let item = |baseline: f64, amplitude: f64| {
+            format!("POOLEDENVINST 1 0 1 0 1 0 {baseline} {amplitude} 0 0 0 0 0 0 0.012 0 1\n")
+        };
+        let slot =
+            eq_slot(&format!("<PARMENV 2 0 1 0.25\nACT 1 -1\n{}{}PT 0 0.5 0\n>\n", item(0.5, 1.0), item(0.3, 0.5)));
+        let mut p = project(Writer::Scythe(1), slot);
+        let mut pool = AutomationPool::new(1, 4.0);
+        pool.points = vec![EnvPoint::new(0.0, 0.0), EnvPoint::new(1.0, 1.0)];
+        pool.lfo = Some(scythe_core::automation_item::Lfo {
+            shape: scythe_core::automation_item::LfoShape::SawUp,
+            phase: 0.0,
+            cycles: 1.0,
+        });
+        p.automation_pools.push(pool);
+
+        assert!(upgrade_project(&mut p, &mut |_, _, _, _| None));
+        let moved = |n: f64| linear(params::from_normalized(freq, n));
+        let values = |id: i64| -> Vec<f64> {
+            p.automation_pools.iter().find(|q| q.id == id).unwrap().points.iter().map(|q| q.value).collect()
+        };
+        assert_eq!(values(1), [moved(0.0), moved(1.0)]);
+        let near = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-12);
+        assert!(near(&values(2), &[moved(0.05), moved(0.55)]), "{:?}", values(2));
+        assert!(p.automation_pools.iter().all(|q| q.lfo.is_none()));
+        let items = &p.tracks[0].fx[0].parameter_envelope("2").unwrap().envelope.items;
+        let played: Vec<_> = items.iter().map(|i| (i.pool, i.baseline, i.amplitude)).collect();
+        assert_eq!(played, [(1, 0.5, 1.0), (2, 0.5, 1.0)]);
     }
 
     /// An old file whose hosted plugin cannot be made is marked current all the same, so the
