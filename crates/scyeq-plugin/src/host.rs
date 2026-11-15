@@ -369,7 +369,7 @@ fn keep_loaded() -> bool {
 
 /// Keeps the library that holds `code` loaded for good; false when it could not.
 #[cfg(unix)]
-unsafe fn pin(code: *const ()) -> bool {
+pub(crate) unsafe fn pin(code: *const ()) -> bool {
     unsafe {
         let mut info: libc::Dl_info = std::mem::zeroed();
         if libc::dladdr(code.cast(), &mut info) == 0 || info.dli_fname.is_null() {
@@ -381,7 +381,7 @@ unsafe fn pin(code: *const ()) -> bool {
 }
 
 #[cfg(windows)]
-unsafe fn pin(code: *const ()) -> bool {
+pub(crate) unsafe fn pin(code: *const ()) -> bool {
     use windows_sys::Win32::System::LibraryLoader::{
         GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
     };
@@ -572,27 +572,5 @@ mod tests {
             std::task::Poll::Pending
         });
         assert_eq!(block_on(future), 7);
-    }
-
-    /// What `keep_loaded` does for the plugin, on the library a host would load: the test
-    /// itself runs from an executable, which cannot be pinned so.
-    #[cfg(unix)]
-    #[test]
-    fn a_pinned_library_outlives_its_last_close() {
-        use std::os::unix::ffi::OsStrExt;
-        let library = crate::built_library::library("scyeq_plugin");
-        let path = std::ffi::CString::new(library.as_os_str().as_bytes()).unwrap();
-        unsafe {
-            let handle = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
-            assert!(!handle.is_null());
-            let entry = libc::dlsym(handle, c"clap_entry".as_ptr());
-            assert!(!entry.is_null());
-            assert!(pin(entry as *const ()));
-            assert_eq!(libc::dlclose(handle), 0);
-            let still = libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_NOLOAD);
-            assert!(!still.is_null(), "unloaded by its last close");
-            libc::dlclose(still);
-        }
-        assert!(!unsafe { pin(std::ptr::null()) }, "no library holds a null pointer");
     }
 }
