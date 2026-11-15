@@ -2385,3 +2385,36 @@ fn an_old_project_s_clap_automation_moves_to_the_parameters_units_when_it_opens(
     assert_eq!(s.project.tracks[0].fx, before.tracks[0].fx, "REAPER's own file stays as it is");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// ScyEQ-Pro's modulation baselines and pooled automation items were log-normalised in projects
+/// from before the format revision, with no range to tell them by: the writer does. A baseline
+/// of 0.25 on the first band's frequency is 74 Hz after opening an old Scythe file, and stays
+/// 0.25 (the range's bottom, 10 Hz) in REAPER's.
+#[test]
+fn an_old_project_s_scyeq_baselines_move_to_the_parameters_units_when_it_opens() {
+    use scythe_engine::scythe_eq::params;
+    let mut project = scythe_core::Project::default();
+    let mut track = scythe_core::Track::new("Vox");
+    let mut slot = scythe_engine::scythe_eq::slot(None);
+    let mut m = scythe_core::modulation::ParamModulation::new("2", "Freq", 0.25);
+    m.lfo.active = true;
+    m.lfo.strength = 0.1;
+    scythe_core::modulation::set_modulation(&mut slot, &m);
+    track.fx.push(slot);
+    project.tracks.push(track);
+    let text = scythe_core::rpp::project_to_rpp(&project);
+    let header = text.lines().next().unwrap().to_owned();
+    let dir = std::env::temp_dir().join(format!("scythe-scyeq-upgrade-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (old, reaper) = (dir.join("old.RPP"), dir.join("reaper.RPP"));
+    std::fs::write(&old, text.replacen(&header, "<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 0", 1)).unwrap();
+    std::fs::write(&reaper, text.replacen(&header, "<REAPER_PROJECT 0.1 \"7.73/linux-x86_64\" 0 0", 1)).unwrap();
+
+    let mut s = session();
+    let base = |s: &Session| scythe_core::modulation::modulation(&s.project.tracks[0].fx[0], 2).unwrap().base;
+    s.open_path(&old).unwrap();
+    assert!((base(&s) - params::from_normalized(2, 0.25)).abs() < 1e-3, "{}", base(&s));
+    s.open_path(&reaper).unwrap();
+    assert_eq!(base(&s), 0.25);
+    std::fs::remove_dir_all(&dir).ok();
+}

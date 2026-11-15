@@ -1,20 +1,25 @@
 //! Converts what older Scythe versions stored in other units than REAPER, when a project opens.
 //!
 //! REAPER keeps a CLAP plugin's parameter envelopes (`PARMENV <index>:<id> <min> <max>`) and
-//! modulation baselines (`PARAMBASE`) in the parameter's own units. Scythe before format
-//! revision 2 stored hosted CLAP plugins' envelopes and baselines on 0..1 (linear over the range).
+//! modulation baselines (`PARAMBASE`) in the parameter's own units, and pooled automation items
+//! normalised linearly over the envelope's range. Scythe before format revision 2 stored hosted
+//! CLAP plugins' envelopes and baselines on 0..1 (linear over the range), and ScyEQ-Pro's
+//! envelopes, baselines and pooled items log-normalised as its VST3 plugin maps them.
 //!
 //! The project's writer decides: a file REAPER wrote is never converted, and one an older Scythe
 //! wrote is converted wholly. Elsewhere (no marker, or a newer Scythe that could not convert a
 //! slot because its plugin was missing) only a 0..1 envelope on a parameter with another range
 //! shows a slot is old, which REAPER never writes; its baselines are then converted with it.
 
+use std::collections::HashMap;
+
 use scythe_core::fx_chain::ParamEnvelope;
 use scythe_core::model::{SCYTHE_FORMAT, Writer};
-use scythe_core::{FxSlot, Project};
+use scythe_core::{Envelope, FxSlot, Project};
 
 use crate::clap_host::ParamInfo;
 use crate::fx::{FxOwner, slot_key};
+use crate::scythe_eq::params;
 
 /// The first format revision that stores CLAP automation in the parameters' units.
 const UNITS_FORMAT: u32 = 2;
@@ -29,6 +34,8 @@ struct Units {
     id: u32,
     min: f64,
     max: f64,
+    /// A ScyEQ-Pro parameter, stored as `params::to_normalized` maps it.
+    scyeq: bool,
 }
 
 impl Units {
@@ -37,11 +44,21 @@ impl Units {
     }
 
     fn old_to_units(&self, v: f64) -> f64 {
-        self.min + v.clamp(0.0, 1.0) * (self.max - self.min)
+        if self.scyeq {
+            params::from_normalized(self.id, v)
+        } else {
+            self.min + v.clamp(0.0, 1.0) * (self.max - self.min)
+        }
+    }
+
+    /// An old pooled value, normalised over the range as pools store it.
+    fn pooled(&self, n: f64) -> f64 {
+        (self.old_to_units(n) - self.min) / (self.max - self.min)
     }
 }
 
-/// Converts the CLAP parameter envelopes and modulation baselines of every chain that an older Scythe stored in other units than REAPER. `params` lists a hosted
+/// Converts the CLAP parameter envelopes, modulation baselines and pooled automation items of
+/// every chain that an older Scythe stored in other units than REAPER. `params` lists a hosted
 /// plugin's parameters; it is asked only for slots that may need them. Returns whether anything
 /// changed. A project from an older Scythe is marked as current afterwards, so converting it
 /// again changes nothing.
@@ -51,7 +68,7 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
         Writer::Scythe(format) => format < UNITS_FORMAT,
         Writer::Unknown => false,
     };
-    let mut pass = Pass { all, params };
+    let mut pass = Pass { all, params, pooled: Vec::new() };
     let mut changed = pass.chain(&FxOwner::Master, &mut project.master.fx, "");
     for track in &mut project.tracks {
         let id = track.id;
@@ -72,6 +89,11 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
             }
         }
     }
+    let pooled = std::mem::take(&mut pass.pooled);
+    if upgrade_pools(project, &pooled) {
+        project.resolve_automation_items();
+        changed = true;
+    }
     if all {
         project.writer = Writer::Scythe(SCYTHE_FORMAT);
     }
@@ -82,6 +104,8 @@ struct Pass<'p, 'a> {
     /// Whether every baseline is old, not only those of slots with an old envelope.
     all: bool,
     params: &'p mut SlotParams<'a>,
+    /// Pools played by the envelopes converted, with how their values move.
+    pooled: Vec<(i64, Units)>,
 }
 
 impl Pass<'_, '_> {
@@ -121,6 +145,7 @@ impl Pass<'_, '_> {
             (pe.min, pe.max) = (u.min, u.max);
             pe.envelope.range = Some((u.min, u.max));
             pe.spec = format!("{}:{}", pe.param().unwrap_or_default(), u.id);
+            self.pooled.extend(pe.envelope.items.iter().map(|item| (item.pool, u)));
             slot.set_parameter_envelope(&pe);
             changed = true;
         }
@@ -135,24 +160,88 @@ impl Pass<'_, '_> {
         changed
     }
 
-    /// The units of each parameter of a hosted CLAP plugin, by index; `None` for other formats,
-    /// whose envelopes REAPER keeps on 0..1 too, and ScyEQ-Pro (`scythe_eq::upgrade_project`).
+    /// The units of each parameter of the slot's plugin, by index: ScyEQ-Pro's own, or a hosted
+    /// CLAP plugin's; `None` for other formats, whose envelopes REAPER keeps on 0..1 too.
     fn units(&mut self, owner: &FxOwner, key: &str, slot: &FxSlot) -> Option<Vec<Option<Units>>> {
+        if crate::scythe_eq::is_clap_slot(slot) {
+            return Some(
+                params::automatable()
+                    .map(|id| params::spec_of(id).map(|s| Units { id, min: s.min, max: s.max, scyeq: true }))
+                    .collect(),
+            );
+        }
         if crate::scythe_eq::is_slot(slot) || !crate::fx::is_clap(slot) {
             return None;
         }
         let list = (self.params)(owner, key, slot)?;
-        Some(list.iter().map(|p| Some(Units { id: p.id, min: p.min, max: p.max })).collect())
+        Some(list.iter().map(|p| Some(Units { id: p.id, min: p.min, max: p.max, scyeq: false })).collect())
     }
+}
+
+/// Moves the pools whose every instance is on an envelope just converted, the same way; a pool
+/// also played elsewhere keeps its values. Linear moves leave normalised values as they are.
+fn upgrade_pools(project: &mut Project, pooled: &[(i64, Units)]) -> bool {
+    let mut moves: HashMap<i64, (usize, Option<Units>)> = HashMap::new();
+    for &(pool, u) in pooled {
+        let entry = moves.entry(pool).or_insert((0, Some(u)));
+        entry.0 += 1;
+        if entry.1 != Some(u) {
+            entry.1 = None;
+        }
+    }
+    let uses = pool_uses(project);
+    let mut changed = false;
+    for pool in &mut project.automation_pools {
+        let Some(&(count, Some(u))) = moves.get(&pool.id) else { continue };
+        if !u.scyeq || uses.get(&pool.id) != Some(&count) {
+            continue;
+        }
+        for p in &mut pool.points {
+            p.value = u.pooled(p.value);
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// How many automation items play each pool, over every envelope of the project.
+fn pool_uses(project: &Project) -> HashMap<i64, usize> {
+    let mut uses = HashMap::new();
+    let mut count = |env: &Envelope| {
+        for item in &env.items {
+            *uses.entry(item.pool).or_insert(0) += 1;
+        }
+    };
+    fn slots(chain: &[FxSlot], count: &mut dyn FnMut(&Envelope)) {
+        for slot in chain {
+            if slot.is_container() {
+                slots(&slot.container_children(), count);
+            }
+            slot.parameter_envelopes().iter().for_each(|p| count(&p.envelope));
+        }
+    }
+    for track in std::iter::once(&project.master).chain(&project.tracks) {
+        track.envelopes.iter().for_each(&mut count);
+        track.sends.iter().flat_map(|s| &s.envelopes).for_each(&mut count);
+        slots(&track.fx, &mut count);
+        slots(&track.input_fx(), &mut count);
+        for take in track.items.iter().flat_map(|i| &i.takes) {
+            take.envelopes.iter().for_each(&mut count);
+            slots(&take.fx(), &mut count);
+        }
+    }
+    uses
 }
 
 #[cfg(test)]
 mod tests {
+    use scythe_core::automation_item::{AutomationItem, AutomationPool};
     use scythe_core::model::{SCYTHE_FORMAT, Writer};
     use scythe_core::rpp::{Chunk, Node, parse};
-    use scythe_core::{Item, Take, Track};
+    use scythe_core::{EnvPoint, Item, Take, Track};
 
     use super::*;
+    use crate::scythe_eq::params;
 
     /// A hosted CLAP plugin listing a 0..1 gain (id 7) and a 0..4 boost (id 9).
     fn gain_params() -> Vec<ParamInfo> {
@@ -177,6 +266,10 @@ mod tests {
             Node::Line("WAK 0 0".into()),
         ];
         with_children(FxSlot { name: "CLAP: Test Gain (Scythe)".into(), enabled: true, raw }, children)
+    }
+
+    fn eq_slot(children: &str) -> FxSlot {
+        with_children(crate::scythe_eq::slot(None), children)
     }
 
     const OLD_BOOST: &str = "<PARMENV 1 0 1 0.25\nACT 1 -1\nPT 0 0.25 0\nPT 1 0.75 0\n>\n";
@@ -312,4 +405,47 @@ mod tests {
             ]
         );
     }
+
+    /// ScyEQ-Pro's baselines were log-normalised as its envelopes were, and its pooled items
+    /// are normalised over the envelope's range, so they move to linear with them: a pool only
+    /// when every instance is on an envelope moving the same way.
+    #[test]
+    fn old_scyeq_baselines_and_pooled_items_move_with_its_envelopes() {
+        let freq = params::automatable().nth(2).unwrap();
+        let linear = |v: f64| {
+            let s = params::spec_of(freq).unwrap();
+            (v - s.min) / (s.max - s.min)
+        };
+        let pooled = |pool: i64| format!("POOLEDENVINST {pool} 0 1 0 1 0 0.5 1 0 0 0 0 0 0 0.012 0 1\n");
+        let slot = eq_slot(&format!(
+            "<PARMENV 2 0 1 0.25\nACT 1 -1\n{}{}PT 0 0.5 0\n>\n<PROGRAMENV 2 0 \"Freq\"\nPARAMBASE 0.25\nLFO 1\n>\n",
+            pooled(1),
+            pooled(2)
+        ));
+        let mut p = project(Writer::Scythe(1), slot);
+        let mut shared = Envelope::new(scythe_core::EnvelopeKind::Volume);
+        shared.items.push(AutomationItem::new(2, 0.0, 1.0));
+        p.tracks[0].envelopes.push(shared);
+        for id in [1, 2] {
+            let mut pool = AutomationPool::new(id, 4.0);
+            pool.points = vec![EnvPoint::new(0.0, 0.5), EnvPoint::new(1.0, 1.0)];
+            p.automation_pools.push(pool);
+        }
+
+        assert!(upgrade_project(&mut p, &mut |_, _, _| None));
+        let slot = &p.tracks[0].fx[0];
+        assert_eq!(values(slot, "2"), [params::from_normalized(freq, 0.5)]);
+        assert!((base(slot, 2) - params::from_normalized(freq, 0.25)).abs() < 1e-4, "stored as REAPER rounds it");
+        let pool = |id: i64| p.automation_pools.iter().find(|q| q.id == id).unwrap().points.clone();
+        let own: Vec<f64> = pool(1).iter().map(|q| q.value).collect();
+        assert_eq!(own, [linear(params::from_normalized(freq, 0.5)), 1.0]);
+        let kept: Vec<f64> = pool(2).iter().map(|q| q.value).collect();
+        assert_eq!(kept, [0.5, 1.0], "the volume envelope plays it too");
+
+        let upgraded = p.clone();
+        assert!(!upgrade_project(&mut p, &mut |_, _, _| None), "a second load changes nothing");
+        assert_eq!(p, upgraded);
+    }
+
+    use scythe_core::Envelope;
 }

@@ -142,5 +142,8 @@ instances loaded on both.
 Scythe plays ScyEQ-Pro's envelopes as REAPER plays them for the slot's format: read at the last
 frame of each 512-frame block, in the parameter's own units on a linear range for the CLAP slot
 (Scythe's own form, `PARMENV <index>:<id> <min> <max>`), as VST3 normalised values mapped as the
-plugin's VST3 wrapper maps them for the VST3 slot (`0 1`). Envelopes Scythe stored on 0..1 before
-are moved to the parameter's units when a project opens.
+plugin's VST3 wrapper maps them for the VST3 slot (`0 1`). Projects an older Scythe wrote (no
+`/format-2` after the version in their header) have their envelopes, modulation baselines and
+pooled automation items, which it kept log-normalised on 0..1, moved to the parameter's units
+when they open, pooled items to 0..1 linear over the range (`scythe_engine::upgrade`); projects
+REAPER wrote are never converted.

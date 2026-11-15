@@ -73,12 +73,11 @@ impl Session {
 
     /// Opens `path` in a new tab and switches to it; on failure no tab is added.
     pub fn open_in_new_tab(&mut self, path: &Path) -> Result<(), String> {
-        let mut project = scythe_core::rpp::read_project(path).map_err(|e| {
+        let project = scythe_core::rpp::read_project(path).map_err(|e| {
             let e = format!("Could not open {}: {e}", path.display());
             self.notify(e.clone());
             e
         })?;
-        scythe_engine::scythe_eq::upgrade_project(&mut project);
         let at = self.active_tab + 1;
         self.parked_tabs.insert(at, Some(ParkedTab { project, ..Default::default() }));
         self.switch_tab(at);

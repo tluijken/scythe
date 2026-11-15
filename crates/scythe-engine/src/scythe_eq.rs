@@ -106,7 +106,7 @@ pub fn slot(state: Option<&[u8]>) -> scythe_core::FxSlot {
 }
 
 /// Whether `slot` holds the CLAP plugin's block, the form Scythe itself stores ScyEQ-Pro in.
-fn is_clap_slot(slot: &scythe_core::FxSlot) -> bool {
+pub(crate) fn is_clap_slot(slot: &scythe_core::FxSlot) -> bool {
     slot.raw.iter().any(|n| matches!(n, Node::Chunk(c) if c.name() == "CLAP" && is_chunk(c)))
 }
 
@@ -125,6 +125,8 @@ pub fn envelope_spec(slot: &scythe_core::FxSlot, index: usize) -> Option<String>
 /// Rewrites the envelopes of a CLAP slot that Scythe stored before they followed REAPER: from
 /// 0..1, mapped as `params::from_normalized` maps, to the parameter's own units and range.
 /// Parameters whose range is 0..1 read the same either way. Returns whether anything changed.
+/// Projects convert when they open (`upgrade::upgrade_project`, which also moves baselines and
+/// pooled items); the engine plays a slot through this too, for projects rendered from a file.
 pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
     if !is_clap_slot(slot) {
         return false;
@@ -145,44 +147,6 @@ pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
         pe.spec = format!("{index}:{id}");
         slot.set_parameter_envelope(&pe);
         changed = true;
-    }
-    changed
-}
-
-/// Every ScyEQ-Pro slot of `project` through [`upgrade_envelopes`]: in track, input and take
-/// chains, and inside containers.
-pub fn upgrade_project(project: &mut scythe_core::Project) -> bool {
-    let mut changed = false;
-    for track in std::iter::once(&mut project.master).chain(project.tracks.iter_mut()) {
-        changed |= upgrade_chain(&mut track.fx);
-        let mut input = track.input_fx();
-        if upgrade_chain(&mut input) {
-            track.set_input_fx(&input);
-            changed = true;
-        }
-        for take in track.items.iter_mut().flat_map(|item| &mut item.takes) {
-            let mut fx = take.fx();
-            if upgrade_chain(&mut fx) {
-                take.set_fx(&fx);
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-fn upgrade_chain(slots: &mut [scythe_core::FxSlot]) -> bool {
-    let mut changed = false;
-    for slot in slots {
-        if slot.is_container() {
-            let mut children = slot.container_children();
-            if upgrade_chain(&mut children) {
-                slot.set_container_children(&children);
-                changed = true;
-            }
-        } else {
-            changed |= upgrade_envelopes(slot);
-        }
     }
     changed
 }
@@ -465,34 +429,5 @@ mod host_tests {
         let upgraded = slot.clone();
         assert!(!upgrade_envelopes(&mut slot), "a second load changes nothing");
         assert_eq!(slot, upgraded);
-    }
-    /// Old envelopes move to the parameter's units in every chain of a project: take effects,
-    /// input effects and containers too.
-    #[test]
-    fn old_envelopes_are_upgraded_in_every_chain() {
-        use scythe_core::{Item, Project, Take, Track};
-        let old = slot_with("<PARMENV 2 0 1 0.25\n  ACT 1 -1\n  PT 0 0.5 0\n>\n");
-        let upgraded = || {
-            let mut slot = old.clone();
-            assert!(upgrade_envelopes(&mut slot));
-            slot
-        };
-        let mut container = scythe_core::FxSlot::container();
-        container.set_container_children(std::slice::from_ref(&old));
-        let mut take = Take::from_file("vocal.wav".into());
-        take.set_fx(std::slice::from_ref(&old));
-        let mut track = Track::new("Vocals");
-        track.set_input_fx(std::slice::from_ref(&old));
-        track.fx.push(container);
-        track.items.push(Item::new(0.0, 1.0, take));
-        let mut project = Project::default();
-        project.tracks.push(track);
-
-        assert!(upgrade_project(&mut project));
-        let track = &project.tracks[0];
-        assert_eq!(track.input_fx(), [upgraded()]);
-        assert_eq!(track.items[0].takes[0].fx(), [upgraded()]);
-        assert_eq!(track.fx[0].container_children(), [upgraded()]);
-        assert!(!upgrade_project(&mut project), "a second load changes nothing");
     }
 }
