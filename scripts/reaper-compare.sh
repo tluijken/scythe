@@ -144,7 +144,12 @@ for rpp in "$projects"/*.RPP; do
     call '{"cmd":"render.project"}' >/dev/null
     for _ in $(seq 600); do
         events=$(call "{\"cmd\":\"events.since\",\"since\":$latest}")
-        latest=$(grep -o '"latest":[0-9]*' <<<"$events" | head -n1 | cut -d: -f2)
+        next=$(grep -o '"latest":[0-9]*' <<<"$events" | head -n1 | cut -d: -f2)
+        if [ -z "$next" ]; then
+            echo "$(basename "$rpp"): events.since answered ${events:-nothing}" >&2
+            break
+        fi
+        latest=$next
         if grep -q '"message":"Render' <<<"$events"; then break; fi
         sleep 0.1
     done
