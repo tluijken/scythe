@@ -142,7 +142,7 @@ fn measure_file(decode: DecodeFn, path: PathBuf) -> Receiver<Result<Vec<f64>, St
 fn unusable(path: &Path, error: &ReferenceError) -> String {
     let name = file_label(path);
     match error {
-        ReferenceError::NotAudio => format!("{name} is not audio Scythe can read."),
+        ReferenceError::NotAudio => format!("{name} is not audio ScyEQ-Pro can read."),
         ReferenceError::Open(ErrorKind::NotFound) => format!("{name} cannot be found."),
         ReferenceError::Open(ErrorKind::PermissionDenied) => {
             format!("{name} cannot be opened: no permission to read it.")
