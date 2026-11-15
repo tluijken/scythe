@@ -63,6 +63,11 @@ three programs in release and writes the archives for the system it runs on. It 
 devbox run -- scripts/release/package.sh dist   # dist/scythe-<version>-linux-x86_64.tar.gz
 ```
 
+What it writes locally is for checking the packaging, not for handing out: built in devbox, the
+Linux programs load their libraries through Nix's dynamic loader under `/nix/store`, so they run
+only on a machine with that store, not on an ordinary distribution. Releases come from the
+workflow, which builds on the runners' own systems.
+
 `scripts/release/notices.sh <dir> <crate> <os>` alone writes the licenses and `CRATE_LICENSES.md`
 for one crate, for example to check `about.toml` after adding a dependency.
 
