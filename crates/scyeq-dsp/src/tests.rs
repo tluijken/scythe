@@ -574,7 +574,8 @@ fn automating_a_parameter_keeps_the_dynamic_gain_reduction() {
     }
 }
 
-/// A band that starts following its input does not pick up where its detector left off.
+/// A band that starts following its input again, after a block without, does not pick up where
+/// its detector left off.
 #[test]
 fn a_band_turned_dynamic_starts_from_a_fresh_detector() {
     let sr = 48000;
@@ -588,9 +589,35 @@ fn a_band_turned_dynamic_starts_from_a_fresh_detector() {
         run(&mut eq, &mut l, &mut r);
         assert!((eq.meters().dynamic(0) + 9.0).abs() < 0.3);
         eq.set(band::DYNAMIC, 0.0);
+        eq.process_block(&mut [0.0; 256], &mut [0.0; 256], None, None);
         eq.set(band::DYNAMIC, 1.0);
-        let (mut l, mut r) = (vec![0.0; 256], vec![0.0; 256]);
-        eq.process_block(&mut l, &mut r, None, None);
+        eq.process_block(&mut [0.0; 256], &mut [0.0; 256], None, None);
         assert_eq!(eq.meters().dynamic(0), 0.0, "mode {mode}");
     }
+}
+
+/// Scythe sets parameters one by one, the plugin hands the EQ all values once per block: a band
+/// switched off and on again between two blocks must sound the same either way.
+#[test]
+fn a_band_toggled_between_blocks_sounds_the_same_set_one_by_one_or_all_at_once() {
+    let sr = 48000;
+    let mut setup = ScytheEq::new(sr);
+    dynamic_band(&mut setup, 0, 1.0, -9.0, -30.0);
+    let mut one_by_one = ScytheEq::with_values(setup.values().to_vec(), sr);
+    let mut all_at_once = ScytheEq::with_values(setup.values().to_vec(), sr);
+    let input = sine(1000.0, 0.5, sr as usize, sr as f64);
+    let mut outputs = [Vec::new(), Vec::new()];
+    for (k, block) in input.chunks(256).enumerate() {
+        if k == 100 {
+            one_by_one.set(band::DYNAMIC, 0.0);
+            one_by_one.set(band::DYNAMIC, 1.0);
+            all_at_once.set_all(one_by_one.values());
+        }
+        for (eq, out) in [&mut one_by_one, &mut all_at_once].into_iter().zip(&mut outputs) {
+            let (mut l, mut r) = (block.to_vec(), block.to_vec());
+            eq.process_block(&mut l, &mut r, None, None);
+            out.extend(l);
+        }
+    }
+    assert!(outputs[0] == outputs[1], "the two paths differ");
 }

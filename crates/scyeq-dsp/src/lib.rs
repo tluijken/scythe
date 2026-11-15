@@ -182,6 +182,9 @@ struct Band {
     /// The mix at the start of the current grid cell.
     mix_from: f64,
     detector: Detector,
+    /// The detector ran in the last block; a band that starts detecting starts afresh. Judged per
+    /// block, not per change, so values set one by one or all at once between two blocks agree.
+    detecting: bool,
     dynamic_db: f64,
     solo: Cascade,
     solo_state: [CascadeState; 2],
@@ -378,13 +381,8 @@ impl ScytheEq {
     /// Reads the parameter table and makes the processing structures match it. It allocates
     /// only for a new FIR length: a change of phase mode or linear phase resolution.
     fn reconfigure(&mut self) {
-        let detecting = |s: &BandSettings| s.active() && s.dynamic == 1;
         for b in 0..BANDS {
-            let s = BandSettings::read(&self.values, b);
-            if detecting(&s) && !detecting(&self.settings[b]) {
-                self.bands[b].detector.reset();
-            }
-            self.settings[b] = s;
+            self.settings[b] = BandSettings::read(&self.values, b);
         }
         self.auto_dirty = true;
         let mode = PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize);
@@ -612,7 +610,11 @@ impl ScytheEq {
             let band = &mut self.bands[b];
             if !(s.active() && s.dynamic == 1) {
                 band.dynamic_db = 0.0;
+                band.detecting = false;
                 continue;
+            }
+            if !std::mem::replace(&mut band.detecting, true) {
+                band.detector.reset();
             }
             // A dynamic cut listens to what it removes.
             let listen = match s.design.shape {
