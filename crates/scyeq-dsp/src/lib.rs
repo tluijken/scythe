@@ -378,8 +378,13 @@ impl ScytheEq {
     /// Reads the parameter table and makes the processing structures match it. It allocates
     /// only for a new FIR length: a change of phase mode or linear phase resolution.
     fn reconfigure(&mut self) {
+        let detecting = |s: &BandSettings| s.active() && s.dynamic == 1;
         for b in 0..BANDS {
-            self.settings[b] = BandSettings::read(&self.values, b);
+            let s = BandSettings::read(&self.values, b);
+            if detecting(&s) && !detecting(&self.settings[b]) {
+                self.bands[b].detector.reset();
+            }
+            self.settings[b] = s;
         }
         self.auto_dirty = true;
         let mode = PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize);
@@ -389,7 +394,7 @@ impl ScytheEq {
             || self.fir.is_some() == (mode == PhaseMode::ZeroLatency);
         let was_zero = self.fir.is_none();
         let mut old_fir = None;
-        if mode != self.mode || (mode == PhaseMode::Linear && resolution != self.resolution) || self.fir.is_none() {
+        if core_change {
             self.mode = mode;
             self.resolution = resolution;
             let fir = match mode {
@@ -399,7 +404,7 @@ impl ScytheEq {
             old_fir = std::mem::replace(&mut self.fir, fir);
             for b in &mut self.bands {
                 b.detector.reset();
-                if core_change && mode == PhaseMode::ZeroLatency {
+                if mode == PhaseMode::ZeroLatency {
                     b.state.iter_mut().for_each(CascadeState::reset);
                 }
             }
