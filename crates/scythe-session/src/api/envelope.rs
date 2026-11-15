@@ -416,24 +416,33 @@ pub fn new_parameter_envelope(
     let (label, mut lo, mut hi, _) = param_info(session, target, fx, param)?;
     let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     let slot = t.fx.get(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
+    let (params, offline) = listed_params(session, target, fx, slot);
+    if offline && let Some(range) = params.as_deref().and_then(|p| scythe_engine::fx::clap_param_range(p, param)) {
+        (lo, hi) = range;
+    }
+    let mut pe = ParamEnvelope::new(param, lo, hi, (lo + hi) / 2.0, &label);
+    pe.spec = scythe_engine::fx::envelope_spec(slot, params.as_deref(), param).unwrap_or(pe.spec);
+    Ok(pe)
+}
+
+/// The parameters the plugin of slot `fx` lists: its running instance's, or for a CLAP slot no
+/// instance runs (offline) those `fx::offline_clap_params` finds, with whether they came from
+/// there.
+pub(crate) fn listed_params(
+    session: &Session,
+    target: Target,
+    fx: usize,
+    slot: &scythe_core::FxSlot,
+) -> (Option<Vec<scythe_engine::clap_host::ParamInfo>>, bool) {
     let owner = match target {
         Target::Master => None,
         Target::Track(id) => Some(id),
     };
     let registry = session.engine.fx();
-    let params = match registry.instance(owner, slot, fx) {
-        Some(inst) => inst.with(|e| e.params()),
-        None => {
-            let offline = scythe_engine::fx::offline_clap_params(slot, || registry.made_params(slot));
-            if let Some(range) = offline.as_deref().and_then(|p| scythe_engine::fx::clap_param_range(p, param)) {
-                (lo, hi) = range;
-            }
-            offline
-        }
-    };
-    let mut pe = ParamEnvelope::new(param, lo, hi, (lo + hi) / 2.0, &label);
-    pe.spec = scythe_engine::fx::envelope_spec(slot, params.as_deref(), param).unwrap_or(pe.spec);
-    Ok(pe)
+    match registry.instance(owner, slot, fx) {
+        Some(inst) => (inst.with(|e| e.params()), false),
+        None => (scythe_engine::fx::offline_clap_params(slot, || registry.made_params(slot)), true),
+    }
 }
 
 /// The envelope as it is, or a new empty one (not stored) when the track has none yet.

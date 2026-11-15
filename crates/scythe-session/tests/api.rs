@@ -2361,6 +2361,29 @@ fn clap_parameter_envelopes_on_offline_slots_span_the_parameters_range() {
     assert!(text.contains("<PARMENV 2:2 10 30000 15005 "), "the band's frequency range: {text}");
 }
 
+/// Modulation and learn on a CLAP plugin's parameter name it by index and id, as REAPER does,
+/// so they stay on the parameter if the plugin lists its parameters in another order.
+#[test]
+fn clap_parameter_modulation_and_learn_are_named_by_id() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let t = add_track(&mut s, "Gtr");
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+    ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 0, "param": 1, "base": 2.0}));
+    ok(&mut s, json!({"cmd": "fx.modulation.set", "track": t, "index": 1, "param": 2, "base": 440.0}));
+    ok(
+        &mut s,
+        json!({"cmd": "fx.learn.set", "track": t, "index": 0, "param": 0, "midi": {"type": "cc", "number": 7, "channel": 1}}),
+    );
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PROGRAMENV 1:9 0"), "{text}");
+    assert!(text.contains("<PROGRAMENV 2:2 0"), "{text}");
+    assert!(text.contains("PARMLEARN 0:7 "), "{text}");
+}
+
 /// A Scythe project from before the format revision holds the boost's envelope and modulation
 /// baseline on 0..1; opening it moves them to the boost's 0..4, also in an offline slot, once
 /// and before any undo step. The same file from REAPER stays as it is.

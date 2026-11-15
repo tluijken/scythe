@@ -496,8 +496,9 @@ pub fn is_js(slot: &FxSlot) -> bool {
 }
 
 /// How REAPER names parameter `param` beside the slot: the spelling of an envelope or
-/// binding it already has, else the index.
-fn param_spec(slot: &FxSlot, param: usize) -> String {
+/// binding it already has, else as a new envelope names it: `<index>:<id>` for a CLAP plugin,
+/// the index for others.
+fn param_spec(session: &Session, target: Target, index: usize, slot: &FxSlot, param: usize) -> String {
     let from_env = slot.raw.iter().find_map(|n| match n {
         scythe_core::rpp::Node::Chunk(c) if c.name() == "PARMENV" => {
             c.args().first().filter(|s| m::param_index(s) == Some(param)).cloned()
@@ -507,6 +508,10 @@ fn param_spec(slot: &FxSlot, param: usize) -> String {
     from_env
         .or_else(|| m::learn(slot, param).map(|l| l.param))
         .or_else(|| m::modulation(slot, param).map(|m| m.param))
+        .or_else(|| {
+            let (params, _) = super::envelope::listed_params(session, target, index, slot);
+            scythe_engine::fx::envelope_spec(slot, params.as_deref(), param)
+        })
         .unwrap_or_else(|| param.to_string())
 }
 
@@ -686,7 +691,11 @@ pub fn execute(session: &mut Session, command: ModulationCommand) -> Result<Valu
                     let (name, value) = param_state(session, target, index, &current, param);
                     let fx_name = current.name.split_once(": ").map_or(current.name.as_str(), |(_, n)| n);
                     let fx_name = fx_name.rsplit_once(" (").map_or(fx_name, |(n, _)| n);
-                    ParamModulation::new(param_spec(&current, param), format!("{name} / {fx_name}"), value)
+                    ParamModulation::new(
+                        param_spec(session, target, index, &current, param),
+                        format!("{name} / {fx_name}"),
+                        value,
+                    )
                 }
             };
             if let Some(v) = enabled {
@@ -749,7 +758,7 @@ pub fn execute(session: &mut Session, command: ModulationCommand) -> Result<Valu
             let current = slot(&session.project, target, index)?;
             let mode = mode.as_deref().map(mode_from).transpose()?.unwrap_or(LearnMode::Absolute);
             let trigger = learn_from(session, &midi, &osc, heard)?;
-            let spec = param_spec(&current, param);
+            let spec = param_spec(session, target, index, &current, param);
             let mut l = match &trigger {
                 Trigger::Midi { status, data1 } => ParamLearn::midi(spec, *status, *data1, mode),
                 Trigger::Osc { address } => {
