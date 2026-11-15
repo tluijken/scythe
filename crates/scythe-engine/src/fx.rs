@@ -788,6 +788,8 @@ struct Entry {
     ir: Option<Arc<crate::reaverb::IrControl>>,
     /// The latency the instance reported when the chain took it.
     latency: usize,
+    /// Whether a ScyEQ-Pro slot was to host the plugin (`FxRegistry::host_scyeq_plugin`) when made.
+    hosting: bool,
 }
 
 /// Owns every effect instance across graph rebuilds.
@@ -903,10 +905,11 @@ impl FxRegistry {
         let state = plugin_state(slot);
         // The built-in EQ in a VST3 slot does not depend on the width, so it is not set up again.
         let built_in = |e: &Entry| e.status == FxStatus::Native(crate::scythe_eq::STATUS);
-        let stale = self
-            .entries
-            .get(&key)
-            .is_none_or(|e| e.state != state || (e.channels != channels && is_vst3(slot) && !built_in(e)));
+        let stale = self.entries.get(&key).is_none_or(|e| {
+            e.state != state
+                || (e.channels != channels && is_vst3(slot) && !built_in(e))
+                || (e.hosting != self.host_scyeq_plugin && slot_plugin(slot).is_some_and(crate::scythe_eq::is_chunk))
+        });
         if stale
             && !self.update_nam(&key, &state)
             && !self.update_stock(&key, &state)
@@ -919,7 +922,10 @@ impl FxRegistry {
             let nam = instance.as_ref().and_then(|i| i.with(|e| e.nam_control()).flatten());
             let ir = instance.as_ref().and_then(|i| i.with(|e| e.ir_control()).flatten());
             let latency = instance.as_ref().and_then(|i| i.with(|e| e.latency())).unwrap_or(0);
-            self.entries.insert(key.clone(), Entry { state, instance, status, channels, nam, ir, latency });
+            self.entries.insert(
+                key.clone(),
+                Entry { state, instance, status, channels, nam, ir, latency, hosting: self.host_scyeq_plugin },
+            );
         }
         let entry = &self.entries[&key];
         if let Some(control) = &entry.nam {
@@ -1391,7 +1397,7 @@ impl FxRegistry {
             return false;
         };
         let built_in = entry.status == FxStatus::Native(crate::scythe_eq::STATUS);
-        if !built_in || old.name() != new.name() || !crate::scythe_eq::is_chunk(new) {
+        if !built_in || self.host_scyeq_plugin || old.name() != new.name() || !crate::scythe_eq::is_chunk(new) {
             return false;
         }
         let Ok(Some(chunk)) = crate::scythe_eq::chunk_state(new) else { return false };
@@ -2982,6 +2988,33 @@ mod scyeq_state_tests {
     fn a_clap_state_holding_no_eq_state_is_kept() {
         use base64::Engine as _;
         survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+
+    /// A slot set up built in is set up again when hosting the plugin is turned on, and back.
+    #[test]
+    fn turning_plugin_hosting_on_replaces_the_built_in_eq() {
+        let project = project(&clap(&{
+            use base64::Engine as _;
+            let state = crate::scythe_eq::params::encode(
+                &crate::scythe_eq::params::defaults(),
+                &[],
+                crate::scythe_eq::params::VERSION,
+            );
+            base64::engine::general_purpose::STANDARD.encode(state)
+        }));
+        let mut registry = FxRegistry::new(48_000);
+        let track = &project.tracks[0];
+        let built_in = |registry: &FxRegistry| {
+            registry.status(Some(track.id), &track.fx[0], 0) == Some(&FxStatus::Native(crate::scythe_eq::STATUS))
+        };
+        registry.chain(Some(track.id), &track.fx);
+        assert!(built_in(&registry));
+        registry.host_scyeq_plugin = true;
+        registry.chain(Some(track.id), &track.fx);
+        assert!(!built_in(&registry), "still built in");
+        registry.host_scyeq_plugin = false;
+        registry.chain(Some(track.id), &track.fx);
+        assert!(built_in(&registry));
     }
 
     /// Left as it loaded, such a block is saved as it was, without lines.
