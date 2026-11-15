@@ -580,7 +580,7 @@ impl Processor {
         if let Some(queue) = &self.midi_out
             && let Ok(mut q) = queue.try_lock()
         {
-            q.next_block();
+            q.next_block(heard, budget);
             if self.was_playing && n == 0 {
                 let _ = q.push(OutMessage::all_notes_off(heard));
             }
