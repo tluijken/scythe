@@ -404,21 +404,33 @@ pub fn param_info(
 }
 
 /// A new envelope for parameter `param`, as REAPER writes it: over the parameter's range in its
-/// own units, named by index and, for a CLAP plugin, its id.
+/// own units, named by index and, for a CLAP plugin, its id. A CLAP plugin no instance runs
+/// (offline) is asked through one made for the question, so the envelope is not stored on 0..1,
+/// which marks one from an older Scythe.
 pub fn new_parameter_envelope(
     session: &Session,
     target: Target,
     fx: usize,
     param: usize,
 ) -> Result<ParamEnvelope, ApiError> {
-    let (label, lo, hi, v) = param_info(session, target, fx, param)?;
+    let (label, mut lo, mut hi, v) = param_info(session, target, fx, param)?;
     let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     let slot = t.fx.get(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
     let owner = match target {
         Target::Master => None,
         Target::Track(id) => Some(id),
     };
-    let params = session.engine.fx().instance(owner, slot, fx).and_then(|i| i.with(|e| e.params()));
+    let registry = session.engine.fx();
+    let params = match registry.instance(owner, slot, fx) {
+        Some(inst) => inst.with(|e| e.params()),
+        None => {
+            let offline = scythe_engine::fx::offline_clap_params(slot, || registry.made_params(slot));
+            if let Some(range) = offline.as_deref().and_then(|p| scythe_engine::fx::clap_param_range(p, param)) {
+                (lo, hi) = range;
+            }
+            offline
+        }
+    };
     let mut pe = ParamEnvelope::new(param, lo, hi, v, &label);
     pe.spec = scythe_engine::fx::envelope_spec(slot, params.as_deref(), param).unwrap_or(pe.spec);
     Ok(pe)

@@ -2339,6 +2339,28 @@ fn clap_parameter_envelopes_are_stored_as_reaper_stores_them() {
     assert!(text.contains("PT 1 3 "), "{text}");
 }
 
+/// An envelope made on an offline CLAP slot spans the parameter's own range too: on 0..1 it
+/// would read as one an older Scythe stored and be converted again on the next load.
+#[test]
+fn clap_parameter_envelopes_on_offline_slots_span_the_parameters_range() {
+    let Some(mut s) = clap_gain_session() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let source = add_track(&mut s, "Source");
+    ok(&mut s, json!({"cmd": "fx.add", "track": source, "plugin": "clap:org.scythe.test-gain"}));
+    ok(&mut s, json!({"cmd": "fx.add", "track": source, "plugin": "builtin:scythe-eq"}));
+    let mut slots = s.project.tracks[0].fx.clone();
+    slots.iter_mut().for_each(|slot| slot.set_offline(true));
+    let t = add_track(&mut s, "Gtr");
+    s.edit("Offline effects", |p| p.tracks[1].fx = slots);
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
+    ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:1:2", "time": 1.0, "value": 440.0}));
+    let text = scythe_core::rpp::project_to_rpp(&s.project);
+    assert!(text.contains("<PARMENV 1:9 0 4 "), "the boost's range: {text}");
+    assert!(text.contains("<PARMENV 2:2 10 30000 "), "the band's frequency range: {text}");
+}
+
 /// A Scythe project from before the format revision holds the boost's envelope and modulation
 /// baseline on 0..1; opening it moves them to the boost's 0..4, also in an offline slot, once
 /// and before any undo step. The same file from REAPER stays as it is.

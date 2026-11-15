@@ -1928,6 +1928,23 @@ pub fn envelope_spec(slot: &FxSlot, params: Option<&[ParamInfo]>, index: usize) 
     params?.get(index).map(|p| format!("{index}:{}", p.id))
 }
 
+/// The parameters a CLAP slot lists where no instance runs to say, so an envelope made on it
+/// spans the parameter's own range as REAPER writes it: ScyEQ-Pro's own list, or for a hosted
+/// plugin those `made` gives (an instance made for the question). `None` for other formats,
+/// whose envelopes are normalised.
+pub fn offline_clap_params(slot: &FxSlot, made: impl FnOnce() -> Option<Vec<ParamInfo>>) -> Option<Vec<ParamInfo>> {
+    if crate::scythe_eq::is_clap_slot(slot) {
+        use crate::scythe_eq::params;
+        return Some(params::automatable().filter_map(params::info).collect());
+    }
+    (is_clap(slot) && !crate::scythe_eq::is_slot(slot)).then(made).flatten()
+}
+
+/// The range of parameter `index` in a CLAP plugin's list, when values can be mapped over it.
+pub fn clap_param_range(params: &[ParamInfo], index: usize) -> Option<(f64, f64)> {
+    params.get(index).and_then(clap_range)
+}
+
 /// A new slot for an LV2 plugin, named the way REAPER names it (`LV2i:` for instruments).
 pub fn lv2_slot(info: &crate::lv2::Lv2Info) -> FxSlot {
     let display = format!("{}: {}", if info.instrument { "LV2i" } else { "LV2" }, info.name);
