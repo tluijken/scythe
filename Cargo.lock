@@ -4153,8 +4153,11 @@ dependencies = [
  "hound",
  "libc",
  "libloading 0.8.9",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "opus-pure",
  "plugin-format",
+ "raw-window-handle",
  "rfd",
  "scyeq-dsp",
  "scyeq-ui",
@@ -4162,6 +4165,7 @@ dependencies = [
  "serde_json",
  "vst3",
  "windows-sys 0.61.2",
+ "x11rb",
 ]
 
 [[package]]

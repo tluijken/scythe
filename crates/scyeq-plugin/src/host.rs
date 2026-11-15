@@ -11,6 +11,7 @@ use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq, params};
 use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ViewState};
 
+use crate::owner;
 use crate::plugin::ScyEqShared;
 use crate::registry;
 
@@ -277,16 +278,27 @@ fn set(shared: &ScyEqShared, cx: &GuiContext, id: u32, value: f64) {
     }
 }
 
+/// Made in the frame, so it belongs to the window the user just clicked in, and shown on the
+/// pick's thread.
 #[cfg(not(target_os = "macos"))]
 fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
-    || rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file()
+    let mut dialog = rfd::FileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+    if let Some(owner) = owner::active() {
+        dialog = dialog.set_parent(&owner);
+    }
+    move || dialog.pick_file()
 }
 
-/// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet,
-/// it returns at once, and its answer is waited for on the pick's thread.
+/// AppKit's panel must start on the main thread, where the frame runs: begun here as a sheet on
+/// the window the user just clicked in, it returns at once, and its answer is waited for on the
+/// pick's thread.
 #[cfg(target_os = "macos")]
 fn file_dialog() -> impl FnOnce() -> Option<PathBuf> + Send + 'static {
-    let picked = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS).pick_file();
+    let mut dialog = rfd::AsyncFileDialog::new().add_filter("Audio", scythe_decode::REFERENCE_EXTENSIONS);
+    if let Some(owner) = owner::active() {
+        dialog = dialog.set_parent(&owner);
+    }
+    let picked = dialog.pick_file();
     move || block_on(picked).map(|file| file.path().to_path_buf())
 }
 

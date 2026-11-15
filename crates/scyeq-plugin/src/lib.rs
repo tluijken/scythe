@@ -5,6 +5,7 @@
 #[path = "../tests/built/library.rs"]
 mod built_library;
 mod host;
+mod owner;
 pub mod params;
 mod plugin;
 pub mod registry;
