@@ -715,12 +715,13 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
 For a rig that has to come up on its own, `scythe-server --install-service [project] [flags]`
 writes a systemd user unit running with those settings (`Restart=on-failure`, real-time
 priority and locked memory as far as the user's limits allow); `loginctl enable-linger`
-starts it at boot without anyone logging in. The audio thread runs with real-time priority
-(`SCHED_FIFO` within the user's rtprio limit, else through RealtimeKit). `scythe-server --status`
-asks the running session for its device, buffer, CPU load, xruns, reconnects, scheduling and
-connected clients. A device that is
-unplugged mid-show leaves the session running silently (transport, setlist and clients carry
-on) while it looks for the device every five seconds and picks it up again. See
+starts it at boot without anyone logging in. That is Linux only: on macOS and Windows the flag
+refuses, and the system's own service manager starts `scythe-server`. The audio thread runs
+with real-time priority (`SCHED_FIFO` within the user's rtprio limit, else through RealtimeKit).
+`scythe-server --status` asks the running session for its device, buffer, CPU load, xruns,
+reconnects, scheduling and connected clients. A device that is unplugged mid-show leaves the
+session running silently (transport, setlist and clients carry on) while it looks for the device
+every five seconds and picks it up again. See
 [docs/live.md](live.md) for the whole stage setup.
 
 ## Remote control

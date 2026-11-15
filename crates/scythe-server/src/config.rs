@@ -109,7 +109,7 @@ usage: scythe-server [project.RPP] [options]
   --no-input             never open an audio or MIDI input
   --list-devices         print the audio devices as the device page offers them, and exit
   --all                  with --list-devices: every device name the audio systems know
-  --install-service      write a systemd user unit that runs with these options, and exit
+  --install-service      write a systemd user unit that runs with these options, and exit (Linux)
   --status               show how the running session is doing (device, xruns, clients)
 ";
 
