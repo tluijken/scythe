@@ -65,7 +65,7 @@ impl EqHost for Fake {
     }
 
     fn meters(&self) -> Option<Arc<Meters>> {
-        Some(self.eq.meters())
+        Some(self.eq.meters().clone())
     }
 
     fn probe(&self) -> Option<Arc<FxProbe>> {

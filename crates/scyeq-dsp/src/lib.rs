@@ -344,8 +344,8 @@ impl ScytheEq {
         self.fs
     }
 
-    pub fn meters(&self) -> Arc<Meters> {
-        self.meters.clone()
+    pub fn meters(&self) -> &Arc<Meters> {
+        &self.meters
     }
 
     pub fn band(&self, b: usize) -> BandSettings {

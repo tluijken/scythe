@@ -23,7 +23,7 @@ pub fn show(cx: &mut Ctx, ui: &mut Ui, rect: Rect) {
         .with(|e| {
             let latency = e.latency();
             let eq = e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>())?;
-            Some((eq.values().to_vec(), eq.meters(), latency, eq.sample_rate()))
+            Some((eq.values().to_vec(), eq.meters().clone(), latency, eq.sample_rate()))
         })
         .flatten()
     else {

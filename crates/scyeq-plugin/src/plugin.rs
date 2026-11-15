@@ -300,7 +300,7 @@ impl Plugin for ScyEqPlugin {
         let eq = ScytheEq::with_values(self.shared.values(), sample_rate);
         self.latency = eq.latency() as u32;
         self.latency_changed = false;
-        let meters = eq.meters();
+        let meters = eq.meters().clone();
         self.shared.latency.store(self.latency, Ordering::Relaxed);
         self.shared.sample_rate.store(sample_rate, Ordering::Relaxed);
         *self.shared.meters.lock().unwrap_or_else(|e| e.into_inner()) = Some(meters.clone());
