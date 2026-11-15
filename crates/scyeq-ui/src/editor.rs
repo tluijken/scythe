@@ -1182,12 +1182,41 @@ fn band_menu(cx: &mut Cx, ui: &mut Ui, view: &mut View, st: &State, b: usize) {
 
 /// A pill showing `current` that opens a menu of `options`; returns the one picked.
 fn choice(ui: &mut Ui, rect: Rect, id: Id, label: &str, options: &[String], current: usize) -> Option<usize> {
-    let text = format!("{label} {}", options.get(current).map_or("", |s| s.as_str()));
+    colored_choice(ui, rect, id, label, options, &[], current)
+}
+
+/// [`choice`] with a dot before each option that has a colour (a source's track colour).
+fn colored_choice(
+    ui: &mut Ui,
+    rect: Rect,
+    id: Id,
+    label: &str,
+    options: &[String],
+    colors: &[Option<[u8; 3]>],
+    current: usize,
+) -> Option<usize> {
+    let option = options.get(current).map_or("", |s| s.as_str());
+    let text = format!("{label} {option}");
     let resp = ui.interact(rect, id, Sense::click());
     let hot = resp.hovered();
     ui.painter().rect_filled(rect, CornerRadius::same(8), if hot { RAISED_HI } else { BG });
-    let shown = widgets::truncate(ui, &text, &theme::regular(11.0), rect.width() - 18.0);
-    ui.painter().text(rect.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, shown, theme::regular(11.0), TEXT);
+    let font = theme::regular(11.0);
+    let at = rect.left_center() + vec2(8.0, 0.0);
+    let room = rect.width() - 18.0;
+    match colors.get(current).copied().flatten() {
+        Some(color) => {
+            let head = widgets::truncate(ui, &format!("{label} "), &font, room);
+            let head_w = widgets::text_width(ui, &head, font.clone());
+            ui.painter().text(at, Align2::LEFT_CENTER, head, font.clone(), TEXT);
+            widgets::color_dot(ui.painter(), at + vec2(head_w + 4.0, 0.0), color);
+            let shown = widgets::truncate(ui, option, &font, (room - head_w - 12.0).max(0.0));
+            ui.painter().text(at + vec2(head_w + 12.0, 0.0), Align2::LEFT_CENTER, shown, font, TEXT);
+        }
+        None => {
+            let shown = widgets::truncate(ui, &text, &font, room);
+            ui.painter().text(at, Align2::LEFT_CENTER, shown, font, TEXT);
+        }
+    }
     let c = rect.right_center() - vec2(10.0, 0.0);
     ui.painter().add(Shape::convex_polygon(
         vec![c + vec2(-3.5, -2.0), c + vec2(3.5, -2.0), c + vec2(0.0, 2.5)],
@@ -1198,7 +1227,17 @@ fn choice(ui: &mut Ui, rect: Rect, id: Id, label: &str, options: &[String], curr
     let mut picked = None;
     egui::Popup::menu(&resp).show(|ui| {
         for (i, o) in options.iter().enumerate() {
-            if ui.radio(i == current, o.as_str()).clicked() {
+            let clicked = match colors.get(i).copied().flatten() {
+                Some(color) => {
+                    let r = ui.radio(i == current, format!("    {o}"));
+                    let dot_x = ui.spacing().icon_width + ui.spacing().icon_spacing + 8.0;
+                    widgets::color_dot(ui.painter(), r.rect.left_center() + vec2(dot_x, 0.0), color);
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, i == current, o));
+                    r.clicked()
+                }
+                None => ui.radio(i == current, o.as_str()).clicked(),
+            };
+            if clicked {
                 picked = Some(i);
                 ui.close();
             }
@@ -1433,8 +1472,10 @@ fn bottom_bar(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State,
     }
     let mut labels = vec!["None".to_owned()];
     labels.extend(others.iter().map(|o| o.label.clone()));
+    let mut colors = vec![None];
+    colors.extend(others.iter().map(|o| o.color));
     let current = view.other.and_then(|o| others.iter().position(|x| x.id == o)).map_or(0, |i| i + 1);
-    if let Some(i) = choice(ui, row.next(150.0), key("compare"), "Compare", &labels, current) {
+    if let Some(i) = colored_choice(ui, row.next(150.0), key("compare"), "Compare", &labels, &colors, current) {
         view.other = i.checked_sub(1).and_then(|i| others.get(i)).map(|o| o.id);
     }
     if view.other.is_some() && toggle(ui, row.next(76.0), key("collisions"), "Collisions", view.collisions, COLLISION) {
