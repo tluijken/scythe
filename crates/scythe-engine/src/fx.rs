@@ -379,7 +379,7 @@ pub(crate) fn parameter_envelopes(
     ctx: &scythe_core::automation_item::AutomationContext,
 ) -> Vec<ParamAutomation> {
     let mut upgraded = None;
-    if crate::scythe_eq::is_slot(slot) {
+    if crate::scythe_eq::has_old_envelopes(slot) {
         let mut copy = slot.clone();
         if crate::scythe_eq::upgrade_envelopes(&mut copy) {
             upgraded = Some(copy);

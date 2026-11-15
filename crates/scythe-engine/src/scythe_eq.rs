@@ -128,7 +128,7 @@ pub fn envelope_spec(slot: &scythe_core::FxSlot, index: usize) -> Option<String>
 /// Projects convert when they open (`upgrade::upgrade_project`, which also moves baselines and
 /// pooled items); the engine plays a slot through this too, for projects rendered from a file.
 pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
-    if !is_clap_slot(slot) {
+    if !has_old_envelopes(slot) {
         return false;
     }
     let mut changed = false;
@@ -149,6 +149,23 @@ pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
         changed = true;
     }
     changed
+}
+
+/// Whether [`upgrade_envelopes`] would change `slot`, read without copying it: the engine asks
+/// on every chain build.
+pub fn has_old_envelopes(slot: &scythe_core::FxSlot) -> bool {
+    is_clap_slot(slot)
+        && slot.raw.iter().any(|n| {
+            let Node::Chunk(c) = n else { return false };
+            if c.name() != "PARMENV" {
+                return false;
+            }
+            let args = c.args();
+            let num = |i: usize| args.get(i).and_then(|v| v.parse::<f64>().ok());
+            let index = args.first().and_then(|s| s.split(':').next()?.parse::<usize>().ok());
+            (num(1), num(2)) == (Some(0.0), Some(1.0))
+                && index.and_then(param_at).and_then(params::spec_of).is_some_and(|s| (s.min, s.max) != (0.0, 1.0))
+        })
 }
 
 /// A slot's parameter as REAPER sees the CLAP plugin's: in its own units, 0..1 being its range
@@ -423,6 +440,7 @@ mod host_tests {
             "<PARMENV 3:3 -30 30 0\n  ACT 1 -1\n  PT 0 6 0\n>\n",
         ));
         let before = slot.clone();
+        assert!(has_old_envelopes(&slot));
         assert!(upgrade_envelopes(&mut slot));
         let freq = slot.parameter_envelope("2").unwrap();
         assert_eq!((freq.spec.as_str(), freq.min, freq.max), ("2:2", 10.0, 30000.0));
@@ -432,6 +450,7 @@ mod host_tests {
         assert_eq!(slot.parameter_envelope("0"), before.parameter_envelope("0"));
         assert_eq!(slot.parameter_envelope("3"), before.parameter_envelope("3"));
         let upgraded = slot.clone();
+        assert!(!has_old_envelopes(&slot));
         assert!(!upgrade_envelopes(&mut slot), "a second load changes nothing");
         assert_eq!(slot, upgraded);
     }
