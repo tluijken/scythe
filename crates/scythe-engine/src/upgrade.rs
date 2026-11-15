@@ -217,8 +217,7 @@ impl Pass<'_, '_> {
     }
 
     fn slot(&mut self, owner: &FxOwner, key: &str, slot: &mut FxSlot) -> bool {
-        // An older Scythe named a hosted CLAP plugin's envelopes by index alone; ScyEQ-Pro's
-        // carried its id already.
+        // ScyEQ-Pro's envelopes carried their id in older versions too.
         let hosted_clap = crate::fx::is_clap(slot) && !crate::scythe_eq::is_slot(slot);
         let old: Vec<ParamEnvelope> = slot
             .parameter_envelopes()
