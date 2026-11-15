@@ -179,6 +179,8 @@ pub struct ScytheApp {
     pub nam: crate::nam::NamHub,
     /// Toolbar icons loaded from REAPER's `Data/toolbar_icons`, by file name.
     pub(crate) toolbar_icons: HashMap<String, Option<egui::TextureHandle>>,
+    /// Every ScyEQ-Pro in the project, with the session revision and load it was listed at.
+    pub(crate) eq_instance_list: std::cell::RefCell<Option<crate::ui::fx_editor::scythe_eq::Listed>>,
 }
 
 impl Deref for ScytheApp {
@@ -307,6 +309,7 @@ impl ScytheApp {
             seen_loads: 0,
             nam: crate::nam::NamHub::new(),
             toolbar_icons: HashMap::new(),
+            eq_instance_list: Default::default(),
         };
         app.session.host_actions = true;
         app.follow_session();

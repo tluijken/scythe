@@ -2,6 +2,7 @@
 //! the project offers, and the instance list, every ScyEQ-Pro in one window.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use egui::{Id, Rect, Ui, UiBuilder};
@@ -102,10 +103,10 @@ impl EqHost for Host<'_, '_> {
     }
 
     fn instances(&self) -> Vec<scyeq_ui::Instance> {
-        all_instances(self.cx.app)
-            .into_iter()
+        project_instances(self.cx.app)
+            .iter()
             .filter(|i| !(i.owner == self.cx.ed.owner && i.path == self.cx.ed.path))
-            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label, color: None })
+            .map(|i| scyeq_ui::Instance { id: source_id(&i.owner, &i.path), label: i.label.clone(), color: None })
             .collect()
     }
 
@@ -121,7 +122,8 @@ impl EqHost for Host<'_, '_> {
         if let Some((owner, _)) = track_outputs(app).into_iter().find(|(o, _)| source_id(o, &[]) == id) {
             return track_probe(app, &owner);
         }
-        let i = all_instances(app).into_iter().find(|i| source_id(&i.owner, &i.path) == id)?;
+        let instances = project_instances(app);
+        let i = instances.iter().find(|i| source_id(&i.owner, &i.path) == id)?;
         let slots = chain_slots(app, &i.owner);
         app.engine.fx().instance_at(&i.owner, &slots, &i.path).map(|i| i.probe.clone())
     }
@@ -199,6 +201,24 @@ pub struct Instance {
     pub label: String,
 }
 
+/// The session revision and load count an instance list was made at, and the list.
+pub type Listed = (u64, u64, Rc<Vec<Instance>>);
+
+/// [`all_instances`], listed anew only once the project changed: the editor and the instance
+/// list ask for it every frame.
+pub fn project_instances(app: &ScytheApp) -> Rc<Vec<Instance>> {
+    let at = (app.revision(), app.loads());
+    let mut cache = app.eq_instance_list.borrow_mut();
+    if let Some((revision, loads, list)) = &*cache
+        && (*revision, *loads) == at
+    {
+        return list.clone();
+    }
+    let list = Rc::new(all_instances(app));
+    *cache = Some((at.0, at.1, list.clone()));
+    list
+}
+
 /// Every ScyEQ-Pro in the project, in track order: each track's chain, input chain and take
 /// chains, then the master's and the monitoring chain, containers included. The label says
 /// where: "Vocals", "Vocals · input", "Guitar · Rig › 3".
@@ -268,7 +288,7 @@ pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
     }
     let mut open = true;
     let ctx = ui.ctx().clone();
-    let all = all_instances(app);
+    let all = project_instances(app);
     scyeq_ui::instances_window(&ctx, &mut ProjectInstances { app, all }, &mut open);
     if !open {
         app.view.eq_instances = false;
@@ -282,7 +302,7 @@ pub fn instances_window(app: &mut ScytheApp, ui: &mut Ui) {
 /// session.
 struct ProjectInstances<'a> {
     app: &'a mut ScytheApp,
-    all: Vec<Instance>,
+    all: Rc<Vec<Instance>>,
 }
 
 impl ProjectInstances<'_> {
@@ -353,5 +373,26 @@ impl InstanceList for ProjectInstances<'_> {
 
     fn window(&self) -> WindowFn {
         panel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_project_is_walked_again_only_after_it_changed() {
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
+        app.edit("Add track", |p| {
+            let mut track = scythe_core::Track::new("Vocals");
+            track.fx.push(scythe_eq::slot(None));
+            p.tracks.push(track);
+        });
+        let first = project_instances(&app);
+        assert_eq!(first.len(), 1);
+        assert!(Rc::ptr_eq(&first, &project_instances(&app)), "listed again without a change");
+        app.edit("Add FX", |p| p.tracks[0].fx.push(scythe_eq::slot(None)));
+        let labels: Vec<String> = project_instances(&app).iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["Vocals · 1", "Vocals · 2"]);
     }
 }
