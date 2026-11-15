@@ -300,19 +300,20 @@ fn pick<D>(picking: &Mutex<Option<Receiver<Option<PathBuf>>>>, open: impl FnOnce
 where
     D: FnOnce() -> Option<PathBuf> + Send + 'static,
 {
-    let mut picking = picking.lock().unwrap_or_else(|e| e.into_inner());
-    if picking.is_none() {
-        *picking = Some(start_pick(open()));
-    }
-}
-
-/// Runs `dialog` on a thread of its own; its answer arrives through the receiver.
-fn start_pick(dialog: impl FnOnce() -> Option<PathBuf> + Send + 'static) -> Receiver<Option<PathBuf>> {
-    let (tx, rx) = mpsc::channel();
+    let answer = {
+        let mut picking = picking.lock().unwrap_or_else(|e| e.into_inner());
+        if picking.is_some() {
+            return;
+        }
+        let (answer, receiver) = mpsc::channel();
+        *picking = Some(receiver);
+        answer
+    };
+    // Should `open` panic, the dropped sender ends the pick.
+    let dialog = open();
     std::thread::spawn(move || {
-        let _ = tx.send(dialog());
+        let _ = answer.send(dialog());
     });
-    rx
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -527,11 +528,16 @@ mod tests {
     fn a_pick_runs_on_a_thread_of_its_own() {
         let (release, wait) = mpsc::channel::<()>();
         let caller = std::thread::current().id();
-        let mut picking = Some(start_pick(move || {
-            assert_ne!(std::thread::current().id(), caller);
-            wait.recv().unwrap();
-            Some(PathBuf::from("/music/reference.wav"))
-        }));
+        let slot = Mutex::new(None);
+        pick(&slot, || {
+            assert!(slot.try_lock().is_ok(), "the dialog is made with the pick locked");
+            move || {
+                assert_ne!(std::thread::current().id(), caller);
+                wait.recv().unwrap();
+                Some(PathBuf::from("/music/reference.wav"))
+            }
+        });
+        let mut picking = slot.into_inner().unwrap();
         assert_eq!(take_picked(&mut picking), None, "the dialog is still open");
         release.send(()).unwrap();
         let picked = loop {
