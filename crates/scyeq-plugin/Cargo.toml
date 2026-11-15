@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 scyeq-dsp.workspace = true
 scyeq-ui.workspace = true
-plugin-format = { git = "https://github.com/tluijken/plugin-format", tag = "v0.1.0" }
+plugin-format = { git = "https://github.com/tluijken/plugin-format", tag = "v0.1.1" }
 # The portal (or zenity) on Linux, not GTK: a plugin must not run a GTK loop inside the host.
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 scythe-decode.workspace = true
