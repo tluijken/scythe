@@ -333,10 +333,18 @@ impl Session {
         self.sync();
         // After the first sync, so the hosted plugins whose ranges the conversion needs run.
         let fx = self.engine.fx();
-        if scythe_engine::upgrade::upgrade_project(&mut self.project, &mut |owner, key, slot, create| {
-            fx.slot_params(owner, key, slot, create)
-        }) {
+        let upgraded =
+            scythe_engine::upgrade::upgrade_project_report(&mut self.project, &mut |owner, key, slot, create| {
+                fx.slot_params(owner, key, slot, create)
+            });
+        if upgraded.changed {
             self.sync();
+        }
+        if !upgraded.unconverted.is_empty() {
+            self.notify(format!(
+                "Modulation of {} stays as an older Scythe stored it: the plugin could not be loaded to convert it",
+                upgraded.unconverted.join(", ")
+            ));
         }
         self.loads += 1;
         self.follow_project_rate();

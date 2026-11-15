@@ -2436,6 +2436,23 @@ fn an_old_project_s_clap_automation_moves_to_the_parameters_units_when_it_opens(
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Opening an older Scythe's project whose CLAP plugin is missing tells which effects' modulation
+/// stays as stored, as nothing marks it as old once the project is saved.
+#[test]
+fn an_old_project_tells_the_modulation_a_missing_plugin_leaves_as_stored() {
+    let mut s = session();
+    let text = "<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 0\n  <TRACK\n    NAME Gtr\n    <FXCHAIN\n      BYPASS 0 0 0\n      <CLAP \"CLAP: Gone (Nobody)\" org.nobody.gone \"\"\n        CFG 4 0 0 \"\"\n      >\n      FXID {11111111-2222-3333-4444-555555555555}\n      <PROGRAMENV 1 0 \"Boost\"\n        PARAMBASE 0.5\n        LFO 1\n      >\n      WAK 0 0\n    >\n  >\n>\n";
+    let dir = std::env::temp_dir().join(format!("scythe-clap-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("old.RPP");
+    std::fs::write(&path, text).unwrap();
+    s.take_notices();
+    s.open_path(&path).unwrap();
+    let notices = s.take_notices();
+    assert!(notices.iter().any(|n| n.starts_with("Modulation of CLAP: Gone (Nobody) stays")), "{notices:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// ScyEQ-Pro's modulation baselines and pooled automation items were log-normalised in projects
 /// from before the format revision, with no range to tell them by: the writer does. A baseline
 /// of 0.25 on the first band's frequency is 74 Hz after opening an old Scythe file, and stays

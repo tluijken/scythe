@@ -69,12 +69,27 @@ impl Units {
 /// changed. A project from an older Scythe is marked as current afterwards, so converting it
 /// again changes nothing.
 pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
+    upgrade_project_report(project, params).changed
+}
+
+/// What converting a project did.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Upgraded {
+    pub changed: bool,
+    /// The effects of a project from an older Scythe whose modulation baselines stay as stored,
+    /// as no instance of their CLAP plugin could tell its ranges. Once the project is saved, only
+    /// a 0..1 envelope beside them would still show they are old.
+    pub unconverted: Vec<String>,
+}
+
+/// [`upgrade_project`], telling what could not be converted.
+pub fn upgrade_project_report(project: &mut Project, params: &mut SlotParams) -> Upgraded {
     let all = match project.writer {
-        Writer::Other => return false,
+        Writer::Other => return Upgraded::default(),
         Writer::Scythe(format) => format < UNITS_FORMAT,
         Writer::Unknown => false,
     };
-    let mut pass = Pass { all, make: all, params, pooled: Vec::new(), made: HashMap::new() };
+    let mut pass = Pass { all, make: all, params, pooled: Vec::new(), made: HashMap::new(), unconverted: Vec::new() };
     let mut changed = pass.chain(&FxOwner::Master, &mut project.master.fx, "");
     for track in &mut project.tracks {
         let id = track.id;
@@ -103,7 +118,7 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
     if all {
         project.writer = Writer::Scythe(SCYTHE_FORMAT);
     }
-    changed
+    Upgraded { changed, unconverted: pass.unconverted }
 }
 
 /// Converts the slots of tracks or effects a file brings into a project (an FX chain, a track
@@ -134,7 +149,14 @@ pub fn upgrade_tracks(tracks: &mut [scythe_core::Track], params: &mut MadeParams
 /// [`upgrade_tracks`] for effects alone.
 pub fn upgrade_slots(slots: &mut [FxSlot], params: &mut MadeParams) -> bool {
     let mut ask = |_: &FxOwner, _: &str, slot: &FxSlot, create: bool| if create { params(slot) } else { None };
-    let mut pass = Pass { all: false, make: true, params: &mut ask, pooled: Vec::new(), made: HashMap::new() };
+    let mut pass = Pass {
+        all: false,
+        make: true,
+        params: &mut ask,
+        pooled: Vec::new(),
+        made: HashMap::new(),
+        unconverted: Vec::new(),
+    };
     pass.chain(&FxOwner::Master, slots, "")
 }
 
@@ -163,6 +185,8 @@ struct Pass<'p, 'a> {
     /// The parameters of plugins made for the question, by CLAP id: one instance each per pass,
     /// also when making it failed.
     made: HashMap<String, Option<Vec<ParamInfo>>>,
+    /// See [`Upgraded::unconverted`].
+    unconverted: Vec<String>,
 }
 
 impl Pass<'_, '_> {
@@ -190,7 +214,12 @@ impl Pass<'_, '_> {
         if old.is_empty() && !(self.all && !modulations.is_empty()) {
             return false;
         }
-        let Some(units) = self.units(owner, key, slot) else { return false };
+        let Some(units) = self.units(owner, key, slot) else {
+            if self.all && !modulations.is_empty() && crate::fx::is_clap(slot) {
+                self.unconverted.push(slot.name.clone());
+            }
+            return false;
+        };
         let at = |index: Option<usize>| index.and_then(|i| units.get(i).copied().flatten()).filter(Units::moves);
         let mut changed = false;
         for mut pe in old {
@@ -562,6 +591,27 @@ mod tests {
         let upgraded = p.clone();
         assert!(!upgrade_project(&mut p, &mut |_, _, _, _| None), "a second load changes nothing");
         assert_eq!(p, upgraded);
+    }
+
+    /// An old file whose hosted plugin cannot be made is marked current all the same, so the
+    /// effects whose baselines stayed as stored are told; a file without a marker is converted
+    /// on a later load still, wherever a 0..1 envelope shows it.
+    #[test]
+    fn baselines_left_for_a_missing_plugin_are_told() {
+        let missing = |_: &FxOwner, _: &str, _: &FxSlot, _: bool| None;
+        for slot in [clap_slot(OLD_BASE), clap_slot(&format!("{OLD_BOOST}{OLD_BASE}"))] {
+            let mut p = project(Writer::Scythe(1), slot.clone());
+            let report = upgrade_project_report(&mut p, &mut missing.clone());
+            assert_eq!(report, Upgraded { changed: false, unconverted: vec![slot.name.clone()] });
+            assert_eq!(p.tracks[0].fx[0], slot);
+
+            let mut p = project(Writer::Unknown, slot.clone());
+            assert_eq!(upgrade_project_report(&mut p, &mut missing.clone()), Upgraded::default());
+        }
+        let mut p = project(Writer::Scythe(1), clap_slot(OLD_BOOST));
+        assert_eq!(upgrade_project_report(&mut p, &mut missing.clone()), Upgraded::default(), "no baseline to lose");
+        let mut p = project(Writer::Scythe(1), clap_slot(OLD_BASE));
+        assert!(upgrade_project_report(&mut p, &mut hosted).unconverted.is_empty());
     }
 
     /// Effects a chain file or a track template brings in convert as a file without a marker
