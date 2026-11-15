@@ -445,9 +445,15 @@ fn live_set(s: &mut Session) {
     }
 }
 
-/// Lets the null engine play for `ms`, then lets the session follow up on marker actions.
-fn play_for(s: &mut Session, ms: u64) {
-    std::thread::sleep(Duration::from_millis(ms));
+/// Lets the null engine play until `ready`, then lets the session follow up on marker actions.
+/// A fixed sleep is not enough: a slow runner can wake the test a whole short song late.
+fn play_until(s: &mut Session, what: &str, ready: impl Fn(&Session) -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !ready(s) {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        s.poll();
+        std::thread::sleep(Duration::from_millis(1));
+    }
     s.poll();
 }
 
@@ -504,10 +510,10 @@ fn a_setlist_plays_to_the_stop_marker_and_cues_the_next_song() {
 
     let st = ok(&mut s, json!({"cmd": "setlist.play"}));
     assert_eq!(st["playing"], true);
-    play_for(&mut s, 50);
+    play_until(&mut s, "the song to get under way", |s| s.position() > 0.3);
     let st = ok(&mut s, json!({"cmd": "setlist.status"}));
     assert!(st["elapsed"].as_f64().unwrap() > 0.0 && st["remaining"].as_f64().unwrap() < 0.15);
-    play_for(&mut s, 400);
+    play_until(&mut s, "the song's stop marker", |s| !s.is_playing());
     let st = ok(&mut s, json!({"cmd": "setlist.status"}));
     assert_eq!(st["playing"], false, "stopped at the song's stop marker");
     assert_eq!(st["current"]["name"], "Closer", "auto-advance cued the next song");
@@ -523,15 +529,14 @@ fn a_setlist_plays_to_the_stop_marker_and_cues_the_next_song() {
     let st = ok(&mut s, json!({"cmd": "setlist.marker_actions", "enabled": false}));
     assert_eq!(st["marker_actions"], false);
     ok(&mut s, json!({"cmd": "setlist.play", "entry": 0}));
-    play_for(&mut s, 300);
+    play_until(&mut s, "the stop marker to pass", |s| s.position() > 0.5);
     assert!(s.is_playing(), "without marker actions playback runs past the stop marker");
     let st = ok(&mut s, json!({"cmd": "setlist.stop"}));
     assert_eq!(st["playing"], false);
     assert_eq!(st["current"]["name"], "Ballad");
     ok(&mut s, json!({"cmd": "setlist.marker_actions", "enabled": true}));
     ok(&mut s, json!({"cmd": "setlist.play"}));
-    play_for(&mut s, 400);
-    assert!(!s.is_playing());
+    play_until(&mut s, "the stop marker", |s| !s.is_playing());
     assert_eq!(s.project.cursor, 0.3, "Stop returns to the edit cursor, the song's start");
 
     let missing = execute_json(&mut s, json!({"cmd": "setlist.play", "entry": 5}));
