@@ -102,11 +102,19 @@ impl CountIn {
         }
         let extra = (block - frames % block) % block;
         let pad = extra as f64 / sr;
+        Self { length: self.length + pad, audible: self.audible + pad, counting: self.counting + pad, ..self }
+            .clicks_later(pad)
+    }
+
+    /// The clicks `by` seconds later into it, on the same beats: a first click moved past a beat
+    /// leaves room for the beat before it.
+    fn clicks_later(self, by: f64) -> Self {
+        let first = self.first + by;
+        let back = if self.beat > 0.0 { (first / self.beat + 1e-9).floor() } else { 0.0 };
+        let bar = self.beats_per_bar.max(1) as i64;
         Self {
-            length: self.length + pad,
-            first: self.first + pad,
-            audible: self.audible + pad,
-            counting: self.counting + pad,
+            first: (first - back * self.beat).max(0.0),
+            first_in_bar: (self.first_in_bar as i64 - back as i64).rem_euclid(bar) as u32,
             ..self
         }
     }
@@ -142,7 +150,7 @@ impl Start {
         if self.from - pad < 0.0 {
             return self;
         }
-        let count_in = self.count_in.map(|c| CountIn { first: c.first + pad, ..c });
+        let count_in = self.count_in.map(|c| c.clicks_later(pad));
         Self { from: self.from - pad, count_in }
     }
 }
@@ -464,6 +472,49 @@ mod tests {
         }
         let c = on().start(&at_measure, &tempo, 3.9, false, false).count_in.unwrap();
         assert_eq!(c.padded(0, 48_000), c, "no block size yet");
+    }
+
+    /// Each click as seconds before the count-in ends, and whether it is accented.
+    fn clicks_before_end(c: &CountIn) -> Vec<(i64, bool)> {
+        (0..c.beats())
+            .map(|k| {
+                let at = c.length - c.first - k as f64 * c.beat;
+                ((at * 1e6).round() as i64, (c.first_in_bar + k).is_multiple_of(c.beats_per_bar))
+            })
+            .collect()
+    }
+
+    /// 4096-frame blocks pad by up to 85 ms, a third of a beat at 240 bpm: a first click padded
+    /// past a beat makes room for the beat before it, every click and accent on its beat.
+    #[test]
+    fn padding_past_a_beat_keeps_clicks_and_accents_on_their_beats() {
+        let c = CountIn {
+            length: 1.2,
+            beat: 0.25,
+            first: 0.2,
+            first_in_bar: 3,
+            beats_per_bar: 4,
+            audible: 1.2,
+            counting: 1.2,
+        };
+        // 57600 frames become 15 blocks, 61440: 80 ms more.
+        let p = c.padded(4096, 48_000);
+        assert!(p.first < p.beat && close(p.length, 1.28), "{p:?}");
+        let mut want = vec![(1_250_000, false)];
+        want.extend(clicks_before_end(&c));
+        assert_eq!(clicks_before_end(&p), want);
+
+        // A pre-roll of 2 s, 96000 frames, becomes 24 blocks: the playhead starts 48 ms early and
+        // the clicks keep their place before the bar it starts in.
+        let s = Start { from: 4.0, count_in: Some(CountIn { first: 0.22, first_in_bar: 0, ..c }) };
+        let p = s.padded_preroll(6.0, 4096, 48_000);
+        assert!(close(p.from, 4.0 - 0.048), "{p:?}");
+        let pc = p.count_in.unwrap();
+        assert!(pc.first < pc.beat, "{pc:?}");
+        assert_eq!(
+            clicks_before_end(&pc),
+            [(1_182_000, false), (932_000, true), (682_000, false), (432_000, false), (182_000, false)]
+        );
     }
 
     /// Recording with pre-roll in REAPER 7.73 on the JACK dummy device at 48 kHz: the playhead
