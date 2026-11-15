@@ -29,6 +29,7 @@ clap-sys.workspace = true
 egui_kittest = "0.37.0"
 hound.workspace = true
 libloading.workspace = true
+opus-pure.workspace = true
 serde_json.workspace = true
 vst3.workspace = true
 

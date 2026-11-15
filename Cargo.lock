@@ -4153,6 +4153,7 @@ dependencies = [
  "hound",
  "libc",
  "libloading 0.8.9",
+ "opus-pure",
  "plugin-format",
  "rfd",
  "scyeq-dsp",
@@ -4215,6 +4216,7 @@ dependencies = [
 name = "scythe-decode"
 version = "0.1.0"
 dependencies = [
+ "opus-pure",
  "symphonia",
 ]
 

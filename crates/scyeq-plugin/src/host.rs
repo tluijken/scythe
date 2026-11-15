@@ -341,7 +341,7 @@ fn take_picked(picking: &mut Option<Receiver<Option<PathBuf>>>) -> Option<PathBu
 
 /// A reference file for EQ Match, decoded as Scythe decodes it.
 fn load_reference(path: &Path) -> Result<ReferenceAudio, String> {
-    let audio = scythe_decode::decode(path, false).map_err(|e| e.to_string())?;
+    let audio = scythe_decode::decode_reference(path).map_err(|e| e.to_string())?;
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 
@@ -420,6 +420,27 @@ mod tests {
         let audio = audio.unwrap();
         assert_eq!(audio.sample_rate, 44_100);
         assert_eq!(audio.channels, vec![vec![0.5, 0.25], vec![-0.5, 0.0]]);
+    }
+
+    #[test]
+    fn an_ogg_opus_reference_decodes() {
+        use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead};
+        let path = std::env::temp_dir().join(format!("scyeq-plugin-reference-{}.ogg", std::process::id()));
+        let tone: Vec<f32> = (0..9600).map(|i| 0.5 * (i as f32 * 0.05).sin()).collect();
+        let mut encoder = OpusEncoder::new(48_000, 1, Application::Audio).unwrap();
+        let head = OpusHead::for_encoder(&encoder, 48_000);
+        let mut writer = OggOpusWriter::new(std::fs::File::create(&path).unwrap(), head).unwrap();
+        let mut packet = vec![0u8; MAX_PACKET_BYTES];
+        for block in tone.as_chunks::<960>().0 {
+            let n = encoder.encode(block, 960, &mut packet).unwrap();
+            writer.write_packet(&packet[..n]).unwrap();
+        }
+        writer.finish().unwrap();
+        let audio = load_reference(&path);
+        std::fs::remove_file(&path).unwrap();
+        let audio = audio.unwrap();
+        assert_eq!((audio.sample_rate, audio.channels.len()), (48_000, 1));
+        assert!(audio.channels[0].iter().any(|s| s.abs() > 0.25));
     }
 
     #[test]

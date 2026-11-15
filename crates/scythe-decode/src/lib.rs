@@ -1,5 +1,6 @@
-//! Audio files decoded with Symphonia the way REAPER reads them: what Scythe's media items and
-//! ScyEQ-Pro's EQ Match references (in Scythe and in the plugin) are read with.
+//! Audio files decoded with Symphonia, Ogg Opus with opus-pure, the way REAPER reads them: what
+//! Scythe's media items and ScyEQ-Pro's EQ Match references (in Scythe and in the plugin) are read
+//! with.
 
 use std::fmt;
 use std::fs::File;
@@ -139,6 +140,63 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
         }
     }
     Ok(Audio { sample_rate, channels })
+}
+
+/// Decodes an EQ Match reference file: what [`decode`] reads and Ogg Opus, which Symphonia does
+/// not, as Scythe's media items read them.
+pub fn decode_reference(path: &Path) -> Result<Audio, Error> {
+    decode(path, false).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) })
+}
+
+/// Whether `path` is an Ogg stream holding Opus.
+pub fn is_ogg_opus(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 64];
+    let n = File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    head[..n].starts_with(b"OggS") && head[..n].windows(8).any(|w| w == b"OpusHead")
+}
+
+/// An Ogg Opus file decoded at 48 kHz the way REAPER plays it: the header's pre-skip and the
+/// last page's end trim are applied, its output gain too, and surround streams keep the Vorbis
+/// channel order of the file.
+pub fn decode_opus(path: &Path) -> Result<Audio, Error> {
+    use opus_pure::{MAX_PACKET_SAMPLES, OggOpusReader, OpusMSDecoder, Trim};
+    let decode_err = |e: opus_pure::Error| Error::Decode(e.to_string());
+    let file = File::open(path).map_err(Error::Open)?;
+    let mut reader = OggOpusReader::new(std::io::BufReader::new(file)).map_err(decode_err)?;
+    let head = reader.head().clone();
+    let nch = usize::from(head.channel_count);
+    let mut trim = Trim::new(&head, 48_000, nch).map_err(decode_err)?;
+    let mut buf = vec![0f32; MAX_PACKET_SAMPLES * nch];
+    let mut channels = vec![Vec::new(); nch];
+    let mut keep = |packet: &opus_pure::OggPacket, decoded: &[f32]| {
+        for frame in trim.keep(packet, decoded).chunks_exact(nch) {
+            for (dst, s) in channels.iter_mut().zip(frame) {
+                dst.push(*s);
+            }
+        }
+    };
+    if head.mapping_family == 0 {
+        let mut decoder = head.decoder(48_000).map_err(decode_err)?;
+        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
+            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
+            keep(&packet, &buf[..n * nch]);
+        }
+    } else {
+        let mut decoder = OpusMSDecoder::new(48_000, nch, head.mapping_family).map_err(decode_err)?;
+        for d in decoder.streams_mut() {
+            d.gain_q8 = i32::from(head.output_gain_q8);
+        }
+        while let Some(packet) = reader.read_packet().map_err(decode_err)? {
+            let n = decoder.decode(&packet.data, MAX_PACKET_SAMPLES, &mut buf).map_err(decode_err)?;
+            keep(&packet, &buf[..n * nch]);
+        }
+    }
+    drop(keep);
+    if channels.first().is_none_or(Vec::is_empty) {
+        return Err(Error::Decode("stream contains no audio".into()));
+    }
+    Ok(Audio { sample_rate: 48_000, channels })
 }
 
 /// REAPER's MP3 decoder plays mid/side granules of MPEG-2 and 2.5 (LSF) Layer III streams
