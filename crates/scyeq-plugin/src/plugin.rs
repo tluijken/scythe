@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering, fence};
 use std::sync::{Arc, Mutex, Weak};
 
 use plugin_format::{Block, GuiContext, Info, Layout, ParamInfo, Plugin, Shared, TrackInfo};
@@ -24,6 +24,9 @@ pub struct ScyEqShared {
     values: Box<[AtomicU64]>,
     /// Set after a value changed, for the audio thread to pick the values up.
     changed: AtomicBool,
+    /// Odd while a state is being loaded into `values`; counts up once more when it is done, so
+    /// the audio thread can tell it read a state whole.
+    loading: AtomicU64,
     stored: Mutex<Stored>,
     track: Mutex<TrackInfo>,
     /// Width and height at a scale of 1.0, as `width << 32 | height`; 0 until resized.
@@ -54,6 +57,7 @@ impl ScyEqShared {
             cx: Mutex::new(None),
             values: params::defaults().into_iter().map(|v| AtomicU64::new(v.to_bits())).collect(),
             changed: AtomicBool::new(false),
+            loading: AtomicU64::new(0),
             stored: Mutex::new(Stored { extra: Vec::new(), unclamped: Vec::new(), version: params::VERSION }),
             track: Mutex::new(TrackInfo::default()),
             editor_size: AtomicU64::new(0),
@@ -158,9 +162,12 @@ impl Shared for ScyEqShared {
     fn load(&self, bytes: &[u8]) -> bool {
         let Some(decoded) = params::decode(bytes) else { return false };
         let mut stored = self.stored.lock().unwrap_or_else(|e| e.into_inner());
+        self.loading.fetch_add(1, Ordering::Relaxed);
+        fence(Ordering::Release);
         for (slot, v) in self.values.iter().zip(&decoded.values) {
             slot.store(v.to_bits(), Ordering::Relaxed);
         }
+        self.loading.fetch_add(1, Ordering::Release);
         *stored = Stored { extra: decoded.extra, unclamped: decoded.unclamped, version: decoded.version };
         self.changed.store(true, Ordering::Release);
         true
@@ -217,10 +224,17 @@ impl ScyEqPlugin {
         if !self.shared.changed.swap(false, Ordering::Acquire) {
             return;
         }
+        let loading = self.shared.loading.load(Ordering::Acquire);
         let mut differs = false;
         for (id, (into, value)) in self.scratch.iter_mut().zip(&self.shared.values).enumerate() {
             *into = f64::from_bits(value.load(Ordering::Relaxed));
             differs |= *into != running.eq.value(id as u32);
+        }
+        fence(Ordering::Acquire);
+        if loading % 2 == 1 || self.shared.loading.load(Ordering::Relaxed) != loading {
+            // Part of a state being loaded: the next block takes it whole.
+            self.shared.changed.store(true, Ordering::Release);
+            return;
         }
         if !differs {
             return;
@@ -349,5 +363,51 @@ impl Plugin for ScyEqPlugin {
 
     fn take_latency_changed(&mut self) -> bool {
         std::mem::take(&mut self.latency_changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A state loaded while the audio thread picks the values up reaches the EQ whole: the
+    /// values it runs with are always one state's.
+    #[test]
+    fn a_state_loaded_meanwhile_is_taken_whole_or_not_at_all() {
+        let states: Vec<Vec<f64>> = [100.0, 5000.0]
+            .into_iter()
+            .map(|hz| {
+                let mut v = params::defaults();
+                for b in 0..params::BANDS {
+                    v[params::band_param(b, params::band::FREQ) as usize] = hz;
+                }
+                v
+            })
+            .collect();
+        let (mut plugin, shared) = ScyEqPlugin::new();
+        plugin.activate(48_000.0, 64, 2);
+        let stop = Arc::new(AtomicBool::new(false));
+        let loader = {
+            let (shared, stop) = (shared.clone(), stop.clone());
+            let bytes: Vec<Vec<u8>> = states.iter().map(|v| params::encode(v, &[], params::VERSION)).collect();
+            std::thread::spawn(move || {
+                for bytes in bytes.iter().cycle() {
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    assert!(shared.load(bytes));
+                }
+            })
+        };
+        for _ in 0..20_000 {
+            plugin.follow_values();
+            let values = plugin.eq.as_ref().unwrap().eq.values();
+            assert!(values == params::defaults() || states.iter().any(|s| s == values), "a mixed state");
+        }
+        stop.store(true, Ordering::Relaxed);
+        loader.join().unwrap();
+        plugin.follow_values();
+        let values = plugin.eq.as_ref().unwrap().eq.values();
+        assert!(states.iter().any(|s| s == values), "the last state loaded is taken");
     }
 }
