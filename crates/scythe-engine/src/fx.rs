@@ -1112,8 +1112,14 @@ impl FxRegistry {
                     let Some(state) = crate::vst3_host::with_component(&old.chunk, &state) else { return };
                     state
                 }
-                // A block with no state yet: the edits start a state of their own.
-                None if built_in_eq && lines.is_empty() => crate::vst3_host::reaper_state(&state, &[]),
+                // A block with no state plays the defaults; once edited, it gets a state of its own.
+                None if built_in_eq && lines.is_empty() => {
+                    use crate::scythe_eq::params;
+                    if state == params::encode(&params::defaults(), &[], params::VERSION) {
+                        return;
+                    }
+                    crate::vst3_host::reaper_state(&state, &[])
+                }
                 None if built_in_eq => return,
                 _ => state,
             };
@@ -2976,6 +2982,18 @@ mod scyeq_state_tests {
     fn a_clap_state_holding_no_eq_state_is_kept() {
         use base64::Engine as _;
         survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+
+    /// Left as it loaded, such a block is saved as it was, without lines.
+    #[test]
+    fn an_unedited_vst3_block_without_lines_is_saved_as_it_was() {
+        let mut project = project(&vst3(&[]));
+        let before = scythe_core::rpp::project_to_rpp(&project);
+        let mut registry = FxRegistry::new(48_000);
+        let track = &project.tracks[0];
+        assert_eq!(registry.chain(Some(track.id), &track.fx).len(), 1);
+        registry.store_states(&mut project);
+        assert_eq!(scythe_core::rpp::project_to_rpp(&project), before);
     }
 
     /// A VST3 block with no state lines plays as a default EQ; its edits are saved in REAPER's
