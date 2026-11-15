@@ -9,11 +9,11 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq};
-use scyeq_ui::{CompareSource, DecodeFn, EditorState, EqHost, Instance, ReferenceAudio, ViewState};
+use scyeq_ui::{CompareSource, DecodeFn, EditorState, EqHost, Instance, ReferenceAudio, ReferenceError, ViewState};
 
 static DECODED: AtomicUsize = AtomicUsize::new(0);
 
-fn decode(path: &Path) -> Result<ReferenceAudio, String> {
+fn decode(path: &Path) -> Result<ReferenceAudio, ReferenceError> {
     assert_eq!(path, Path::new("/music/reference.wav"));
     DECODED.fetch_add(1, Ordering::SeqCst);
     Ok(ReferenceAudio { channels: vec![vec![0.0; 4800]], sample_rate: 48_000 })
@@ -267,10 +267,13 @@ fn the_chosen_reference_shows_its_colour() {
     assert_eq!(dots(&h, [40, 200, 40]), 2, "on the compare choice and the reference");
 }
 
-fn decode_by_name(path: &Path) -> Result<ReferenceAudio, String> {
+fn decode_by_name(path: &Path) -> Result<ReferenceAudio, ReferenceError> {
     match path.file_name().and_then(|n| n.to_str()) {
         Some("good.wav") => Ok(ReferenceAudio { channels: vec![vec![0.1; 4800]], sample_rate: 48_000 }),
-        _ => Err("unsupported feature: core (probe): no suitable format reader found".to_owned()),
+        Some("gone.wav") => Err(ReferenceError::Open(std::io::ErrorKind::NotFound)),
+        Some("locked.wav") => Err(ReferenceError::Open(std::io::ErrorKind::PermissionDenied)),
+        Some("busy.wav") => Err(ReferenceError::Open(std::io::ErrorKind::Other)),
+        _ => Err(ReferenceError::NotAudio),
     }
 }
 
@@ -360,26 +363,40 @@ fn pick_next(h: &mut Harness<'static, (Picks, EditorState)>, current: &str) {
     panic!("the file was never measured");
 }
 
-const RAW: &str = "unsupported feature: core (probe): no suitable format reader found";
+const NOT_AUDIO: &str = "notes.txt is not audio Scythe can read.";
 
 #[test]
 fn a_file_measured_after_one_that_failed_clears_the_error() {
     let mut h = picks(&["notes.txt", "good.wav"]);
     pick_next(&mut h, "Choose…");
-    assert!(h.query_by_label_contains(RAW).is_some(), "the failed file's error");
+    assert!(h.query_by_label_contains(NOT_AUDIO).is_some(), "the failed file's error");
     pick_next(&mut h, "notes.txt");
     assert!(h.query_by_value("good.wav").is_some());
-    assert!(h.query_by_label_contains(RAW).is_none(), "the error stays after a good file");
+    assert!(h.query_by_label_contains(NOT_AUDIO).is_none(), "the error stays after a good file");
 }
 
 #[test]
 fn choosing_an_instance_after_a_failed_file_clears_the_error() {
     let mut h = picks(&["notes.txt"]);
     pick_next(&mut h, "Choose…");
-    assert!(h.query_by_label_contains(RAW).is_some());
+    assert!(h.query_by_label_contains(NOT_AUDIO).is_some());
     h.get_by_value("notes.txt").click();
     h.run_steps(2);
     h.get_by_label("Bass (ScyEQ-Pro)").click();
     h.run_steps(2);
-    assert!(h.query_by_label_contains(RAW).is_none(), "the error stays with an instance as reference");
+    assert!(h.query_by_label_contains(NOT_AUDIO).is_none(), "the error stays with an instance as reference");
+}
+
+#[test]
+fn a_file_that_cannot_be_used_is_named_in_a_plain_sentence() {
+    let mut h = picks(&["notes.txt", "gone.wav", "locked.wav", "busy.wav"]);
+    pick_next(&mut h, "Choose…");
+    assert!(h.query_by_label("notes.txt is not audio Scythe can read.").is_some());
+    assert!(h.query_by_label_contains("format reader").is_none(), "the decoder's own words");
+    pick_next(&mut h, "notes.txt");
+    assert!(h.query_by_label("gone.wav cannot be found.").is_some());
+    pick_next(&mut h, "gone.wav");
+    assert!(h.query_by_label("locked.wav cannot be opened: no permission to read it.").is_some());
+    pick_next(&mut h, "locked.wav");
+    assert!(h.query_by_label("busy.wav cannot be opened.").is_some());
 }

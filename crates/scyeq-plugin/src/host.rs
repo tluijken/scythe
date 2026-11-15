@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use plugin_format::{GuiContext, Shared, egui};
 use scyeq_dsp::probe::FxProbe;
 use scyeq_dsp::{Meters, ScytheEq, params};
-use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ViewState};
+use scyeq_ui::{CompareSource, EditorState, EqHost, Instance, InstanceList, ReferenceAudio, ReferenceError, ViewState};
 
 #[cfg(unix)]
 use crate::owner;
@@ -350,8 +350,11 @@ fn take_picked(picking: &mut Option<Receiver<Option<PathBuf>>>) -> Option<PathBu
 }
 
 /// A reference file for EQ Match, decoded as Scythe decodes it.
-fn load_reference(path: &Path) -> Result<ReferenceAudio, String> {
-    let audio = scythe_decode::decode_reference(path).map_err(|e| e.to_string())?;
+fn load_reference(path: &Path) -> Result<ReferenceAudio, ReferenceError> {
+    let audio = scythe_decode::decode_reference(path).map_err(|e| match e {
+        scythe_decode::Error::Open(e) => ReferenceError::Open(e.kind()),
+        scythe_decode::Error::Decode(_) => ReferenceError::NotAudio,
+    })?;
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 
@@ -468,8 +471,11 @@ mod tests {
         std::fs::write(&path, b"not audio").unwrap();
         let audio = load_reference(&path);
         std::fs::remove_file(&path).unwrap();
-        assert!(audio.is_err());
-        assert!(load_reference(Path::new("/nonexistent/reference.wav")).is_err());
+        assert_eq!(audio, Err(ReferenceError::NotAudio));
+        assert_eq!(
+            load_reference(Path::new("/nonexistent/reference.wav")),
+            Err(ReferenceError::Open(std::io::ErrorKind::NotFound))
+        );
     }
 
     #[test]

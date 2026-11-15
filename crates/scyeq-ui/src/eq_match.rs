@@ -1,7 +1,8 @@
 //! EQ Match: bands fitted so this instance's input moves towards another instance's signal
 //! or a reference file.
 
-use std::path::PathBuf;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 use egui::{CornerRadius, Id, Pos2, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -12,7 +13,7 @@ use scyeq_dsp::reference::{levels_at, third_octaves};
 
 use crate::analyzer::{POINTS, grid_hz};
 use crate::editor::{Cx, View};
-use crate::host::{CompareSource, DecodeFn, WindowSpec};
+use crate::host::{CompareSource, DecodeFn, ReferenceError, WindowSpec};
 use crate::model::{Plot, Scale};
 use crate::theme::{self, ACCENT, BG, RAISED_HI, TEXT_DIM, TEXT_MID};
 use crate::widgets;
@@ -130,9 +131,28 @@ fn measure_file(decode: DecodeFn, path: PathBuf) -> Receiver<Result<Vec<f64>, St
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let freqs: Vec<f64> = (0..POINTS).map(grid_hz).collect();
-        let _ = tx.send(decode(&path).map(|a| levels_at(&third_octaves(&a.channels, a.sample_rate), &freqs)));
+        let levels = decode(&path)
+            .map(|a| levels_at(&third_octaves(&a.channels, a.sample_rate), &freqs))
+            .map_err(|e| unusable(&path, &e));
+        let _ = tx.send(levels);
     });
     rx
+}
+
+fn unusable(path: &Path, error: &ReferenceError) -> String {
+    let name = file_label(path);
+    match error {
+        ReferenceError::NotAudio => format!("{name} is not audio Scythe can read."),
+        ReferenceError::Open(ErrorKind::NotFound) => format!("{name} cannot be found."),
+        ReferenceError::Open(ErrorKind::PermissionDenied) => {
+            format!("{name} cannot be opened: no permission to read it.")
+        }
+        ReferenceError::Open(_) => format!("{name} cannot be opened."),
+    }
+}
+
+fn file_label(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
 }
 
 pub(crate) fn window(cx: &mut Cx, ui: &mut Ui, view: &mut View, values: &[f64], others: &[CompareSource]) {
@@ -197,9 +217,7 @@ fn match_body(
         let current = match &panel.reference {
             Target::None => "Choose…".to_owned(),
             Target::Source(i) => i.label.clone(),
-            Target::File(f) => {
-                f.file_name().map_or_else(|| f.display().to_string(), |n| n.to_string_lossy().into_owned())
-            }
+            Target::File(f) => file_label(f),
         };
         if let Target::Source(source) = &panel.reference
             && let Some(color) = source.color

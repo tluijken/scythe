@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use egui::{Id, Rect, Ui, UiBuilder};
 use scyeq_ui::{
-    CompareSource, EqHost, InstanceControls, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec,
+    CompareSource, EqHost, InstanceControls, InstanceList, ReferenceAudio, ReferenceError, ViewState, WindowFn,
+    WindowSpec,
 };
 use scythe_core::FxSlot;
 use scythe_engine::fx::FxOwner;
+use scythe_engine::media::MediaError;
 use scythe_engine::probe::FxProbe;
 use scythe_engine::scythe_eq::params::{self as p, band};
 use scythe_engine::scythe_eq::{self, Meters, ScytheEq};
@@ -182,8 +184,11 @@ fn track_probe(app: &ScytheApp, owner: &FxOwner) -> Option<Arc<FxProbe>> {
     }
 }
 
-fn decode_file(path: &Path) -> Result<ReferenceAudio, String> {
-    let mut audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
+fn decode_file(path: &Path) -> Result<ReferenceAudio, ReferenceError> {
+    let mut audio = scythe_engine::media::decode_file(path).map_err(|e| match e {
+        MediaError::Open { source, .. } => ReferenceError::Open(source.kind()),
+        MediaError::Decode { .. } | MediaError::Resample(_) => ReferenceError::NotAudio,
+    })?;
     audio.channels.truncate(2);
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
@@ -403,5 +408,18 @@ mod tests {
         app.edit("Add FX", |p| p.tracks[0].fx.push(scythe_eq::slot(None)));
         let labels: Vec<String> = project_instances(&app).iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, ["Vocals · 1", "Vocals · 2"]);
+    }
+
+    #[test]
+    fn a_reference_that_cannot_be_used_says_why() {
+        let path = std::env::temp_dir().join(format!("scythe-eq-not-audio-{}.wav", std::process::id()));
+        std::fs::write(&path, b"not audio").unwrap();
+        let audio = decode_file(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(audio, Err(ReferenceError::NotAudio));
+        assert_eq!(
+            decode_file(Path::new("/nonexistent/reference.wav")),
+            Err(ReferenceError::Open(std::io::ErrorKind::NotFound))
+        );
     }
 }
