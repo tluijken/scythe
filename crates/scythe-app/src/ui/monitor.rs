@@ -739,13 +739,16 @@ fn create(app: &mut ScytheApp, w: &Wizard) -> bool {
         app.view.monitor_page = true;
         return new.is_some();
     }
-    let opts = match w.options() {
+    let mut opts = match w.options() {
         Ok(o) => o,
         Err(e) => {
             app.notify(format!("Could not load the track template: {e}"));
             return false;
         }
     };
+    if let Some(t) = opts.template.as_mut() {
+        app.upgrade_brought_in(std::slice::from_mut(t));
+    }
     let sources: Vec<TrackId> = app.project.tracks.iter().map(|t| t.id).filter(|t| w.sources.contains(t)).collect();
     let mut id = TrackId(0);
     if w.cue_bus {

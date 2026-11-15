@@ -1499,7 +1499,8 @@ impl ScytheApp {
             .map_err(|e| e.to_string())
             .and_then(|t| scythe_core::rpp::fx_chain_from_text(&t).map_err(|e| e.to_string()));
         match slots {
-            Ok(slots) if !slots.is_empty() => {
+            Ok(mut slots) if !slots.is_empty() => {
+                self.upgrade_brought_in_fx(&mut slots);
                 let n = slots.len();
                 self.edit("Load FX chain", |p| {
                     if let Some(t) = p.track_mut(track) {
@@ -1541,11 +1542,12 @@ impl ScytheApp {
         let tracks = std::fs::read_to_string(&path)
             .map_err(|e| e.to_string())
             .and_then(|t| scythe_core::rpp::tracks_from_template(&t).map_err(|e| e.to_string()));
-        let tracks = match tracks {
+        let mut tracks = match tracks {
             Ok(t) if !t.is_empty() => t,
             Ok(_) => return self.notify("The file holds no tracks"),
             Err(e) => return self.notify(format!("Could not load {}: {e}", path.display())),
         };
+        self.upgrade_brought_in(&mut tracks);
         let first = tracks[0].id;
         let at = self.selected_track_index().map_or(self.project.tracks.len(), |i| i + 1);
         self.edit("Insert track template", |p| {

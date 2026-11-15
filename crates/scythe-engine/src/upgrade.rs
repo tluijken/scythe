@@ -31,6 +31,9 @@ const UNITS_FORMAT: u32 = 2;
 /// for the question; `None` when they cannot be known.
 pub type SlotParams<'a> = dyn FnMut(&FxOwner, &str, &FxSlot, bool) -> Option<Vec<ParamInfo>> + 'a;
 
+/// The parameters a hosted plugin lists, from an instance made for the question.
+pub type MadeParams<'a> = dyn FnMut(&FxSlot) -> Option<Vec<ParamInfo>> + 'a;
+
 /// A parameter's range in its own units, and how the value an older Scythe stored maps into it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Units {
@@ -71,7 +74,7 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
         Writer::Scythe(format) => format < UNITS_FORMAT,
         Writer::Unknown => false,
     };
-    let mut pass = Pass { all, params, pooled: Vec::new(), made: HashMap::new() };
+    let mut pass = Pass { all, make: all, params, pooled: Vec::new(), made: HashMap::new() };
     let mut changed = pass.chain(&FxOwner::Master, &mut project.master.fx, "");
     for track in &mut project.tracks {
         let id = track.id;
@@ -103,6 +106,38 @@ pub fn upgrade_project(project: &mut Project, params: &mut SlotParams) -> bool {
     changed
 }
 
+/// Converts the slots of tracks or effects a file brings into a project (an FX chain, a track
+/// template). Such a file carries no marker, so as in a project without one only a 0..1 envelope
+/// on a parameter with another range shows that an older Scythe wrote the slot; the pools its
+/// items play belong to the project it came from and stay. `params` lists a hosted plugin's
+/// parameters from an instance made for the question, as none runs for the slot yet.
+pub fn upgrade_tracks(tracks: &mut [scythe_core::Track], params: &mut MadeParams) -> bool {
+    let mut changed = false;
+    for track in tracks {
+        changed |= upgrade_slots(&mut track.fx, params);
+        let mut input = track.input_fx();
+        if upgrade_slots(&mut input, params) {
+            track.set_input_fx(&input);
+            changed = true;
+        }
+        for take in track.items.iter_mut().flat_map(|i| &mut i.takes) {
+            let mut fx = take.fx();
+            if upgrade_slots(&mut fx, params) {
+                take.set_fx(&fx);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// [`upgrade_tracks`] for effects alone.
+pub fn upgrade_slots(slots: &mut [FxSlot], params: &mut MadeParams) -> bool {
+    let mut ask = |_: &FxOwner, _: &str, slot: &FxSlot, create: bool| if create { params(slot) } else { None };
+    let mut pass = Pass { all: false, make: true, params: &mut ask, pooled: Vec::new(), made: HashMap::new() };
+    pass.chain(&FxOwner::Master, slots, "")
+}
+
 /// [`upgrade_project`] for a project rendered without a session, with `fx`, a registry of its
 /// own that runs none of its plugins.
 pub fn upgrade_read(project: &mut Project, fx: &FxRegistry) -> bool {
@@ -120,6 +155,8 @@ pub fn read_project(path: &Path) -> Result<Project, ProjectIoError> {
 struct Pass<'p, 'a> {
     /// Whether every baseline is old, not only those of slots with an old envelope.
     all: bool,
+    /// Whether a plugin no instance runs may be made to learn its parameters.
+    make: bool,
     params: &'p mut SlotParams<'a>,
     /// Pools played by the envelopes converted, with how their values move.
     pooled: Vec<(i64, Units)>,
@@ -182,7 +219,7 @@ impl Pass<'_, '_> {
 
     /// The units of each parameter of the slot's plugin, by index: ScyEQ-Pro's own, or a hosted
     /// CLAP plugin's; `None` for other formats, whose envelopes REAPER keeps on 0..1 too. A hosted
-    /// plugin no instance runs is made only in an old file, once per plugin id.
+    /// plugin no instance runs is made only in an old file or one brought in, once per plugin id.
     fn units(&mut self, owner: &FxOwner, key: &str, slot: &FxSlot) -> Option<Vec<Option<Units>>> {
         if crate::scythe_eq::is_clap_slot(slot) {
             return Some(
@@ -196,7 +233,7 @@ impl Pass<'_, '_> {
         }
         let list = match (self.params)(owner, key, slot, false) {
             Some(list) => list,
-            None if self.all => {
+            None if self.make => {
                 let id = crate::fx::clap_id(slot)?;
                 if !self.made.contains_key(&id) {
                     let made = (self.params)(owner, key, slot, true);
@@ -525,6 +562,40 @@ mod tests {
         let upgraded = p.clone();
         assert!(!upgrade_project(&mut p, &mut |_, _, _, _| None), "a second load changes nothing");
         assert_eq!(p, upgraded);
+    }
+
+    /// Effects a chain file or a track template brings in convert as a file without a marker
+    /// does, a hosted plugin's parameters coming from an instance made for the question.
+    #[test]
+    fn brought_in_effects_convert_where_an_old_envelope_shows() {
+        let freq = params::automatable().nth(2).unwrap();
+        let old_eq = eq_slot("<PARMENV 2 0 1 0.25\nACT 1 -1\nPT 0 0.5 0\n>\n");
+        let base_only = clap_slot(OLD_BASE);
+        let mut slots = vec![clap_slot(&format!("{OLD_BOOST}{OLD_BASE}")), base_only.clone(), old_eq.clone()];
+        let mut made = 0;
+        assert!(upgrade_slots(&mut slots, &mut |_| {
+            made += 1;
+            Some(gain_params())
+        }));
+        assert_eq!(values(&slots[0], "1"), [1.0, 3.0]);
+        assert_eq!(base(&slots[0], 1), 2.0);
+        assert_eq!(slots[1], base_only, "nothing shows the baseline is old");
+        assert_eq!(values(&slots[2], "2"), [params::from_normalized(freq, 0.5)]);
+        assert_eq!(made, 1);
+
+        let mut take = Take::from_file("vocal.wav".into());
+        take.set_fx(std::slice::from_ref(&old_eq));
+        let mut track = Track::new("Vocals");
+        track.fx.push(old_eq.clone());
+        track.set_input_fx(std::slice::from_ref(&old_eq));
+        track.items.push(Item::new(0.0, 1.0, take));
+        let mut tracks = vec![track];
+        assert!(upgrade_tracks(&mut tracks, &mut |_| None));
+        let converted = |slot: &FxSlot| values(slot, "2") == [params::from_normalized(freq, 0.5)];
+        assert!(converted(&tracks[0].fx[0]));
+        assert!(converted(&tracks[0].input_fx()[0]));
+        assert!(converted(&tracks[0].items[0].takes[0].fx()[0]));
+        assert!(!upgrade_tracks(&mut tracks, &mut |_| None), "a second time changes nothing");
     }
 
     use scythe_core::Envelope;

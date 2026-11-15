@@ -977,6 +977,12 @@ impl FxRegistry {
         if !create {
             return None;
         }
+        self.made_params(slot)
+    }
+
+    /// The parameters the plugin of `slot` lists, from an instance made for the question without
+    /// the slot's state.
+    pub fn made_params(&self, slot: &FxSlot) -> Option<Vec<ParamInfo>> {
         let bare = without_state(slot);
         crate::plugin_thread::run(|| self.create_here(&bare, 2).ok().map(|(mut e, _)| e.params()))
     }

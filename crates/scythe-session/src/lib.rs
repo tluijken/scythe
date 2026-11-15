@@ -311,6 +311,19 @@ impl Session {
         std::mem::take(&mut self.notices)
     }
 
+    /// Converts the effects of tracks a track template brings in, as an older Scythe may have
+    /// stored their automation in other units (`upgrade::upgrade_tracks`).
+    pub fn upgrade_brought_in(&self, tracks: &mut [scythe_core::Track]) -> bool {
+        let fx = self.engine.fx();
+        scythe_engine::upgrade::upgrade_tracks(tracks, &mut |slot| fx.made_params(slot))
+    }
+
+    /// [`Self::upgrade_brought_in`] for the effects of an FX chain file.
+    pub fn upgrade_brought_in_fx(&self, slots: &mut [scythe_core::FxSlot]) -> bool {
+        let fx = self.engine.fx();
+        scythe_engine::upgrade::upgrade_slots(slots, &mut |slot| fx.made_params(slot))
+    }
+
     fn after_load(&mut self) {
         self.live.list = 0;
         self.live.player = Default::default();
