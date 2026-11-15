@@ -20,8 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         # macOS runner minutes count ten times against a private repository's quota, so pull
-        # requests build on Linux and Windows only.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "windows-latest"]') || fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') }}
+        # requests build on Linux and Windows only. Linux is 22.04 for its older glibc, so the
+        # plugin loads in hosts on older distributions too.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-22.04", "windows-latest"]') || fromJSON('["ubuntu-22.04", "windows-latest", "macos-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
