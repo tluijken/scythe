@@ -108,6 +108,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+          # The zips are the release files: left as they are, not unpacked into dist.
+          skip-decompress: true
       # Run again on its own, the job also downloads the SHA256SUMS of its first run.
       - name: Checksums
         working-directory: dist
