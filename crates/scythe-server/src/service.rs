@@ -129,9 +129,12 @@ fn unit_dir() -> Option<PathBuf> {
 
 /// Where a systemd user unit does something: Linux. Elsewhere the file would only sit there.
 fn has_systemd(os: &str) -> Result<(), String> {
-    if os == "linux" {
-        return Ok(());
-    }
+    let os = match os {
+        "linux" => return Ok(()),
+        "macos" => "macOS",
+        "windows" => "Windows",
+        other => other,
+    };
     Err(format!(
         "--install-service writes a systemd user unit, which {os} does not run; start scythe-server \
          from {os}'s own service manager instead"
@@ -271,9 +274,10 @@ mod tests {
     #[test]
     fn a_unit_is_written_only_where_systemd_runs() {
         assert_eq!(has_systemd("linux"), Ok(()));
-        for os in ["macos", "windows"] {
+        for (os, name) in [("macos", "macOS"), ("windows", "Windows"), ("freebsd", "freebsd")] {
             let refused = has_systemd(os).unwrap_err();
-            assert!(refused.contains("systemd") && refused.contains(os), "{refused}");
+            assert!(refused.contains("systemd") && refused.contains(name), "{refused}");
+            assert!(name == os || !refused.contains(os), "{refused}");
         }
     }
 
