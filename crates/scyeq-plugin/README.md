@@ -22,14 +22,20 @@ editor says so instead of opening a dialog.
 
 ### NixOS
 
-REAPER from nixpkgs does not have the X11 and OpenGL libraries the editor loads on its library
-path (`libX11-xcb.so.1` from libx11, libGL from libglvnd, and the driver in `/run/opengl-driver/lib`),
-so it shows its generic parameter list instead of the editor. Add them to `LD_LIBRARY_PATH` when
-starting REAPER:
+REAPER from nixpkgs does not have the OpenGL libraries the editor loads on its library path (libGL
+from libglvnd and the driver in `/run/opengl-driver/lib`), and in some setups not
+`libX11-xcb.so.1` from libx11 either, so it shows its generic parameter list instead of the
+editor. Add them to `LD_LIBRARY_PATH` when starting REAPER. The links `nix build` makes keep the
+libraries from being garbage-collected:
 
 ```sh
-LD_LIBRARY_PATH="$(nix build --no-link --print-out-paths nixpkgs#libx11.out)/lib:$(nix build --no-link --print-out-paths nixpkgs#libglvnd.out)/lib:/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" reaper
+libs=~/.local/state/reaper-libs
+nix build --out-link "$libs/x11" nixpkgs#libx11.out
+nix build --out-link "$libs/gl" nixpkgs#libglvnd.out
+LD_LIBRARY_PATH="$libs/x11/lib:$libs/gl/lib:/run/opengl-driver/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" reaper
 ```
+
+The two `nix build` lines are needed once; remove the links to let the libraries go.
 
 In a NixOS or Home Manager configuration the same goes into a wrapper around `reaper`, with
 `lib.makeLibraryPath [ pkgs.libx11 pkgs.libglvnd ]` and `/run/opengl-driver/lib`.
