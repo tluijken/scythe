@@ -53,6 +53,7 @@ pub(crate) enum PickNotice {
     Refused,
     /// The last one is still open, maybe behind the host's window.
     AlreadyOpen,
+    /// There is no file dialog to show: on Linux, neither a file chooser portal nor zenity.
     NoDialog,
 }
 

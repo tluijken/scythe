@@ -3,6 +3,7 @@
 
 use std::ffi::{CStr, OsStr, c_char, c_int, c_uint, c_void};
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// Whether rfd has a file dialog to show: zenity on the `PATH`, or a file chooser portal on the
 /// session bus.
@@ -19,7 +20,7 @@ fn on_path(path: &OsStr, program: &str) -> bool {
 /// Whether the session bus, or the bus at `address`, answers for the portal's file chooser, the
 /// interface rfd calls. The bus starts the portal when it can, as it would for rfd.
 fn file_chooser_portal(address: Option<&CStr>) -> bool {
-    Dbus::open().is_some_and(|dbus| unsafe { dbus.has_file_chooser(address) })
+    Dbus::get().is_some_and(|dbus| unsafe { dbus.has_file_chooser(address) })
 }
 
 #[repr(C)]
@@ -52,7 +53,13 @@ struct Dbus {
 }
 
 impl Dbus {
-    /// Never closed: libdbus keeps state for the process, and rfd holds the same library open.
+    /// Loaded once and never closed: libdbus keeps state for the process, and rfd holds the same
+    /// library open.
+    fn get() -> Option<&'static Self> {
+        static DBUS: OnceLock<Option<Dbus>> = OnceLock::new();
+        DBUS.get_or_init(Self::open).as_ref()
+    }
+
     fn open() -> Option<Self> {
         unsafe {
             let lib = [c"libdbus-1.so.3", c"libdbus-1.so"]

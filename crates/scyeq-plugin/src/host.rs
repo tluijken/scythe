@@ -272,10 +272,24 @@ fn file_dialog() -> impl FnOnce() -> Picked + Send + 'static {
         dialog = dialog.set_parent(&owner);
     }
     move || {
-        if !chooser::available() {
-            return Picked::NoDialog;
-        }
-        dialog.pick_file().map_or(Picked::Cancelled, Picked::File)
+        let found = chooser::available();
+        let started = std::time::Instant::now();
+        let picked = dialog.pick_file();
+        outcome(found, picked, started.elapsed())
+    }
+}
+
+/// How a dialog that took `took` ended, `found` saying whether a file chooser was found before.
+/// The search can miss one that works, so its answer alone opens or blocks nothing: no file means
+/// no dialog only when none was found and rfd gave up at once. A missing portal and zenity fail
+/// within milliseconds; a person needs longer than this to see a dialog and cancel it.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn outcome(found: bool, picked: Option<PathBuf>, took: std::time::Duration) -> Picked {
+    const AT_ONCE: std::time::Duration = std::time::Duration::from_millis(1500);
+    match picked {
+        Some(path) => Picked::File(path),
+        None if !found && took < AT_ONCE => Picked::NoDialog,
+        None => Picked::Cancelled,
     }
 }
 
@@ -307,7 +321,8 @@ fn file_dialog() -> impl FnOnce() -> Picked + Send + 'static {
 pub(crate) enum Picked {
     File(PathBuf),
     Cancelled,
-    /// None could show: on Linux, neither a file chooser portal nor zenity is there.
+    /// None showed: on Linux, neither a file chooser portal nor zenity was found, and rfd gave up
+    /// at once.
     NoDialog,
 }
 
@@ -600,6 +615,18 @@ mod tests {
             }
         };
         assert_eq!(picked, Picked::File(PathBuf::from("/music/reference.wav")));
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_dialog_without_a_file_counts_as_missing_only_when_none_was_found_and_it_ended_at_once() {
+        use std::time::Duration;
+        let file = || Some(PathBuf::from("/music/reference.wav"));
+        let (quick, slow) = (Duration::from_millis(30), Duration::from_secs(10));
+        assert_eq!(outcome(true, None, quick), Picked::Cancelled, "found, then cancelled");
+        assert_eq!(outcome(false, file(), quick), Picked::File(PathBuf::from("/music/reference.wav")));
+        assert_eq!(outcome(false, None, quick), Picked::NoDialog);
+        assert_eq!(outcome(false, None, slow), Picked::Cancelled, "a person closed a dialog the probe missed");
     }
 
     fn shared() -> Arc<ScyEqShared> {
