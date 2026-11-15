@@ -176,6 +176,7 @@ fn instances_see_each_other() {
         assert!(h.query_by_label(&format!("{name} band 1")).is_some(), "{name} in the instance list");
     }
     assert!(h.query_by_label("Bypassed").is_none() && h.query_by_label("On").is_none(), "no bypass to offer");
+    assert!(h.query_by_label("Open").is_none() && h.query_by_label("Close").is_none(), "no editor to open");
 }
 
 #[test]

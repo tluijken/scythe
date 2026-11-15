@@ -5,7 +5,7 @@ use scyeq_dsp::BandSettings;
 use scyeq_dsp::filters::{Design, Prototype};
 use scyeq_dsp::params::{self as p, BANDS, GLOBAL, band, global};
 
-use crate::host::{Instance, InstanceList, WindowSpec};
+use crate::host::{Instance, InstanceControls, InstanceList, WindowSpec};
 use crate::model::{Plot, Scale, hz_text};
 use crate::theme::{self, ACCENT, BG, RAISED, RAISED_HI, TEXT, TEXT_DIM, TEXT_MID, band_color};
 use crate::widgets;
@@ -60,8 +60,8 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
         TEXT_DIM,
     );
     let key = |what: &str| inst.id.with(("eq-instances", what));
-    if list.controls_instances() {
-        open_and_bypass(list, ui, rect, inst);
+    if let Some(controls) = list.controls() {
+        open_and_bypass(controls, ui, rect, inst);
     }
     let curve =
         Rect::from_min_max(pos2(rect.left() + 160.0, rect.top() + 8.0), pos2(rect.left() + 400.0, rect.bottom() - 8.0));
@@ -139,7 +139,7 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
     }
 }
 
-fn open_and_bypass(list: &mut dyn InstanceList, ui: &mut Ui, rect: Rect, inst: &Instance) {
+fn open_and_bypass(list: &mut dyn InstanceControls, ui: &mut Ui, rect: Rect, inst: &Instance) {
     let open_r = Rect::from_min_size(rect.min + vec2(10.0, 50.0), vec2(56.0, 24.0));
     let is_open = list.instance_open(inst.id);
     if widgets::text_pill(

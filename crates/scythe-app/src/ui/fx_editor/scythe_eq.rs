@@ -6,7 +6,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use egui::{Id, Rect, Ui, UiBuilder};
-use scyeq_ui::{CompareSource, EqHost, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec};
+use scyeq_ui::{
+    CompareSource, EqHost, InstanceControls, InstanceList, ReferenceAudio, ViewState, WindowFn, WindowSpec,
+};
 use scythe_core::FxSlot;
 use scythe_engine::fx::FxOwner;
 use scythe_engine::probe::FxProbe;
@@ -340,6 +342,30 @@ impl InstanceList for ProjectInstances<'_> {
         Some(running.or_else(|| scythe_eq::slot_values(&slot)).unwrap_or_else(p::defaults))
     }
 
+    fn begin_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn set_instance(&mut self, id: Id, param: u32, value: f64) {
+        let Some(fx) = self.running(id) else { return };
+        let label = if param % p::BAND_STRIDE == band::ENABLED { "Bypass EQ band" } else { "Adjust EQ band gain" };
+        self.app.fx_gesture(label, &fx, |e| e.set_param(param, value));
+    }
+
+    fn end_instance(&mut self, _id: Id, _param: u32) {
+        self.app.end_gesture();
+    }
+
+    fn controls(&mut self) -> Option<&mut dyn InstanceControls> {
+        Some(self)
+    }
+
+    fn window(&self) -> WindowFn {
+        panel
+    }
+}
+
+impl InstanceControls for ProjectInstances<'_> {
     fn instance_enabled(&self, id: Id) -> bool {
         self.slot(id).is_some_and(|s| s.enabled)
     }
@@ -356,24 +382,6 @@ impl InstanceList for ProjectInstances<'_> {
     fn toggle_instance_open(&mut self, id: Id) {
         let Some(i) = self.find(id).cloned() else { return };
         super::toggle_at(self.app, &i.owner, &i.path);
-    }
-
-    fn begin_instance(&mut self, _id: Id, _param: u32) {
-        self.app.end_gesture();
-    }
-
-    fn set_instance(&mut self, id: Id, param: u32, value: f64) {
-        let Some(fx) = self.running(id) else { return };
-        let label = if param % p::BAND_STRIDE == band::ENABLED { "Bypass EQ band" } else { "Adjust EQ band gain" };
-        self.app.fx_gesture(label, &fx, |e| e.set_param(param, value));
-    }
-
-    fn end_instance(&mut self, _id: Id, _param: u32) {
-        self.app.end_gesture();
-    }
-
-    fn window(&self) -> WindowFn {
-        panel
     }
 }
 

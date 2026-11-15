@@ -4,7 +4,7 @@ use egui::{Id, Pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use scyeq_dsp::params::{self as p, band};
-use scyeq_ui::{Instance, InstanceList};
+use scyeq_ui::{Instance, InstanceControls, InstanceList};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Call {
@@ -45,22 +45,6 @@ impl InstanceList for Fake {
         Some(self.values.clone())
     }
 
-    fn instance_enabled(&self, _id: Id) -> bool {
-        true
-    }
-
-    fn toggle_instance_bypass(&mut self, _id: Id) {}
-
-    fn instance_open(&self, _id: Id) -> bool {
-        false
-    }
-
-    fn toggle_instance_open(&mut self, _id: Id) {}
-
-    fn controls_instances(&self) -> bool {
-        self.controls
-    }
-
     fn begin_instance(&mut self, id: Id, param: u32) {
         self.calls.push(Call::Begin(id, param));
     }
@@ -73,6 +57,24 @@ impl InstanceList for Fake {
     fn end_instance(&mut self, id: Id, param: u32) {
         self.calls.push(Call::End(id, param));
     }
+
+    fn controls(&mut self) -> Option<&mut dyn InstanceControls> {
+        if self.controls { Some(self) } else { None }
+    }
+}
+
+impl InstanceControls for Fake {
+    fn instance_enabled(&self, _id: Id) -> bool {
+        true
+    }
+
+    fn toggle_instance_bypass(&mut self, _id: Id) {}
+
+    fn instance_open(&self, _id: Id) -> bool {
+        false
+    }
+
+    fn toggle_instance_open(&mut self, _id: Id) {}
 }
 
 fn button(h: &mut Harness<Fake>, pos: Pos2, pressed: bool) {

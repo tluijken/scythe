@@ -230,18 +230,6 @@ impl InstanceList for Instances<'_> {
         self.find(id).map(|s| s.values())
     }
 
-    fn instance_enabled(&self, _id: egui::Id) -> bool {
-        true
-    }
-
-    fn toggle_instance_bypass(&mut self, _id: egui::Id) {}
-
-    fn instance_open(&self, id: egui::Id) -> bool {
-        self.all.first().is_some_and(|me| registry::id_of(me) == id)
-    }
-
-    fn toggle_instance_open(&mut self, _id: egui::Id) {}
-
     fn begin_instance(&mut self, id: egui::Id, param: u32) {
         let Some(cx) = self.cx_of(id) else { return };
         if let Some((unfinished, unfinished_param)) = self.gesture.take() {
@@ -261,10 +249,6 @@ impl InstanceList for Instances<'_> {
         let Some(cx) = self.cx_of(id) else { return };
         cx.end(param);
         *self.gesture = None;
-    }
-
-    fn controls_instances(&self) -> bool {
-        false
     }
 }
 
