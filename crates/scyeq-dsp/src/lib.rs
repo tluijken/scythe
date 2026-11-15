@@ -238,6 +238,10 @@ pub struct ScytheEq {
     det: Vec<f64>,
     /// Whether audio went through, so a structural change crossfades.
     running: bool,
+    /// Values were set since the last block.
+    pending: bool,
+    /// The values the processing was last made to match.
+    applied: Vec<f64>,
     outgoing: Box<Outgoing>,
     /// The sample position of the next frame, which places the grid cells.
     clock: i64,
@@ -305,6 +309,8 @@ impl ScytheEq {
             buf: [vec![0.0; SUB], vec![0.0; SUB]],
             det: vec![0.0; SUB],
             running: false,
+            pending: false,
+            applied: Vec::new(),
             outgoing: Box::new(Outgoing {
                 fir: None,
                 zero: false,
@@ -355,8 +361,9 @@ impl ScytheEq {
         self.settings[b]
     }
 
+    /// The phase mode set, which the processing takes at the next block.
     pub fn phase_mode(&self) -> PhaseMode {
-        self.mode
+        PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize)
     }
 
     /// Sets parameter `id` to `v` in its own units.
@@ -367,7 +374,7 @@ impl ScytheEq {
             return;
         }
         *slot = v;
-        self.reconfigure();
+        self.changed();
     }
 
     /// Replaces every value (a recalled state).
@@ -375,17 +382,34 @@ impl ScytheEq {
         for (id, v) in values.iter().enumerate().take(params::TOTAL) {
             self.values[id] = params::clamp(id as u32, *v);
         }
-        self.reconfigure();
+        self.changed();
+    }
+
+    /// The processing follows changed values at the next block, all at once: values set one by
+    /// one between two blocks sound as when set together, and a switch made and undone between
+    /// them as none.
+    fn changed(&mut self) {
+        for b in 0..BANDS {
+            self.settings[b] = BandSettings::read(&self.values, b);
+        }
+        self.pending = true;
+    }
+
+    fn settle(&mut self) {
+        if std::mem::take(&mut self.pending) && self.values != self.applied {
+            self.reconfigure();
+        }
     }
 
     /// Reads the parameter table and makes the processing structures match it. It allocates
     /// only for a new FIR length: a change of phase mode or linear phase resolution.
     fn reconfigure(&mut self) {
+        self.applied.clone_from(&self.values);
         for b in 0..BANDS {
             self.settings[b] = BandSettings::read(&self.values, b);
         }
         self.auto_dirty = true;
-        let mode = PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize);
+        let mode = self.phase_mode();
         let resolution = self.value(GLOBAL + global::RESOLUTION) as usize;
         let core_change = mode != self.mode
             || (mode == PhaseMode::Linear && resolution != self.resolution)
@@ -480,13 +504,18 @@ impl ScytheEq {
         }
     }
 
-    fn fir_path(&self) -> FirPath {
+    /// The FIR grid, partition size and timing of a phase mode and resolution.
+    fn fir_size(&self, mode: PhaseMode, resolution: usize) -> (usize, usize, Timing) {
         let scale = (self.fs / 48000.0).log2().round().clamp(0.0, 3.0) as u32;
         let p = 256usize << scale;
-        let (n, timing) = match self.mode {
-            PhaseMode::Natural => (8192usize << scale, Timing::Natural),
-            _ => (2048usize << (self.resolution.min(4) as u32 + scale), Timing::Linear),
-        };
+        match mode {
+            PhaseMode::Natural => (8192usize << scale, p, Timing::Natural),
+            _ => (2048usize << (resolution.min(4) as u32 + scale), p, Timing::Linear),
+        }
+    }
+
+    fn fir_path(&self) -> FirPath {
+        let (n, p, timing) = self.fir_size(self.mode, self.resolution);
         let engine = FirEngine::new(n, p, timing, BANDS);
         let bins = n / 2 + 1;
         let latency = engine.latency();
@@ -911,6 +940,7 @@ impl ScytheEq {
         position: Option<i64>,
     ) {
         let frames = left.len().min(right.len());
+        self.settle();
         self.running = true;
         if let Some(p) = position {
             self.clock = p;
@@ -1089,6 +1119,7 @@ impl ScytheEq {
 impl ScytheEq {
     /// Clears what the processing remembers of earlier audio, as after a seek.
     pub fn reset(&mut self) {
+        self.settle();
         for b in &mut self.bands {
             b.state.iter_mut().for_each(CascadeState::reset);
             b.solo_state.iter_mut().for_each(CascadeState::reset);
@@ -1109,9 +1140,18 @@ impl ScytheEq {
         self.primed = false;
     }
 
-    /// Frames the output lags the input.
+    /// Frames the output lags the input, with the values set, from the next block on.
     pub fn latency(&self) -> usize {
-        self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency())
+        let fir = match self.phase_mode() {
+            PhaseMode::ZeroLatency => 0,
+            mode => {
+                let (n, _, timing) = self.fir_size(mode, self.value(GLOBAL + global::RESOLUTION) as usize);
+                FirEngine::latency_of(n, timing)
+            }
+        };
+        let spectral =
+            if self.settings.iter().any(|s| s.spectral().is_some()) { Spectral::latency_at(self.fs) } else { 0 };
+        fir + spectral
     }
 
     /// The stored state, with any values from a newer version written back unchanged.
