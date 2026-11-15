@@ -121,7 +121,7 @@ fn vst3_slot_with(info: &vst3_host::Vst3Info, state: &[u8]) -> FxSlot {
     slot
 }
 
-fn write_wav(path: &Path, seed: u64, bursts: bool) {
+fn write_wav(path: &Path, seed: u64, bursts: bool, level: f32) {
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: RATE,
@@ -134,7 +134,7 @@ fn write_wav(path: &Path, seed: u64, bursts: bool) {
         let gate = if bursts && (i / 4000) % 2 == 1 { 0.05 } else { 1.0 };
         for _ in 0..2 {
             state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            w.write_sample(((state >> 33) as f32 / (1u64 << 31) as f32 - 0.5) * 0.8 * gate).unwrap();
+            w.write_sample(((state >> 33) as f32 / (1u64 << 31) as f32 - 0.5) * 0.8 * gate * level).unwrap();
         }
     }
     w.finalize().unwrap();
@@ -149,11 +149,15 @@ struct Media {
 
 impl Media {
     fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("scythe-scyeq-null-{}", std::process::id()));
+        Self::at("loud", 1.0)
+    }
+
+    fn at(name: &str, level: f32) -> Self {
+        let dir = std::env::temp_dir().join(format!("scythe-scyeq-null-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (main, key) = (dir.join("main.wav"), dir.join("key.wav"));
-        write_wav(&main, 7, false);
-        write_wav(&key, 11, true);
+        write_wav(&main, 7, false, level);
+        write_wav(&key, 11, true, level);
         let pool = MediaPool::default();
         pool.load(&main, RATE).unwrap();
         pool.load(&key, RATE).unwrap();
@@ -230,16 +234,21 @@ fn render(media: &Media, host: Host, state: Option<&[u8]>, block: usize, keyed: 
     (l, r)
 }
 
-#[test]
-fn built_in_and_plugin_null() {
-    let media = Media::new();
-    let dry = render(&media, Host::BuiltIn, None, 512, true);
-    let hosts: &[Host] = if cfg!(target_os = "macos") {
+/// The plugin hosts to compare with the built-in EQ.
+fn hosts() -> &'static [Host] {
+    if cfg!(target_os = "macos") {
         // A VST 3 module on macOS loads only from a bundle.
         &[Host::Clap]
     } else {
         &[Host::Clap, Host::Vst3]
-    };
+    }
+}
+
+#[test]
+fn built_in_and_plugin_null() {
+    let media = Media::new();
+    let dry = render(&media, Host::BuiltIn, None, 512, true);
+    let hosts = hosts();
     for phase in 0..3 {
         let state = state(phase);
         for block in [64, 512] {
@@ -260,6 +269,20 @@ fn built_in_and_plugin_null() {
                 assert!(plugin == built_in, "phase {phase}, blocks of {block}, {host:?}: differs by up to {worst}");
             }
         }
+    }
+}
+
+/// A signal so quiet that the EQ's results fall below the smallest normal f32: the plugin
+/// flushes them to zero, so the built-in EQ has to as well.
+#[test]
+fn built_in_and_plugin_null_on_subnormal_results() {
+    let media = Media::at("quiet", 1e-36);
+    let state = state(0);
+    let built_in = render(&media, Host::BuiltIn, Some(&state), 512, true);
+    assert!(built_in.0.iter().any(|s| *s != 0.0), "the quiet signal comes through");
+    for &host in hosts() {
+        let plugin = render(&media, host, Some(&state), 512, true);
+        assert!(plugin == built_in, "{host:?}");
     }
 }
 

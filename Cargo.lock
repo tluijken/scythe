@@ -3519,8 +3519,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plugin-format"
-version = "0.1.0"
-source = "git+https://github.com/tluijken/plugin-format?tag=v0.1.0#ed6978af674a3e969318a33e7289fdf2e5f27efe"
+version = "0.1.1"
+source = "git+https://github.com/tluijken/plugin-format?tag=v0.1.1#757e2d16936a2727dc2c7dfe2ed0cfee9fb96c1b"
 dependencies = [
  "clap-sys",
  "egui",

@@ -372,7 +372,7 @@ struct Processor {
 }
 
 /// The queue hardware MIDI outputs are fed through.
-type MidiOutQueue = Arc<std::sync::Mutex<rtrb::Producer<OutMessage>>>;
+type MidiOutQueue = Arc<std::sync::Mutex<crate::midi_io::OutQueue>>;
 
 impl Processor {
     fn new(graph: Arc<ArcSwap<RenderGraph>>, transport: Arc<Transport>, feeds: Feeds) -> Self {
@@ -577,16 +577,13 @@ impl Processor {
                 frame,
             })
         };
-        if self.was_playing
-            && n == 0
-            && let Some(queue) = &self.midi_out
-            && let Ok(mut q) = queue.try_lock()
-        {
-            let _ = q.push(OutMessage::all_notes_off(heard));
-        }
         if let Some(queue) = &self.midi_out
             && let Ok(mut q) = queue.try_lock()
         {
+            q.next_block();
+            if self.was_playing && n == 0 {
+                let _ = q.push(OutMessage::all_notes_off(heard));
+            }
             let pos = self.transport.position.load(Ordering::Relaxed);
             let played = if counted > 0 { &segments[..0] } else { &segments[..n] };
             self.clock.block(played, pos, &graph.timeline, self.transport.sample_rate, &mut |off, port, m| {

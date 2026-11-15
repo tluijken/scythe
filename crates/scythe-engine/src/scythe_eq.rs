@@ -167,8 +167,13 @@ fn linear_position(id: u32, v: f64) -> f64 {
 /// units, read at the end of each block, as REAPER automates the CLAP plugin.
 impl Effect for ScytheEq {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext) {
+        // As plugin-format runs the plugin, so built in and hosted it sounds the same to the bit on
+        // every architecture. Only ScyEQ-Pro: Scythe's other effects are nulled against REAPER as
+        // they run now, and the audio thread keeps the floating-point state it starts with.
+        let flushed = crate::denormals::FlushDenormals::new();
         // Offline renders run with `playing` set too; stopped, the position stands still.
         self.process_block(left, right, ctx.aux, ctx.playing.then_some(ctx.position));
+        drop(flushed);
         if let Some(sc) = ctx.aux {
             let sidechain = &self.meters().sidechain;
             if sidechain.active() {
