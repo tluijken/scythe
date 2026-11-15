@@ -25,7 +25,8 @@ tool() {
     local var=$1 attr=$2 bin=$3 found
     found=$(command -v "$bin" || true)
     if [ -z "$found" ] && command -v nix-build >/dev/null; then
-        found=$(nix-build '<nixpkgs>' -A "$attr" --no-out-link 2>/dev/null)/bin/$bin
+        found=$(nix-build '<nixpkgs>' -A "$attr" --no-out-link 2>/dev/null || true)
+        found=${found:+$found/bin/$bin}
     fi
     [ -x "$found" ] || { echo "no $bin: put it on PATH" >&2; exit 2; }
     printf -v "$var" '%s' "$found"
@@ -58,7 +59,12 @@ export DISPLAY=:$display
 "${jackenv[@]}" "$jackd" -n "$server" -d dummy -r 48000 -p "$block" -C 4 -P 4 \
     >"$work/jackd.log" 2>&1 &
 pids+=($!)
-for _ in $(seq 100); do "${jackenv[@]}" "$jack_lsp" >/dev/null 2>&1 && break; sleep 0.1; done
+jack_up=
+for _ in $(seq 100); do
+    "${jackenv[@]}" "$jack_lsp" >/dev/null 2>&1 && { jack_up=1; break; }
+    sleep 0.1
+done
+[ -n "$jack_up" ] || { echo "the JACK dummy server did not start:" >&2; tail -n 5 "$work/jackd.log" >&2; exit 1; }
 
 # A ramp whose value tells the project position of every frame the master plays.
 "$python" -I - "$work/ramp.wav" <<'EOF'
