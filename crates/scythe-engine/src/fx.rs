@@ -2134,7 +2134,7 @@ impl Effect for ClapEffect {
     }
 
     fn params(&mut self) -> Vec<ParamInfo> {
-        self.plugin.params()
+        self.params.clone()
     }
 
     fn param(&mut self, id: u32) -> Option<(f64, String)> {
