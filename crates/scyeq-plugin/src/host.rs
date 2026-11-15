@@ -164,7 +164,9 @@ impl EqHost for PluginHost<'_> {
     /// thread when it closes the window; on Windows the dialog's modal loop would paint the
     /// editor again inside this frame.
     fn pick_reference(&mut self) -> Option<PathBuf> {
-        if keep_loaded() {
+        let kept = keep_loaded();
+        self.shared.set_pick_refused(!kept);
+        if kept {
             pick(self.shared.picking(), file_dialog);
         }
         None

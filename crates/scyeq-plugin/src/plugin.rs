@@ -43,6 +43,8 @@ pub struct ScyEqShared {
     view: Mutex<ViewState>,
     /// The answer of the EQ Match file dialog while it is open, for whichever editor is open then.
     picking: Mutex<Option<Receiver<Option<PathBuf>>>>,
+    /// The last file dialog asked for was refused: the library could not be kept loaded for it.
+    pick_refused: AtomicBool,
 }
 
 /// Values a newer version stored, written back unchanged, the known values stored outside their
@@ -71,6 +73,7 @@ impl ScyEqShared {
             sample_rate: AtomicU32::new(0),
             view: Mutex::new(ViewState::default()),
             picking: Mutex::new(None),
+            pick_refused: AtomicBool::new(false),
         }
     }
 
@@ -91,10 +94,15 @@ impl ScyEqShared {
         self.stored.lock().unwrap_or_else(|e| e.into_inner()).version
     }
 
-    /// Tells the user when the loaded state was written by a newer ScyEQ-Pro than this one.
+    /// Tells the user when the loaded state was written by a newer ScyEQ-Pro than this one, or
+    /// when the file dialog could not be opened.
     pub fn notice(&self) -> Option<String> {
-        (self.version() > params::VERSION)
-            .then(|| "Made with a newer ScyEQ-Pro; update to hear every setting.".to_string())
+        if self.version() > params::VERSION {
+            return Some("Made with a newer ScyEQ-Pro; update to hear every setting.".to_string());
+        }
+        self.pick_refused
+            .load(Ordering::Relaxed)
+            .then(|| "The file dialog cannot open: the plugin could not stay loaded for it.".to_string())
     }
 
     pub fn track(&self) -> TrackInfo {
@@ -133,6 +141,10 @@ impl ScyEqShared {
 
     pub(crate) fn picking(&self) -> &Mutex<Option<Receiver<Option<PathBuf>>>> {
         &self.picking
+    }
+
+    pub(crate) fn set_pick_refused(&self, refused: bool) {
+        self.pick_refused.store(refused, Ordering::Relaxed);
     }
 }
 

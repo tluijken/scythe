@@ -292,3 +292,21 @@ fn a_closed_instance_leaves_its_number_to_the_next() {
     }
     drop((kick, second, third));
 }
+
+/// A test runs the plugin from its executable, which cannot be kept loaded as a library can, so
+/// the file dialog is refused, and the editor says so. Linux only: elsewhere an executable may be
+/// pinned, and a real dialog would open.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_file_dialog_is_reported() {
+    let _turn = turn();
+    let kick = Instance::on("Kick", [200, 40, 40]);
+    let mut h = kick.harness();
+    open_match(&mut h);
+    h.get_by_value("Choose…").click();
+    h.run_steps(2);
+    h.get_by_label("Audio file…").click();
+    h.run_steps(2);
+    let notice = on_track("Kick").notice().expect("a notice");
+    assert!(notice.contains("file"), "{notice}");
+}
