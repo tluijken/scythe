@@ -141,7 +141,7 @@ pub fn upgrade_envelopes(slot: &mut scythe_core::FxSlot) -> bool {
         for p in &mut pe.envelope.points {
             p.value = params::from_normalized(id, p.value);
         }
-        pe.default = params::from_normalized(id, pe.default);
+        pe.default = (spec.min + spec.max) / 2.0;
         (pe.min, pe.max) = (spec.min, spec.max);
         pe.envelope.range = Some((spec.min, spec.max));
         pe.spec = format!("{index}:{id}");
@@ -444,7 +444,7 @@ mod host_tests {
         assert!(upgrade_envelopes(&mut slot));
         let freq = slot.parameter_envelope("2").unwrap();
         assert_eq!((freq.spec.as_str(), freq.min, freq.max), ("2:2", 10.0, 30000.0));
-        assert_eq!(freq.default, params::from_normalized(2, 0.25));
+        assert_eq!(freq.default, 15005.0, "the middle of the range, as REAPER writes it");
         let values: Vec<f64> = freq.envelope.points.iter().map(|p| p.value).collect();
         assert_eq!(values, [params::from_normalized(2, 0.5), 30000.0]);
         assert_eq!(slot.parameter_envelope("0"), before.parameter_envelope("0"));

@@ -404,16 +404,16 @@ pub fn param_info(
 }
 
 /// A new envelope for parameter `param`, as REAPER writes it: over the parameter's range in its
-/// own units, named by index and, for a CLAP plugin, its id. A CLAP plugin no instance runs
-/// (offline) is asked through one made for the question, so the envelope is not stored on 0..1,
-/// which marks one from an older Scythe.
+/// own units, named by index and, for a CLAP plugin, its id, with the middle of the range as
+/// its default. A CLAP plugin no instance runs (offline) is asked through one made for the
+/// question, so the envelope is not stored on 0..1, which marks one from an older Scythe.
 pub fn new_parameter_envelope(
     session: &Session,
     target: Target,
     fx: usize,
     param: usize,
 ) -> Result<ParamEnvelope, ApiError> {
-    let (label, mut lo, mut hi, v) = param_info(session, target, fx, param)?;
+    let (label, mut lo, mut hi, _) = param_info(session, target, fx, param)?;
     let t = target.get(&session.project).ok_or_else(|| ApiError::not_found("the track is gone"))?;
     let slot = t.fx.get(fx).ok_or_else(|| ApiError::not_found(format!("the track has no effect {fx}")))?;
     let owner = match target {
@@ -431,7 +431,7 @@ pub fn new_parameter_envelope(
             offline
         }
     };
-    let mut pe = ParamEnvelope::new(param, lo, hi, v, &label);
+    let mut pe = ParamEnvelope::new(param, lo, hi, (lo + hi) / 2.0, &label);
     pe.spec = scythe_engine::fx::envelope_spec(slot, params.as_deref(), param).unwrap_or(pe.spec);
     Ok(pe)
 }

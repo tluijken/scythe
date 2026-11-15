@@ -198,7 +198,7 @@ impl Pass<'_, '_> {
             for p in &mut pe.envelope.points {
                 p.value = u.old_to_units(p.value);
             }
-            pe.default = u.old_to_units(pe.default);
+            pe.default = (u.min + u.max) / 2.0;
             (pe.min, pe.max) = (u.min, u.max);
             pe.envelope.range = Some((u.min, u.max));
             pe.spec = format!("{}:{}", pe.param().unwrap_or_default(), u.id);
@@ -368,7 +368,7 @@ mod tests {
         assert!(upgrade_project(&mut p, &mut hosted));
         let slot = &p.tracks[0].fx[0];
         let env = slot.parameter_envelope("1").unwrap();
-        assert_eq!((env.spec.as_str(), env.min, env.max, env.default), ("1:9", 0.0, 4.0, 1.0));
+        assert_eq!((env.spec.as_str(), env.min, env.max, env.default), ("1:9", 0.0, 4.0, 2.0));
         assert_eq!(values(slot, "1"), [1.0, 3.0]);
         assert_eq!(base(slot, 1), 2.0);
         assert_eq!(p.writer, Writer::Scythe(SCYTHE_FORMAT), "converted once");

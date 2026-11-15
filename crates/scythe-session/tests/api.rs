@@ -2335,7 +2335,7 @@ fn clap_parameter_envelopes_are_stored_as_reaper_stores_them() {
     ok(&mut s, json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
     ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
     let text = scythe_core::rpp::project_to_rpp(&s.project);
-    assert!(text.contains("<PARMENV 1:9 0 4 "), "the boost's index and id, and its range: {text}");
+    assert!(text.contains("<PARMENV 1:9 0 4 2 "), "the boost's index and id, its range and its middle: {text}");
     assert!(text.contains("PT 1 3 "), "{text}");
 }
 
@@ -2357,8 +2357,8 @@ fn clap_parameter_envelopes_on_offline_slots_span_the_parameters_range() {
     ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:1", "time": 1.0, "value": 3.0}));
     ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:1:2", "time": 1.0, "value": 440.0}));
     let text = scythe_core::rpp::project_to_rpp(&s.project);
-    assert!(text.contains("<PARMENV 1:9 0 4 "), "the boost's range: {text}");
-    assert!(text.contains("<PARMENV 2:2 10 30000 "), "the band's frequency range: {text}");
+    assert!(text.contains("<PARMENV 1:9 0 4 2 "), "the boost's range: {text}");
+    assert!(text.contains("<PARMENV 2:2 10 30000 15005 "), "the band's frequency range: {text}");
 }
 
 /// A Scythe project from before the format revision holds the boost's envelope and modulation
