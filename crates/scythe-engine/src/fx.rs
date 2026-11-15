@@ -1106,6 +1106,8 @@ impl FxRegistry {
                     let Some(state) = crate::vst3_host::with_component(&old.chunk, &state) else { return };
                     state
                 }
+                // A block with no state yet: the edits start a state of their own.
+                None if built_in_eq && lines.is_empty() => crate::vst3_host::reaper_state(&state, &[]),
                 None if built_in_eq => return,
                 _ => state,
             };
@@ -1114,6 +1116,7 @@ impl FxRegistry {
                 Some(old) if old.inputs.len() < 4 && crate::stock::takes_sidechain_header(&chunk.args()) => {
                     crate::builtin::sidechain_vst_lines(id, &state)
                 }
+                None if built_in_eq && lines.is_empty() => crate::builtin::vst_lines_with(id, &state, 0xffff),
                 _ => ReaperVstState::reencode(&lines, &state).unwrap_or_else(|| crate::builtin::vst_lines(id, &state)),
             };
             // REAPER maps the input pins of the plugin's own arrangement and an output
@@ -2950,6 +2953,34 @@ mod scyeq_state_tests {
     fn a_clap_state_holding_no_eq_state_is_kept() {
         use base64::Engine as _;
         survives(&clap(&base64::engine::general_purpose::STANDARD.encode(b"no ScyEQ-Pro state")));
+    }
+
+    /// A VST3 block with no state lines plays as a default EQ; its edits are saved in REAPER's
+    /// VST3 layout, so the slot loads with them.
+    #[test]
+    fn a_vst3_block_without_lines_saves_its_edits() {
+        use crate::scythe_eq::{ScytheEq, params};
+        let mut project = project(&vst3(&[]));
+        let mut registry = FxRegistry::new(48_000);
+        let freq = params::band_param(0, params::band::FREQ);
+        let track = &project.tracks[0];
+        let chain = registry.chain(Some(track.id), &track.fx);
+        assert_eq!(chain.len(), 1);
+        chain[0].with(|e| e.as_any_mut().and_then(|a| a.downcast_mut::<ScytheEq>()).map(|eq| eq.set(freq, 2000.0)));
+        registry.store_states(&mut project);
+        let saved = crate::scythe_eq::slot_values(&project.tracks[0].fx[0]).expect("a state");
+        assert_eq!(saved[freq as usize], 2000.0);
+        let Some(Node::Chunk(chunk)) = project.tracks[0].fx[0].raw.get(1) else { panic!("no plugin chunk") };
+        let lines: Vec<String> = chunk
+            .children
+            .iter()
+            .filter_map(|n| match n {
+                Node::Line(l) => Some(l.trim().to_owned()),
+                Node::Chunk(_) => None,
+            })
+            .collect();
+        let reaper = ReaperVstState::decode(&lines).expect("REAPER's layout");
+        assert!(crate::vst3_host::split_reaper_state(&reaper.chunk).is_some(), "a VST3 state");
     }
 
     /// The built-in EQ in a VST3 slot does not depend on the track's width: a hosted VST3 is
