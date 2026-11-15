@@ -68,8 +68,9 @@ Linux programs load their libraries through Nix's dynamic loader under `/nix/sto
 only on a machine with that store, not on an ordinary distribution. Releases come from the
 workflow, which builds on the runners' own systems.
 
-`scripts/release/notices.sh <dir> <crate> <os>` alone writes the licenses and `CRATE_LICENSES.md`
-for one crate, for example to check `about.toml` after adding a dependency.
+`scripts/release/notices.sh <dir> <crate> <os> [features]` alone writes the licenses and
+`CRATE_LICENSES.md` for one crate built with those cargo features, for example to check
+`about.toml` after adding a dependency.
 
 ## macOS (beta)
 
