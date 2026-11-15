@@ -498,35 +498,6 @@ impl OutQueue {
         self.tx.push(m)
     }
 }
-
-/// "All notes off" on each of the 16 channels.
-const ALL_NOTES_OFF: [[u8; 3]; 16] = {
-    let mut msgs = [[0xb0, 0x7b, 0]; 16];
-    let mut ch = 0;
-    while ch < 16 {
-        msgs[ch][0] |= ch as u8;
-        ch += 1;
-    }
-    msgs
-};
-
-/// The packets a port sends `msgs` in. CoreMIDI does not keep the order of separate sends made
-/// at the same moment, so where `joined` the messages go out in one packet, except that system
-/// exclusive keeps a packet of its own.
-fn packets<'a>(msgs: impl IntoIterator<Item = &'a [u8]>, joined: bool) -> Vec<Vec<u8>> {
-    let mut out: Vec<Vec<u8>> = Vec::new();
-    let mut open = false;
-    for m in msgs {
-        let alone = !joined || m.first() == Some(&0xf0);
-        match out.last_mut() {
-            Some(last) if open && !alone => last.extend_from_slice(m),
-            _ => out.push(m.to_vec()),
-        }
-        open = !alone;
-    }
-    out
-}
-
 /// Sends queued messages to the hardware outputs when they fall due, on its own thread: the
 /// audio callback only stamps and queues them.
 pub struct MidiSender {
@@ -565,21 +536,15 @@ impl MidiSender {
                     let now = std::time::Instant::now();
                     pending.sort_by_key(|m| m.due);
                     let due = pending.partition_point(|m| m.due <= now);
-                    let sent: Vec<OutMessage> = pending.drain(..due).collect();
-                    if !sent.is_empty() {
-                        for (number, port) in by_number.iter_mut().enumerate() {
-                            let Some(port) = port else { continue };
-                            let mut msgs: Vec<&[u8]> = Vec::new();
-                            for m in &sent {
-                                if m.port == ALL_PORTS {
-                                    msgs.extend(ALL_NOTES_OFF.iter().map(|b| &b[..]));
-                                } else if usize::from(m.port) == number {
-                                    msgs.push(m.message());
+                    for m in pending.drain(..due) {
+                        if m.port == ALL_PORTS {
+                            for port in by_number.iter_mut().flatten() {
+                                for ch in 0..16u8 {
+                                    let _ = port.send(&[0xb0 | ch, 0x7b, 0]);
                                 }
                             }
-                            for packet in packets(msgs, cfg!(target_os = "macos")) {
-                                let _ = port.send(&packet);
-                            }
+                        } else if let Some(Some(port)) = by_number.get_mut(m.port as usize) {
+                            let _ = port.send(m.message());
                         }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(1));
@@ -740,13 +705,5 @@ mod tests {
         q.push(OutMessage::new(t + ms(30), 0, &[0xf1, 0x40])).unwrap();
         let due: Vec<_> = std::iter::from_fn(|| rx.pop().ok()).map(|m| m.due - t).collect();
         assert_eq!(due, [ms(9), ms(9), ms(10), ms(30)]);
-    }
-
-    #[test]
-    fn messages_due_together_share_a_packet() {
-        let full: &[u8] = &[0xf0, 0x7f, 0x7f, 0x01, 0x01, 0x21, 0, 0, 0, 0xf7];
-        let msgs: [&[u8]; 5] = [&[0xf8], &[0xfc], full, &[0xf1, 0x10], &[0xf2, 8, 0]];
-        assert_eq!(packets(msgs, true), [vec![0xf8, 0xfc], full.to_vec(), vec![0xf1, 0x10, 0xf2, 8, 0]]);
-        assert_eq!(packets(msgs, false), msgs.map(<[u8]>::to_vec));
     }
 }
