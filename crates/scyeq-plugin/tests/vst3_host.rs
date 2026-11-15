@@ -1,6 +1,7 @@
 //! Loads the built ScyEQ-Pro VST3 library the way a host does: its parameters, its state and its sound.
 
 #![allow(non_snake_case)]
+#![cfg_attr(windows, allow(clippy::unnecessary_cast, reason = "the vst3 enums are i32 on Windows and u32 elsewhere"))]
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
