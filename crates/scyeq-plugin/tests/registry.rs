@@ -386,3 +386,20 @@ fn instances_on_unnamed_tracks_are_numbered() {
     assert_eq!(found_by("Kick")[0].0, labels[1], "a number stays with its instance");
     drop((kick, second));
 }
+
+#[test]
+fn a_closed_instance_leaves_its_number_to_the_next() {
+    let _turn = turn();
+    let (kick, first, second) = (Instance::on("Kick", [200, 40, 40]), Instance::unnamed(), Instance::unnamed());
+    let labels = |list: Vec<(String, Option<[u8; 3]>)>| list.into_iter().map(|(label, _)| label).collect::<Vec<_>>();
+    let before = labels(found_by("Kick"));
+    drop(first);
+    let third = Instance::unnamed();
+    let after = labels(found_by("Kick"));
+    assert_eq!(after, [before[1].clone(), before[0].clone()], "the new instance numbered as the closed one was");
+    for label in &after {
+        let n: usize = label.trim_start_matches("ScyEQ-Pro ").parse().unwrap();
+        assert!(n <= everyone().len(), "{label} among {} instances", everyone().len());
+    }
+    drop((kick, second, third));
+}
