@@ -5,9 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # release.yml collects the zips from here.
+  workflow_call:
 
+# Called from release.yml, github.workflow is the caller's name, which keeps a release run from
+# cancelling this workflow's own run on the same ref.
 concurrency:
-  group: scyeq-plugin-${{ github.ref }}
+  group: ${{ github.workflow }}-scyeq-plugin-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

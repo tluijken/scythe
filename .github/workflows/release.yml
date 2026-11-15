@@ -1,0 +1,115 @@
+name: Release
+
+# A pushed tag v<version> builds Scythe and the ScyEQ-Pro plugin for Linux, Windows and macOS and
+# makes a draft release of them; docs/releasing.md says how. Run by hand it builds the same files
+# as artifacts and makes no release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the workspace version
+        id: version
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          version=$(scripts/release/version.sh ${TAG:+"$TAG"})
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  scythe:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for its older glibc, so the binaries run on most distributions.
+          - os: ubuntu-22.04
+            name: linux
+          # Its image ships WiX 3, which cargo-wix needs.
+          - os: windows-2022
+            name: windows
+          - os: macos-latest
+            name: macos
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libjack-jackd2-dev libx11-dev libxcb1-dev libxkbcommon-dev libgl1-mesa-dev libx11-xcb-dev libxcursor-dev libfontconfig1-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: macOS targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.0
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Windows'
+        with:
+          tool: cargo-wix@0.3.9
+      - name: WiX 3
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [ -z "${WIX:-}" ]; then
+            choco install wixtoolset --version 3.14.1 -y --no-progress
+            printf '%s\n' 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
+          fi
+      - name: Package
+        shell: bash
+        run: scripts/release/package.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scythe-${{ needs.version.outputs.version }}-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  scyeq-plugin:
+    needs: version
+    uses: ./.github/workflows/scyeq-plugin.yml
+
+  publish:
+    needs: [version, scythe, scyeq-plugin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'push'
+        with:
+          name: release-${{ needs.version.outputs.version }}
+          path: dist/*
+          if-no-files-found: error
+      - name: Draft release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Scythe $VERSION" dist/*

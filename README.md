@@ -26,6 +26,9 @@ A from-scratch digital audio workstation in Rust, strongly inspired by the fanta
 
 ## Quick start
 
+Ready-made builds for Linux, Windows and macOS (beta) are on the
+[Releases](https://github.com/tluijken/scythe/releases) page ([how they are made](docs/releasing.md)).
+
 Scythe builds with [devbox](https://www.jetify.com/devbox), which brings Rust and the audio
 libraries:
 
