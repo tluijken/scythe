@@ -597,8 +597,6 @@ mod tests {
         assert!(converted(&tracks[0].items[0].takes[0].fx()[0]));
         assert!(!upgrade_tracks(&mut tracks, &mut |_| None), "a second time changes nothing");
     }
-
-    use scythe_core::Envelope;
 }
 
 #[cfg(test)]
