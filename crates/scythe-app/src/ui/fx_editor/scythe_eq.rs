@@ -181,7 +181,8 @@ fn track_probe(app: &ScytheApp, owner: &FxOwner) -> Option<Arc<FxProbe>> {
 }
 
 fn decode_file(path: &Path) -> Result<ReferenceAudio, String> {
-    let audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
+    let mut audio = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
+    audio.channels.truncate(2);
     Ok(ReferenceAudio { channels: audio.channels, sample_rate: audio.sample_rate })
 }
 

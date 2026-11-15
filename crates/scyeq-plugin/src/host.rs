@@ -423,6 +423,15 @@ mod tests {
     }
 
     #[test]
+    fn a_reference_keeps_its_first_two_channels() {
+        let path = std::env::temp_dir().join(format!("scyeq-plugin-quad-{}.wav", std::process::id()));
+        std::fs::write(&path, wav(48_000, 4, &[16384, -16384, 8192, 4096])).unwrap();
+        let audio = load_reference(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(audio.unwrap().channels, vec![vec![0.5], vec![-0.5]]);
+    }
+
+    #[test]
     fn an_ogg_opus_reference_decodes() {
         use opus_pure::{Application, MAX_PACKET_BYTES, OggOpusWriter, OpusEncoder, OpusHead};
         let path = std::env::temp_dir().join(format!("scyeq-plugin-reference-{}.ogg", std::process::id()));

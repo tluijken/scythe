@@ -143,9 +143,12 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
 }
 
 /// Decodes an EQ Match reference file: what [`decode`] reads and Ogg Opus, which Symphonia does
-/// not, as Scythe's media items read them.
+/// not, as Scythe's media items read them. Only the first two channels, which is all a reference
+/// is measured from.
 pub fn decode_reference(path: &Path) -> Result<Audio, Error> {
-    decode(path, false).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) })
+    let mut audio = decode(path, false).or_else(|e| if is_ogg_opus(path) { decode_opus(path) } else { Err(e) })?;
+    audio.channels.truncate(2);
+    Ok(audio)
 }
 
 /// Whether `path` is an Ogg stream holding Opus.
