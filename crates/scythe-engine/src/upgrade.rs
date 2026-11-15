@@ -230,7 +230,8 @@ impl Pass<'_, '_> {
             return false;
         }
         let Some(units) = self.units(owner, key, slot) else {
-            if self.all && !modulations.is_empty() && crate::fx::is_clap(slot) {
+            if self.all && !modulations.is_empty() && crate::fx::is_clap(slot) && !self.unconverted.contains(&slot.name)
+            {
                 self.unconverted.push(slot.name.clone());
             }
             return false;
@@ -751,6 +752,20 @@ mod tests {
         assert_eq!(upgrade_project_report(&mut p, &mut missing.clone()), Upgraded::default(), "no baseline to lose");
         let mut p = project(Writer::Scythe(1), clap_slot(OLD_BASE));
         assert!(upgrade_project_report(&mut p, &mut hosted).unconverted.is_empty());
+    }
+
+    /// The same missing plugin on several tracks is told once, in the order first met.
+    #[test]
+    fn a_missing_plugin_is_told_once() {
+        let mut other = clap_slot(OLD_BASE);
+        other.name = "CLAP: Other".into();
+        let mut p = project(Writer::Scythe(1), clap_slot(OLD_BASE));
+        p.tracks[0].fx.push(other);
+        let mut second = Track::new("Bass");
+        second.fx.push(clap_slot(OLD_BASE));
+        p.tracks.push(second);
+        let report = upgrade_project_report(&mut p, &mut |_, _, _, _| None);
+        assert_eq!(report.unconverted, ["CLAP: Test Gain (Scythe)", "CLAP: Other"]);
     }
 
     /// Effects a chain file or a track template brings in convert as a file without a marker
