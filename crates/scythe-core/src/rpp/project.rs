@@ -8,7 +8,7 @@ use crate::groups::GroupFlags;
 use crate::lanes::{COMP_FADE, CompArea};
 use crate::model::{
     AutoMode, ChannelMode, Color, FxSlot, GlobalAutomation, HwOut, Item, LineMemo, Marker, Processing, Project,
-    RegionRenderTrack, Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, new_guid,
+    RegionRenderTrack, Section, Send, SendMode, SoloMode, Source, Take, TimeRange, Track, TrackId, Writer, new_guid,
 };
 use crate::recording::{RecordMode, RecordTap};
 use crate::tempo::TempoPoint;
@@ -326,6 +326,13 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
     }
     p.markers.extend(region_starts);
     p.markers.sort_by(|a, b| a.position.total_cmp(&b.position).then(a.index.cmp(&b.index)));
+    p.writer = match root.args().get(1) {
+        Some(version) if version.starts_with("scythe-") => {
+            Writer::Scythe(version.rsplit_once("/format-").and_then(|(_, f)| f.parse().ok()).unwrap_or(1))
+        }
+        Some(_) => Writer::Other,
+        None => Writer::Unknown,
+    };
     p.time_selection = selection;
     p.resolve_automation_items();
     Ok(p)
@@ -1050,7 +1057,7 @@ fn source_kind_for(path: &Path) -> &'static str {
 
 pub fn project_to_rpp(p: &Project) -> String {
     let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let version = format!("scythe-{}", env!("CARGO_PKG_VERSION"));
+    let version = format!("scythe-{}/format-{}", env!("CARGO_PKG_VERSION"), crate::model::SCYTHE_FORMAT);
     let mut root = Chunk::new("REAPER_PROJECT", &[PROJECT_VERSION, &version, &timestamp.to_string()]);
 
     let l = &p.lines;
@@ -2201,6 +2208,22 @@ mod tests {
     #[test]
     fn rejects_other_roots() {
         assert!(matches!(project_from_rpp("<FXCHAIN\n>\n"), Err(ParseError::WrongRoot { .. })));
+    }
+
+    #[test]
+    fn a_project_knows_which_application_wrote_it() {
+        use crate::model::{SCYTHE_FORMAT, Writer};
+        let writer = |text: &str| project_from_rpp(text).unwrap().writer;
+        assert_eq!(writer("<REAPER_PROJECT 0.1 \"7.73/linux-x86_64\" 1762500000 0\n>\n"), Writer::Other);
+        assert_eq!(writer("<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 1762500000\n>\n"), Writer::Scythe(1));
+        assert_eq!(writer("<REAPER_PROJECT 0.1 \"scythe-0.2.0/format-7\" 0\n>\n"), Writer::Scythe(7));
+        assert_eq!(writer("<REAPER_PROJECT\n>\n"), Writer::Unknown);
+        assert_eq!(Project::default().writer, Writer::Unknown);
+
+        let out = project_to_rpp(&Project::default());
+        let header = format!("<REAPER_PROJECT 0.1 scythe-{}/format-{SCYTHE_FORMAT} ", env!("CARGO_PKG_VERSION"));
+        assert!(out.starts_with(&header), "{out}");
+        assert_eq!(project_from_rpp(&out).unwrap().writer, Writer::Scythe(SCYTHE_FORMAT));
     }
 }
 

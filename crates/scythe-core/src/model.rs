@@ -1127,6 +1127,24 @@ pub struct RegionRenderTrack {
     pub channels: i64,
 }
 
+/// The revision of how Scythe stores a project, written after the version in the header
+/// (`"scythe-0.1.0/format-2"`): REAPER stops at a window over a line it does not know, but reads
+/// any version. Files without it are revision 1, whose CLAP parameter envelopes and modulation
+/// baselines are on 0..1 where REAPER uses the parameters' own units (revision 2).
+pub const SCYTHE_FORMAT: u32 = 2;
+
+/// The application that wrote a project file, from the version in its header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Writer {
+    /// Not read from a file, or from one whose header names no version.
+    #[default]
+    Unknown,
+    /// REAPER, or anything else that is not Scythe.
+    Other,
+    /// Scythe, with the [`SCYTHE_FORMAT`] revision the file was written in.
+    Scythe(u32),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
     pub path: Option<PathBuf>,
@@ -1165,6 +1183,8 @@ pub struct Project {
     /// The global automation override (`GLOBAL_AUTO`): `None` lets every track use its own
     /// mode.
     pub global_automation: Option<GlobalAutomation>,
+    /// Which application wrote the file the project was read from.
+    pub writer: Writer,
     pub lines: LineMemo,
     pub extra: Vec<Node>,
 }
@@ -1196,6 +1216,7 @@ impl Default for Project {
             global_automation: None,
             lines: LineMemo::new(),
             extra: Vec::new(),
+            writer: Writer::Unknown,
         }
     }
 }
