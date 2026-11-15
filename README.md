@@ -99,7 +99,13 @@ runs.
 On macOS Scythe builds with rustup's stable toolchain and the Xcode Command Line Tools, and plays
 through Core Audio. It finds CLAP, VST 3, VST 2 and LV2 plugins in `/Library/Audio/Plug-Ins` and
 `~/Library/Audio/Plug-Ins`, and keeps its settings in `~/Library/Application Support/scythe`.
-Plugin editors do not open yet, and there is no app bundle or installer.
+Plugin editors do not open yet.
+
+Releases have `Scythe.app` for Apple silicon and Intel as a beta, with `scythe-server` and
+`scythe-mcp` inside it in `Scythe.app/Contents/MacOS`. It is signed ad hoc and not notarized, so
+macOS blocks it the first time: allow it under System Settings > Privacy & Security, or run
+`xattr -dr com.apple.quarantine /Applications/Scythe.app`. `scripts/release/package.sh` builds
+the bundle from source ([docs/releasing.md](docs/releasing.md)); there is no installer.
 
 ## Features
 
