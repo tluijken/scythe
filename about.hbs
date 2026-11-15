@@ -1,0 +1,25 @@
+# Crate licenses
+
+The Rust crates built into these programs, by license, with each license's text. Generated with
+cargo-about from Cargo.lock.
+
+## Overview
+
+{{#each overview}}
+- {{{name}}}: {{count}}
+{{/each}}
+
+{{#each licenses}}
+## {{{name}}}
+
+Used by:
+
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} ({{{crate.repository}}}){{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}
