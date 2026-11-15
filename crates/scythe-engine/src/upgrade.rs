@@ -287,13 +287,16 @@ impl Pass<'_, '_> {
     }
 }
 
+/// An automation item's baseline and amplitude.
+type Scale = (f64, f64);
+
 /// An automation item on an envelope just converted: the pool it plays, how the envelope's
 /// values moved, and the item's baseline and amplitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Pooled {
     pool: i64,
     units: Units,
-    scale: (f64, f64),
+    scale: Scale,
 }
 
 /// Moves the pools whose every instance is on an envelope just converted, the same way; a pool
@@ -303,7 +306,9 @@ struct Pooled {
 /// them as they are, a pool played with several scalings being copied for each. The pool's LFO
 /// settings, which no longer make its points, are dropped.
 fn upgrade_pools(project: &mut Project, pooled: &[Pooled]) -> bool {
-    let mut moves: HashMap<i64, (usize, Option<Units>, Vec<(f64, f64)>)> = HashMap::new();
+    // By pool: how many converted items play it, how they all moved (`None` when not alike),
+    // and their scalings.
+    let mut moves: HashMap<i64, (usize, Option<Units>, Vec<Scale>)> = HashMap::new();
     for p in pooled {
         let entry = moves.entry(p.pool).or_insert((0, Some(p.units), Vec::new()));
         entry.0 += 1;
@@ -325,7 +330,7 @@ fn upgrade_pools(project: &mut Project, pooled: &[Pooled]) -> bool {
             continue;
         }
         let source = std::mem::take(&mut pool.points);
-        let scaled = |(baseline, amplitude): (f64, f64)| -> Vec<scythe_core::EnvPoint> {
+        let scaled = |(baseline, amplitude): Scale| -> Vec<scythe_core::EnvPoint> {
             let mut points = source.clone();
             for p in &mut points {
                 p.value = u.pooled((baseline + amplitude * (p.value - 0.5)).clamp(0.0, 1.0));
