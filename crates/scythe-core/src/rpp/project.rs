@@ -1317,20 +1317,18 @@ pub fn project_to_rpp(p: &Project) -> String {
         let old_flags = old.map_or(0, |t| num(t, 4, 0.0) as i64);
         let flags = (old_flags & !1) | m.region_end.is_some() as i64;
         let order = old.map_or(ColorOrder::NATIVE, |t| ColorOrder::of_marker(t));
-        root.line(line_from(
-            &m.lines,
-            "MARKER",
-            &["MARKER"],
-            &[
-                (1, m.index.to_string()),
-                (2, fmt_num(m.position)),
-                (3, m.name.clone()),
-                (4, flags.to_string()),
-                (5, order.write(m.color).to_string()),
-                (6, old.and_then(|t| t.get(6)).map_or("1", String::as_str).to_owned()),
-                (7, order.letter().to_owned()),
-            ],
-        ));
+        let mut fields = vec![
+            (1, m.index.to_string()),
+            (2, fmt_num(m.position)),
+            (3, m.name.clone()),
+            (4, flags.to_string()),
+            (5, order.write(m.color).to_string()),
+        ];
+        if old.and_then(|t| t.get(7)).is_none_or(|l| l.is_empty() || l == "R" || l == "B") {
+            fields.push((6, old.and_then(|t| t.get(6)).map_or("1", String::as_str).to_owned()));
+            fields.push((7, order.letter().to_owned()));
+        }
+        root.line(line_from(&m.lines, "MARKER", &["MARKER"], &fields));
         if m.region_end.is_some() && !m.render_matrix.is_empty() {
             let mut c = Chunk::new("REGIONRENDER", &[&m.index.to_string()]);
             for t in &m.render_matrix {
@@ -2330,6 +2328,22 @@ mod tests {
         assert!(saved.contains("MARKER 1 1 M 0 17435386 1 R"), "{saved}");
         let again = project_from_rpp(&saved).unwrap();
         assert_eq!((again.tracks[0].color, again.markers[0].color), (Some(RED), Some(MARKER_RED)));
+
+        // Format 1 (no `/format-` in the header), and a region.
+        let first = "<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 0\n  MARKER 2 2 R 1 33163786 1 R\n  MARKER 2 3 \"\" 1\n>\n";
+        let p = project_from_rpp(first).unwrap();
+        assert_eq!((p.markers[0].region_end, p.markers[0].color), (Some(3.0), Some(MARKER_RED)));
+        assert!(project_to_rpp(&p).contains("MARKER 2 2 R 1 17435386 1 R"));
+    }
+
+    /// The order letter is written where a line held one or nothing; anything else there stays.
+    #[test]
+    fn a_marker_keeps_what_its_line_holds_where_the_letter_would_go() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  MARKER 1 1 M 0 33163786 0 X\n>\n";
+        let saved = project_to_rpp(&project_from_rpp(text).unwrap());
+        assert!(saved.contains("MARKER 1 1 M 0 "), "{saved}");
+        let line = saved.lines().find(|l| l.trim_start().starts_with("MARKER")).unwrap();
+        assert!(line.trim_end().ends_with(" 0 X"), "{line}");
     }
 
     #[test]
