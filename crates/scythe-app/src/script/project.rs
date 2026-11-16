@@ -72,10 +72,13 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         "SLIDER2DB" => ret(Val::Num(scythe_core::fader::slider_to_db(a.num(0)))),
         "mkvolstr" => (Val::Nil, vec![Val::Str(volume_text(a.num(1)))]),
         "mkpanstr" => (Val::Nil, vec![Val::Str(pan_text(a.num(1)))]),
-        "ColorToNative" => ret(Val::Int((a.int(0) & 255) << 16 | (a.int(1) & 255) << 8 | a.int(2) & 255)),
+        "ColorToNative" => {
+            let c = scythe_core::Color::rgb(a.int(0) as u8, a.int(1) as u8, a.int(2) as u8);
+            ret(Val::Int(c.to_native() as i64))
+        }
         "ColorFromNative" => {
-            let c = a.int(0);
-            (Val::Nil, vec![Val::Int(c >> 16 & 255), Val::Int(c >> 8 & 255), Val::Int(c & 255)])
+            let c = scythe_core::Color::from_native(a.int(0) as u32);
+            (Val::Nil, vec![Val::Int(c.r.into()), Val::Int(c.g.into()), Val::Int(c.b.into())])
         }
         "format_timestr" => (Val::Nil, vec![Val::Str(scythe_core::tempo::format_time(a.num(0)))]),
         "format_timestr_pos" => (Val::Nil, vec![Val::Str(format_pos(&s.project, a.num(0), a.int(2)))]),
@@ -1145,7 +1148,9 @@ mod tests {
         let pos = |st: &mut State, mode| one(st, "format_timestr_pos", &[Val::Num(75.5), s(""), Val::Int(mode)]);
         assert_eq!((pos(&mut st, 3), pos(&mut st, 5)), (s("75.500"), s("00:01:15:15")));
         assert_eq!(api(&mut st, "parse_timestr", &[s("1:15.5")]).0, Val::Num(75.5));
-        assert_eq!(api(&mut st, "ColorToNative", &[Val::Int(1), Val::Int(2), Val::Int(3)]).0, Val::Int(66051));
+        // As measured in REAPER 7.73 on Linux and 7.85 on Windows.
+        let native = if cfg!(windows) { 197121 } else { 66051 };
+        assert_eq!(api(&mut st, "ColorToNative", &[Val::Int(1), Val::Int(2), Val::Int(3)]).0, Val::Int(native));
     }
 
     #[test]

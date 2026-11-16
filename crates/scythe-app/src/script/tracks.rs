@@ -63,7 +63,7 @@ pub(super) fn call(s: &mut State, name: &str, a: &Args) -> Option<Ret> {
         "SetTrackColor" => {
             let c = a.int(1);
             if let Some(t) = track(&mut s.project, a.get(0).track()) {
-                t.color = Some(Color::from_hex((c & 0xff_ffff) as u32));
+                t.color = Some(Color::from_native((c & 0xff_ffff) as u32));
                 s.changed = true;
             }
             ret(Val::Nil)
@@ -355,11 +355,11 @@ pub(super) fn track_name(p: &Project, t: TrackId) -> String {
 }
 
 pub(super) fn color_to_native(c: Option<Color>) -> i64 {
-    c.map_or(0, |c| c.to_hex() as i64 | 0x100_0000)
+    c.map_or(0, |c| c.to_native() as i64 | 0x100_0000)
 }
 
 pub(super) fn color_from_native(v: i64) -> Option<Color> {
-    (v & 0x100_0000 != 0).then(|| Color::from_hex((v & 0xff_ffff) as u32))
+    (v & 0x100_0000 != 0).then(|| Color::from_native((v & 0xff_ffff) as u32))
 }
 
 /// Gets, or sets when `set` is given, a value in the `<EXT` chunk of `extra`, where REAPER keeps
@@ -1286,6 +1286,21 @@ mod tests {
             assert!((scale_from_fader(pos) - amp).abs() < 1e-9);
         }
         assert!((scale_from_fader(500.0) - 0.27991910429543).abs() < 1e-9);
+    }
+
+    /// A colour a script sets is the colour REAPER shows for the saved project.
+    #[test]
+    fn a_track_colour_from_a_script_is_saved_as_reaper_reads_it() {
+        let p = project();
+        let a = Val::Track(p.tracks[0].id);
+        let mut s = state(p);
+        let red = api(&mut s, "ColorToNative", &[Val::Int(220), Val::Int(60), Val::Int(60)]).0;
+        api(&mut s, "SetTrackColor", &[a.clone(), red.clone()]);
+        assert_eq!(s.project.tracks[0].color, Some(Color::rgb(220, 60, 60)));
+        let Val::Int(red) = red else { panic!("{red:?}") };
+        assert_eq!(api(&mut s, "GetTrackColor", &[a]).0, Val::Int(red | 0x100_0000));
+        let saved = scythe_core::rpp::project_to_rpp(&s.project);
+        assert!(saved.contains("PEAKCOL 20724956"), "{saved}");
     }
 
     #[test]

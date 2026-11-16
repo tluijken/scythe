@@ -73,6 +73,25 @@ impl Color {
     pub fn to_hex(self) -> u32 {
         (self.r as u32) << 16 | (self.g as u32) << 8 | self.b as u32
     }
+
+    /// A Windows `COLORREF`: red in the low byte.
+    pub fn from_colorref(v: u32) -> Self {
+        Self::rgb(v as u8, (v >> 8) as u8, (v >> 16) as u8)
+    }
+
+    pub fn to_colorref(self) -> u32 {
+        (self.b as u32) << 16 | (self.g as u32) << 8 | self.r as u32
+    }
+
+    /// A colour as REAPER's script API passes it on this system (`ColorToNative`): measured as
+    /// red in the low byte on Windows and in bits 16-23 on Linux.
+    pub fn from_native(v: u32) -> Self {
+        if cfg!(windows) { Self::from_colorref(v) } else { Self::from_hex(v) }
+    }
+
+    pub fn to_native(self) -> u32 {
+        if cfg!(windows) { self.to_colorref() } else { self.to_hex() }
+    }
 }
 
 /// Track colors cycled through for new tracks, taken from the redesign palette.
@@ -1130,8 +1149,10 @@ pub struct RegionRenderTrack {
 /// The revision of how Scythe stores a project, written after the version in the header
 /// (`"scythe-0.1.0/format-2"`): REAPER stops at a window over a line it does not know, but reads
 /// any version. Files without it are revision 1, whose CLAP parameter envelopes and modulation
-/// baselines are on 0..1 where REAPER uses the parameters' own units (revision 2).
-pub const SCYTHE_FORMAT: u32 = 2;
+/// baselines are on 0..1 where REAPER uses the parameters' own units (revision 2). Before
+/// revision 3 every colour was stored with red in bits 16-23, where REAPER stores a track's with
+/// red in the low byte and a marker's in the order its line names (revision 3).
+pub const SCYTHE_FORMAT: u32 = 3;
 
 /// The application that wrote a project file, from the version in its header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

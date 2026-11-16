@@ -1,3 +1,7 @@
+// A release build opens no console window of its own; `attach_console` gives the output to the
+// terminal it was started from.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod commands;
 mod demo;
@@ -7,6 +11,8 @@ mod file_dialog;
 mod fx_preset;
 mod keys;
 mod live;
+#[cfg(any(windows, test))]
+mod main_window;
 mod nam;
 mod palette;
 mod plugin_window;
@@ -185,16 +191,63 @@ fn is_script(path: &std::path::Path) -> bool {
         .is_some_and(|e| ["lua", "eel", "py"].iter().any(|s| e.eq_ignore_ascii_case(s)))
 }
 
+const USAGE: &str = "\
+usage: scythe-app [project.RPP] [script.lua|.eel|.py ...] [options]
+       scythe-app --headless [project.RPP] [scythe-server options]
+
+  --demo                 open the demo song
+  --play                 start playback once the project is open
+  --view=START-END       open zoomed to a range in seconds
+  --setlist              open on the setlist page
+  --null-audio           open no audio device
+  --no-input             never open an audio or MIDI input
+  --audio-host NAME      audio host (ALSA, JACK, ...), and the other device options of scythe-server
+  --list-devices         print the audio devices, and exit (with --all: every name the hosts know)
+  --control ADDR         serve the control API at ADDR (also SCYTHE_CONTROL)
+  --control-token TOKEN  the token its clients present (also SCYTHE_CONTROL_TOKEN)
+  --render=OUT.wav       render the project to a 24-bit WAV without a window (--range=START-END)
+  --render-project       render the project with its own render settings, and exit
+  --render-queue [DIR]   render every project in REAPER's render queue, and exit
+  --headless             run as scythe-server: a session without a window
+  --version              print the version, and exit
+  --help                 print this help, and exit
+";
+
+/// Gives a GUI-subsystem build the console of the terminal it was started from, so its output
+/// and logs reach it; started from Explorer there is none and nothing changes.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: only reads and sets up this process's standard handles.
+    unsafe {
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() && GetStdHandle(STD_ERROR_HANDLE).is_null() {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 fn app_icon() -> egui::IconData {
     let img = image::load_from_memory(include_bytes!("../assets/icon.png")).expect("bundled icon").to_rgba8();
     egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
 }
 
 fn main() -> eframe::Result {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_console();
     if let Some(code) = scythe_engine::plugin_scan::helper_main(&std::env::args().collect::<Vec<_>>()) {
         std::process::exit(code);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("scythe-app {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return Ok(());
+    }
     if args.first().is_some_and(|a| a == "--script-dialog") {
         dialog::run_child();
         return Ok(());
@@ -304,6 +357,8 @@ fn main() -> eframe::Result {
         "Scythe",
         options,
         Box::new(move |cc| {
+            #[cfg(windows)]
+            main_window::place(cc);
             theme::install(&cc.egui_ctx);
             if let Some(scale) = std::env::var("SCYTHE_UI_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
                 cc.egui_ctx.set_zoom_factor(scale.clamp(0.5, 3.0));

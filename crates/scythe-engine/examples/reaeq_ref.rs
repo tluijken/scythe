@@ -4,7 +4,6 @@
 //! cargo run -p scythe-engine --example reaeq_ref -- <work dir> [path to reaper]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use base64::Engine as _;
 use scythe_engine::fx::{Effect, ProcessContext};
@@ -129,7 +128,7 @@ fn main() {
         if let Some(r) = &reaper
             && !out.exists()
         {
-            let _ = Command::new(r)
+            let _ = scythe_engine::process::command(r)
                 .args(["-cfgfile", &cfg.display().to_string(), "-nosplash", "-renderproject"])
                 .arg(&rpp_path)
                 .status();

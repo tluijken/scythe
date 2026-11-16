@@ -146,7 +146,7 @@ impl MidiPort {
     }
 }
 
-/// The devices REAPER knows, as its `reaper-midihw-linux.ini` keeps them in `[mididevcache]`:
+/// The devices REAPER knows, as its `reaper-midihw*.ini` keeps them in `[mididevcache]`:
 /// `in<n>`/`on<n>` name input and output `n`, `ia<n>`/`oa<n>` hold their aliases and
 /// `it<n>`/`ot<n>` their type. A device keeps its number while it is unplugged, so projects
 /// that name it by number find it again.
@@ -156,8 +156,11 @@ pub struct MidiDevices {
     pub outputs: Vec<MidiPort>,
 }
 
-/// The device cache's file name beside the preferences.
-pub const DEVICE_CACHE_FILE: &str = "reaper-midihw-linux.ini";
+/// The device cache's file name beside the preferences, as REAPER names its own where that was
+/// measured (7.85 on Windows).
+pub const DEVICE_CACHE_FILE: &str = if cfg!(windows) { "reaper-midihw.ini" } else { "reaper-midihw-linux.ini" };
+/// The name Scythe 0.1 gave the device cache on every system.
+pub const OLD_DEVICE_CACHE_FILE: &str = "reaper-midihw-linux.ini";
 const CACHE_SECTION: &str = "[mididevcache]";
 
 impl MidiDevices {

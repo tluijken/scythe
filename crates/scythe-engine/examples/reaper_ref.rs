@@ -8,7 +8,6 @@
 //! pointing into the work dir, so the user's own configuration is never touched.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use scythe_core::TimeRange;
 use scythe_core::rpp::project_from_rpp;
@@ -301,7 +300,7 @@ fn main() {
         if let Some(reaper) = &reaper
             && !reaper_out.exists()
         {
-            let status = Command::new(reaper)
+            let status = scythe_engine::process::command(reaper)
                 .args(["-cfgfile", &cfg.display().to_string(), "-nosplash", "-renderproject"])
                 .arg(&rpp)
                 .status();

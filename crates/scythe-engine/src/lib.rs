@@ -36,6 +36,7 @@ pub mod perf;
 pub mod plugin_scan;
 pub mod plugin_thread;
 pub mod preview;
+pub mod process;
 pub use scyeq_dsp::probe;
 mod r8brain;
 pub mod reaeq;

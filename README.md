@@ -8,8 +8,10 @@
 A from-scratch digital audio workstation in Rust, strongly inspired by the fantastic
 [REAPER](https://www.reaper.fm) and compatible with its projects, with a modern UI of its own.
 
-- **REAPER-compatible.** Scythe opens and saves REAPER 7.73 `.RPP` projects losslessly: on 33
-  real projects (~237k lines) a round trip changes only the header line. Projects play
+- **REAPER-compatible.** Scythe opens and saves REAPER 7.73 `.RPP` projects without losing
+  anything: on 33 real projects (~237k lines) every line but the header comes back with the same
+  content. The text is not REAPER's byte for byte: Scythe writes LF line endings and puts some
+  lines in its own order. Projects play
   sample-identically to REAPER wherever that was measured, from pan laws and fades to REAPER's
   ReaEQ and ReaComp, JSFX and resampling ([how](#how-scythe-is-verified)).
 - **Built for the stage.** In-ear monitor mixes with "more me", setlists with count-in and stop
@@ -74,6 +76,29 @@ claude mcp add --transport http scythe http://127.0.0.1:8770/mcp   # or without 
 Every flag is described under [Command line](docs/features.md#command-line) and
 [Remote control](docs/features.md#remote-control); [docs/live.md](docs/live.md) walks through a
 whole stage setup.
+
+### NixOS
+
+The Linux release binaries do not start on NixOS as they are ("Could not start dynamically linked
+executable"): they look for the loader and libraries where other distributions keep them.
+`patchelf` can point the unpacked binaries at the ones in the Nix store; the links `nix build`
+makes keep those from being garbage-collected:
+
+```sh
+cd scythe-<version>-linux-x86_64
+libs=~/.local/state/scythe-libs
+for p in glibc alsa-lib libx11 libxcursor libxi libxrandr libxkbcommon libglvnd vulkan-loader wayland; do
+    nix build --out-link "$libs/$p" "nixpkgs#$p.out"
+done
+nix build --out-link "$libs/gcc" nixpkgs#gcc.cc.lib   # makes $libs/gcc-lib
+rpath=$(printf "$libs/%s/lib:" alsa-lib gcc-lib libx11 libxcursor libxi libxrandr libxkbcommon \
+    libglvnd vulkan-loader wayland)/run/opengl-driver/lib
+for b in scythe-app scythe-server scythe-mcp; do
+    nix run nixpkgs#patchelf -- --set-interpreter "$libs/glibc/lib/ld-linux-x86-64.so.2" --set-rpath "$rpath" "$b"
+done
+```
+
+The binaries then run from that folder for as long as the links are there.
 
 ### Windows
 

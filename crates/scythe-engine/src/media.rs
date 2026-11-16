@@ -115,7 +115,7 @@ fn decode_with_ffmpeg(path: &Path) -> Result<AudioData, MediaError> {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let wav = std::env::temp_dir().join(format!("scythe-video-audio-{}-{n}.wav", std::process::id()));
-    let output = std::process::Command::new("ffmpeg")
+    let output = crate::process::command("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
         .arg(path)
         .args(["-map", "0:a:0", "-vn", "-c:a", "pcm_f32le", "-f", "wav"])
