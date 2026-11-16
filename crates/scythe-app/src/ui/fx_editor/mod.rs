@@ -481,13 +481,10 @@ fn owner_name(app: &ScytheApp, owner: &FxOwner, nested: bool) -> String {
 }
 
 fn read_params(inst: &FxInstance) -> (Vec<ParamInfo>, HashMap<u32, (f64, String)>) {
-    inst.with(|e| {
-        let params = e.params();
-        let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
-        let values = ids.iter().zip(e.param_values(&ids)).filter_map(|(&id, v)| Some((id, v?))).collect();
-        (params, values)
-    })
-    .unwrap_or_default()
+    let params = inst.with(|e| e.params()).unwrap_or_default();
+    let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+    let values = ids.iter().zip(inst.param_values(&ids)).filter_map(|(&id, v)| Some((id, v?))).collect();
+    (params, values)
 }
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {

@@ -517,13 +517,61 @@ fn parameters_are_asked_on_the_plugin_thread_only() {
     let read = chain[0]
         .with(|e| {
             e.set_param(9, 3.0);
-            (e.param(7), e.param_values(&[9, 99]), e.normalized(1), scythe_engine::modulation::normalized(e, 0))
+            (e.param(7), e.normalized(1), scythe_engine::modulation::normalized(e, 0))
         })
         .unwrap();
+    let listed = chain[0].param_values(&[9, 99]);
     let inst = chain[0].clone();
-    let elsewhere = std::thread::spawn(move || inst.with(|e| e.param(7)).flatten()).join().unwrap();
+    let elsewhere = std::thread::spawn(move || inst.param_values(&[7])).join().unwrap();
     assert_eq!(off_main() - before, 0, "asked off the plugin thread");
-    let three = Some((3.0, "3.00".into()));
-    assert_eq!(read, (Some((0.5, "0.50".into())), vec![three, None], Some(0.75), Some(0.5)));
-    assert_eq!(elsewhere, Some((0.5, "0.50".into())));
+    assert_eq!(read, (Some((0.5, "0.50".into())), Some(0.75), Some(0.5)));
+    assert_eq!(listed, [Some((3.0, "3.00".into())), None], "a value set and not yet played");
+    assert_eq!(elsewhere, [Some((0.5, "0.50".into()))]);
+}
+
+/// A parameter read waiting on a busy plugin thread does not keep the audio thread from the
+/// plugin: a block processed meanwhile is played, not passed through.
+#[test]
+fn a_block_plays_while_a_parameter_read_waits_for_the_plugin_thread() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut registry = scythe_engine::fx::FxRegistry::new(48_000);
+    registry.set_clap_plugins(lib.descriptors());
+    let slot = scythe_engine::fx::clap_slot(&lib.descriptors()[0]);
+    let chain = registry.chain(None, std::slice::from_ref(&slot));
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (busy, is_busy) = std::sync::mpsc::channel();
+    scythe_engine::plugin_thread::spawn(move || {
+        busy.send(()).unwrap();
+        let _ = held.recv();
+    });
+    is_busy.recv().unwrap();
+    let inst = chain[0].clone();
+    let reading = std::thread::spawn(move || inst.with(|e| e.param_values(&[7])).unwrap());
+    let inst = chain[0].clone();
+    let asking = std::thread::spawn(move || inst.param_values(&[7]));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let ctx = scythe_engine::fx::ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+    let played = chain[0].process(&mut l, &mut r, &ctx);
+    release.send(()).unwrap();
+    let (read, asked) = (reading.join().unwrap(), asking.join().unwrap());
+    assert!(played, "the block passed through while a read waited");
+    assert_eq!(l[0], 0.5);
+    assert_eq!(read[0].as_ref().map(|(v, _)| *v), Some(0.5));
+    assert_eq!(asked, [Some((0.5, "0.50".into()))]);
 }

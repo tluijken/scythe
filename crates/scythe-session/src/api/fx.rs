@@ -564,20 +564,16 @@ pub(crate) fn instance(
 
 fn params(session: &Session, loc: Loc, at: &ChainAt, index: usize) -> Result<Vec<ParamValue>, ApiError> {
     let inst = instance(session, loc, at, index)?;
-    let values = inst
-        .with(|e| {
-            let params = e.params();
-            let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
-            params
-                .into_iter()
-                .zip(e.param_values(&ids))
-                .map(|(p, v)| {
-                    let (value, text) = v.unwrap_or((p.default, String::new()));
-                    ParamValue { id: p.id, name: p.name, value, text, min: p.min, max: p.max, default: p.default }
-                })
-                .collect()
+    let params = inst.with(|e| e.params()).unwrap_or_default();
+    let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+    let values = params
+        .into_iter()
+        .zip(inst.param_values(&ids))
+        .map(|(p, v)| {
+            let (value, text) = v.unwrap_or((p.default, String::new()));
+            ParamValue { id: p.id, name: p.name, value, text, min: p.min, max: p.max, default: p.default }
         })
-        .unwrap_or_default();
+        .collect();
     Ok(values)
 }
 

@@ -576,6 +576,37 @@ pub struct ClapPlugin {
 // main-thread calls on the same instance.
 unsafe impl Send for ClapPlugin {}
 
+/// A plugin's parameter value and text queries, made apart from the [`ClapPlugin`]: CLAP lets
+/// them run on the main thread while the audio thread processes. Valid while the plugin lives.
+pub struct ParamQueries {
+    plugin: *const clap_plugin,
+    get_value: unsafe extern "C" fn(*const clap_plugin, clap_id, *mut f64) -> bool,
+    value_to_text: Option<unsafe extern "C" fn(*const clap_plugin, clap_id, f64, *mut c_char, u32) -> bool>,
+}
+
+// SAFETY: only the pointers move; the queries are made on the plugin thread while the owner keeps
+// the plugin alive.
+unsafe impl Send for ParamQueries {}
+
+impl ParamQueries {
+    /// # Safety
+    /// Call on the plugin's main thread while the plugin lives.
+    pub unsafe fn value(&self, id: u32) -> Option<f64> {
+        let mut v = 0.0;
+        // SAFETY: as the caller promises, with an out-value the plugin fills in.
+        unsafe { (self.get_value)(self.plugin, id, &mut v) }.then_some(v)
+    }
+
+    /// # Safety
+    /// As for [`ParamQueries::value`].
+    pub unsafe fn text(&self, id: u32, value: f64) -> Option<String> {
+        let to_text = self.value_to_text?;
+        let mut buf = [0 as c_char; 128];
+        // SAFETY: as the caller promises, with a buffer of the stated capacity.
+        unsafe { to_text(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) }.then(|| cstr(buf.as_ptr()))
+    }
+}
+
 impl ClapPlugin {
     pub fn create(lib: Arc<ClapLibrary>, id: &str, sample_rate: f64, max_frames: u32) -> Result<Self, ClapError> {
         Self::create_with_state(lib, id, sample_rate, max_frames, None)
@@ -816,6 +847,13 @@ impl ClapPlugin {
         let mut v = 0.0;
         // SAFETY: a main-thread query with an out-value the plugin fills in.
         unsafe { get(self.plugin, id, &mut v) }.then_some(v)
+    }
+
+    /// The plugin's value and text queries, to make on its main thread without the caller's
+    /// hold on the plugin.
+    pub fn param_queries(&self) -> Option<ParamQueries> {
+        let ext = self.params_ext()?;
+        Some(ParamQueries { plugin: self.plugin, get_value: ext.get_value?, value_to_text: ext.value_to_text })
     }
 
     /// Whether a change of the parameter waits for the next block.
