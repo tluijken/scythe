@@ -2,6 +2,7 @@
 //! session leaves to the app's actions.
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::palette::Action;
 
 impl ScytheApp {
@@ -9,8 +10,10 @@ impl ScytheApp {
     pub fn export_setlist(&mut self) {
         let Some(list) = self.current_setlist() else { return };
         self.ctx.copy_text(list.to_text(false));
-        let Some(path) =
-            rfd::FileDialog::new().add_filter("Text", &["txt"]).set_file_name(format!("{}.txt", list.name)).save_file()
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Text", &["txt"])
+            .set_file_name(format!("{}.txt", list.name))
+            .ask_save_file()
         else {
             self.notify("Setlist copied");
             return;
@@ -22,7 +25,7 @@ impl ScytheApp {
     }
 
     pub fn import_setlist(&mut self) {
-        let Some(path) = rfd::FileDialog::new().add_filter("Text", &["txt"]).pick_file() else { return };
+        let Some(path) = rfd::FileDialog::new().add_filter("Text", &["txt"]).ask_file() else { return };
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
             Err(e) => {

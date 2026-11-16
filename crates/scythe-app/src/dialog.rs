@@ -5,7 +5,7 @@
 //! stdout.
 
 use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde_json::{Value, json};
 
@@ -13,8 +13,12 @@ use serde_json::{Value, json};
 /// values entered (`null` when cancelled).
 pub fn ask(request: &Value) -> Option<Value> {
     let exe = std::env::current_exe().ok()?;
-    let mut child =
-        Command::new(exe).arg("--script-dialog").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().ok()?;
+    let mut child = scythe_engine::process::command(exe)
+        .arg("--script-dialog")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .ok()?;
     child.stdin.take()?.write_all(request.to_string().as_bytes()).ok()?;
     let mut out = String::new();
     child.stdout.take()?.read_to_string(&mut out).ok()?;

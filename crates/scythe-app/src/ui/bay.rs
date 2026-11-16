@@ -9,6 +9,7 @@ use scythe_core::bay;
 use scythe_core::tempo::format_time;
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{self, TEXT_DIM};
 use crate::ui::window::{WindowKind, scythe_window};
 
@@ -97,7 +98,7 @@ fn media(app: &mut ScytheApp, ui: &mut Ui) {
         }
     });
     if let Some(from) = retarget
-        && let Some(to) = rfd::FileDialog::new().set_title("Replace media with").pick_file()
+        && let Some(to) = rfd::FileDialog::new().set_title("Replace media with").ask_file()
     {
         match app.session.retarget_media(&from, &to) {
             Ok(n) => app.notify(format!("Retargeted {n} takes")),

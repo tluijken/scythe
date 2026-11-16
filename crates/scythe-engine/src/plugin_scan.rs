@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -134,7 +134,16 @@ impl Catalog {
     /// The process's catalog of the standard folders.
     pub fn global() -> Arc<Self> {
         static GLOBAL: OnceLock<Arc<Catalog>> = OnceLock::new();
-        GLOBAL.get_or_init(|| Catalog::new(ScanConfig::from_env())).clone()
+        GLOBAL
+            .get_or_init(|| {
+                let mut config = ScanConfig::from_env();
+                // This crate's own tests keep no scan cache: its default place is the user's.
+                if cfg!(test) {
+                    config.cache_dir = None;
+                }
+                Catalog::new(config)
+            })
+            .clone()
     }
 
     pub fn set_clap(&self, plugins: Vec<ClapDescriptor>) {
@@ -318,7 +327,7 @@ enum Helper {
 }
 
 fn run_helper(helper: &Path, args: &[&str], path: &Path, timeout: Duration) -> Helper {
-    let mut cmd = Command::new(helper);
+    let mut cmd = crate::process::command(helper);
     cmd.arg("--scan-plugin").arg(args[0]).arg(path).args(&args[1..]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = match cmd.spawn() {

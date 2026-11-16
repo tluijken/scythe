@@ -59,7 +59,15 @@ case "$(uname -s)" in
         cargo build --release --locked "${packages[@]}" --target aarch64-apple-darwin --target x86_64-apple-darwin
         app=$stage/$name/Scythe.app
         mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-        sips -s format icns crates/scythe-app/assets/icon.png --out "$app/Contents/Resources/Scythe.icns" >/dev/null
+        # Every size Finder and the Dock ask for, from a render of docs/logo/scythe.svg.
+        iconset=$stage/Scythe.iconset
+        mkdir -p "$iconset"
+        icon=crates/scythe-app/assets/icon-1024.png
+        for size in 16 32 128 256 512; do
+            sips -z $size $size "$icon" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+            sips -z $((size * 2)) $((size * 2)) "$icon" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+        done
+        iconutil -c icns "$iconset" -o "$app/Contents/Resources/Scythe.icns"
         for bin in "${bins[@]}"; do
             lipo -create -output "$app/Contents/MacOS/$bin" \
                 "$target_dir/aarch64-apple-darwin/release/$bin" \

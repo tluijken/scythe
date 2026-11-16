@@ -111,6 +111,8 @@ usage: scythe-server [project.RPP] [options]
   --all                  with --list-devices: every device name the audio systems know
   --install-service      write a systemd user unit that runs with these options, and exit (Linux)
   --status               show how the running session is doing (device, xruns, clients)
+  --version              print the version, and exit
+  --help                 print this help, and exit
 ";
 
 /// Flags followed by a value.

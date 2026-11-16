@@ -10,6 +10,7 @@ use scythe_core::units::format_db;
 use scythe_core::{Project, SendMode, TrackId};
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{self, ACCENT, BG, GREEN, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM, YELLOW, track_color};
 use crate::ui::arrange::meter_fraction;
 use crate::ui::mixer::{fader_gain, fader_position};
@@ -657,7 +658,7 @@ fn wizard_body(app: &mut ScytheApp, ui: &mut Ui, w: &mut Wizard) -> bool {
                 if ui.button(name.unwrap_or_else(|| "None…".to_owned())).clicked()
                     && let Some(path) = crate::app::resource_dialog("TrackTemplates")
                         .add_filter("Track template", &["RTrackTemplate"])
-                        .pick_file()
+                        .ask_file()
                 {
                     w.template = Some(path);
                 }

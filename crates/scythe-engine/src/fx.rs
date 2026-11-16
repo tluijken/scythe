@@ -148,6 +148,18 @@ impl ProcessContext<'_> {
     }
 }
 
+/// Asks a hosted plugin for parameter values and texts on the plugin thread, apart from the
+/// effect: see [`Effect::param_reader`].
+pub struct ParamReader {
+    pub read: Box<dyn FnOnce() -> Vec<ParamValue> + Send>,
+    /// Where the effect's changes stood when the reader was made: what changed after it is newer
+    /// than what it reads.
+    pub stamp: u64,
+}
+
+/// A parameter's value and its display text, or `None` where the effect has no such parameter.
+pub type ParamValue = Option<(f64, String)>;
+
 /// An audio effect working in place on a stereo block.
 pub trait Effect: Send {
     fn process(&mut self, left: &mut [f32], right: &mut [f32], ctx: &ProcessContext);
@@ -235,6 +247,9 @@ pub trait Effect: Send {
     /// Clears internal state such as filter memories and delay lines (on seek or stop).
     fn reset(&mut self) {}
 
+    /// Frees what processing let go and kept for the purpose; called off the audio thread.
+    fn release(&mut self) {}
+
     /// Frames the effect delays its output by; the graph compensates for it.
     fn latency(&mut self) -> usize {
         0
@@ -270,6 +285,21 @@ pub trait Effect: Send {
     fn param(&mut self, _id: u32) -> Option<(f64, String)> {
         None
     }
+
+    /// [`Effect::param`] of each of `ids`, asked together.
+    fn param_values(&mut self, ids: &[u32]) -> Vec<Option<(f64, String)>> {
+        ids.iter().map(|&id| self.param(id)).collect()
+    }
+
+    /// For effects whose values must be asked on the plugin thread: what asks `ids` there,
+    /// without the effect's lock. `None` where [`Effect::param_values`] answers.
+    fn param_reader(&mut self, _ids: &[u32]) -> Option<ParamReader> {
+        None
+    }
+
+    /// Keeps what a [`ParamReader`] made at `stamp` read for `ids`, except where a value changed
+    /// since.
+    fn keep_values(&mut self, _ids: &[u32], _read: &[Option<(f64, String)>], _stamp: u64) {}
 
     fn set_param(&mut self, _id: u32, _value: f64) {}
 
@@ -728,9 +758,24 @@ impl FxInstance {
     }
 
     /// Runs `f` on the effect from the UI thread, waiting for the audio thread to finish its
-    /// block if needed.
+    /// block if needed, then frees what the effect's processing let go.
     pub fn with<R>(&self, f: impl FnOnce(&mut dyn Effect) -> R) -> Option<R> {
-        self.effect.lock().ok().map(|mut e| f(e.as_mut()))
+        self.effect.lock().ok().map(|mut e| {
+            let r = f(e.as_mut());
+            e.release();
+            r
+        })
+    }
+
+    /// The current value and text of each of `ids`. A hosted plugin that answers on the plugin
+    /// thread is asked there without the effect's lock, so the audio thread plays it meanwhile.
+    pub fn param_values(&self, ids: &[u32]) -> Vec<Option<(f64, String)>> {
+        let Some(reader) = self.with(|e| e.param_reader(ids)).flatten() else {
+            return self.with(|e| e.param_values(ids)).unwrap_or_else(|| vec![None; ids.len()]);
+        };
+        let read = crate::plugin_thread::run(reader.read);
+        self.with(|e| e.keep_values(ids, &read, reader.stamp));
+        read
     }
 
     /// Runs the effect unless another thread holds it (state being swapped), in which case
@@ -1569,19 +1614,7 @@ impl FxRegistry {
                     clap_state(plugin_chunk).as_deref(),
                 )
                 .map_err(|e| e.to_string())?;
-                let instrument = desc.is_instrument();
-                let params = plugin.params();
-                Ok((
-                    Box::new(ClapEffect {
-                        plugin,
-                        params,
-                        instrument,
-                        expected: None,
-                        long: Vec::new(),
-                        presets: None,
-                    }),
-                    FxStatus::Hosted(desc.path),
-                ))
+                Ok((Box::new(ClapEffect::new(plugin, desc.is_instrument())), FxStatus::Hosted(desc.path)))
             }
             other => Err(format!("{other} plugins are not supported yet")),
         }
@@ -1930,13 +1963,14 @@ pub(crate) fn is_clap(slot: &FxSlot) -> bool {
     slot_plugin(slot).is_some_and(|c| c.name() == "CLAP")
 }
 
-/// How REAPER names parameter `index` of `slot` in `PARMENV`: `<index>:<id>` for a CLAP plugin,
-/// given the parameters it lists; `None` where the index alone names it.
+/// How REAPER names parameter `index` of `slot` in `PARMENV`, `<PROGRAMENV` and `PARMLEARN`:
+/// `<index>:<id>` for a CLAP or VST3 plugin, given the parameters it lists; `None` where the
+/// index alone names it.
 pub fn envelope_spec(slot: &FxSlot, params: Option<&[ParamInfo]>, index: usize) -> Option<String> {
     if crate::scythe_eq::is_slot(slot) {
         return crate::scythe_eq::envelope_spec(slot, index);
     }
-    is_clap(slot).then_some(())?;
+    (is_clap(slot) || is_vst3(slot)).then_some(())?;
     params?.get(index).map(|p| format!("{index}:{}", p.id))
 }
 
@@ -2121,11 +2155,30 @@ pub fn slot_id(slot: &FxSlot) -> Option<String> {
     })
 }
 
+/// A parameter a [`ParamReader`] answers: not the plugin's, one set and not yet processed (with
+/// the value set), or one to ask the plugin.
+enum Asked {
+    Unknown,
+    Set(u32, f64),
+    Plugin(u32),
+}
+
 struct ClapEffect {
     plugin: ClapPlugin,
     /// The parameters as the plugin listed them when it was created: their ranges are asked for
     /// on the main thread only, and automation needs them on the audio thread.
     params: Vec<ParamInfo>,
+    /// Each parameter's value, in `params`' order, as last asked, set or reported: the plugin
+    /// answers on its main thread only.
+    values: Vec<f64>,
+    /// The plugin's text for each parameter, with the value it was made for.
+    texts: Vec<Option<(f64, String)>>,
+    /// Changes to the kept values so far, set, played or reported, and the count at each
+    /// parameter's last change: a read made before it is older.
+    changes: u64,
+    changed_at: Vec<u64>,
+    /// Where each parameter id is in `params`.
+    index: HashMap<u32, usize>,
     instrument: bool,
     /// Where the next block should start if playback is continuous.
     expected: Option<i64>,
@@ -2141,9 +2194,17 @@ impl Effect for ClapEffect {
     }
 
     fn set_program(&mut self, index: usize) {
-        if let Some(preset) = self.presets.get_or_insert_with(|| self.plugin.presets()).get(index).cloned() {
-            self.plugin.load_preset(&preset);
-        }
+        let Some(preset) = self.presets.get_or_insert_with(|| self.plugin.presets()).get(index).cloned() else {
+            return;
+        };
+        let (plugin, params) = (&mut self.plugin, &self.params);
+        self.values = crate::plugin_thread::run(move || {
+            plugin.load_preset(&preset);
+            params.iter().map(|p| plugin.current_value(p.id).unwrap_or(p.default)).collect()
+        });
+        self.texts.iter_mut().for_each(|t| *t = None);
+        self.changes += 1;
+        self.changed_at.iter_mut().for_each(|c| *c = self.changes);
     }
 
     fn automates_at_block_end(&self) -> bool {
@@ -2166,13 +2227,69 @@ impl Effect for ClapEffect {
         self.params.clone()
     }
 
+    /// Asked of the plugin on the plugin thread, else the value kept: the caller holds the lock
+    /// the audio thread needs, so it never waits for another thread here. The audio thread gets
+    /// no text.
     fn param(&mut self, id: u32) -> Option<(f64, String)> {
-        let v = self.plugin.param_value(id)?;
-        Some((v, self.plugin.param_text(id, v).unwrap_or_else(|| format!("{v:.3}"))))
+        let at = *self.index.get(&id)?;
+        if crate::plugin_thread::is_plugin_thread() {
+            return self.read_here(id, at);
+        }
+        let v = self.values[at];
+        if crate::realtime::is_audio_thread() {
+            return Some((v, String::new()));
+        }
+        Some((v, self.text_of(at, v)))
+    }
+
+    fn param_reader(&mut self, ids: &[u32]) -> Option<ParamReader> {
+        let queries = self.plugin.param_queries()?;
+        let asked: Vec<Asked> = ids
+            .iter()
+            .map(|&id| match self.index.get(&id) {
+                None => Asked::Unknown,
+                Some(&at) if self.plugin.is_pending(id) => Asked::Set(id, self.values[at]),
+                Some(_) => Asked::Plugin(id),
+            })
+            .collect();
+        let read = Box::new(move || {
+            let text = |id: u32, v: f64| {
+                // SAFETY: run on the plugin thread while the reader's caller holds the instance
+                // that owns the plugin.
+                unsafe { queries.text(id, v) }.unwrap_or_else(|| format!("{v:.3}"))
+            };
+            asked
+                .iter()
+                .map(|a| match *a {
+                    Asked::Unknown => None,
+                    Asked::Set(id, v) => Some((v, text(id, v))),
+                    // SAFETY: as above.
+                    Asked::Plugin(id) => unsafe { queries.value(id) }.map(|v| (v, text(id, v))),
+                })
+                .collect()
+        });
+        Some(ParamReader { read, stamp: self.changes })
+    }
+
+    fn keep_values(&mut self, ids: &[u32], read: &[Option<(f64, String)>], stamp: u64) {
+        for (&id, got) in ids.iter().zip(read) {
+            if let (Some(&at), Some((v, text))) = (self.index.get(&id), got)
+                && !self.plugin.is_pending(id)
+                && self.changed_at[at] <= stamp
+            {
+                self.values[at] = *v;
+                self.texts[at] = Some((*v, text.clone()));
+            }
+        }
     }
 
     fn set_param(&mut self, id: u32, value: f64) {
         self.plugin.set_param(id, value);
+        if let Some(&at) = self.index.get(&id) {
+            let p = &self.params[at];
+            self.values[at] = clap_range(p).map_or(value, |(min, max)| value.clamp(min, max));
+            self.changed(at);
+        }
     }
 
     fn save_state(&mut self) -> Option<Vec<u8>> {
@@ -2182,15 +2299,18 @@ impl Effect for ClapEffect {
     fn set_normalized(&mut self, index: usize, value: f64) -> bool {
         let Some(p) = self.params.get(index) else { return false };
         let Some((min, max)) = clap_range(p) else { return false };
-        self.plugin.set_param(p.id, min + value.clamp(0.0, 1.0) * (max - min));
+        let v = min + value.clamp(0.0, 1.0) * (max - min);
+        self.plugin.set_param(p.id, v);
+        self.values[index] = v;
+        self.changed(index);
         true
     }
 
+    /// From the values kept: modulation asks on the audio thread.
     fn normalized(&mut self, index: usize) -> Option<f64> {
         let p = self.params.get(index)?;
         let (min, max) = clap_range(p)?;
-        let v = self.plugin.param_value(p.id)?;
-        Some(((v - min) / (max - min)).clamp(0.0, 1.0))
+        Some(((self.values[index] - min) / (max - min)).clamp(0.0, 1.0))
     }
 
     fn param_range(&mut self, index: usize) -> Option<(f64, f64)> {
@@ -2201,6 +2321,7 @@ impl Effect for ClapEffect {
         self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(left.len() as i64, ctx);
         self.plugin.process(left, right);
+        self.follow_reported();
     }
 
     fn pins(&self) -> (usize, usize) {
@@ -2218,10 +2339,67 @@ impl Effect for ClapEffect {
         self.plugin.set_transport(ctx.position, ctx.playing, ctx.bpm);
         self.queue_events(range.len() as i64, ctx);
         self.plugin.process_channels(bufs, range);
+        self.follow_reported();
     }
 }
 
 impl ClapEffect {
+    /// Made on the plugin thread, where it asks the plugin for its parameters and their values.
+    fn new(plugin: ClapPlugin, instrument: bool) -> Self {
+        let params = plugin.params();
+        let values: Vec<f64> = params.iter().map(|p| plugin.current_value(p.id).unwrap_or(p.default)).collect();
+        let texts = params.iter().zip(&values).map(|(p, &v)| plugin.param_text(p.id, v).map(|t| (v, t))).collect();
+        let index = params.iter().enumerate().map(|(at, p)| (p.id, at)).collect();
+        let changed_at = vec![0; params.len()];
+        Self {
+            plugin,
+            params,
+            values,
+            texts,
+            changes: 0,
+            changed_at,
+            index,
+            instrument,
+            expected: None,
+            long: Vec::new(),
+            presets: None,
+        }
+    }
+
+    /// Parameter `id` (at `at` in the list) asked of the plugin; call on the plugin thread.
+    fn read_here(&mut self, id: u32, at: usize) -> Option<(f64, String)> {
+        let v = if self.plugin.is_pending(id) { self.values[at] } else { self.plugin.current_value(id)? };
+        let text = self.plugin.param_text(id, v).unwrap_or_else(|| format!("{v:.3}"));
+        self.values[at] = v;
+        self.texts[at] = Some((v, text.clone()));
+        Some((v, text))
+    }
+
+    /// The plugin's text for value `v` of the parameter at `at` when it was last asked for that
+    /// value, else the number.
+    fn text_of(&self, at: usize, v: f64) -> String {
+        match &self.texts[at] {
+            Some((shown, text)) if *shown == v => text.clone(),
+            _ => format!("{v:.3}"),
+        }
+    }
+
+    /// Keeps the values the plugin reported in the block, its editor's changes among them.
+    fn follow_reported(&mut self) {
+        for (id, v) in self.plugin.take_reported() {
+            if let Some(&at) = self.index.get(&id) {
+                self.values[at] = v;
+                self.changes += 1;
+                self.changed_at[at] = self.changes;
+            }
+        }
+    }
+
+    fn changed(&mut self, at: usize) {
+        self.changes += 1;
+        self.changed_at[at] = self.changes;
+    }
+
     /// Queues the block's notes, controllers and live MIDI for an instrument, resetting it
     /// after a jump in the timeline.
     fn queue_events(&mut self, n: i64, ctx: &ProcessContext) {

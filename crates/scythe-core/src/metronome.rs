@@ -91,8 +91,8 @@ impl CountIn {
     }
 
     /// The count-in as REAPER 7.73 plays it on a device running `block` frames at a time: the
-    /// counting part lengthened at its start to whole blocks, clicks staying on their beats. A
-    /// pre-roll before the project start is not.
+    /// counting part lengthened at its start to whole blocks, so it lasts whole frames, clicks
+    /// staying on their beats. A pre-roll before the project start is not.
     pub fn padded(self, block: u32, sample_rate: u32) -> Self {
         let sr = sample_rate as f64;
         let frames = (self.counting * sr).round() as i64;
@@ -101,7 +101,9 @@ impl CountIn {
             return self;
         }
         let extra = (block - frames % block) % block;
-        let pad = extra as f64 / sr;
+        let part_frame = frames as f64 - self.counting * sr;
+        let part_frame = if part_frame.abs() < 1e-6 { 0.0 } else { part_frame };
+        let pad = ((extra as f64 + part_frame) / sr).max(0.0);
         Self { length: self.length + pad, audible: self.audible + pad, counting: self.counting + pad, ..self }
             .clicks_later(pad)
     }
@@ -438,8 +440,76 @@ mod tests {
         assert_eq!(s.count_in, None, "nor before recording");
     }
 
-    /// REAPER 7.73's count-in lengths on the JACK dummy device at 48 kHz, as `GetPlayPosition`
-    /// showed them, with the clicks on the same beats before the playhead as unpadded.
+    /// Starts measured in REAPER 7.73 on a JACK dummy device at 48 kHz and 1024 frames
+    /// (`docs/verification.md`) in other tempos and time signatures, with two measures of
+    /// count-in, and with a tempo or time signature change at 4 s, before the start: where the
+    /// playhead started, how long it waited, when the first click sounded, which beat of its
+    /// bar that was, the seconds between clicks and the count-in as `GetPlayPosition` told it.
+    #[test]
+    fn starts_match_reaper_in_other_tempos_and_metres() {
+        use crate::tempo::TempoPoint;
+        let changed = |bpm: f64, sig: (u32, u32)| TempoMap {
+            points: vec![
+                TempoPoint { time_sig: Some((4, 4)), ..TempoPoint::new(0.0, 120.0) },
+                TempoPoint { time_sig: Some(sig), ..TempoPoint::new(4.0, bpm) },
+            ],
+            ..TempoMap::constant(120.0, 4, 4)
+        };
+        let to_90 = changed(90.0, (4, 4));
+        let to_60 = changed(60.0, (4, 4));
+        let to_3_4 = changed(120.0, (3, 4));
+        let slow = TempoMap::constant(70.0, 4, 4);
+        let fast = TempoMap::constant(180.0, 4, 4);
+        let common = TempoMap::constant(120.0, 4, 4);
+        let three = TempoMap::constant(120.0, 3, 4);
+        let six_eight = TempoMap::constant(120.0, 6, 8);
+        let two = Metronome { count_in_measures: 2.0, ..on() };
+        let quiet = Metronome { flags: ENABLED | RUN_ON_PLAY, ..on() };
+        let mid = PREROLL_PLAY | PREROLL_MID_MEASURE;
+        #[rustfmt::skip]
+        let cases = [
+            // tempo, metronome, preroll, start, from, wait, first click, its beat, beat, count-in
+            (&slow, &on(), 0, 5.0, 5.0, 3.428571, 0.142857, 2, 0.857143, 3.434667),
+            (&slow, &on(), COUNT_IN_AT_MEASURE, 5.0, 5.0, 5.0, 0.0, 0, 0.857143, 5.013333),
+            (&fast, &on(), 0, 4.0, 4.0, 1.333333, 0.0, 0, 0.333333, 1.344),
+            (&fast, &two, 0, 4.0, 4.0, 2.666667, 0.0, 0, 0.333333, 2.666667),
+            (&fast, &on(), COUNT_IN_AT_MEASURE, 4.5, 4.5, 1.833333, 0.0, 0, 0.333333, 1.834667),
+            (&common, &two, 0, 4.0, 4.0, 4.0, 0.0, 0, 0.5, 4.010667),
+            (&three, &on(), 0, 3.0, 3.0, 1.5, 0.0, 0, 0.5, 1.514667),
+            (&three, &on(), COUNT_IN_AT_MEASURE, 3.25, 3.25, 1.75, 0.0, 0, 0.5, 1.770667),
+            (&six_eight, &on(), 0, 3.0, 3.0, 1.5, 0.0, 0, 0.25, 1.514667),
+            (&six_eight, &on(), 0, 3.25, 3.25, 1.5, 0.0, 1, 0.25, 1.514667),
+            (&to_90, &on(), 0, 4.0, 4.0, 2.666667, 0.0, 0, 0.666667, 2.666667),
+            (&to_90, &on(), 0, 5.0, 5.0, 2.666667, 0.333333, 2, 0.666667, 2.666667),
+            (&to_90, &on(), COUNT_IN_AT_MEASURE, 5.0, 5.0, 3.666667, 0.0, 0, 0.666667, 3.669333),
+            (&to_3_4, &on(), 0, 4.0, 4.0, 1.5, 0.0, 0, 0.5, 1.514667),
+            (&to_3_4, &on(), 0, 4.5, 4.5, 1.5, 0.0, 1, 0.5, 1.514667),
+            (&to_60, &quiet, mid, 5.0, 2.5, 0.0, 0.0, 0, 0.0, 0.0),
+            (&to_60, &quiet, PREROLL_PLAY, 9.0, 4.0, 0.0, 0.0, 0, 0.0, 0.0),
+            (&to_60, &on(), mid, 5.0, 2.5, 2.0, 0.0, 1, 0.5, 2.005333),
+            (&to_3_4, &quiet, mid, 4.5, 2.5, 0.0, 0.0, 0, 0.0, 0.0),
+        ];
+        for (tempo, m, preroll, at, from, wait, first, first_in_bar, beat, counting) in cases {
+            let prefs = Preferences { preroll, preroll_measures: 1.0, ..Preferences::default() };
+            let s = m.start(&prefs, tempo, at, false, false);
+            let what = format!("{} bpm, preroll {preroll} from {at}: {s:?}", tempo.bpm_at(at));
+            assert!(close(s.from, from), "{what}");
+            match s.count_in {
+                None => assert_eq!(wait, 0.0, "{what}"),
+                Some(c) => {
+                    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+                    assert!(near(c.length, wait) && near(c.first, first) && near(c.beat, beat), "{what}");
+                    assert_eq!(c.first_in_bar, first_in_bar, "{what}");
+                    let padded = c.padded(1024, 48_000).length;
+                    assert!((padded - counting).abs() < 0.5 / 48_000.0, "to the frame: {padded} {what}");
+                }
+            }
+        }
+    }
+
+    /// REAPER 7.73's count-in lengths on the JACK dummy device at 48 kHz and at 44.1 kHz, as
+    /// `GetPlayPosition` showed them (to the frame), with the clicks on the same beats before the
+    /// playhead as unpadded.
     #[test]
     fn count_ins_are_padded_to_whole_blocks() {
         let tempo = TempoMap::constant(120.0, 4, 4);
@@ -451,22 +521,29 @@ mod tests {
         };
         let quiet = Metronome { flags: ENABLED | RUN_ON_PLAY, ..on() };
         let cases = [
-            (on(), &at_measure, 4.0, 1024, 2.005333),
-            (on(), &at_measure, 3.125, 1024, 3.136),
-            (on(), &at_measure, 3.7, 1024, 3.712),
-            (on(), &at_measure, 3.8, 1024, 1.813333),
-            (on(), &at_measure, 3.9, 128, 1.901333),
-            (on(), &at_measure, 3.85, 128, 1.850667),
-            (on(), &at_measure, 3.125, 128, 3.125333),
-            (on(), &at_measure, 3.75, 128, 3.752),
-            (on(), &before_zero, 0.3, 1024, 2.005333 + 1.7),
-            (quiet, &before_zero, 0.3, 1024, 1.7),
+            (on(), &at_measure, 4.0, 1024, 48_000, 2.005333),
+            (on(), &at_measure, 3.125, 1024, 48_000, 3.136),
+            (on(), &at_measure, 3.7, 1024, 48_000, 3.712),
+            (on(), &at_measure, 3.8, 1024, 48_000, 1.813333),
+            (on(), &at_measure, 3.9, 128, 48_000, 1.901333),
+            (on(), &at_measure, 3.85, 128, 48_000, 1.850667),
+            (on(), &at_measure, 3.125, 128, 48_000, 3.125333),
+            (on(), &at_measure, 3.75, 128, 48_000, 3.752),
+            (on(), &before_zero, 0.3, 1024, 48_000, 2.005333 + 1.7),
+            (quiet.clone(), &before_zero, 0.3, 1024, 48_000, 1.7),
+            (on(), &at_measure, 4.0, 256, 44_100, 2.002721),
+            (on(), &at_measure, 3.125, 256, 44_100, 3.128889),
+            (on(), &at_measure, 3.9, 256, 44_100, 1.904036),
+            (on(), &at_measure, 3.8, 256, 44_100, 1.805351),
+            (on(), &at_measure, 3.75, 256, 44_100, 3.750023),
+            (on(), &before_zero, 0.3, 256, 44_100, 2.002721 + 1.7),
+            (quiet, &before_zero, 0.3, 256, 44_100, 1.7),
         ];
-        for (m, prefs, at, block, length) in cases {
+        for (m, prefs, at, block, rate, length) in cases {
             let c = m.start(prefs, &tempo, at, false, false).count_in.unwrap();
-            let p = c.padded(block, 48_000);
-            let what = format!("{at} at {block}: {p:?}");
-            assert!((p.length - length).abs() < 1e-6, "{what}");
+            let p = c.padded(block, rate);
+            let what = format!("{at} at {block} and {rate}: {p:?}");
+            assert!((p.length - length).abs() < 0.5 / rate as f64, "{what}");
             assert!(close(p.length - p.first, c.length - c.first), "{what}");
             assert!(close(p.audible - p.first, c.audible - c.first) && p.beats() == c.beats(), "{what}");
         }
@@ -517,9 +594,10 @@ mod tests {
         );
     }
 
-    /// Recording with pre-roll in REAPER 7.73 on the JACK dummy device at 48 kHz: the playhead
-    /// started up to a block before the pre-roll's start, the clicks staying on the project's
-    /// beats; in playback, at blocks of 128 frames and before the project start it did not.
+    /// Recording with pre-roll in REAPER 7.73 on the JACK dummy device at 48 kHz and at 44.1 kHz
+    /// with blocks of 256 frames: the playhead started up to a block before the pre-roll's start,
+    /// the clicks staying on the project's beats; in playback, at blocks of 128 frames and
+    /// before the project start it did not.
     #[test]
     fn a_recording_pre_roll_is_padded_to_whole_blocks() {
         let tempo = TempoMap::constant(120.0, 4, 4);
@@ -535,6 +613,12 @@ mod tests {
             (&quiet, &mid, 0.3, 1024, 0.0),
         ] {
             let s = m.start(prefs, &tempo, at, true, false).padded_preroll(at, block, 48_000);
+            assert!((s.from - from).abs() < 1e-6, "{at} at {block}: {s:?}");
+        }
+        for (m, prefs, at, block, from) in
+            [(&quiet, &rec, 6.0, 256, 3.997279), (&quiet, &rec, 7.0, 256, 3.998821), (&quiet, &mid, 7.3, 256, 5.297279)]
+        {
+            let s = m.start(prefs, &tempo, at, true, false).padded_preroll(at, block, 44_100);
             assert!((s.from - from).abs() < 1e-6, "{at} at {block}: {s:?}");
         }
         let s = on().start(&rec, &tempo, 6.0, true, false).padded_preroll(6.0, 1024, 48_000);

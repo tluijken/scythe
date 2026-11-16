@@ -10,6 +10,7 @@
 #
 #   REAPER   the REAPER binary (default: reaper on PATH)
 #   BLOCK    frames per block of the dummy device (default 1024)
+#   RATE     sample rate of the dummy device and the projects (default 48000)
 #   ONLY     a regular expression: run only the cases whose names match it
 #   KEEP=1   keep the work folder with the projects, captures and logs
 set -euo pipefail
@@ -20,6 +21,7 @@ reaper=${REAPER:-$(command -v reaper || true)}
 python=$(command -v python3 || true)
 [ -n "$python" ] || { echo "no python3" >&2; exit 2; }
 block=${BLOCK:-1024}
+rate=${RATE:-48000}
 
 tool() {
     local var=$1 attr=$2 bin=$3 found
@@ -52,11 +54,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-exec 3< <("$xvfb" -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp 2>/dev/null)
+# Left to choose, Xvfb can take :0 from a desktop whose Xwayland it does not see as running.
+display=
+for free in $(seq 300 399); do
+    if [ ! -e "/tmp/.X$free-lock" ] && [ ! -e "/tmp/.X11-unix/X$free" ]; then display=$free; break; fi
+done
+[ -n "$display" ] || { echo "no free X display among :300 to :399" >&2; exit 1; }
+exec 3< <("$xvfb" ":$display" -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp 2>/dev/null)
 pids+=($!)
 read -r -t 20 display <&3 || { echo "Xvfb did not start" >&2; exit 1; }
 export DISPLAY=:$display
-"${jackenv[@]}" "$jackd" -n "$server" -d dummy -r 48000 -p "$block" -C 4 -P 4 \
+"${jackenv[@]}" "$jackd" -n "$server" -d dummy -r "$rate" -p "$block" -C 4 -P 4 \
     >"$work/jackd.log" 2>&1 &
 pids+=($!)
 jack_up=
@@ -67,9 +75,9 @@ done
 [ -n "$jack_up" ] || { echo "the JACK dummy server did not start:" >&2; tail -n 5 "$work/jackd.log" >&2; exit 1; }
 
 # A ramp whose value tells the project position of every frame the master plays.
-"$python" -I - "$work/ramp.wav" <<'EOF'
+"$python" -I - "$work/ramp.wav" "$rate" <<'EOF'
 import array, struct, sys
-sr, secs = 48000, 30
+sr, secs = int(sys.argv[2]), 30
 x = array.array('f', ((i / sr + 1.0) / 64.0 for i in range(sr * secs)))
 data = x.tobytes()
 with open(sys.argv[1], 'wb') as f:
@@ -125,6 +133,10 @@ EOF
 # name, metronome flags, reaper.ini preroll and prerollmeas, start, play or rec; then as
 # measured: where the playhead starts, the wait before it without padding, the first click into
 # it, that click's beat in its bar, the clicks before the start and the seconds that count in.
+# Optional after that: the tempo (bpm/beats per bar/beat unit, 120/4/4), the count-in in
+# measures (1), tempo points (time:bpm:beats per bar:beat unit, comma separated) and, where the
+# clicks are not evenly spaced in one tempo, each click in seconds before the playhead starts,
+# `!` marking an accented one (then the first click, its beat and the click count are `-`).
 cases="
 disabled           10 0  2    4.0   play 4.0  0.0  0.0   0 0 0.0
 count-in           11 0  2    4.0   play 4.0  2.0  0.0   0 4 2.0
@@ -152,14 +164,35 @@ count-in-0.875     11 8  2    3.75  play 3.75 3.75 0.0   0 8 3.75
 pre-roll-0.95      3  1  1    7.9   play 6.0  0.0  0.0   0 0 0.0
 pre-roll-0.9       3  1  1    7.8   play 6.0  0.0  0.0   0 0 0.0
 pre-roll-0.875     3  1  1    7.75  play 4.0  0.0  0.0   0 0 0.0
+slow               11 0  2    5.0   play 5.0  3.428571 0.142857 2 4 3.428571 70/4/4
+slow-at-bar        11 8  2    5.0   play 5.0  5.0  0.0   0 6 5.0   70/4/4
+fast               11 0  2    4.0   play 4.0  1.333333 0.0 0 4 1.333333 180/4/4
+fast-two-measures  11 0  2    4.0   play 4.0  2.666667 0.0 0 8 2.666667 180/4/4 2
+fast-mid-at-bar    11 8  2    4.5   play 4.5  1.833333 0.0 0 6 1.833333 180/4/4
+two-measures       11 0  2    4.0   play 4.0  4.0  0.0   0 8 4.0   120/4/4 2
+three-four         11 0  2    3.0   play 3.0  1.5  0.0   0 3 1.5   120/3/4
+three-four-mid-at-bar 11 8 2  3.25  play 3.25 1.75 0.0   0 4 1.75  120/3/4
+six-eight          11 0  2    3.0   play 3.0  1.5  0.0   0 6 1.5   120/6/8
+six-eight-mid-bar  11 0  2    3.25  play 3.25 1.5  0.0   1 6 1.5   120/6/8
+tempo-change-at-start 11 0 2  4.0   play 4.0  2.666667 - - - 2.666667 120/4/4 1 4:90:4:4 -2.666667!,-2,-1.333333,-0.666667
+tempo-change-before 11 0 2    5.0   play 5.0  2.666667 - - - 2.666667 120/4/4 1 4:90:4:4 -2.333333,-1.666667,-1!,-0.333333
+tempo-change-at-bar 11 8 2    5.0   play 5.0  3.666667 - - - 3.666667 120/4/4 1 4:90:4:4 -3.666667!,-3,-2.333333,-1.666667,-1!,-0.333333
+metre-change-at-start 11 0 2  4.0   play 4.0  1.5  - - - 1.5 120/4/4 1 4:120:3:4 -1.5!,-1,-0.5
+metre-change-before 11 0 2    4.5   play 4.5  1.5  - - - 1.5 120/4/4 1 4:120:3:4 -1.5,-1,-0.5!
+pre-roll-over-tempo-change 3 5 1 5.0 play 2.5 0.0 0.0 0 0 0.0  120/4/4 1 4:60:4:4
+pre-roll-over-tempo-change-at-bar 3 1 1 9.0 play 4.0 0.0 0.0 0 0 0.0 120/4/4 1 4:60:4:4
+both-over-tempo-change 11 5 1 5.0   play 2.5  2.0  0.0   1 4 2.0   120/4/4 1 4:60:4:4
+pre-roll-over-metre-change 3 5 1 4.5 play 2.5 0.0 0.0 0 0 0.0  120/4/4 1 4:120:3:4
 "
 
 cat >"$work/check.py" <<'EOF'
 import array, math, struct, sys
 
-path, transport, block, mode = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
-at, start_exp, wait, first, first_in_bar, nclicks, counting = map(float, sys.argv[5:12])
-sr, beat = 48000, 24000
+path, transport, block, mode, sr = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], int(sys.argv[5])
+at, start_exp, wait, counting, beat_s = map(float, [sys.argv[i] for i in (6, 7, 8, 12, 13)])
+first, first_in_bar, nclicks = sys.argv[9:12]
+beats_per_bar, explicit = int(sys.argv[14]), sys.argv[15]
+beat = round(beat_s * sr)
 # A recording's pre-roll inside the project is lengthened at its start to whole blocks.
 pad = 0.0
 if mode == "rec" and 0 < start_exp < at:
@@ -204,36 +237,43 @@ for i, v in enumerate(click):
         if i - last > sr // 20:
             onsets.append(i)
         last = i
-before = [(i - start, max(abs(v) for v in click[i:i + 1440])) for i in onsets if i < start - 2]
+before = [(i - start, max(abs(v) for v in click[i:i + sr * 3 // 100])) for i in onsets if i < start - 2]
 gaps = [b[0] - a[0] for a, b in zip(before, before[1:])]
-if skips or any(abs(g - beat) > 2 for g in gaps):
+if skips or (explicit == "-" and any(abs(g - beat) > 2 for g in gaps)):
     print("  DROPOUT")
     sys.exit(3)
+peaks = [p for _, p in before]
+accented = [p > 1.5 * min(peaks) for p in peaks] if peaks else []
+rel = [round(r / sr, 6) for r, _ in before]
 print(f"  playhead from {start_pos:.6f}", end="")
 want_start = max(start_exp, 0.0) - pad
 if abs(want_start - start_pos) > 2 / sr:
     problems.append(f"playhead from {start_pos:.6f}, not {want_start:.6f}")
-rel = [round(r / sr, 6) for r, _ in before]
-print(f", clicks before it at {rel}", end="")
-want = [round(-(wait - first) + pad + k * 0.5, 6) for k in range(int(nclicks))]
+shown = ",".join(f"{r:g}" + ("!" if acc else "") for r, acc in zip(rel, accented))
+print(f", clicks before it at [{shown}]", end="")
+if explicit == "-":
+    first, first_in_bar, nclicks = float(first), int(first_in_bar), int(nclicks)
+    want = [round(-(wait - first) + pad + k * beat_s, 6) for k in range(nclicks)]
+    want_acc = [(first_in_bar + k) % beats_per_bar == 0 for k in range(nclicks)]
+else:
+    marks = [c for c in explicit.split(",") if c]
+    want = [round(float(c.rstrip("!")) + pad, 6) for c in marks]
+    want_acc = [c.endswith("!") for c in marks]
 if len(rel) != len(want) or any(abs(r - w) > 2 / sr for r, w in zip(rel, want)):
     problems.append(f"clicks at {rel}, not {want}")
-peaks = [p for _, p in before]
-if peaks:
-    accents = [k for k, p in enumerate(peaks) if p > 1.5 * min(peaks)]
-    want_acc = [k for k in range(int(nclicks)) if (int(first_in_bar) + k) % 4 == 0]
-    if accents != want_acc:
-        problems.append(f"accents on clicks {accents}, not {want_acc}")
+elif peaks and accented != want_acc:
+    problems.append(f"accents {accented}, not {want_acc}")
 rows = [l.split('\t') for l in open(transport) if l.strip()]
 playing = [(float(r[2]), float(r[3])) for r in rows if int(r[1]) & 1]
-if counting > 0 and playing:
+if playing:
     pos, pos2 = playing[0]
     told = round(pos2 - pos, 6)
-    frames = round(counting * sr)
-    padded = (frames + (-frames) % block) / sr
     print(f", count-in {told}", end="")
-    if abs(told - padded) > 2 / sr:
-        problems.append(f"count-in {told} s, not {padded:.6f}")
+    if counting > 0:
+        frames = round(counting * sr)
+        padded = (frames + (-frames) % block) / sr
+        if abs(told - padded) > 2 / sr:
+            problems.append(f"count-in {told} s, not {padded:.6f}")
 print()
 for p in problems:
     print("  DIFFERS: " + p)
@@ -241,10 +281,27 @@ sys.exit(1 if problems else 0)
 EOF
 
 status=0
-while read -r name flags preroll pm at mode from wait first first_in_bar nclicks counting; do
+while read -r name flags preroll pm at mode from wait first first_in_bar nclicks counting tempo meas points clicks; do
     [ -n "$name" ] || continue
     [[ $name =~ ${ONLY:-.} ]] || continue
+    IFS=/ read -r bpm num denom <<<"${tempo:-120/4/4}"
+    meas=${meas:-1}
+    beat_s=$(awk -v b="$bpm" -v d="$denom" 'BEGIN { printf "%.9f", 60 / b * 4 / d }')
     secs=$(awk -v w="$wait" 'BEGIN { printf "%d", w + 4 }')
+    envelope=
+    if [ "${points:--}" != - ]; then
+        envelope="  <TEMPOENVEX
+    ACT 1 -1
+    PT 0 $bpm 1 $((num | denom << 16))"
+        IFS=, read -ra pts <<<"$points"
+        for pt in "${pts[@]}"; do
+            IFS=: read -r t b n d <<<"$pt"
+            envelope+="
+    PT $t $b 1 $((n | d << 16))"
+        done
+        envelope+="
+  >"
+    fi
     echo "== $name"
     for attempt in 1 2 3 4; do
         dir=$work/$name
@@ -254,12 +311,13 @@ while read -r name flags preroll pm at mode from wait first first_in_bar nclicks
             "$preroll" "$pm" >"$dir/reaper.ini"
         cat >"$dir/case.RPP" <<EOF
 <REAPER_PROJECT 0.1 "7.73/linux-x86_64" 0
-  SAMPLERATE 48000 0 0
-  <METRONOME $flags 1
+  SAMPLERATE $rate 0 0
+  <METRONOME $flags $meas
     VOL 0.25 0.125
   >
   METRONOMEOUT 1026
-  TEMPO 120 4 4
+  TEMPO $bpm $num $denom
+$envelope
   <TRACK
     NAME ramp
     <ITEM
@@ -293,8 +351,8 @@ EOF
         wait $cpid || true
         wait $rpid || true
         set +e
-        "$python" -I "$work/check.py" "$dir/capture.wav" "$dir/transport.tsv" "$block" "$mode" \
-            "$at" "$from" "$wait" "$first" "$first_in_bar" "$nclicks" "$counting"
+        "$python" -I "$work/check.py" "$dir/capture.wav" "$dir/transport.tsv" "$block" "$mode" "$rate" \
+            "$at" "$from" "$wait" "$first" "$first_in_bar" "$nclicks" "$counting" "$beat_s" "$num" "${clicks:--}"
         result=$?
         set -e
         # The dummy driver runs without real-time priority: a cycle missed while nothing

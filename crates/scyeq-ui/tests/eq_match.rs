@@ -372,7 +372,7 @@ fn pick_next(h: &mut Harness<'static, (Picks, EditorState)>, current: &str) {
     panic!("the file was never measured");
 }
 
-const NOT_AUDIO: &str = "notes.txt is not audio Scythe can read.";
+const NOT_AUDIO: &str = "notes.txt is not audio ScyEQ-Pro can read.";
 
 #[test]
 fn a_file_measured_after_one_that_failed_clears_the_error() {
@@ -400,7 +400,7 @@ fn choosing_an_instance_after_a_failed_file_clears_the_error() {
 fn a_file_that_cannot_be_used_is_named_in_a_plain_sentence() {
     let mut h = picks(&["notes.txt", "gone.wav", "locked.wav", "busy.wav"]);
     pick_next(&mut h, "Choose…");
-    assert!(h.query_by_label("notes.txt is not audio Scythe can read.").is_some());
+    assert!(h.query_by_label("notes.txt is not audio ScyEQ-Pro can read.").is_some());
     assert!(h.query_by_label_contains("format reader").is_none(), "the decoder's own words");
     pick_next(&mut h, "notes.txt");
     assert!(h.query_by_label("gone.wav cannot be found.").is_some());

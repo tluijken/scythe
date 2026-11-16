@@ -4,7 +4,6 @@
 //! cargo run -p scythe-engine --example readelay_ref -- <work dir> <path to reaper>
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use base64::Engine as _;
 
@@ -97,7 +96,7 @@ fn main() {
         let rpp_path = dir.join(format!("dl_{name}.RPP"));
         std::fs::write(&rpp_path, rpp).unwrap();
         if !out.exists() {
-            let _ = Command::new(&reaper)
+            let _ = scythe_engine::process::command(&reaper)
                 .args(["-cfgfile", &cfg.display().to_string(), "-nosplash", "-renderproject"])
                 .arg(&rpp_path)
                 .status();

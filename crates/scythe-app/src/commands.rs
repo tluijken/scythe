@@ -11,6 +11,7 @@ use scythe_core::menus;
 use scythe_session::Session;
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::palette::Action;
 
 /// Where the window sets (screensets) are kept, beside the preferences. REAPER's
@@ -185,7 +186,7 @@ impl ScytheApp {
 
     pub fn import_keymap_dialog(&mut self) {
         let dialog = crate::app::resource_dialog("KeyMaps").add_filter("Key map", &["ReaperKeyMap", "ini"]);
-        let Some(path) = dialog.pick_file() else { return };
+        let Some(path) = dialog.ask_file() else { return };
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let n = self.session.import_keymap(&text);
@@ -199,7 +200,7 @@ impl ScytheApp {
         let dialog = crate::app::resource_dialog("KeyMaps")
             .add_filter("Key map", &["ReaperKeyMap"])
             .set_file_name("Scythe.ReaperKeyMap");
-        let Some(path) = dialog.save_file() else { return };
+        let Some(path) = dialog.ask_save_file() else { return };
         if let Err(e) = std::fs::write(&path, self.session.keymap_text()) {
             self.notify(format!("Cannot save {}: {e}", path.display()));
         }
@@ -208,7 +209,7 @@ impl ScytheApp {
     pub fn import_menus_dialog(&mut self) {
         let dialog =
             crate::app::resource_dialog("MenuSets").add_filter("Menus and toolbars", &["ReaperMenu", "ReaperMenuSet"]);
-        let Some(path) = dialog.pick_file() else { return };
+        let Some(path) = dialog.ask_file() else { return };
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let n = self.session.import_menus(&text);
@@ -225,7 +226,7 @@ impl ScytheApp {
         let dialog = crate::app::resource_dialog("MenuSets")
             .add_filter("Toolbar", &["ReaperMenu"])
             .set_file_name(format!("{section}.ReaperMenu"));
-        let Some(path) = dialog.save_file() else { return };
+        let Some(path) = dialog.ask_save_file() else { return };
         if let Err(e) = std::fs::write(&path, file.write()) {
             self.notify(format!("Cannot save {}: {e}", path.display()));
         }

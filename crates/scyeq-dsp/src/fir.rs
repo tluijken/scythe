@@ -107,10 +107,7 @@ pub struct FirEngine {
 impl FirEngine {
     /// An engine for a design grid of `n` points (a power of two) and partitions of `p`.
     pub fn new(n: usize, p: usize, timing: Timing, bands: usize) -> Self {
-        let delay = match timing {
-            Timing::Linear => n / 2 - p,
-            Timing::Natural => n / 8 - p,
-        };
+        let delay = Self::latency_of(n, timing) - p;
         let taps = match timing {
             Timing::Linear => 2 * delay,
             Timing::Natural => n - 2 * p,
@@ -179,6 +176,14 @@ impl FirEngine {
 
     pub fn latency(&self) -> usize {
         self.delay + self.p
+    }
+
+    /// The latency of an engine for a design grid of `n` points.
+    pub fn latency_of(n: usize, timing: Timing) -> usize {
+        match timing {
+            Timing::Linear => n / 2,
+            Timing::Natural => n / 8,
+        }
     }
 
     /// Turns band `b`'s correction kernel on (silent until `set_dynamic`) or off.

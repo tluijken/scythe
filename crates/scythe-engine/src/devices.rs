@@ -480,7 +480,7 @@ fn start_jack(request: &DeviceRequest) -> Result<(), String> {
             .map(drop)
             .map_err(|e| format!("starting the JACK server: {e}"));
     }
-    std::process::Command::new("sh")
+    crate::process::command("sh")
         .args(["-c", command])
         .stdin(std::process::Stdio::null())
         .spawn()

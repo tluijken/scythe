@@ -7,6 +7,7 @@ use scythe_core::keymap::{Chord, SECTION_MAIN};
 use scythe_session::actions::{ActionInfo, Kind};
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{ACCENT, TEXT_DIM};
 use crate::ui::window::{WindowKind, scythe_window};
 
@@ -76,7 +77,7 @@ fn body(app: &mut ScytheApp, ui: &mut Ui, state: &mut ActionsWindow) {
             state.editor = Some(CustomEditor { consolidate_undo: true, ..Default::default() });
         }
         if ui.button("Add script…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("ReaScript", &["lua", "eel", "py"]).pick_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("ReaScript", &["lua", "eel", "py"]).ask_file()
         {
             let command = app.session.add_script_action(&path.to_string_lossy(), SECTION_MAIN);
             state.selected = Some(command);

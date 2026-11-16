@@ -16,17 +16,16 @@ pub struct LiveInstance(pub Arc<FxInstance>);
 
 impl LiveFx for LiveInstance {
     fn params(&self) -> Vec<FxParam> {
-        self.0
-            .with(|e| {
-                e.params()
-                    .into_iter()
-                    .map(|p| {
-                        let (value, text) = e.param(p.id).unwrap_or((p.default, String::new()));
-                        FxParam { name: p.name, min: p.min, max: p.max, value, text }
-                    })
-                    .collect()
+        let params = self.0.with(|e| e.params()).unwrap_or_default();
+        let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+        params
+            .into_iter()
+            .zip(self.0.param_values(&ids))
+            .map(|(p, v)| {
+                let (value, text) = v.unwrap_or((p.default, String::new()));
+                FxParam { name: p.name, min: p.min, max: p.max, value, text }
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn set_param(&self, index: usize, value: f64) {

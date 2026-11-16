@@ -25,6 +25,7 @@ impl Client {
             .args(args)
             .env("XDG_DATA_HOME", dir.join("data"))
             .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_CACHE_HOME", dir.join("cache"))
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .stdin(Stdio::piped())

@@ -238,6 +238,16 @@ pub struct ScytheEq {
     det: Vec<f64>,
     /// Whether audio went through, so a structural change crossfades.
     running: bool,
+    /// Values were set since the last block.
+    pending: bool,
+    /// The values the processing was last made to match.
+    applied: Vec<f64>,
+    /// The FIR path for the phase mode and resolution set, built where they were set, for the
+    /// next block to take.
+    prepared: Option<(FirKey, Box<FirPath>)>,
+    /// A FIR path the processing let go, kept until [`ScytheEq::release_retired`] frees it off the
+    /// audio thread.
+    retired: Option<Box<FirPath>>,
     outgoing: Box<Outgoing>,
     /// The sample position of the next frame, which places the grid cells.
     clock: i64,
@@ -265,6 +275,18 @@ struct Outgoing {
 }
 
 const SWITCH_FADE_SECONDS: f64 = 0.03;
+
+/// What a FIR path is built for: a phase mode and, in linear phase, its resolution.
+type FirKey = (PhaseMode, usize);
+
+/// The FIR path a phase mode and resolution need; none in zero latency.
+fn fir_key(mode: PhaseMode, resolution: usize) -> Option<FirKey> {
+    match mode {
+        PhaseMode::ZeroLatency => None,
+        PhaseMode::Natural => Some((mode, 0)),
+        PhaseMode::Linear => Some((mode, resolution)),
+    }
+}
 
 impl ScytheEq {
     pub fn new(sample_rate: u32) -> Self {
@@ -305,6 +327,10 @@ impl ScytheEq {
             buf: [vec![0.0; SUB], vec![0.0; SUB]],
             det: vec![0.0; SUB],
             running: false,
+            pending: false,
+            applied: Vec::new(),
+            prepared: None,
+            retired: None,
             outgoing: Box::new(Outgoing {
                 fir: None,
                 zero: false,
@@ -355,8 +381,9 @@ impl ScytheEq {
         self.settings[b]
     }
 
+    /// The phase mode set, which the processing takes at the next block.
     pub fn phase_mode(&self) -> PhaseMode {
-        self.mode
+        PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize)
     }
 
     /// Sets parameter `id` to `v` in its own units.
@@ -367,7 +394,7 @@ impl ScytheEq {
             return;
         }
         *slot = v;
-        self.reconfigure();
+        self.changed();
     }
 
     /// Replaces every value (a recalled state).
@@ -375,17 +402,52 @@ impl ScytheEq {
         for (id, v) in values.iter().enumerate().take(params::TOTAL) {
             self.values[id] = params::clamp(id as u32, *v);
         }
-        self.reconfigure();
+        self.changed();
+    }
+
+    /// The processing follows changed values at the next block, all at once: values set one by
+    /// one between two blocks sound as when set together, and a switch made and undone between
+    /// them as none.
+    /// A new phase mode or resolution gets its FIR path here, on the thread that set it: built in
+    /// the block it would allocate and plan FFTs on the audio thread.
+    fn changed(&mut self) {
+        for b in 0..BANDS {
+            self.settings[b] = BandSettings::read(&self.values, b);
+        }
+        self.pending = true;
+        let wanted = fir_key(self.phase_mode(), self.value(GLOBAL + global::RESOLUTION) as usize);
+        let current = if self.fir.is_some() { fir_key(self.mode, self.resolution) } else { None };
+        match wanted {
+            Some(key) if wanted != current => {
+                if self.prepared.as_ref().is_none_or(|(k, _)| *k != key) {
+                    self.prepared = Some((key, Box::new(self.fir_path(key))));
+                }
+            }
+            _ => self.prepared = None,
+        }
+    }
+
+    /// Frees the FIR path a phase mode or resolution switch let go. Call it off the audio thread:
+    /// values set in the block (envelopes, modulation) leave it.
+    pub fn release_retired(&mut self) {
+        self.retired = None;
+    }
+
+    fn settle(&mut self) {
+        if std::mem::take(&mut self.pending) && self.values != self.applied {
+            self.reconfigure();
+        }
     }
 
     /// Reads the parameter table and makes the processing structures match it. It allocates
-    /// only for a new FIR length: a change of phase mode or linear phase resolution.
+    /// only for a new FIR length that was not prepared where the values were set.
     fn reconfigure(&mut self) {
+        self.applied.clone_from(&self.values);
         for b in 0..BANDS {
             self.settings[b] = BandSettings::read(&self.values, b);
         }
         self.auto_dirty = true;
-        let mode = PhaseMode::from_index(self.value(GLOBAL + global::PHASE) as usize);
+        let mode = self.phase_mode();
         let resolution = self.value(GLOBAL + global::RESOLUTION) as usize;
         let core_change = mode != self.mode
             || (mode == PhaseMode::Linear && resolution != self.resolution)
@@ -395,10 +457,10 @@ impl ScytheEq {
         if core_change {
             self.mode = mode;
             self.resolution = resolution;
-            let fir = match mode {
-                PhaseMode::ZeroLatency => None,
-                _ => Some(Box::new(self.fir_path())),
-            };
+            let fir = fir_key(mode, resolution).map(|key| match self.prepared.take() {
+                Some((prepared, fir)) if prepared == key => fir,
+                _ => Box::new(self.fir_path(key)),
+            });
             old_fir = std::mem::replace(&mut self.fir, fir);
             for b in &mut self.bands {
                 b.detector.reset();
@@ -441,10 +503,10 @@ impl ScytheEq {
             let latency =
                 self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency());
             let o = &mut *self.outgoing;
-            // A spectral switch keeps an earlier mode switch's FIR path rather than free it on
-            // the audio thread; only a mode switch, which builds a path there anyway, lets it go.
+            // A spectral switch keeps an earlier mode switch's FIR path; a mode switch retires
+            // it, to be freed off the audio thread by `release_retired`.
             if core_change {
-                o.fir = old_fir;
+                self.retired = std::mem::replace(&mut o.fir, old_fir.take());
             }
             o.zero = core_change && was_zero;
             o.shared = !core_change;
@@ -455,6 +517,9 @@ impl ScytheEq {
             o.len = (SWITCH_FADE_SECONDS * self.fs) as usize;
         } else if let Some(stage) = old_spectral {
             self.keep_spectral(stage);
+        }
+        if old_fir.is_some() {
+            self.retired = old_fir;
         }
     }
 
@@ -480,13 +545,18 @@ impl ScytheEq {
         }
     }
 
-    fn fir_path(&self) -> FirPath {
+    /// The FIR grid, partition size and timing of a phase mode and resolution.
+    fn fir_size(&self, mode: PhaseMode, resolution: usize) -> (usize, usize, Timing) {
         let scale = (self.fs / 48000.0).log2().round().clamp(0.0, 3.0) as u32;
         let p = 256usize << scale;
-        let (n, timing) = match self.mode {
-            PhaseMode::Natural => (8192usize << scale, Timing::Natural),
-            _ => (2048usize << (self.resolution.min(4) as u32 + scale), Timing::Linear),
-        };
+        match mode {
+            PhaseMode::Natural => (8192usize << scale, p, Timing::Natural),
+            _ => (2048usize << (resolution.min(4) as u32 + scale), p, Timing::Linear),
+        }
+    }
+
+    fn fir_path(&self, (mode, resolution): FirKey) -> FirPath {
+        let (n, p, timing) = self.fir_size(mode, resolution);
         let engine = FirEngine::new(n, p, timing, BANDS);
         let bins = n / 2 + 1;
         let latency = engine.latency();
@@ -911,6 +981,7 @@ impl ScytheEq {
         position: Option<i64>,
     ) {
         let frames = left.len().min(right.len());
+        self.settle();
         self.running = true;
         if let Some(p) = position {
             self.clock = p;
@@ -1089,6 +1160,7 @@ impl ScytheEq {
 impl ScytheEq {
     /// Clears what the processing remembers of earlier audio, as after a seek.
     pub fn reset(&mut self) {
+        self.settle();
         for b in &mut self.bands {
             b.state.iter_mut().for_each(CascadeState::reset);
             b.solo_state.iter_mut().for_each(CascadeState::reset);
@@ -1109,9 +1181,18 @@ impl ScytheEq {
         self.primed = false;
     }
 
-    /// Frames the output lags the input.
+    /// Frames the output lags the input, with the values set, from the next block on.
     pub fn latency(&self) -> usize {
-        self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency())
+        let fir = match self.phase_mode() {
+            PhaseMode::ZeroLatency => 0,
+            mode => {
+                let (n, _, timing) = self.fir_size(mode, self.value(GLOBAL + global::RESOLUTION) as usize);
+                FirEngine::latency_of(n, timing)
+            }
+        };
+        let spectral =
+            if self.settings.iter().any(|s| s.spectral().is_some()) { Spectral::latency_at(self.fs) } else { 0 };
+        fir + spectral
     }
 
     /// The stored state, with any values from a newer version written back unchanged.

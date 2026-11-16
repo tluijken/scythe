@@ -148,3 +148,22 @@ fn a_list_that_cannot_open_or_bypass_instances_offers_neither() {
     assert!(h.query_by_label("On").is_none());
     assert!(h.query_by_label("Vocals band 1").is_some(), "the bands are still there");
 }
+
+/// Bands beyond the room of a row are counted at its end instead of left out.
+#[test]
+fn bands_that_do_not_fit_are_counted() {
+    let mut list = Fake::new();
+    for b in 0..p::BANDS {
+        list.values[p::band_param(b, band::USED) as usize] = 1.0;
+        list.values[p::band_param(b, band::FREQ) as usize] = 100.0 * (b + 1) as f64;
+        list.values[p::band_param(b, band::GAIN) as usize] = -3.5;
+    }
+    let mut h = harness(list);
+    h.step();
+    let shown = (1..=p::BANDS).filter(|b| h.query_by_label(&format!("Vocals band {b}")).is_some()).count();
+    assert!(shown < p::BANDS, "this many bands do not fit a row");
+    let hidden = p::BANDS - shown;
+    let more = h.get_by_label(&format!("Vocals: {hidden} more bands")).rect();
+    let last = h.get_by_label(&format!("Vocals band {shown}")).rect();
+    assert!(!more.intersects(last), "{more:?} over {last:?}");
+}

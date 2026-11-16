@@ -370,7 +370,7 @@ fn finished_analysis(id: u64) -> Result<Arc<Analysis>, ApiError> {
 /// What a job measures, gathered on the session's thread.
 enum Source {
     Ready(Arc<Analysis>),
-    File { path: PathBuf, start: Option<f64>, end: Option<f64> },
+    File { path: PathBuf, start: Option<f64>, end: Option<f64>, cache: PathBuf },
     Render(Box<Render>),
 }
 
@@ -386,7 +386,7 @@ impl Source {
     fn measure(self) -> Result<Arc<Analysis>, String> {
         match self {
             Self::Ready(a) => Ok(a),
-            Self::File { path, start, end } => analyse_file(&path, start, end),
+            Self::File { path, start, end, cache } => analyse_file(&path, start, end, &cache),
             Self::Render(r) => r.measure().map(Arc::new),
         }
     }
@@ -666,7 +666,7 @@ fn subject_source(session: &mut Session, subject: &Subject) -> Result<Source, Ap
         Subject::Job { job } => finished_analysis(*job).map(Source::Ready),
         Subject::File { file, start, end } => {
             check_file(file)?;
-            Ok(Source::File { path: file.clone(), start: *start, end: *end })
+            Ok(Source::File { path: file.clone(), start: *start, end: *end, cache: session.analysis_cache.clone() })
         }
         Subject::Mix { mix, start, end } => mix_source(session, mix, *start, *end),
     }
@@ -677,11 +677,6 @@ fn check_file(path: &Path) -> Result<(), ApiError> {
         return Err(ApiError::not_found(format!("no file {}", path.display())));
     }
     Ok(())
-}
-
-/// Where measurements of files are kept between runs.
-fn cache_dir() -> PathBuf {
-    crate::data_dir().join("analysis-cache")
 }
 
 /// Bumped when the measurements change, so older cached ones are not used.
@@ -702,13 +697,13 @@ fn memory_cache() -> &'static Mutex<HashMap<String, Arc<Analysis>>> {
     CACHE.get_or_init(Default::default)
 }
 
-fn analyse_file(path: &Path, start: Option<f64>, end: Option<f64>) -> Result<Arc<Analysis>, String> {
+fn analyse_file(path: &Path, start: Option<f64>, end: Option<f64>, cache: &Path) -> Result<Arc<Analysis>, String> {
     let key = cache_key(path, start, end);
     if let Some(k) = &key {
         if let Some(a) = memory_cache().lock().unwrap().get(k) {
             return Ok(a.clone());
         }
-        let stored = std::fs::read_to_string(cache_dir().join(format!("{k}.json"))).ok();
+        let stored = std::fs::read_to_string(cache.join(format!("{k}.json"))).ok();
         if let Some(a) = stored.and_then(|t| serde_json::from_str::<Analysis>(&t).ok()) {
             let a = Arc::new(a);
             memory_cache().lock().unwrap().insert(k.clone(), a.clone());
@@ -718,9 +713,8 @@ fn analyse_file(path: &Path, start: Option<f64>, end: Option<f64>) -> Result<Arc
     let data = scythe_engine::media::decode_file(path).map_err(|e| e.to_string())?;
     let a = Arc::new(analysis::analyse(&data.channels, data.sample_rate, start, end));
     if let Some(k) = key {
-        let dir = cache_dir();
-        if std::fs::create_dir_all(&dir).is_ok() {
-            let _ = std::fs::write(dir.join(format!("{k}.json")), serde_json::to_string(&*a).unwrap_or_default());
+        if std::fs::create_dir_all(cache).is_ok() {
+            let _ = std::fs::write(cache.join(format!("{k}.json")), serde_json::to_string(&*a).unwrap_or_default());
         }
         memory_cache().lock().unwrap().insert(k, a.clone());
     }
@@ -799,11 +793,12 @@ pub fn execute(session: &mut Session, command: AnalysisCommand) -> Result<Value,
     match command {
         AnalysisCommand::File { path, start, end } => {
             check_file(&path)?;
+            let cache = session.analysis_cache.clone();
             Ok(spawn_job(
                 "file",
                 None,
                 Box::new(move || {
-                    let a = analyse_file(&path, start, end)?;
+                    let a = analyse_file(&path, start, end, &cache)?;
                     Ok((json(&*a), Some(a)))
                 }),
             ))

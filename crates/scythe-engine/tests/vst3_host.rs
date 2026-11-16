@@ -76,8 +76,8 @@ fn scans_processes_and_keeps_state() {
 
     let params = chain[0].with(|e| e.params()).unwrap();
     assert_eq!((params.len(), params[0].name.as_str()), (1, "Gain"));
-    chain[0].with(|e| e.set_param(0, 0.25));
-    assert_eq!(chain[0].with(|e| e.param(0)).flatten(), Some((0.25, "0.25".into())));
+    chain[0].with(|e| e.set_param(3, 0.25));
+    assert_eq!(chain[0].with(|e| e.param(3)).flatten(), Some((0.25, "0.25".into())));
     let (mut l, mut r) = (vec![1.0f32; 8], vec![1.0f32; 8]);
     chain[0].process(&mut l, &mut r, &ctx);
     assert_eq!(l[0], 0.25);
@@ -91,7 +91,7 @@ fn scans_processes_and_keeps_state() {
     let (mut l, mut r) = (vec![1.0f32; 4], vec![1.0f32; 4]);
     chain[0].process(&mut l, &mut r, &ctx);
     assert_eq!(l[0], 0.25, "state restored after reload");
-    assert_eq!(chain[0].with(|e| e.param(0)).flatten().map(|(v, _)| v), Some(0.25), "controller follows the state");
+    assert_eq!(chain[0].with(|e| e.param(3)).flatten().map(|(v, _)| v), Some(0.25), "controller follows the state");
     std::fs::remove_dir_all(root).ok();
 }
 

@@ -505,7 +505,19 @@ pub fn sysex_event(offset: u32, data: &[u8]) -> clap_sys::events::clap_event_mid
     }
 }
 
-unsafe extern "C" fn drop_event(_list: *const clap_output_events, _event: *const clap_event_header) -> bool {
+/// Keeps the parameter values a plugin reports in the `Vec<(u32, f64)>` the list's `ctx` points at,
+/// while it has room: the audio thread does not allocate.
+unsafe extern "C" fn keep_param_value(list: *const clap_output_events, event: *const clap_event_header) -> bool {
+    // SAFETY: `ctx` is the plugin's `reported` vector for the call; the event is valid.
+    unsafe {
+        if (*event).type_ == CLAP_EVENT_PARAM_VALUE && (*event).space_id == CLAP_CORE_EVENT_SPACE_ID {
+            let reported = &mut *((*list).ctx as *mut Vec<(u32, f64)>);
+            let e = &*(event as *const clap_event_param_value);
+            if reported.len() < reported.capacity() {
+                reported.push((e.param_id, e.value));
+            }
+        }
+    }
     true
 }
 
@@ -552,6 +564,9 @@ pub struct ClapPlugin {
     pending_params: Vec<clap_event_param_value>,
     /// All events of a `process` call in time order, as handed to the plugin.
     order: Vec<*const clap_event_header>,
+    /// Parameter values the plugin reported since [`ClapPlugin::take_reported`], its own
+    /// changes (from its editor) among them.
+    reported: Vec<(u32, f64)>,
     sample_rate: f64,
     /// Where the next block plays, from [`ClapPlugin::set_transport`].
     transport: Option<clap_event_transport>,
@@ -560,6 +575,37 @@ pub struct ClapPlugin {
 // SAFETY: the engine serialises access; audio-thread calls (`process`) never overlap
 // main-thread calls on the same instance.
 unsafe impl Send for ClapPlugin {}
+
+/// A plugin's parameter value and text queries, made apart from the [`ClapPlugin`]: CLAP lets
+/// them run on the main thread while the audio thread processes. Valid while the plugin lives.
+pub struct ParamQueries {
+    plugin: *const clap_plugin,
+    get_value: unsafe extern "C" fn(*const clap_plugin, clap_id, *mut f64) -> bool,
+    value_to_text: Option<unsafe extern "C" fn(*const clap_plugin, clap_id, f64, *mut c_char, u32) -> bool>,
+}
+
+// SAFETY: only the pointers move; the queries are made on the plugin thread while the owner keeps
+// the plugin alive.
+unsafe impl Send for ParamQueries {}
+
+impl ParamQueries {
+    /// # Safety
+    /// Call on the plugin's main thread while the plugin lives.
+    pub unsafe fn value(&self, id: u32) -> Option<f64> {
+        let mut v = 0.0;
+        // SAFETY: as the caller promises, with an out-value the plugin fills in.
+        unsafe { (self.get_value)(self.plugin, id, &mut v) }.then_some(v)
+    }
+
+    /// # Safety
+    /// As for [`ParamQueries::value`].
+    pub unsafe fn text(&self, id: u32, value: f64) -> Option<String> {
+        let to_text = self.value_to_text?;
+        let mut buf = [0 as c_char; 128];
+        // SAFETY: as the caller promises, with a buffer of the stated capacity.
+        unsafe { to_text(self.plugin, id, value, buf.as_mut_ptr(), buf.len() as u32) }.then(|| cstr(buf.as_ptr()))
+    }
+}
 
 impl ClapPlugin {
     pub fn create(lib: Arc<ClapLibrary>, id: &str, sample_rate: f64, max_frames: u32) -> Result<Self, ClapError> {
@@ -614,6 +660,7 @@ impl ClapPlugin {
             sysex: Vec::with_capacity(16),
             pending_params: Vec::with_capacity(64),
             order: Vec::with_capacity(1100),
+            reported: Vec::with_capacity(1024),
             sample_rate,
             transport: None,
         };
@@ -794,6 +841,31 @@ impl ClapPlugin {
         unsafe { get(self.plugin, id, &mut v) }.then_some(v)
     }
 
+    /// The value the plugin holds for the parameter, without queued changes.
+    pub fn current_value(&self, id: u32) -> Option<f64> {
+        let get = self.params_ext()?.get_value?;
+        let mut v = 0.0;
+        // SAFETY: a main-thread query with an out-value the plugin fills in.
+        unsafe { get(self.plugin, id, &mut v) }.then_some(v)
+    }
+
+    /// The plugin's value and text queries, to make on its main thread without the caller's
+    /// hold on the plugin.
+    pub fn param_queries(&self) -> Option<ParamQueries> {
+        let ext = self.params_ext()?;
+        Some(ParamQueries { plugin: self.plugin, get_value: ext.get_value?, value_to_text: ext.value_to_text })
+    }
+
+    /// Whether a change of the parameter waits for the next block.
+    pub fn is_pending(&self, id: u32) -> bool {
+        self.pending_params.iter().any(|e| e.param_id == id)
+    }
+
+    /// The parameter values the plugin reported since the last call.
+    pub fn take_reported(&mut self) -> std::vec::Drain<'_, (u32, f64)> {
+        self.reported.drain(..)
+    }
+
     pub fn param_text(&self, id: u32, value: f64) -> Option<String> {
         let to_text = self.params_ext()?.value_to_text?;
         let mut buf = [0 as c_char; 128];
@@ -839,7 +911,10 @@ impl ClapPlugin {
             size: Some(events_size),
             get: Some(events_get),
         };
-        let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(drop_event) };
+        let out_events = clap_output_events {
+            ctx: &mut self.reported as *mut Vec<(u32, f64)> as *mut c_void,
+            try_push: Some(keep_param_value),
+        };
         // SAFETY: the event lists and the events they point at outlive the call.
         unsafe { flush(self.plugin, &in_events, &out_events) };
         self.pending_params.clear();
@@ -986,7 +1061,10 @@ impl ClapPlugin {
             size: Some(events_size),
             get: Some(events_get),
         };
-        let out_events = clap_output_events { ctx: std::ptr::null_mut(), try_push: Some(drop_event) };
+        let out_events = clap_output_events {
+            ctx: &mut self.reported as *mut Vec<(u32, f64)> as *mut c_void,
+            try_push: Some(keep_param_value),
+        };
         let process = clap_process {
             steady_time: -1,
             frames_count: n as u32,

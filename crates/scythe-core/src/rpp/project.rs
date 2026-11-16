@@ -140,12 +140,69 @@ fn bit(b: bool) -> String {
     if b { "1" } else { "0" }.to_owned()
 }
 
-fn color_from_native(v: i64) -> Option<Color> {
-    (v & CUSTOM_COLOR_FLAG != 0).then(|| Color::from_hex((v & 0xff_ffff) as u32))
+/// The byte order of a stored colour, as the letter REAPER writes after a marker's: red in the
+/// low byte ("R") or blue ("B"). Track colours are measured as "R" on Linux and Windows alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColorOrder {
+    R,
+    B,
 }
 
-fn color_to_native(c: Option<Color>) -> i64 {
-    c.map_or(0, |c| c.to_hex() as i64 | CUSTOM_COLOR_FLAG)
+impl ColorOrder {
+    /// What REAPER reads a marker colour without a letter as: measured as its own system's order.
+    const NATIVE: Self = if cfg!(windows) { Self::R } else { Self::B };
+
+    fn of_marker(t: &[String]) -> Self {
+        match t.get(7).map(String::as_str) {
+            Some("R") => Self::R,
+            Some("B") => Self::B,
+            _ => Self::NATIVE,
+        }
+    }
+
+    fn letter(self) -> &'static str {
+        match self {
+            Self::R => "R",
+            Self::B => "B",
+        }
+    }
+
+    fn read(self, v: i64) -> Option<Color> {
+        let rgb = (v & 0xff_ffff) as u32;
+        (v & CUSTOM_COLOR_FLAG != 0).then(|| match self {
+            Self::R => Color::from_colorref(rgb),
+            Self::B => Color::from_hex(rgb),
+        })
+    }
+
+    fn write(self, c: Option<Color>) -> i64 {
+        c.map_or(0, |c| {
+            let rgb = match self {
+                Self::R => c.to_colorref(),
+                Self::B => c.to_hex(),
+            };
+            rgb as i64 | CUSTOM_COLOR_FLAG
+        })
+    }
+}
+
+/// The format revision from which colours are stored in REAPER's order (see [`SCYTHE_FORMAT`]).
+///
+/// [`SCYTHE_FORMAT`]: crate::model::SCYTHE_FORMAT
+const COLORS_FORMAT: u32 = 3;
+
+/// Reads the colours again as an older Scythe stored them: blue in the low byte everywhere.
+fn read_old_colors(p: &mut Project) {
+    for t in &mut p.tracks {
+        if let Some(line) = t.lines.get("PEAKCOL") {
+            t.color = ColorOrder::B.read(num(line, 1, 0.0) as i64);
+        }
+    }
+    for m in &mut p.markers {
+        if let Some(line) = m.lines.get("MARKER") {
+            m.color = ColorOrder::B.read(num(line, 5, 0.0) as i64);
+        }
+    }
 }
 
 pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
@@ -333,6 +390,9 @@ pub fn project_from_rpp(text: &str) -> Result<Project, ParseError> {
         Some(_) => Writer::Other,
         None => Writer::Unknown,
     };
+    if matches!(p.writer, Writer::Scythe(format) if format < COLORS_FORMAT) {
+        read_old_colors(&mut p);
+    }
     p.time_selection = selection;
     p.resolve_automation_items();
     Ok(p)
@@ -435,7 +495,7 @@ fn parse_marker(t: &[String], markers: &mut Vec<Marker>, open_regions: &mut Vec<
     let position = num(t, 2, 0.0);
     let name = t.get(3).cloned().unwrap_or_default();
     let flags = num(t, 4, 0.0) as i64;
-    let color = color_from_native(num(t, 5, 0.0) as i64);
+    let color = ColorOrder::of_marker(t).read(num(t, 5, 0.0) as i64);
     let mut lines = LineMemo::new();
     lines.insert("MARKER".into(), t.to_vec());
     if flags & 1 == 0 {
@@ -465,7 +525,7 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                 }
                 match t[0].as_str() {
                     "NAME" => track.name = t.get(1).cloned().unwrap_or_default(),
-                    "PEAKCOL" => track.color = color_from_native(num(&t, 1, 0.0) as i64),
+                    "PEAKCOL" => track.color = ColorOrder::R.read(num(&t, 1, 0.0) as i64),
                     "VOLPAN" => {
                         track.volume = num(&t, 1, 1.0);
                         track.pan = num(&t, 2, 0.0);
@@ -1253,20 +1313,22 @@ pub fn project_to_rpp(p: &Project) -> String {
     }
 
     for m in &p.markers {
-        let old_flags = m.lines.get("MARKER").map_or(0, |t| num(t, 4, 0.0) as i64);
+        let old = m.lines.get("MARKER");
+        let old_flags = old.map_or(0, |t| num(t, 4, 0.0) as i64);
         let flags = (old_flags & !1) | m.region_end.is_some() as i64;
-        root.line(line_from(
-            &m.lines,
-            "MARKER",
-            &["MARKER"],
-            &[
-                (1, m.index.to_string()),
-                (2, fmt_num(m.position)),
-                (3, m.name.clone()),
-                (4, flags.to_string()),
-                (5, color_to_native(m.color).to_string()),
-            ],
-        ));
+        let order = old.map_or(ColorOrder::NATIVE, |t| ColorOrder::of_marker(t));
+        let mut fields = vec![
+            (1, m.index.to_string()),
+            (2, fmt_num(m.position)),
+            (3, m.name.clone()),
+            (4, flags.to_string()),
+            (5, order.write(m.color).to_string()),
+        ];
+        if old.and_then(|t| t.get(7)).is_none_or(|l| l.is_empty() || l == "R" || l == "B") {
+            fields.push((6, old.and_then(|t| t.get(6)).map_or("1", String::as_str).to_owned()));
+            fields.push((7, order.letter().to_owned()));
+        }
+        root.line(line_from(&m.lines, "MARKER", &["MARKER"], &fields));
         if m.region_end.is_some() && !m.render_matrix.is_empty() {
             let mut c = Chunk::new("REGIONRENDER", &[&m.index.to_string()]);
             for t in &m.render_matrix {
@@ -1314,7 +1376,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     let mut c = Chunk::new("TRACK", &[&guid]);
     let l = &t.lines;
     c.line(line_from(l, "NAME", &["NAME"], &[(1, t.name.clone())]));
-    let peakcol = if t.color.is_some() { color_to_native(t.color) } else { 16576 };
+    let peakcol = if t.color.is_some() { ColorOrder::R.write(t.color) } else { 16576 };
     c.line(line_from(l, "PEAKCOL", &["PEAKCOL"], &[(1, peakcol.to_string())]));
     c.line(line_from(
         l,
@@ -2009,7 +2071,7 @@ mod tests {
 
         let g = &p.tracks[0];
         assert_eq!(g.name, "Guitar L · 7-str");
-        assert_eq!(g.color, Some(Color::from_hex(0xdb_8e_74)));
+        assert_eq!(g.color, Some(Color::rgb(0x74, 0x8e, 0xdb)));
         assert_eq!((g.volume, g.pan, g.solo, g.armed), (0.72, -0.8, true, true));
         assert_eq!(g.fx.len(), 2);
         assert_eq!(g.fx[0].name, "VST: ReaEQ (Cockos)");
@@ -2224,6 +2286,95 @@ mod tests {
         let header = format!("<REAPER_PROJECT 0.1 scythe-{}/format-{SCYTHE_FORMAT} ", env!("CARGO_PKG_VERSION"));
         assert!(out.starts_with(&header), "{out}");
         assert_eq!(project_from_rpp(&out).unwrap().writer, Writer::Scythe(SCYTHE_FORMAT));
+    }
+
+    const RED: Color = Color::rgb(220, 60, 60);
+    const MARKER_RED: Color = Color::rgb(250, 10, 10);
+
+    /// Lines REAPER 7.73 (Linux) and 7.85 (Windows) saved for `SetTrackColor(ColorToNative(220,
+    /// 60, 60))` and a marker of `ColorToNative(250, 10, 10) | 0x1000000`: the track colour has
+    /// red in the low byte on both, a marker's follows the letter after it ("B": blue in the low
+    /// byte, "R": red), and without one the system's own order.
+    fn reaper_colours(version: &str, tag: &str) -> String {
+        let marker = if tag == "R" { 17435386 } else { 33163786 };
+        format!(
+            "<REAPER_PROJECT 0.1 \"{version}\" 0\n  MARKER 1 1 M 0 {marker} 1 {tag}\n  <TRACK\n    PEAKCOL 20724956\n  >\n>\n"
+        )
+    }
+
+    #[test]
+    fn colours_read_as_reaper_shows_them() {
+        for (version, tag) in [("7.73/linux-x86_64", "B"), ("7.85/win64", "R")] {
+            let p = project_from_rpp(&reaper_colours(version, tag)).unwrap();
+            assert_eq!(p.tracks[0].color, Some(RED), "{version}");
+            assert_eq!(p.markers[0].color, Some(MARKER_RED), "{version}");
+        }
+        let untagged = project_from_rpp("<REAPER_PROJECT 0.1 \"7.73\" 0\n  MARKER 1 1 M 0 33163786\n>\n").unwrap();
+        assert_eq!(untagged.markers[0].color, Some(Color::from_native(0xfa0a0a)));
+    }
+
+    /// Scythe before format 3 wrote every colour with red in bits 16-23 and read them so: such a
+    /// file keeps showing the colours picked in it, and is saved as REAPER reads colours.
+    #[test]
+    fn an_older_scythe_files_colours_stay_as_picked() {
+        let old = "<REAPER_PROJECT 0.1 \"scythe-0.1.1/format-2\" 0\n  MARKER 1 1 M 0 33163786 1 R\n  \
+                   <TRACK\n    PEAKCOL 31210556\n  >\n>\n";
+        let p = project_from_rpp(old).unwrap();
+        assert_eq!(p.tracks[0].color, Some(RED));
+        assert_eq!(p.markers[0].color, Some(MARKER_RED));
+
+        let saved = project_to_rpp(&p);
+        assert!(saved.contains("PEAKCOL 20724956"), "{saved}");
+        assert!(saved.contains("MARKER 1 1 M 0 17435386 1 R"), "{saved}");
+        let again = project_from_rpp(&saved).unwrap();
+        assert_eq!((again.tracks[0].color, again.markers[0].color), (Some(RED), Some(MARKER_RED)));
+
+        // Format 1 (no `/format-` in the header), and a region.
+        let first = "<REAPER_PROJECT 0.1 \"scythe-0.1.0\" 0\n  MARKER 2 2 R 1 33163786 1 R\n  MARKER 2 3 \"\" 1\n>\n";
+        let p = project_from_rpp(first).unwrap();
+        assert_eq!((p.markers[0].region_end, p.markers[0].color), (Some(3.0), Some(MARKER_RED)));
+        assert!(project_to_rpp(&p).contains("MARKER 2 2 R 1 17435386 1 R"));
+    }
+
+    /// The order letter is written where a line held one or nothing; anything else there stays.
+    #[test]
+    fn a_marker_keeps_what_its_line_holds_where_the_letter_would_go() {
+        let text = "<REAPER_PROJECT 0.1 \"7.73\" 0\n  MARKER 1 1 M 0 33163786 0 X\n>\n";
+        let saved = project_to_rpp(&project_from_rpp(text).unwrap());
+        assert!(saved.contains("MARKER 1 1 M 0 "), "{saved}");
+        let line = saved.lines().find(|l| l.trim_start().starts_with("MARKER")).unwrap();
+        assert!(line.trim_end().ends_with(" 0 X"), "{line}");
+    }
+
+    #[test]
+    fn colours_survive_a_round_trip() {
+        for (version, tag) in [("7.73/linux-x86_64", "B"), ("7.85/win64", "R")] {
+            let text = reaper_colours(version, tag);
+            let saved = project_to_rpp(&project_from_rpp(&text).unwrap());
+            for line in text.lines().filter(|l| l.contains("PEAKCOL") || l.contains("MARKER")) {
+                assert!(saved.contains(line.trim()), "{line} in {saved}");
+            }
+        }
+
+        let mut p = Project::default();
+        let mut track = Track::new("New");
+        track.color = Some(RED);
+        p.tracks.push(track);
+        p.markers.push(Marker {
+            index: 1,
+            position: 1.0,
+            name: "M".into(),
+            color: Some(MARKER_RED),
+            region_end: None,
+            render_matrix: Vec::new(),
+            lines: LineMemo::new(),
+        });
+        let saved = project_to_rpp(&p);
+        assert!(saved.contains("PEAKCOL 20724956"), "{saved}");
+        let (value, tag) = if cfg!(windows) { (17435386, "R") } else { (33163786, "B") };
+        assert!(saved.contains(&format!("MARKER 1 1 M 0 {value} 1 {tag}")), "{saved}");
+        let back = project_from_rpp(&saved).unwrap();
+        assert_eq!((back.tracks[0].color, back.markers[0].color), (Some(RED), Some(MARKER_RED)));
     }
 }
 

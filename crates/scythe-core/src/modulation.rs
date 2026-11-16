@@ -164,8 +164,9 @@ fn bezier(x: f64, cx: f64, cy: f64) -> f64 {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LinkSource {
     /// A parameter of an effect in the same chain: `fx` as REAPER stores it (`2` or `2:1`,
-    /// the second number relative to the linking effect) and the parameter index.
-    Fx { fx: String, param: i64 },
+    /// the second number relative to the linking effect), the parameter index and, for a CLAP
+    /// or VST3 plugin, the parameter's id (REAPER writes `3:7`).
+    Fx { fx: String, param: i64, id: Option<String> },
     /// A MIDI message on the effect's input (`MIDIPLINK bus channel status data1`); channel 0
     /// is any.
     Midi { bus: i32, channel: i32, status: i32, data1: i32 },
@@ -285,7 +286,7 @@ impl ParamModulation {
                     link = Some((
                         f(1, 1.0),
                         t.get(2).cloned().unwrap_or_else(|| "-1".into()),
-                        f(3, -1.0) as i64,
+                        t.get(3).cloned().unwrap_or_else(|| "-1".into()),
                         f(4, 0.0),
                         t.get(5).cloned().unwrap_or_default(),
                     ))
@@ -297,7 +298,11 @@ impl ParamModulation {
         if let Some((scale, fx, param, offset, tail)) = link {
             let source = match (fx.as_str(), midi) {
                 ("-100", Some((bus, channel, status, data1))) => LinkSource::Midi { bus, channel, status, data1 },
-                _ => LinkSource::Fx { fx, param },
+                _ => {
+                    let (index, id) = param.split_once(':').map_or((param.as_str(), None), |(i, id)| (i, Some(id)));
+                    let index = index.parse::<f64>().map_or(-1, |v| v as i64);
+                    LinkSource::Fx { fx, param: index, id: id.map(str::to_owned) }
+                }
             };
             m.link = Some(ParamLink { scale, offset, source, tail });
             m.link_active = true;
@@ -321,6 +326,31 @@ impl ParamModulation {
         c.line(["LFOWT".into(), n(self.lfo.strength), self.lfo.direction.to_string()]);
         c.line(["AUDIOCTL".into(), u8::from(self.acs.active).to_string()]);
         c.line(["AUDIOCTLWT".into(), n(self.acs.strength), self.acs.direction.to_string()]);
+        if let (Some(link), true) = (&self.link, self.link_active) {
+            let (fx, param) = match &link.source {
+                LinkSource::Fx { fx, param, id } => {
+                    (fx.clone(), id.as_ref().map_or_else(|| param.to_string(), |id| format!("{param}:{id}")))
+                }
+                LinkSource::Midi { .. } => ("-100".into(), "-1".into()),
+            };
+            c.children.push(Node::Line(format!(
+                "PLINK {} {} {} {} {}",
+                n(link.scale),
+                fx,
+                param,
+                n(link.offset),
+                quote_always(&link.tail)
+            )));
+            if let LinkSource::Midi { bus, channel, status, data1 } = link.source {
+                c.line([
+                    "MIDIPLINK".into(),
+                    bus.to_string(),
+                    channel.to_string(),
+                    status.to_string(),
+                    data1.to_string(),
+                ]);
+            }
+        }
         if self.lfo.active {
             let l = &self.lfo;
             c.line(["LFOSHAPE".into(), l.shape.to_string()]);
@@ -341,29 +371,6 @@ impl ParamModulation {
             c.line(["DBHI".into(), n(a.db_high)]);
             c.line(["X2".into(), n(a.x2)]);
             c.line(["Y2".into(), n(a.y2)]);
-        }
-        if let (Some(link), true) = (&self.link, self.link_active) {
-            let (fx, param) = match &link.source {
-                LinkSource::Fx { fx, param } => (fx.clone(), *param),
-                LinkSource::Midi { .. } => ("-100".into(), -1),
-            };
-            c.children.push(Node::Line(format!(
-                "PLINK {} {} {} {} {}",
-                n(link.scale),
-                fx,
-                param,
-                n(link.offset),
-                quote_always(&link.tail)
-            )));
-            if let LinkSource::Midi { bus, channel, status, data1 } = link.source {
-                c.line([
-                    "MIDIPLINK".into(),
-                    bus.to_string(),
-                    channel.to_string(),
-                    status.to_string(),
-                    data1.to_string(),
-                ]);
-            }
         }
         c.children.extend(self.extra.iter().cloned());
         c
@@ -635,7 +642,7 @@ mod tests {
     use super::*;
     use crate::rpp::{parse, write};
 
-    const CHAIN: &str = "<FXCHAIN\nBYPASS 0 0 0\n<JS scythe/dcparam \"\"\n0.5 0 0 - - -\n>\nFLOATPOS 0 0 0 0\nFXID {X}\n<PROGRAMENV 0 0 \"Value / Param DC\"\nPARAMBASE 0.25\nLFO 1\nLFOWT 0.4 -1\nAUDIOCTL 1\nAUDIOCTLWT 0.3 0\nLFOSHAPE 2\nLFOSYNC 1 0 1\nLFOSPEED 0.437225 0.3\nCHAN 2\nSTEREO 1\nRMS 10 1000\nDBLO -60\nDBHI -6\nX2 0.2\nY2 0.8\nPLINK 0.5 1:1 2 0.1 \"\"\n>\n<PROGRAMENV 2:_Freq 1 \"Third / Param DC\"\nPARAMBASE 50\nLFO 0\nLFOWT 1 1\nAUDIOCTL 0\nAUDIOCTLWT 1 1\nPLINK 1 -100 -1 0 \"\"\nMIDIPLINK 0 2 176 11\n>\nPARMLEARN 0 133040 3 \nLFOLEARN 1 1968 8 \nPARMLEARN 2 0 0 /foo/bar\nWAK 0 0\n>\n";
+    const CHAIN: &str = "<FXCHAIN\nBYPASS 0 0 0\n<JS scythe/dcparam \"\"\n0.5 0 0 - - -\n>\nFLOATPOS 0 0 0 0\nFXID {X}\n<PROGRAMENV 0 0 \"Value / Param DC\"\nPARAMBASE 0.25\nLFO 1\nLFOWT 0.4 -1\nAUDIOCTL 1\nAUDIOCTLWT 0.3 0\nPLINK 0.5 1:1 2 0.1 \"\"\nLFOSHAPE 2\nLFOSYNC 1 0 1\nLFOSPEED 0.437225 0.3\nCHAN 2\nSTEREO 1\nRMS 10 1000\nDBLO -60\nDBHI -6\nX2 0.2\nY2 0.8\n>\n<PROGRAMENV 2:_Freq 1 \"Third / Param DC\"\nPARAMBASE 50\nLFO 0\nLFOWT 1 1\nAUDIOCTL 0\nAUDIOCTLWT 1 1\nPLINK 1 -100 -1 0 \"\"\nMIDIPLINK 0 2 176 11\n>\nPARMLEARN 0 133040 3 \nLFOLEARN 1 1968 8 \nPARMLEARN 2 0 0 /foo/bar\nWAK 0 0\n>\n";
 
     fn slot() -> FxSlot {
         let chunk = parse(CHAIN).unwrap();
@@ -653,7 +660,7 @@ mod tests {
         assert_eq!((m.acs.channel, m.acs.stereo, m.acs.attack_ms, m.acs.release_ms), (2, true, 10.0, 1000.0));
         assert_eq!((m.acs.db_low, m.acs.db_high, m.acs.x2, m.acs.y2), (-60.0, -6.0, 0.2, 0.8));
         let link = m.link.as_ref().unwrap();
-        assert_eq!(link.source, LinkSource::Fx { fx: "1:1".into(), param: 2 });
+        assert_eq!(link.source, LinkSource::Fx { fx: "1:1".into(), param: 2, id: None });
         assert_eq!(link.source_fx(0), Some(1));
         let m = &mods[1];
         assert_eq!((m.param.as_str(), m.disabled, m.base), ("2:_Freq", true, 50.0));
@@ -670,6 +677,55 @@ mod tests {
         for l in learns(&s) {
             set_learn(&mut s, &l);
         }
+        let rebuilt = Chunk { header: original.header.clone(), children: s.raw };
+        assert_eq!(write(&rebuilt), write(&original));
+    }
+
+    /// As REAPER 7.73 wrote them for ScyEQ-Pro's "Band 2 Gain" (index 18, parameter id 23) and
+    /// "Band 2 Frequency" (17, id 22), set through `TrackFX_SetNamedConfigParm`: the same for
+    /// the CLAP and the VST3 (its plugin state left out here).
+    #[test]
+    fn reads_and_writes_modulation_and_learn_as_reaper_writes_them_for_clap_and_vst3() {
+        let tail = "FLOATPOS 0 0 0 0\nFXID {X}\n<PROGRAMENV 18:23 0 \"Band 2 Gain / ScyEQ-Pro\"\nPARAMBASE 0.25\nLFO 1\nLFOWT 0.5 1\nAUDIOCTL 1\nAUDIOCTLWT 0.4 1\nPLINK 1 -100 -1 0 \"\"\nMIDIPLINK 0 1 176 11\nLFOSHAPE 1\nLFOSYNC 0 0 0\nLFOSPEED 0.249634 0\nCHAN -1\nSTEREO 0\nRMS 200 300\nDBLO -24\nDBHI 0\nX2 0.5\nY2 0.5\n>\n<PROGRAMENV 19:24 0 \"Band 2 Q / ScyEQ-Pro\"\nPARAMBASE 0.025\nLFO 1\nLFOWT 1 1\nAUDIOCTL 0\nAUDIOCTLWT 1 1\nPLINK 0.5 0:-1 3:3 0.1 \"\"\nLFOSHAPE 0\nLFOSYNC 0 0 0\nLFOSPEED 0.124573 0\n>\nPARMLEARN 17:22 1968 2 \nWAK 0 0\n>\n";
+        for plugin in [
+            "<CLAP \"CLAP: ScyEQ-Pro (Scythe)\" scythe.eq \"\"\nCFG 4 0 0 \"\"\n<IN_PINS\n>\n<STATE\n>\n>\n",
+            "<VST \"VST3: ScyEQ-Pro (Scythe)\" ScyEQ-Pro.vst3 0 \"\" 558650356{536379746865536379455150726F3031} \"\"\nAAAAAAAA\n>\n",
+        ] {
+            let text = format!("<FXCHAIN\nBYPASS 0 0 0\n{plugin}{tail}");
+            let original = parse(&text).unwrap();
+            let mut s = FxSlot { name: "x".into(), enabled: true, raw: original.children.clone() };
+            let m = modulation(&s, 18).expect("the gain's modulation");
+            assert_eq!((m.param.as_str(), m.base, m.disabled), ("18:23", 0.25, false));
+            assert_eq!((m.lfo.active, m.lfo.strength, m.lfo.shape, m.lfo.speed), (true, 0.5, 1, 0.249634));
+            assert_eq!((m.acs.active, m.acs.strength, m.acs.attack_ms, m.acs.release_ms), (true, 0.4, 200.0, 300.0));
+            let link = m.link.as_ref().expect("a MIDI link");
+            assert_eq!(link.source, LinkSource::Midi { bus: 0, channel: 1, status: 176, data1: 11 });
+            let q = modulation(&s, 19).expect("the Q's modulation");
+            let link = q.link.as_ref().expect("a link from the effect before");
+            assert_eq!(link.source, LinkSource::Fx { fx: "0:-1".into(), param: 3, id: Some("3".into()) });
+            assert_eq!((link.scale, link.offset, link.source_fx(1)), (0.5, 0.1, Some(0)));
+            let l = learn(&s, 17).expect("the frequency's learn");
+            assert_eq!(l.param, "17:22");
+            assert_eq!((l.status(), l.data1(), l.mode(), l.flags), (0xb0, 7, LearnMode::Absolute, LEARN_SOFT_TAKEOVER));
+            set_modulation(&mut s, &q);
+            set_modulation(&mut s, &m);
+            set_learn(&mut s, &l);
+            let rebuilt = Chunk { header: original.header.clone(), children: s.raw };
+            assert_eq!(write(&rebuilt), write(&original));
+        }
+    }
+
+    /// A linked parameter named by index and something other than a number (a JSFX slider's
+    /// name, say) is written back as read.
+    #[test]
+    fn a_link_keeps_its_source_parameter_as_written() {
+        let text = "<FXCHAIN\n<PROGRAMENV 0 0 \"Value / Param DC\"\nPARAMBASE 0.25\nLFO 0\nLFOWT 1 1\nAUDIOCTL 0\nAUDIOCTLWT 1 1\nPLINK 1 0:-1 3:_Freq 0 \"\"\n>\n>\n";
+        let original = parse(text).unwrap();
+        let mut s = FxSlot { name: "x".into(), enabled: true, raw: original.children.clone() };
+        let m = modulation(&s, 0).unwrap();
+        let link = m.link.as_ref().unwrap();
+        assert!(matches!(&link.source, LinkSource::Fx { param: 3, .. }), "{link:?}");
+        set_modulation(&mut s, &m);
         let rebuilt = Chunk { header: original.header.clone(), children: s.raw };
         assert_eq!(write(&rebuilt), write(&original));
     }

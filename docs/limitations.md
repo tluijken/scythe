@@ -211,10 +211,13 @@ measured.
   not run, and markers just before a loop end are never skipped. The on/off option is not saved
   (SWS keeps `MarkerActionsEnabled` in reaper.ini).
 - Count-in and pre-roll were measured against REAPER 7.73 on a JACK dummy device
-  (`scripts/reaper-count-in.sh`, see [verification](verification.md)) at 120 bpm in 4/4 with a
-  count-in of one measure only: other tempos, time signatures, tempo changes and count-in
-  lengths follow the same model unmeasured. REAPER pads the count-in and a recording's pre-roll
-  at their start to whole device blocks; Scythe pads by the block size the device was opened
+  (`scripts/reaper-count-in.sh`, see [verification](verification.md)) at 70, 120 and 180 bpm, in
+  4/4, 3/4 and 6/8, with counts-in of one and two measures, with a tempo or time signature
+  change before the start or inside a pre-roll, at 48 kHz with blocks of 1024 frames (the
+  120 bpm 4/4 cases also at 128) and at 44.1 kHz with blocks of 256. Not measured: count-ins
+  of part of a measure, gradual tempo ramps, other time signatures (5/4, 7/8 and the like) and
+  other rates and block sizes; they follow the same model. REAPER pads the count-in and a
+  recording's pre-roll at their start to whole device blocks; Scythe pads by the block size the device was opened
   with, or else the last one it delivered, which can differ from REAPER's on a device whose
   blocks vary in size. REAPER's "Record audio during pre-roll" is not there: a pre-roll's audio
   and MIDI are left out of the take (MIDI only roughly when a repeat range overlaps the

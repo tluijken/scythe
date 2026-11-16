@@ -113,9 +113,7 @@ impl ScyEqShared {
         let text = match (*self.pick_notice.lock().unwrap_or_else(|e| e.into_inner()))? {
             PickNotice::Refused => "The file dialog cannot open: the plugin could not stay loaded for it.",
             PickNotice::AlreadyOpen => "A file dialog is already open; it may be behind the host's window.",
-            PickNotice::NoDialog => {
-                "No file dialog can open: install a desktop file chooser portal (xdg-desktop-portal) or zenity."
-            }
+            PickNotice::NoDialog => scythe_chooser::NO_DIALOG,
         };
         Some(text.to_string())
     }

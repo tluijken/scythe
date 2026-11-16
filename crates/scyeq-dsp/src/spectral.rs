@@ -62,9 +62,13 @@ pub struct Spectral {
 }
 
 impl Spectral {
+    /// The latency of a stage at `fs`: its frame length.
+    pub fn latency_at(fs: f64) -> usize {
+        ((2048.0 * fs / 48000.0).round().max(256.0) as usize).next_power_of_two()
+    }
+
     pub fn new(fs: f64, bands: usize) -> Self {
-        let n = (2048.0 * fs / 48000.0).round().max(256.0) as usize;
-        let n = n.next_power_of_two();
+        let n = Self::latency_at(fs);
         let hop = n / 4;
         let mut planner = RealFftPlanner::<f32>::new();
         let bins = n / 2 + 1;

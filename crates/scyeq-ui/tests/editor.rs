@@ -230,3 +230,60 @@ fn the_compare_choice_shows_a_source_colour() {
     assert!(h.query_by_label("Compare Bass").is_some());
     assert!(drew_dot(&h, green), "on the choice");
 }
+
+/// From the plugin's smallest window up, every control below the graph lies inside the window
+/// at its full width and none overlaps another, with as many shown as there can be: a band with
+/// dynamics selected, linear phase and a compare source.
+#[test]
+fn the_controls_below_the_graph_fit_from_the_minimum_size_up() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, by};
+    for size in [vec2(760.0, 440.0), vec2(860.0, 500.0), vec2(960.0, 560.0), vec2(1100.0, 640.0)] {
+        let mut fake = Fake {
+            sources: vec![CompareSource { id: Id::unique("bass"), label: "Bass".into(), color: None }],
+            ..Fake::new()
+        };
+        fake.eq.set(p::GLOBAL + p::global::PHASE, 2.0);
+        fake.eq.set(p::band_param(0, band::DYNAMIC), 1.0);
+        let mut h = Harness::builder()
+            .with_size(size)
+            .with_step_dt(1.0 / 30.0)
+            .with_context_setup(scyeq_ui::theme::install)
+            .build_ui_state(
+                |ui, (host, state): &mut State| scyeq_ui::show(ui, host, state),
+                (fake, EditorState::default()),
+            );
+        h.step();
+        let at = h.get_by_label("Band 1").rect().center();
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        button(&mut h, at, true);
+        button(&mut h, at, false);
+        h.run_steps(2);
+        h.get_by_label("Compare None").click();
+        h.run_steps(2);
+        h.get_by_label("Bass").click();
+        h.run_steps(3);
+
+        let window = egui::Rect::from_min_size(Pos2::ZERO, size);
+        let graph = h.get_by_label("ScyEQ-Pro graph").rect();
+        assert!(graph.height() >= 120.0, "the graph keeps room at {size:?}: {graph:?}");
+        let mut controls = Vec::new();
+        for role in [Role::ComboBox, Role::CheckBox, Role::SpinButton] {
+            for node in h.query_all(by().role(role)) {
+                controls.push((node.accesskit_node().label().unwrap_or_default(), node.rect()));
+            }
+        }
+        let labels: Vec<&str> = controls.iter().map(|(l, _)| l.as_str()).collect();
+        for wanted in ["Remove", "Listen", "Out", "Width", "Collisions", "Match", "Instances"] {
+            assert!(labels.iter().any(|l| l.starts_with(wanted)), "{wanted} at {size:?}: {labels:?}");
+        }
+        for (i, (label, r)) in controls.iter().enumerate() {
+            assert!(window.contains_rect(*r) && r.width() >= 40.0, "{label} at {size:?}: {r:?}");
+            assert!(r.top() >= graph.bottom(), "{label} over the graph at {size:?}");
+            for (other, o) in &controls[i + 1..] {
+                assert!(!r.intersects(*o) || r.intersect(*o).area() <= 0.0, "{label} and {other} at {size:?}");
+            }
+        }
+    }
+}

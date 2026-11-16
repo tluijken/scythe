@@ -549,8 +549,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   is MIDI plays its instrument live while armed with monitoring on, and records an in-project
   MIDI item; recording around a loop layers the passes into one take, as REAPER's MIDI
   overdub. The input is one device or all of them (and one channel or all), numbered as REAPER
-  numbers them: devices keep their number in `reaper-midihw-linux.ini` beside the preferences
-  while unplugged, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
+  numbers them: devices keep their number while unplugged in `reaper-midihw.ini` (Windows) or
+  `reaper-midihw-linux.ini` beside the preferences, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
   virtual keyboard as 30, ports from 30 up two higher), so a project listens only to its
   keyboard or pad. A track can also send its MIDI (items, monitored input and what it receives,
   after its effects, optionally forced to one channel) to a hardware output (Sends tab), timed
@@ -1278,7 +1278,14 @@ audio devices the device window lists, as `id ; name`, and exit; with `--all` ev
 audio systems know), `--null-audio` (open no audio device and play on a
 silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
 made), `--view=START-END`
-(open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).
+(open zoomed to a range in seconds), `--render=out.wav` (render the project without a window),
+`--version` and `--help` (print, and exit; `scythe-server` and `scythe-mcp` take them too).
+On Windows the release `scythe-app.exe` is a GUI program: it prints to the terminal it was
+started from, but an interactive cmd or PowerShell prompt does not wait for it. For `--render`,
+`--render-project`, `--render-queue` and `--list-devices`, a `.cmd` script waits and sees the exit
+code in `%ERRORLEVEL%`; at a prompt use `start /wait "" scythe-app …` (cmd) or
+`Start-Process -Wait -NoNewWindow -PassThru` (PowerShell, `.ExitCode`). `scythe-server
+--list-devices` is a console program.
 A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
 `scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
 Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 2, so a debug

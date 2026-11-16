@@ -203,6 +203,10 @@ impl Effect for ScytheEq {
         ScytheEq::reset(self);
     }
 
+    fn release(&mut self) {
+        self.release_retired();
+    }
+
     fn latency(&mut self) -> usize {
         ScytheEq::latency(self)
     }
@@ -264,6 +268,10 @@ impl Effect for Vst3Eq {
 
     fn reset(&mut self) {
         Effect::reset(&mut self.0);
+    }
+
+    fn release(&mut self) {
+        self.0.release_retired();
     }
 
     fn latency(&mut self) -> usize {

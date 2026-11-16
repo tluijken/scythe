@@ -368,17 +368,17 @@ fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(
             unreachable!("written without a command-line audio encoder")
         }
         Encoding::Mp3 { kbps } => {
-            let mut c = std::process::Command::new("lame");
+            let mut c = crate::process::command("lame");
             c.args(["--quiet", "--cbr", "-b", &kbps.to_string()]).arg(wav).arg(out);
             c
         }
         Encoding::Flac { level, .. } => {
-            let mut c = std::process::Command::new("flac");
+            let mut c = crate::process::command("flac");
             c.args(["--silent", "--force", &format!("-{}", level.min(8)), "-o"]).arg(out).arg(wav);
             c
         }
         Encoding::Vorbis { vbr, quality, kbps } => {
-            let mut c = std::process::Command::new("oggenc");
+            let mut c = crate::process::command("oggenc");
             c.arg("--quiet");
             if vbr {
                 c.args(["-q", &format!("{:.1}", quality * 10.0)]);
@@ -392,13 +392,13 @@ fn encode(encoding: Encoding, channels: u16, wav: &Path, out: &Path) -> Result<(
             // REAPER's bitrate is per channel.
             let total = kbps * channels.max(1) as f32;
             let mode = ["--vbr", "--cvbr", "--hard-cbr"][mode.min(2) as usize];
-            let mut c = std::process::Command::new("opusenc");
+            let mut c = crate::process::command("opusenc");
             c.args(["--quiet", mode, "--bitrate", &format!("{total}"), "--comp", &complexity.to_string()]);
             c.arg(wav).arg(out);
             c
         }
         Encoding::WavPack { mode, .. } => {
-            let mut c = std::process::Command::new("wavpack");
+            let mut c = crate::process::command("wavpack");
             c.args(["-q", "-y"]);
             match mode {
                 1 | 2 => {

@@ -1223,17 +1223,9 @@ fn fx_params(
         );
         return 26.0;
     };
-    let params = inst
-        .with(|e| {
-            e.params()
-                .into_iter()
-                .map(|p| {
-                    let v = e.param(p.id);
-                    (p, v)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let params = inst.with(|e| e.params()).unwrap_or_default();
+    let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+    let params: Vec<_> = params.into_iter().zip(inst.param_values(&ids)).collect();
     if params.is_empty() {
         painter.text(
             pos2(inner.left() + indent - 4.0, y + 10.0),

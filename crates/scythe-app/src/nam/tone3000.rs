@@ -952,7 +952,7 @@ impl Client {
 /// Opens `url` in the user's browser.
 pub fn open_browser(url: &str) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    std::process::Command::new(opener)
+    scythe_engine::process::command(opener)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

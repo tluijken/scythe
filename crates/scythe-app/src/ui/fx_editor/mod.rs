@@ -254,6 +254,8 @@ pub struct FxEditor {
     band: usize,
     /// ScyEQ-Pro's own view state.
     pub(crate) eq: Option<Box<scyeq_ui::EditorState>>,
+    /// EQ Match asked for a file and no file dialog could open.
+    pub(crate) no_dialog: bool,
 }
 
 impl std::fmt::Debug for FxEditor {
@@ -298,6 +300,7 @@ impl FxEditor {
             dragging: None,
             band: 0,
             eq: None,
+            no_dialog: false,
         }
     }
 
@@ -478,12 +481,10 @@ fn owner_name(app: &ScytheApp, owner: &FxOwner, nested: bool) -> String {
 }
 
 fn read_params(inst: &FxInstance) -> (Vec<ParamInfo>, HashMap<u32, (f64, String)>) {
-    inst.with(|e| {
-        let params = e.params();
-        let values = params.iter().filter_map(|p| Some((p.id, e.param(p.id)?))).collect();
-        (params, values)
-    })
-    .unwrap_or_default()
+    let params = inst.with(|e| e.params()).unwrap_or_default();
+    let ids: Vec<u32> = params.iter().map(|p| p.id).collect();
+    let values = ids.iter().zip(inst.param_values(&ids)).filter_map(|(&id, v)| Some((id, v?))).collect();
+    (params, values)
 }
 
 pub fn show(app: &mut ScytheApp, ui: &mut Ui) {

@@ -4,7 +4,6 @@
 //! cargo run -p scythe-engine --example builtin_ref -- <work dir> <reaper> <impulse response>
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use scythe_core::rpp::{Node, project_from_rpp, project_to_rpp};
 use scythe_core::{Item, Project, Take, TimeRange, Track};
@@ -76,7 +75,7 @@ fn main() {
     std::fs::write(&rpp, &text).unwrap();
     let _ = std::fs::remove_file(&out);
     let cfgfile = dir.join("reaper-cfg").join("reaper.ini");
-    let _ = Command::new(&reaper)
+    let _ = scythe_engine::process::command(&reaper)
         .args(["-cfgfile", &cfgfile.display().to_string(), "-nosplash", "-renderproject"])
         .arg(&rpp)
         .status();

@@ -27,8 +27,12 @@ fn stdio_against_a_running_scythe() {
         let gone = Remote::new("http://127.0.0.1:1", None).command(json!({"cmd": "track.list"}));
         assert!(gone.unwrap_err().message.starts_with("cannot reach Scythe"));
 
+        let private = std::env::temp_dir().join(format!("scythe-mcp-remote-{}", std::process::id()));
         let mut child = Command::new(env!("CARGO_BIN_EXE_scythe-mcp"))
             .args(["--url", &url, "--token", TOKEN])
+            .env("XDG_CONFIG_HOME", private.join("config"))
+            .env("XDG_CACHE_HOME", private.join("cache"))
+            .env("XDG_DATA_HOME", private.join("data"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

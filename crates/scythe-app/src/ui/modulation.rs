@@ -8,7 +8,7 @@ use scythe_core::modulation::{
     self as m, LEARN_FOCUSED_FX, LEARN_LFO_RETRIGGER, LEARN_SELECTED_TRACK, LEARN_SOFT_TAKEOVER, LEARN_VISIBLE_FX,
     LFO_SHAPES, LearnMode, LinkSource, ParamLearn, ParamLink, ParamModulation,
 };
-use scythe_session::api::modulation::param_state;
+use scythe_session::api::modulation::{name_link_param, param_spec, param_state};
 use scythe_session::api::{Target, modulation::is_js};
 use scythe_session::learn::{Heard, Trigger};
 
@@ -49,9 +49,13 @@ fn edit_modulation(app: &mut ScytheApp, w: &ModWindow, f: impl FnOnce(&mut Param
         let shown = scythe_engine::stock::shown_name(&slot.name);
         let fx_name = shown.split_once(": ").map_or(&*shown, |(_, n)| n);
         let fx_name = fx_name.rsplit_once(" (").map_or(fx_name, |(n, _)| n);
-        ParamModulation::new(w.param.to_string(), format!("{name} / {fx_name}"), value)
+        let spec = param_spec(&app.session, Target::Track(w.track), w.fx, &slot, w.param);
+        ParamModulation::new(spec, format!("{name} / {fx_name}"), value)
     });
     f(&mut md);
+    if let Some(link) = md.link.as_mut() {
+        name_link_param(&app.session, Target::Track(w.track), w.fx, link);
+    }
     let key = format!("mod-{}-{}-{}", w.track.0, w.fx, w.param);
     let (track, fx) = (w.track, w.fx);
     app.edit_merging("Parameter modulation", &key, |p| {
@@ -266,7 +270,7 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
         md.link_active = active;
         if active && md.link.is_none() {
             let source = if w.fx > 0 {
-                LinkSource::Fx { fx: ParamLink::fx_token(w.fx - 1, w.fx), param: 0 }
+                LinkSource::Fx { fx: ParamLink::fx_token(w.fx - 1, w.fx), param: 0, id: None }
             } else {
                 LinkSource::Midi { bus: 0, channel: 0, status: 0xb0, data1: 1 }
             };
@@ -293,17 +297,18 @@ fn link(app: &ScytheApp, ui: &mut Ui, w: &ModWindow, md: &mut ParamModulation) {
             }
             for (i, name) in chain.iter().enumerate().filter(|(i, _)| *i != w.fx) {
                 if ui.selectable_label(l.source_fx(w.fx) == Some(i), format!("{}: {name}", i + 1)).clicked() {
-                    l.source = LinkSource::Fx { fx: ParamLink::fx_token(i, w.fx), param: 0 };
+                    l.source = LinkSource::Fx { fx: ParamLink::fx_token(i, w.fx), param: 0, id: None };
                 }
             }
         });
         ui.end_row();
         match &mut l.source {
-            LinkSource::Fx { param, .. } => {
+            LinkSource::Fx { param, id, .. } => {
                 ui.label("Parameter");
                 let mut p = (*param).max(0) as usize;
                 if ui.add(egui::DragValue::new(&mut p).range(0..=1023).prefix("#")).changed() {
                     *param = p as i64;
+                    *id = None;
                 }
                 ui.end_row();
             }
@@ -500,4 +505,48 @@ pub fn shortcuts(app: &mut ScytheApp, ui: &mut Ui, draft: &mut ShortcutDraft) {
 
 fn action_names(session: &scythe_session::Session) -> Vec<(String, String)> {
     scythe_session::actions::list(session).into_iter().map(|a| (a.command, a.name)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn clap_test_gain() -> Option<Vec<scythe_engine::clap_host::ClapDescriptor>> {
+        let target = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let path = ["debug", "release"]
+            .iter()
+            .map(|p| {
+                let (pre, suf) = (std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+                target.join(p).join(format!("{pre}clap_test_gain{suf}"))
+            })
+            .find(|p| p.exists())?;
+        Some(scythe_engine::clap_host::ClapLibrary::load(&path).ok()?.descriptors())
+    }
+
+    /// As the control API and REAPER 7.73 name them: `<index>:<id>` for a CLAP parameter.
+    #[test]
+    fn a_link_made_here_names_its_clap_parameters_by_index_and_id() {
+        let Some(descs) = clap_test_gain() else {
+            eprintln!("clap-test-gain not built; skipping");
+            return;
+        };
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
+        let catalog = scythe_engine::plugin_scan::Catalog::fixed();
+        catalog.set_clap(descs);
+        app.session.engine.set_plugin_catalog(catalog);
+        let mut run = |cmd: serde_json::Value| scythe_session::api::execute_json(&mut app.session, cmd).unwrap();
+        let t = run(json!({"cmd": "track.add", "name": "Gtr"}))["id"].as_u64().unwrap();
+        run(json!({"cmd": "fx.add", "track": t, "plugin": "builtin:scythe-eq"}));
+        run(json!({"cmd": "fx.add", "track": t, "plugin": "clap:org.scythe.test-gain"}));
+        let w = ModWindow::new(app.project.tracks[0].id, 1, 1);
+        edit_modulation(&mut app, &w, |md| {
+            let source = LinkSource::Fx { fx: ParamLink::fx_token(0, 1), param: 2, id: None };
+            md.link = Some(ParamLink { scale: 0.5, offset: 0.0, source, tail: String::new() });
+            md.link_active = true;
+        });
+        let text = scythe_core::rpp::project_to_rpp(&app.project);
+        assert!(text.contains("<PROGRAMENV 1:9 "), "{text}");
+        assert!(text.contains("PLINK 0.5 0:-1 2:2 0 \"\""), "{text}");
+    }
 }

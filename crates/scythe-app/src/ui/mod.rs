@@ -554,6 +554,9 @@ fn script_console(app: &mut ScytheApp, ui: &mut Ui) {
 }
 
 fn toast(app: &mut ScytheApp, ui: &mut Ui, screen: Rect) {
+    if crate::file_dialog::missed() {
+        app.notify(scythe_chooser::NO_DIALOG);
+    }
     let Some(msg) = app.toast().map(str::to_owned) else { return };
     let w = widgets::text_width(ui, &msg, theme::regular(13.0)) + 32.0;
     let r = Rect::from_center_size(
@@ -653,5 +656,26 @@ fn metronome_menu(app: &mut ScytheApp, ui: &mut Ui) {
         let value = chosen.map_or(-1, encode);
         app.change_preferences(|p| p.metronome_default_output = value);
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::file_dialog::{Ask, Fake, fake};
+
+    #[test]
+    fn a_file_dialog_that_cannot_open_is_told() {
+        let mut app = ScytheApp::with_devices(egui::Context::default(), &Default::default(), true);
+        fake(Some(Fake::NoDialog));
+        assert_eq!(rfd::FileDialog::new().ask_file(), None);
+        fake(None);
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let screen = ui.max_rect();
+            toast(&mut app, ui, screen);
+        });
+        out.textures_delta.clear();
+        assert_eq!(app.toast(), Some(scythe_chooser::NO_DIALOG));
     }
 }

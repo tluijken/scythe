@@ -17,7 +17,9 @@ const RATE: u32 = 48_000;
 
 fn session() -> Session {
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
-    Session::new(Engine::start_offline(pool, RATE))
+    let mut s = Session::new(Engine::start_offline(pool, RATE));
+    s.analysis_cache = std::env::temp_dir().join(format!("scythe-agents-analysis-{}", std::process::id()));
+    s
 }
 
 fn ok(session: &mut Session, command: Value) -> Value {
@@ -230,7 +232,7 @@ fn matching_a_mix_to_a_reference_converges() {
     let cached = ok(&mut s, json!({"cmd": "analysis.file", "path": noise}));
     let cached = result(&mut s, cached);
     assert_eq!(cached["result"], file["result"]);
-    let cache = scythe_session::data_dir().join("analysis-cache");
+    let cache = s.analysis_cache.clone();
     assert!(std::fs::read_dir(&cache).unwrap().count() >= 1);
     let missing = execute_json(
         &mut s,
@@ -238,6 +240,7 @@ fn matching_a_mix_to_a_reference_converges() {
     );
     assert_eq!(missing.unwrap_err().kind, ErrorKind::NotFound);
     std::fs::remove_dir_all(&dir).unwrap();
+    let _ = std::fs::remove_dir_all(&cache);
 }
 
 /// Renders and measurements run at the project's rate (REAPER's 44.1 kHz for a project that

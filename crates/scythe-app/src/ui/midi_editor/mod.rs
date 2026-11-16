@@ -23,6 +23,7 @@ use scythe_core::midi::{MidiSource, ShapeKind, actions};
 pub use inline::{inline_editor, toggle_inline};
 
 use crate::app::ScytheApp;
+use crate::file_dialog::Ask;
 use crate::theme::{self, PANEL, RAISED, RAISED_HI, TEXT, TEXT_DIM};
 use crate::ui::widgets::text_pill;
 
@@ -552,7 +553,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
         wrapping_pill(ui, &mut x, &mut row, 60.0, "Files", false).on_hover_text("Note names and groove templates");
     egui::Popup::menu(&files).show(|ui| {
         if ui.button("Load note names…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Note names", &["txt"]).pick_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Note names", &["txt"]).ask_file()
         {
             match std::fs::read_to_string(&path) {
                 Ok(text) => {
@@ -568,7 +569,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
             }
         }
         if ui.button("Save note names…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Note names", &["txt"]).save_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Note names", &["txt"]).ask_save_file()
             && let Err(e) = std::fs::write(&path, take.names.to_file())
         {
             app.notify(format!("Could not write {}: {e}", path.display()));
@@ -576,7 +577,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
         ui.separator();
         ui.add(egui::Slider::new(&mut state.groove_strength, 0.0..=100.0).text("groove strength %"));
         if ui.button("Apply groove (.rgt)…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Groove", &["rgt"]).pick_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Groove", &["rgt"]).ask_file()
         {
             match std::fs::read_to_string(&path).ok().and_then(|t| Groove::parse(&t)) {
                 Some(g) => {
@@ -587,7 +588,7 @@ fn toolbar(app: &mut ScytheApp, ui: &mut Ui, mut row: Rect, take: &mut Take, sta
             }
         }
         if ui.button("Save notes as groove…").clicked()
-            && let Some(path) = rfd::FileDialog::new().add_filter("Groove", &["rgt"]).save_file()
+            && let Some(path) = rfd::FileDialog::new().add_filter("Groove", &["rgt"]).ask_save_file()
         {
             let hits: Vec<(f64, u8)> =
                 take.notes.iter().map(|n| (take.origin_qn + n.start as f64 / ppq as f64, n.velocity)).collect();

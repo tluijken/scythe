@@ -81,6 +81,9 @@ pub struct Session {
     pub prefs: Preferences,
     /// Where [`Session::change_preferences`] saves them; tests leave it unset.
     prefs_file: Option<PathBuf>,
+    /// Where measurements of files are kept between runs (`analysis.file`); tests point it at a
+    /// folder of their own.
+    pub analysis_cache: PathBuf,
     /// The MIDI devices REAPER-style: stable numbers, names, aliases, which are plugged in.
     pub midi_devices: scythe_engine::midi_io::MidiDevices,
     pub dirty: bool,
@@ -187,6 +190,7 @@ impl Session {
             no_input: false,
             prefs: Preferences::default(),
             prefs_file: None,
+            analysis_cache: data_dir().join("analysis-cache"),
             midi_devices: Default::default(),
             dirty: false,
             saved_at: None,

@@ -621,3 +621,45 @@ fn a_band_toggled_between_blocks_sounds_the_same_set_one_by_one_or_all_at_once()
     }
     assert!(outputs[0] == outputs[1], "the two paths differ");
 }
+
+/// A phase mode, a linear phase resolution or a spectral band switched and switched back
+/// between two blocks: built in, Scythe sets the values one by one, the plugin takes them all
+/// at once each block.
+#[test]
+fn a_structure_switched_back_between_blocks_sounds_the_same_set_one_by_one_or_all_at_once() {
+    let sr = 48000;
+    type Switch = Box<dyn Fn(&mut ScytheEq)>;
+    let phase = |mode: f64| -> Switch { Box::new(move |eq| eq.set(GLOBAL + global::PHASE, mode)) };
+    let switches: [(f64, Switch, Switch); 4] = [
+        (0.0, phase(2.0), phase(0.0)),
+        (2.0, phase(1.0), phase(2.0)),
+        (
+            2.0,
+            Box::new(|eq| eq.set(GLOBAL + global::RESOLUTION, 3.0)),
+            Box::new(|eq| eq.set(GLOBAL + global::RESOLUTION, 1.0)),
+        ),
+        (1.0, Box::new(|eq| eq.set(band::DYNAMIC, 2.0)), Box::new(|eq| eq.set(band::DYNAMIC, 1.0))),
+    ];
+    for (k, (mode, there, back)) in switches.iter().enumerate() {
+        let mut setup = ScytheEq::new(sr);
+        dynamic_band(&mut setup, 0, 1.0, -9.0, -30.0);
+        setup.set(GLOBAL + global::PHASE, *mode);
+        let mut one_by_one = ScytheEq::with_values(setup.values().to_vec(), sr);
+        let mut all_at_once = ScytheEq::with_values(setup.values().to_vec(), sr);
+        let input = sine(1000.0, 0.5, sr as usize, sr as f64);
+        let mut outputs = [Vec::new(), Vec::new()];
+        for (b, block) in input.chunks(256).enumerate() {
+            if b == 100 {
+                there(&mut one_by_one);
+                back(&mut one_by_one);
+                all_at_once.set_all(one_by_one.values());
+            }
+            for (eq, out) in [&mut one_by_one, &mut all_at_once].into_iter().zip(&mut outputs) {
+                let (mut l, mut r) = (block.to_vec(), block.to_vec());
+                eq.process_block(&mut l, &mut r, None, None);
+                out.extend(l);
+            }
+        }
+        assert!(outputs[0] == outputs[1], "switch {k}: the two paths differ");
+    }
+}

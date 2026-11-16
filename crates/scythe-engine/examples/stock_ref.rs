@@ -12,7 +12,6 @@
 use std::f64::consts::PI;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use scythe_core::render_settings::RenderSettings;
 use scythe_engine::MediaPool;
@@ -733,7 +732,7 @@ fn main() {
             }),
         )
         .unwrap();
-        let _ = Command::new(&reaper)
+        let _ = scythe_engine::process::command(&reaper)
             .args(["-cfgfile", &cfg.display().to_string(), "-nosplash", "-new"])
             .arg(dir.join("run.lua"))
             .env("WDIR", &dir)
