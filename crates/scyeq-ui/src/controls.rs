@@ -183,8 +183,9 @@ pub fn value_box<P: Params + ?Sized>(cx: &mut P, ui: &mut Ui, rect: Rect, id: u3
     }
     let value_rect = Rect::from_min_max(pos2(rect.left() + rect.width() * 0.4, rect.top()), rect.max - vec2(6.0, 0.0));
     if !typing_box(cx, ui, value_rect, id) {
-        ui.painter().text(rect.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, text, theme::mono(11.0), TEXT);
+        ui.painter().text(rect.right_center() - vec2(8.0, 0.0), Align2::RIGHT_CENTER, &text, theme::mono(11.0), TEXT);
     }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, format!("{label} {text}").trim()));
     let resp = if label.is_empty() { resp } else { resp.on_hover_text(label) };
     interact(cx, ui, &resp, id, Axis::Horizontal(240.0));
 }

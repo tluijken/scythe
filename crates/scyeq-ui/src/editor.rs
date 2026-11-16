@@ -84,6 +84,9 @@ pub(crate) struct View {
     ui_cost: Duration,
     profile: Option<Instant>,
     pub match_panel: Option<MatchPanel>,
+    /// Lines the band panel and the bottom bar took in the last frame: they wrap in a narrow window.
+    panel_lines: usize,
+    bar_lines: usize,
 }
 
 #[derive(Clone)]
@@ -116,6 +119,8 @@ impl View {
             ui_cost: Duration::ZERO,
             profile: std::env::var_os("SCYTHE_EQ_PROFILE").map(|_| Instant::now()),
             match_panel: None,
+            panel_lines: 2,
+            bar_lines: 2,
         }
     }
 
@@ -296,8 +301,9 @@ pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     view.selected.retain(|b| st.v(p::band_param(*b, band::USED)) >= 0.5);
     cx.controls.sel = view.selected.iter().next().copied();
 
-    let bottom_h = 74.0;
-    let panel_h = 76.0;
+    let extra = |lines: usize| lines.saturating_sub(2) as f32 * LINE_STEP;
+    let bottom_h = 74.0 + extra(view.bar_lines);
+    let panel_h = 76.0 + extra(view.panel_lines);
     let (graph_area, rest) = split_top(rect, rect.height() - bottom_h - panel_h - 16.0, 8.0);
     let (panel, bottom) = split_top(rest, panel_h, 8.0);
     let (graph, piano) = split_top(graph_area, graph_area.height() - PIANO_H, 0.0);
@@ -324,8 +330,11 @@ pub fn show(ui: &mut Ui, host: &mut dyn EqHost, state: &mut EditorState) {
     if let Some(text) = cx.host.notice() {
         readout(ui, graph, graph.right_top() + vec2(-12.0, 34.0), &text);
     }
-    band_panel(cx, ui, panel, view, &st);
-    bottom_bar(cx, ui, bottom, view, &st, &sources);
+    let lines = (band_panel(cx, ui, panel, view, &st).max(2), bottom_bar(cx, ui, bottom, view, &st, &sources).max(2));
+    if lines != (view.panel_lines, view.bar_lines) {
+        (view.panel_lines, view.bar_lines) = lines;
+        ui.ctx().request_discard("ScyEQ-Pro controls wrap");
+    }
     if view.match_panel.is_some() {
         eq_match::window(cx, ui, view, &st.values, &sources);
     }
@@ -1271,19 +1280,45 @@ fn toggle(ui: &mut Ui, rect: Rect, id: Id, label: &str, on: bool, color: Color32
     resp.clicked()
 }
 
-/// Lays out boxes left to right in a row.
+/// From the top of one line of controls to the next.
+const LINE_STEP: f32 = 34.0;
+
+/// Lays out boxes left to right, starting a new line below when one does not fit.
 struct Row {
+    left: f32,
     x: f32,
     top: f32,
     h: f32,
     right: f32,
+    lines: usize,
 }
 
 impl Row {
+    fn new(left: f32, top: f32, h: f32, right: f32) -> Self {
+        Self { left, x: left, top, h, right, lines: 1 }
+    }
+
     fn next(&mut self, w: f32) -> Rect {
+        if self.x > self.left && self.x + w > self.right {
+            self.break_line();
+        }
         let r = Rect::from_min_size(pos2(self.x, self.top), vec2(w.min((self.right - self.x).max(0.0)), self.h));
         self.x += w + 6.0;
         r
+    }
+
+    fn break_line(&mut self) {
+        self.x = self.left;
+        self.top += LINE_STEP;
+        self.lines += 1;
+    }
+
+    /// Starts the next group of controls on a line of its own, unless the controls already wrap:
+    /// then it follows on, so a narrow window keeps room for the graph.
+    fn next_group(&mut self) {
+        if self.lines == 1 {
+            self.break_line();
+        }
     }
 }
 
@@ -1291,13 +1326,14 @@ fn names<T: AsRef<str>>(v: impl IntoIterator<Item = T>) -> Vec<String> {
     v.into_iter().map(|s| s.as_ref().to_owned()).collect()
 }
 
-fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State) {
+/// Draws the selected band's controls; returns the lines they took.
+fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State) -> usize {
     card(ui, rect);
     let Some(b) = view.selected.iter().next().copied() else {
         let hint =
             "Double-click the graph to add a band · drag a spectrum peak to grab it · Alt-click a band to solo it";
         ui.painter().text(rect.center(), Align2::CENTER_CENTER, hint, theme::regular(12.0), TEXT_DIM);
-        return;
+        return 1;
     };
     let s = st.band(b);
     let salt = cx.salt;
@@ -1321,7 +1357,7 @@ fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State)
             TEXT_DIM,
         );
     }
-    let mut row = Row { x: rect.left() + 36.0, top: rect.top() + 8.0, h: 26.0, right: rect.right() - 8.0 };
+    let mut row = Row::new(rect.left() + 36.0, rect.top() + 8.0, 26.0, rect.right() - 8.0);
     let shapes = names(BandShape::ALL.iter().map(|s| s.label()));
     if let Some(i) = choice(ui, row.next(128.0), key("shape"), "", &shapes, s.design.shape.index()) {
         put_once(cx, "Change EQ band shape", p::band_param(b, band::SHAPE), i as f64);
@@ -1350,9 +1386,9 @@ fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State)
     if toggle(ui, row.next(64.0), key("remove"), "Remove", false, ACCENT) {
         remove_bands(cx, &[b]);
         view.selected.remove(&b);
-        return;
+        return row.lines;
     }
-    let mut row = Row { x: rect.left() + 36.0, top: rect.top() + 42.0, h: 26.0, right: rect.right() - 8.0 };
+    row.next_group();
     let gain = s.design.shape.has_gain();
     if !gain && !(s.design.shape.dynamic_in_zero_latency() && st.g(global::PHASE) < 0.5) {
         ui.painter().text(
@@ -1362,14 +1398,14 @@ fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State)
             theme::regular(11.0),
             TEXT_DIM,
         );
-        return;
+        return row.lines;
     }
     let modes = names(p::DYNAMIC_MODES.iter().take(if gain { 3 } else { 2 }).copied());
     if let Some(i) = choice(ui, row.next(116.0), key("dynamic"), "Dyn", &modes, s.dynamic as usize) {
         put_once(cx, "Change EQ band dynamics", p::band_param(b, band::DYNAMIC), i as f64);
     }
     if s.dynamic == 0 {
-        return;
+        return row.lines;
     }
     value_box(cx, ui, row.next(118.0), p::band_param(b, band::RANGE), "Range");
     value_box(cx, ui, row.next(132.0), p::band_param(b, band::THRESHOLD), "Thresh");
@@ -1394,12 +1430,14 @@ fn band_panel(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State)
     let live = st.meters.dynamic(b);
     let r = row.next(70.0);
     ui.painter().text(r.left_center(), Align2::LEFT_CENTER, format!("{live:+.1} dB"), theme::mono(11.0), color);
+    row.lines
 }
 
-fn bottom_bar(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State, others: &[CompareSource]) {
+/// Draws the global and analyzer controls; returns the lines they took.
+fn bottom_bar(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State, others: &[CompareSource]) -> usize {
     let salt = cx.salt;
     let key = |what: &str| salt.with(("scythe-eq-bar", what));
-    let mut row = Row { x: rect.left(), top: rect.top(), h: 26.0, right: rect.right() };
+    let mut row = Row::new(rect.left(), rect.top(), 26.0, rect.right());
     let phases = names(["Zero latency", "Natural phase", "Linear phase"]);
     let phase = st.g(global::PHASE) as usize;
     if let Some(i) = choice(ui, row.next(150.0), key("phase"), "", &phases, phase) {
@@ -1442,7 +1480,7 @@ fn bottom_bar(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State,
     value_box(cx, ui, row.next(98.0), GLOBAL + global::PAN, "Pan");
     value_box(cx, ui, row.next(98.0), GLOBAL + global::WIDTH, "Width");
 
-    let mut row = Row { x: rect.left(), top: rect.top() + 34.0, h: 26.0, right: rect.right() };
+    row.next_group();
     let sources = names(["Off", "Pre", "Post", "Pre+Post", "SC", "Pre+SC", "Post+SC", "All"]);
     if let Some(i) = choice(ui, row.next(126.0), key("analyzer"), "Analyzer", &sources, st.g(global::ANALYZER) as usize)
     {
@@ -1490,6 +1528,7 @@ fn bottom_bar(cx: &mut Cx, ui: &mut Ui, rect: Rect, view: &mut View, st: &State,
     if toggle(ui, row.next(76.0), key("instances"), "Instances", cx.host.view().instances, ACCENT) {
         cx.host.view().instances = !cx.host.view().instances;
     }
+    row.lines
 }
 
 #[cfg(test)]
