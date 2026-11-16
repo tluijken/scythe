@@ -1,10 +1,10 @@
 //! MIDI devices, the virtual keyboard and synchronization for a session: which ports to open,
 //! what gets clock, and what the transport chases.
 
+use scythe_core::midi_route::{MidiDevice, MidiInput, VIRTUAL_KEYBOARD};
 use scythe_core::prefs::MidiPrefs;
 use scythe_engine::midi_io::{DEVICE_CACHE_FILE, MidiDevices, OLD_DEVICE_CACHE_FILE};
 use scythe_engine::midi_sync::{ChaseConfig, ChaseSource, ClockPort, SyncConfig, TimecodeRate};
-use scythe_core::midi_route::{MidiDevice, MidiInput, VIRTUAL_KEYBOARD};
 
 use crate::Session;
 
