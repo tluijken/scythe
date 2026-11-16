@@ -67,10 +67,15 @@ fn a_phase_mode_set_between_blocks_is_built_where_it_is_set() {
     eq.set(band_param(0, band::USED), 1.0);
     play(&mut eq, 4096);
     let switches = [(global::PHASE, 2.0), (global::RESOLUTION, 3.0), (global::PHASE, 1.0), (global::PHASE, 0.0)];
-    for (param, value) in switches.into_iter().chain(switches) {
+    for (k, (param, value)) in switches.into_iter().chain(switches).enumerate() {
         eq.set(GLOBAL + param, value);
+        eq.release_retired();
         COUNTING.with(|c| c.set(true));
         play(&mut eq, 48_000);
+        // An envelope or modulation sets values in the block path too.
+        let (mut l, mut r) = ([0.1f32; 256], [-0.1f32; 256]);
+        eq.set(band_param(0, band::FREQ), 900.0 + k as f64);
+        eq.process_block(&mut l, &mut r, None, None);
         COUNTING.with(|c| c.set(false));
         let counted = (ALLOCATED.with(Cell::get), FREED.with(Cell::get));
         assert_eq!(counted, (0, 0), "allocations and frees in the blocks after setting {param} to {value}");

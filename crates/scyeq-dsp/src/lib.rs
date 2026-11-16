@@ -245,7 +245,8 @@ pub struct ScytheEq {
     /// The FIR path for the phase mode and resolution set, built where they were set, for the
     /// next block to take.
     prepared: Option<(FirKey, Box<FirPath>)>,
-    /// A FIR path the processing let go, freed where values are next set.
+    /// A FIR path the processing let go, kept until [`ScytheEq::release_retired`] frees it off the
+    /// audio thread.
     retired: Option<Box<FirPath>>,
     outgoing: Box<Outgoing>,
     /// The sample position of the next frame, which places the grid cells.
@@ -414,7 +415,6 @@ impl ScytheEq {
             self.settings[b] = BandSettings::read(&self.values, b);
         }
         self.pending = true;
-        self.retired = None;
         let wanted = fir_key(self.phase_mode(), self.value(GLOBAL + global::RESOLUTION) as usize);
         let current = if self.fir.is_some() { fir_key(self.mode, self.resolution) } else { None };
         match wanted {
@@ -425,6 +425,12 @@ impl ScytheEq {
             }
             _ => self.prepared = None,
         }
+    }
+
+    /// Frees the FIR path a phase mode or resolution switch let go. Call it off the audio thread:
+    /// values set in the block (envelopes, modulation) leave it.
+    pub fn release_retired(&mut self) {
+        self.retired = None;
     }
 
     fn settle(&mut self) {
@@ -498,7 +504,7 @@ impl ScytheEq {
                 self.fir.as_ref().map_or(0, |f| f.engine.latency()) + self.spectral.as_ref().map_or(0, |s| s.latency());
             let o = &mut *self.outgoing;
             // A spectral switch keeps an earlier mode switch's FIR path; a mode switch retires
-            // it, to be freed where values are next set rather than on the audio thread.
+            // it, to be freed off the audio thread by `release_retired`.
             if core_change {
                 self.retired = std::mem::replace(&mut o.fir, old_fir.take());
             }

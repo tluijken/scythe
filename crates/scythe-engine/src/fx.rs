@@ -247,6 +247,9 @@ pub trait Effect: Send {
     /// Clears internal state such as filter memories and delay lines (on seek or stop).
     fn reset(&mut self) {}
 
+    /// Frees what processing let go and kept for the purpose; called off the audio thread.
+    fn release(&mut self) {}
+
     /// Frames the effect delays its output by; the graph compensates for it.
     fn latency(&mut self) -> usize {
         0
@@ -755,9 +758,13 @@ impl FxInstance {
     }
 
     /// Runs `f` on the effect from the UI thread, waiting for the audio thread to finish its
-    /// block if needed.
+    /// block if needed, then frees what the effect's processing let go.
     pub fn with<R>(&self, f: impl FnOnce(&mut dyn Effect) -> R) -> Option<R> {
-        self.effect.lock().ok().map(|mut e| f(e.as_mut()))
+        self.effect.lock().ok().map(|mut e| {
+            let r = f(e.as_mut());
+            e.release();
+            r
+        })
     }
 
     /// The current value and text of each of `ids`. A hosted plugin that answers on the plugin
