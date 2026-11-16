@@ -41,6 +41,7 @@ opus-pure = "0.2.3"
 hound = "3.5.1"
 flate2 = { version = "1.1.11", default-features = false, features = ["zlib-rs"] }
 midir = "0.11.1"
+raw-window-handle = "0.6.2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 eframe = "0.37.0"
