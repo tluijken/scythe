@@ -100,8 +100,10 @@ impl CountIn {
         if block <= 0 || frames <= 0 {
             return self;
         }
-        let blocks = (frames + block - 1) / block;
-        let pad = ((blocks * block) as f64 / sr - self.counting).max(0.0);
+        let extra = (block - frames % block) % block;
+        let part_frame = frames as f64 - self.counting * sr;
+        let part_frame = if part_frame.abs() < 1e-6 { 0.0 } else { part_frame };
+        let pad = ((extra as f64 + part_frame) / sr).max(0.0);
         Self { length: self.length + pad, audible: self.audible + pad, counting: self.counting + pad, ..self }
             .clicks_later(pad)
     }
