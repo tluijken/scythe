@@ -91,8 +91,8 @@ impl CountIn {
     }
 
     /// The count-in as REAPER 7.73 plays it on a device running `block` frames at a time: the
-    /// counting part lengthened at its start to whole blocks, clicks staying on their beats. A
-    /// pre-roll before the project start is not.
+    /// counting part lengthened at its start to whole blocks, so it lasts whole frames, clicks
+    /// staying on their beats. A pre-roll before the project start is not.
     pub fn padded(self, block: u32, sample_rate: u32) -> Self {
         let sr = sample_rate as f64;
         let frames = (self.counting * sr).round() as i64;
@@ -100,8 +100,8 @@ impl CountIn {
         if block <= 0 || frames <= 0 {
             return self;
         }
-        let extra = (block - frames % block) % block;
-        let pad = extra as f64 / sr;
+        let blocks = (frames + block - 1) / block;
+        let pad = ((blocks * block) as f64 / sr - self.counting).max(0.0);
         Self { length: self.length + pad, audible: self.audible + pad, counting: self.counting + pad, ..self }
             .clicks_later(pad)
     }
@@ -541,7 +541,7 @@ mod tests {
             let c = m.start(prefs, &tempo, at, false, false).count_in.unwrap();
             let p = c.padded(block, rate);
             let what = format!("{at} at {block} and {rate}: {p:?}");
-            assert!((p.length - length).abs() < 1.0 / rate as f64, "{what}");
+            assert!((p.length - length).abs() < 0.5 / rate as f64, "{what}");
             assert!(close(p.length - p.first, c.length - c.first), "{what}");
             assert!(close(p.audible - p.first, c.audible - c.first) && p.beats() == c.beats(), "{what}");
         }
