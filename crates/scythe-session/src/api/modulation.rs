@@ -496,9 +496,9 @@ pub fn is_js(slot: &FxSlot) -> bool {
 }
 
 /// How REAPER names parameter `param` beside the slot: the spelling of an envelope or
-/// binding it already has, else as a new envelope names it: `<index>:<id>` for a CLAP plugin,
-/// the index for others.
-fn param_spec(session: &Session, target: Target, index: usize, slot: &FxSlot, param: usize) -> String {
+/// binding it already has, else as a new envelope names it: `<index>:<id>` for a CLAP or VST3
+/// plugin, the index for others.
+pub fn param_spec(session: &Session, target: Target, index: usize, slot: &FxSlot, param: usize) -> String {
     let from_env = slot.raw.iter().find_map(|n| match n {
         scythe_core::rpp::Node::Chunk(c) if c.name() == "PARMENV" => {
             c.args().first().filter(|s| m::param_index(s) == Some(param)).cloned()
@@ -606,7 +606,7 @@ fn apply_audio(a: &mut m::AudioControl, s: &AudioSpec) {
 
 /// Gives a link from a CLAP or VST3 parameter that parameter's id, as REAPER names it
 /// (`PLINK 1 0:-1 3:7 0 ""`), when the source effect's parameters are known.
-fn name_link_param(session: &Session, target: Target, own: usize, link: &mut ParamLink) {
+pub fn name_link_param(session: &Session, target: Target, own: usize, link: &mut ParamLink) {
     let Some(fx) = link.source_fx(own) else { return };
     let LinkSource::Fx { param, id, .. } = &mut link.source else { return };
     if id.is_some() {
