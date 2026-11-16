@@ -7,7 +7,7 @@
 //! port configurations, and comes a second time starting on a mono input.
 
 use std::ffi::{CStr, c_char, c_void};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::ext::preset_load::{CLAP_EXT_PRESET_LOAD, CLAP_EXT_PRESET_LOAD_COMPAT, clap_plugin_preset_load};
@@ -216,8 +216,23 @@ struct Gain {
 }
 
 /// Calls of `clap_plugin_params` main-thread functions made on another thread than the
-/// instance's main thread, by any instance.
+/// instance's main thread, by any instance. One count for the process: a host's tests running
+/// side by side share it, so none of them may ask an instance from a thread it was not made on
+/// (each such call is the fault this counts).
 static OFF_MAIN_PARAM_CALLS: AtomicU32 = AtomicU32::new(0);
+
+/// A gain value an instance whose boost is [`REPORTING_BOOST`] takes and reports to the host in
+/// its next block, as an editor change would; the bits of an `f64`, 0 for none.
+static REPORT_GAIN: AtomicU64 = AtomicU64::new(0);
+
+/// The boost that marks the instance a host's test wants to report, so others ignore the report.
+const REPORTING_BOOST: f32 = 3.25;
+
+/// Has the instance with boost [`REPORTING_BOOST`] take `gain` in its next block and report it.
+#[unsafe(no_mangle)]
+pub extern "C" fn clap_test_gain_report_gain(gain: f64) {
+    REPORT_GAIN.store(gain.to_bits(), Ordering::Relaxed);
+}
 
 fn on_main(p: *const clap_plugin) {
     // SAFETY: called with the plugin the host passed.
@@ -328,6 +343,31 @@ unsafe extern "C" fn process(p: *const clap_plugin, process: *const clap_process
     // SAFETY: the host passes valid buffers for `frames_count` frames.
     unsafe {
         apply_params(p, (*process).in_events);
+        if f32::from_bits(gain_of(p).boost.load(Ordering::Relaxed)) == REPORTING_BOOST {
+            let report = REPORT_GAIN.swap(0, Ordering::Relaxed);
+            if report != 0 {
+                let value = f64::from_bits(report);
+                gain_of(p).gain.store((value as f32).to_bits(), Ordering::Relaxed);
+                let event = clap_sys::events::clap_event_param_value {
+                    header: clap_sys::events::clap_event_header {
+                        size: std::mem::size_of::<clap_sys::events::clap_event_param_value>() as u32,
+                        time: 0,
+                        space_id: clap_sys::events::CLAP_CORE_EVENT_SPACE_ID,
+                        type_: clap_sys::events::CLAP_EVENT_PARAM_VALUE,
+                        flags: 0,
+                    },
+                    param_id: GAIN_PARAM,
+                    cookie: std::ptr::null_mut(),
+                    note_id: -1,
+                    port_index: -1,
+                    channel: -1,
+                    key: -1,
+                    value,
+                };
+                let out = &*(*process).out_events;
+                (out.try_push.unwrap())(out, &event.header);
+            }
+        }
         let g = f32::from_bits(gain_of(p).gain.load(Ordering::Relaxed))
             * f32::from_bits(gain_of(p).boost.load(Ordering::Relaxed));
         let pr = &*process;

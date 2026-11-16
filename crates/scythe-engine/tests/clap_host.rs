@@ -575,3 +575,41 @@ fn a_block_plays_while_a_parameter_read_waits_for_the_plugin_thread() {
     assert_eq!(read[0].as_ref().map(|(v, _)| *v), Some(0.5));
     assert_eq!(asked, [Some((0.5, "0.50".into()))]);
 }
+
+/// A value the plugin reports while it processes (as a change in its own editor would) is the
+/// one Scythe keeps: modulation reading it on the audio thread follows it.
+#[test]
+fn a_value_the_plugin_reports_is_kept() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut registry = scythe_engine::fx::FxRegistry::new(48_000);
+    registry.set_clap_plugins(lib.descriptors());
+    let slot = scythe_engine::fx::clap_slot(&lib.descriptors()[0]);
+    let chain = registry.chain(None, std::slice::from_ref(&slot));
+    let ctx = scythe_engine::fx::ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+    chain[0].with(|e| e.set_param(9, 3.25));
+    assert!(chain[0].process(&mut l, &mut r, &ctx));
+    // SAFETY: the test plugin's own hook, a plain function taking a number.
+    unsafe {
+        let lib = libloading::Library::new(&path).unwrap();
+        lib.get::<unsafe extern "C" fn(f64)>(b"clap_test_gain_report_gain").unwrap()(0.25);
+    }
+    assert!(chain[0].process(&mut l, &mut r, &ctx));
+    let kept = chain[0].with(|e| (e.normalized(0), e.param(7).map(|(v, _)| v))).unwrap();
+    assert_eq!(kept, (Some(0.25), Some(0.25)));
+}
