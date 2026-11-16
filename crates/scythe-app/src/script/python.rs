@@ -392,7 +392,7 @@ RPR_SetMediaTrackInfo_Value(a, "I_SELECTED", 1)
 assert RPR_GetSelectedTrack(0, 0) == a
 assert RPR_AddProjectMarker2(0, True, 1.0, 3.0, "Chorus", -1, RPR_ColorToNative(255, 0, 0) | 0x1000000) == 1
 r = RPR_EnumProjectMarkers3(0, 0, 0, 0, 0, "", 0, 0)
-assert r[:2] == (1, 0) and r[3:] == (1, 1.0, 3.0, "Chorus", 1, 0x1ff0000), r
+assert r[:2] == (1, 0) and r[3:] == (1, 1.0, 3.0, "Chorus", 1, RPR_ColorToNative(255, 0, 0) | 0x1000000), r
 assert RPR_GetSet_LoopTimeRange(True, False, 1.5, 2.5, False) == (True, False, 1.5, 2.5, False)
 assert RPR_GetExtState("ScythePythonTest", "nope") == ""
 assert RPR_GetProjExtState(0, "ScythePythonTest", "k", "", 64)[0] == 0
