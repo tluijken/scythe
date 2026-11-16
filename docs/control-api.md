@@ -679,8 +679,8 @@ The MCP servers report with the rest; other clients have no need to send them:
 
 ### MIDI devices and synchronization
 
-Devices keep stable numbers, as REAPER's `reaper-midihw-linux.ini` keeps them beside
-reaper.ini; tracks name their MIDI inputs and outputs by these numbers. Enabling a device and
+Devices keep stable numbers, kept as REAPER keeps them beside reaper.ini, in
+`reaper-midihw.ini` on Windows and `reaper-midihw-linux.ini` elsewhere; tracks name their MIDI inputs and outputs by these numbers. Enabling a device and
 the clock settings are reaper.ini's `midiins`, `midiouts`, `midiouts_clock`,
 `midiouts_clock_nospp` and `midiouts_noreset` masks; aliases are the cache's `ia`/`oa` lines.
 

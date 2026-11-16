@@ -1,10 +1,10 @@
 //! MIDI devices, the virtual keyboard and synchronization for a session: which ports to open,
 //! what gets clock, and what the transport chases.
 
-use scythe_core::midi_route::{MidiDevice, MidiInput, VIRTUAL_KEYBOARD};
 use scythe_core::prefs::MidiPrefs;
 use scythe_engine::midi_io::{DEVICE_CACHE_FILE, MidiDevices, OLD_DEVICE_CACHE_FILE};
 use scythe_engine::midi_sync::{ChaseConfig, ChaseSource, ClockPort, SyncConfig, TimecodeRate};
+use scythe_core::midi_route::{MidiDevice, MidiInput, VIRTUAL_KEYBOARD};
 
 use crate::Session;
 
@@ -17,18 +17,11 @@ impl Session {
         Some(self.prefs_file.as_ref()?.with_file_name(DEVICE_CACHE_FILE))
     }
 
-    /// The device cache's text; while there is none, what an earlier Scythe wrote under its name.
-    fn device_cache_text(path: &std::path::Path) -> String {
-        std::fs::read_to_string(path)
-            .or_else(|_| std::fs::read_to_string(path.with_file_name(OLD_DEVICE_CACHE_FILE)))
-            .unwrap_or_default()
-    }
-
     /// Looks for MIDI ports again, keeping the numbers known devices had, and saves the map
     /// beside the preferences.
     pub fn rescan_midi_devices(&mut self) {
         let path = self.device_cache_path();
-        let text = path.as_deref().map(Self::device_cache_text).unwrap_or_default();
+        let text = path.as_deref().map(|p| device_cache_text(p, OLD_DEVICE_CACHE_FILE)).unwrap_or_default();
         let known = if self.midi_devices.inputs.is_empty() && self.midi_devices.outputs.is_empty() {
             MidiDevices::parse_cache(&text)
         } else {
@@ -45,7 +38,7 @@ impl Session {
     /// Writes the device map (with its aliases) to its file, keeping the file's other sections.
     pub fn save_midi_devices(&mut self) {
         let Some(path) = self.device_cache_path() else { return };
-        let text = Self::device_cache_text(&path);
+        let text = device_cache_text(&path, OLD_DEVICE_CACHE_FILE);
         let new = self.midi_devices.write_cache(&text);
         if new != text
             && let Err(e) =
@@ -176,5 +169,28 @@ impl Session {
         self.project.tracks.iter().any(|t| {
             t.armed && MidiInput::from_rec_input(t.rec_input).is_some_and(|i| i.device.number() == VIRTUAL_KEYBOARD)
         })
+    }
+}
+
+/// The device cache's text; while there is none, what an earlier Scythe wrote as `old` beside it.
+fn device_cache_text(path: &std::path::Path, old: &str) -> String {
+    std::fs::read_to_string(path).or_else(|_| std::fs::read_to_string(path.with_file_name(old))).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_device_cache_an_earlier_scythe_wrote_is_read_until_there_is_a_new_one() {
+        let dir = std::env::temp_dir().join(format!("scythe-midihw-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (new, old) = (dir.join("reaper-midihw.ini"), "reaper-midihw-linux.ini");
+        assert_eq!(device_cache_text(&new, old), "", "neither file");
+        std::fs::write(dir.join(old), "[mididevcache]\non0=Old\n").unwrap();
+        assert_eq!(device_cache_text(&new, old), "[mididevcache]\non0=Old\n");
+        std::fs::write(&new, "[mididevcache]\non0=New\n").unwrap();
+        assert_eq!(device_cache_text(&new, old), "[mididevcache]\non0=New\n");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

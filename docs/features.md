@@ -549,8 +549,8 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   is MIDI plays its instrument live while armed with monitoring on, and records an in-project
   MIDI item; recording around a loop layers the passes into one take, as REAPER's MIDI
   overdub. The input is one device or all of them (and one channel or all), numbered as REAPER
-  numbers them: devices keep their number in `reaper-midihw-linux.ini` beside the preferences
-  while unplugged, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
+  numbers them: devices keep their number while unplugged in `reaper-midihw.ini` (Windows) or
+  `reaper-midihw-linux.ini` beside the preferences, the `REC` line stores them in REAPER's older layout (all inputs as 31, the
   virtual keyboard as 30, ports from 30 up two higher), so a project listens only to its
   keyboard or pad. A track can also send its MIDI (items, monitored input and what it receives,
   after its effects, optionally forced to one channel) to a hardware output (Sends tab), timed
