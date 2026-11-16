@@ -1213,6 +1213,8 @@ fn midi_device_settings_are_kept_in_the_preferences() {
     let dir = std::env::temp_dir().join(format!("scythe-midi-prefs-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("reaper.ini");
+    // The name an earlier Scythe gave the device cache on every system: it is read, and saved
+    // under the name REAPER gives its own.
     std::fs::write(dir.join("reaper-midihw-linux.ini"), "[mididevcache]\not0=1\non0=Synth Out\nit0=1\nin0=Keys In\n")
         .unwrap();
     let mut s = session();
@@ -1228,7 +1230,7 @@ fn midi_device_settings_are_kept_in_the_preferences() {
         ini.contains("midiouts_clock=1\n") && ini.contains("midiouts_clock_nospp=1\n") && ini.contains("midiins=-2\n"),
         "{ini}"
     );
-    let cache = std::fs::read_to_string(dir.join("reaper-midihw-linux.ini")).unwrap();
+    let cache = std::fs::read_to_string(dir.join(scythe_engine::midi_io::DEVICE_CACHE_FILE)).unwrap();
     assert!(cache.contains("oa0=Modular"), "{cache}");
     let mut again = session();
     again.load_preferences(file);
