@@ -150,7 +150,12 @@ impl ProcessContext<'_> {
 
 /// Asks a hosted plugin for parameter values and texts on the plugin thread, apart from the
 /// effect: see [`Effect::param_reader`].
-pub struct ParamReader(pub Box<dyn FnOnce() -> Vec<ParamValue> + Send>);
+pub struct ParamReader {
+    pub read: Box<dyn FnOnce() -> Vec<ParamValue> + Send>,
+    /// Where the effect's changes stood when the reader was made: what changed after it is newer
+    /// than what it reads.
+    pub stamp: u64,
+}
 
 /// A parameter's value and its display text, or `None` where the effect has no such parameter.
 pub type ParamValue = Option<(f64, String)>;
@@ -289,8 +294,9 @@ pub trait Effect: Send {
         None
     }
 
-    /// Keeps what a [`ParamReader`] read for `ids`.
-    fn keep_values(&mut self, _ids: &[u32], _read: &[Option<(f64, String)>]) {}
+    /// Keeps what a [`ParamReader`] made at `stamp` read for `ids`, except where a value changed
+    /// since.
+    fn keep_values(&mut self, _ids: &[u32], _read: &[Option<(f64, String)>], _stamp: u64) {}
 
     fn set_param(&mut self, _id: u32, _value: f64) {}
 
@@ -760,8 +766,8 @@ impl FxInstance {
         let Some(reader) = self.with(|e| e.param_reader(ids)).flatten() else {
             return self.with(|e| e.param_values(ids)).unwrap_or_else(|| vec![None; ids.len()]);
         };
-        let read = crate::plugin_thread::run(reader.0);
-        self.with(|e| e.keep_values(ids, &read));
+        let read = crate::plugin_thread::run(reader.read);
+        self.with(|e| e.keep_values(ids, &read, reader.stamp));
         read
     }
 
@@ -2160,6 +2166,10 @@ struct ClapEffect {
     values: Vec<f64>,
     /// The plugin's text for each parameter, with the value it was made for.
     texts: Vec<Option<(f64, String)>>,
+    /// Changes to the kept values so far, set, played or reported, and the count at each
+    /// parameter's last change: a read made before it is older.
+    changes: u64,
+    changed_at: Vec<u64>,
     /// Where each parameter id is in `params`.
     index: HashMap<u32, usize>,
     instrument: bool,
@@ -2186,6 +2196,8 @@ impl Effect for ClapEffect {
             params.iter().map(|p| plugin.current_value(p.id).unwrap_or(p.default)).collect()
         });
         self.texts.iter_mut().for_each(|t| *t = None);
+        self.changes += 1;
+        self.changed_at.iter_mut().for_each(|c| *c = self.changes);
     }
 
     fn automates_at_block_end(&self) -> bool {
@@ -2233,7 +2245,7 @@ impl Effect for ClapEffect {
                 Some(_) => Asked::Plugin(id),
             })
             .collect();
-        Some(ParamReader(Box::new(move || {
+        let read = Box::new(move || {
             let text = |id: u32, v: f64| {
                 // SAFETY: run on the plugin thread while the reader's caller holds the instance
                 // that owns the plugin.
@@ -2248,13 +2260,15 @@ impl Effect for ClapEffect {
                     Asked::Plugin(id) => unsafe { queries.value(id) }.map(|v| (v, text(id, v))),
                 })
                 .collect()
-        })))
+        });
+        Some(ParamReader { read, stamp: self.changes })
     }
 
-    fn keep_values(&mut self, ids: &[u32], read: &[Option<(f64, String)>]) {
+    fn keep_values(&mut self, ids: &[u32], read: &[Option<(f64, String)>], stamp: u64) {
         for (&id, got) in ids.iter().zip(read) {
             if let (Some(&at), Some((v, text))) = (self.index.get(&id), got)
                 && !self.plugin.is_pending(id)
+                && self.changed_at[at] <= stamp
             {
                 self.values[at] = *v;
                 self.texts[at] = Some((*v, text.clone()));
@@ -2267,6 +2281,7 @@ impl Effect for ClapEffect {
         if let Some(&at) = self.index.get(&id) {
             let p = &self.params[at];
             self.values[at] = clap_range(p).map_or(value, |(min, max)| value.clamp(min, max));
+            self.changed(at);
         }
     }
 
@@ -2280,6 +2295,7 @@ impl Effect for ClapEffect {
         let v = min + value.clamp(0.0, 1.0) * (max - min);
         self.plugin.set_param(p.id, v);
         self.values[index] = v;
+        self.changed(index);
         true
     }
 
@@ -2327,7 +2343,20 @@ impl ClapEffect {
         let values: Vec<f64> = params.iter().map(|p| plugin.current_value(p.id).unwrap_or(p.default)).collect();
         let texts = params.iter().zip(&values).map(|(p, &v)| plugin.param_text(p.id, v).map(|t| (v, t))).collect();
         let index = params.iter().enumerate().map(|(at, p)| (p.id, at)).collect();
-        Self { plugin, params, values, texts, index, instrument, expected: None, long: Vec::new(), presets: None }
+        let changed_at = vec![0; params.len()];
+        Self {
+            plugin,
+            params,
+            values,
+            texts,
+            changes: 0,
+            changed_at,
+            index,
+            instrument,
+            expected: None,
+            long: Vec::new(),
+            presets: None,
+        }
     }
 
     /// Parameter `id` (at `at` in the list) asked of the plugin; call on the plugin thread.
@@ -2353,8 +2382,15 @@ impl ClapEffect {
         for (id, v) in self.plugin.take_reported() {
             if let Some(&at) = self.index.get(&id) {
                 self.values[at] = v;
+                self.changes += 1;
+                self.changed_at[at] = self.changes;
             }
         }
+    }
+
+    fn changed(&mut self, at: usize) {
+        self.changes += 1;
+        self.changed_at[at] = self.changes;
     }
 
     /// Queues the block's notes, controllers and live MIDI for an instrument, resetting it

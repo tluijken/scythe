@@ -613,3 +613,37 @@ fn a_value_the_plugin_reports_is_kept() {
     let kept = chain[0].with(|e| (e.normalized(0), e.param(7).map(|(v, _)| v))).unwrap();
     assert_eq!(kept, (Some(0.25), Some(0.25)));
 }
+
+/// A read that ends after a newer value was set and played does not bring the older value back.
+#[test]
+fn a_read_finished_after_a_newer_value_keeps_the_newer_one() {
+    let Some(path) = test_plugin() else {
+        eprintln!("clap-test-gain not built; skipping");
+        return;
+    };
+    let lib = ClapLibrary::load(&path).unwrap();
+    let mut registry = scythe_engine::fx::FxRegistry::new(48_000);
+    registry.set_clap_plugins(lib.descriptors());
+    let slot = scythe_engine::fx::clap_slot(&lib.descriptors()[0]);
+    let chain = registry.chain(None, std::slice::from_ref(&slot));
+    let ctx = scythe_engine::fx::ProcessContext {
+        midi: None,
+        midi_from: 0,
+        sample_rate: 48000,
+        position: 0,
+        playing: true,
+        notes: None,
+        live: &[],
+        live_channel: None,
+        aux: None,
+        bpm: 120.0,
+    };
+    let reader = chain[0].with(|e| e.param_reader(&[9])).flatten().unwrap();
+    let read = scythe_engine::plugin_thread::run(reader.read);
+    assert_eq!(read[0].as_ref().map(|(v, _)| *v), Some(1.0));
+    chain[0].with(|e| e.set_param(9, 2.0));
+    let (mut l, mut r) = (vec![1.0f32; 64], vec![1.0f32; 64]);
+    assert!(chain[0].process(&mut l, &mut r, &ctx));
+    chain[0].with(|e| e.keep_values(&[9], &read, reader.stamp));
+    assert_eq!(chain[0].with(|e| e.normalized(1)).flatten(), Some(0.5), "the value set and played");
+}
