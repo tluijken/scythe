@@ -84,24 +84,34 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
         .collect();
     ui.painter_at(curve).add(Shape::line(pts, Stroke::new(1.6, ACCENT)));
     // Band chips: click bypasses, drag up and down sets the gain.
-    let mut x = curve.right() + 10.0;
-    let mut y = rect.top() + 8.0;
-    for b in (0..BANDS).filter(|b| values[p::band_param(*b, band::USED) as usize] >= 0.5) {
-        let s = BandSettings::read(&values, b);
-        let text = if s.design.shape.has_gain() {
-            format!("{} {} {:+.1}", b + 1, hz_text(s.design.freq), s.design.gain_db)
-        } else {
-            format!("{} {} {}", b + 1, s.design.shape.label(), hz_text(s.design.freq))
-        };
-        let w = widgets::text_width(ui, &text, theme::regular(10.0)) + 14.0;
-        if x + w > rect.right() - 8.0 {
-            x = curve.right() + 10.0;
-            y += 26.0;
-        }
-        if y + 22.0 > rect.bottom() {
-            break;
-        }
-        let r = Rect::from_min_size(pos2(x, y), vec2(w, 22.0));
+    let chips: Vec<(usize, BandSettings, String)> = (0..BANDS)
+        .filter(|b| values[p::band_param(*b, band::USED) as usize] >= 0.5)
+        .map(|b| {
+            let s = BandSettings::read(&values, b);
+            let text = if s.design.shape.has_gain() {
+                format!("{} {} {:+.1}", b + 1, hz_text(s.design.freq), s.design.gain_db)
+            } else {
+                format!("{} {} {}", b + 1, s.design.shape.label(), hz_text(s.design.freq))
+            };
+            (b, s, text)
+        })
+        .collect();
+    let chip_w = |text: &str| widgets::text_width(ui, text, theme::regular(10.0)) + 14.0;
+    let widths: Vec<f32> = chips.iter().map(|(_, _, text)| chip_w(text)).collect();
+    let area =
+        Rect::from_min_max(pos2(curve.right() + 10.0, rect.top() + 8.0), pos2(rect.right() - 8.0, rect.bottom()));
+    let (places, more) = place_chips(&widths, area, |hidden| chip_w(&format!("+{hidden}")));
+    if let Some(r) = more {
+        let hidden: Vec<String> = chips[places.len()..].iter().map(|(b, _, _)| (b + 1).to_string()).collect();
+        ui.painter().rect_filled(r, CornerRadius::same(6), BG);
+        let count = format!("+{}", hidden.len());
+        ui.painter().text(r.center(), Align2::CENTER_CENTER, count, theme::regular(10.0), TEXT_DIM);
+        let resp = ui.interact(r, key("more"), Sense::hover());
+        let label = format!("{}: {} more bands", inst.label, hidden.len());
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &label));
+        resp.on_hover_text(format!("Bands {} do not fit here", hidden.join(", ")));
+    }
+    for ((b, s, text), r) in chips.into_iter().zip(places) {
         let resp = ui.interact(r, key(&format!("band{b}")), Sense::click_and_drag());
         let color = band_color(b);
         let fill = if s.enabled { theme::with_alpha(color, if resp.hovered() { 90 } else { 55 }) } else { BG };
@@ -135,8 +145,44 @@ fn instance_row(list: &mut dyn InstanceList, ui: &mut Ui, inst: &Instance) {
                 list.end_instance(inst.id, id);
             }
         }
+    }
+}
+
+/// Places chips of `widths` in lines across `area`. When not all fit, it places as many as leave
+/// room after them for a chip of width `more(hidden)` counting the rest, and returns that too.
+fn place_chips(widths: &[f32], area: Rect, more: impl Fn(usize) -> f32) -> (Vec<Rect>, Option<Rect>) {
+    let all = flow(widths, area);
+    if all.len() == widths.len() {
+        return (all, None);
+    }
+    for shown in (0..=all.len()).rev() {
+        let mut with_more = widths[..shown].to_vec();
+        with_more.push(more(widths.len() - shown));
+        let mut places = flow(&with_more, area);
+        if places.len() == with_more.len() {
+            let more = places.pop();
+            return (places, more);
+        }
+    }
+    (Vec::new(), None)
+}
+
+/// Boxes of `widths` left to right in lines 22 px high, as many as fit in `area`.
+fn flow(widths: &[f32], area: Rect) -> Vec<Rect> {
+    let (mut x, mut y) = (area.left(), area.top());
+    let mut out = Vec::new();
+    for &w in widths {
+        if x > area.left() && x + w > area.right() {
+            x = area.left();
+            y += 26.0;
+        }
+        if y + 22.0 > area.bottom() {
+            break;
+        }
+        out.push(Rect::from_min_size(pos2(x, y), vec2(w, 22.0)));
         x += w + 6.0;
     }
+    out
 }
 
 fn open_and_bypass(list: &mut dyn InstanceControls, ui: &mut Ui, rect: Rect, inst: &Instance) {
