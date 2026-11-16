@@ -159,6 +159,8 @@ pub struct ScytheApp {
     /// Where the copied material starts, so a paste keeps space before the first item.
     clipboard_origin: f64,
     pub last_script: Option<PathBuf>,
+    /// The folder of the last render made through the render dialog, where it opens next.
+    last_render_dir: Option<PathBuf>,
     /// What the last script printed (`ShowConsoleMsg`) or its error, until closed.
     pub script_console: Option<String>,
     /// A script that deferred work, run once per frame, and its file name.
@@ -298,6 +300,7 @@ impl ScytheApp {
             razor_envelopes: Vec::new(),
             clipboard_origin: 0.0,
             last_script: None,
+            last_render_dir: None,
             script_console: None,
             running_script: None,
             script_services: None,
@@ -595,7 +598,9 @@ impl ScytheApp {
                 }
             }
         } else if kind == RenderKind::Stems {
-            let Some(dir) = rfd::FileDialog::new().set_title("Folder for the stems").pick_folder() else { return };
+            let dialog = self.render_dialog_place(rfd::FileDialog::new().set_title("Folder for the stems"));
+            let Some(dir) = dialog.pick_folder() else { return };
+            self.last_render_dir = Some(dir.clone());
             (0..self.project.tracks.len())
                 .filter(|&i| !self.project.tracks[i].items.is_empty())
                 .map(|i| {
@@ -612,7 +617,8 @@ impl ScytheApp {
                 .collect()
         } else {
             let dialog = rfd::FileDialog::new().add_filter("WAV", &["wav"]).set_file_name(format!("{name}.wav"));
-            let Some(path) = dialog.save_file() else { return };
+            let Some(path) = self.render_dialog_place(dialog).save_file() else { return };
+            self.last_render_dir = path.parent().map(Path::to_owned);
             vec![(self.project.clone(), path)]
         };
         let rate = encoding.sample_rate().unwrap_or_else(|| {
@@ -647,6 +653,20 @@ impl ScytheApp {
             let _ = tx.send(LoaderMsg::Bounced(last));
             ctx.request_repaint();
         });
+    }
+
+    /// `dialog` set to open in the folder of the last render made with one, else the project's
+    /// folder, and on Windows over the main window.
+    fn render_dialog_place(&self, dialog: rfd::FileDialog) -> rfd::FileDialog {
+        let dialog = match render_dialog_dir(self.last_render_dir.as_deref(), self.project.path.as_deref()) {
+            Some(dir) => dialog.set_directory(dir),
+            None => dialog,
+        };
+        #[cfg(windows)]
+        if let Some(owner) = crate::main_window::owner() {
+            return dialog.set_parent(&owner);
+        }
+        dialog
     }
 
     fn render_selection(&self) -> scythe_core::render_settings::RenderSelection {
@@ -1596,6 +1616,12 @@ pub(crate) fn reaper_resource_dir() -> Option<PathBuf> {
     scythe_core::paths::config_home().map(|c| c.join("REAPER")).filter(|d| d.is_dir())
 }
 
+/// Where a render dialog opens: the folder of the last render made with one while it is there,
+/// else the project's folder.
+fn render_dialog_dir(last: Option<&Path>, project: Option<&Path>) -> Option<PathBuf> {
+    last.filter(|d| d.is_dir()).or_else(|| project.and_then(Path::parent).filter(|d| d.is_dir())).map(Path::to_owned)
+}
+
 /// A file dialog starting in REAPER's resource folder `sub` (`FXChains`, `TrackTemplates`)
 /// when it exists, so files are shared with REAPER.
 pub(crate) fn resource_dialog(sub: &str) -> rfd::FileDialog {
@@ -1664,5 +1690,24 @@ impl ScytheApp {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_render_dialog_opens_where_the_last_render_went_else_beside_the_project() {
+        let dir = std::env::temp_dir().join(format!("scythe-render-dir-{}", std::process::id()));
+        let (song, mixdown) = (dir.join("song"), dir.join("mixdown"));
+        std::fs::create_dir_all(&song).unwrap();
+        std::fs::create_dir_all(&mixdown).unwrap();
+        let project = song.join("Song.RPP");
+        assert_eq!(render_dialog_dir(None, Some(&project)), Some(song.clone()));
+        assert_eq!(render_dialog_dir(Some(&mixdown), Some(&project)), Some(mixdown.clone()));
+        assert_eq!(render_dialog_dir(Some(&dir.join("gone")), Some(&project)), Some(song), "the last folder is gone");
+        assert_eq!(render_dialog_dir(None, None), None, "an unsaved project");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
