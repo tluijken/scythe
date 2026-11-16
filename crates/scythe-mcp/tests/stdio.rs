@@ -44,6 +44,9 @@ fn stdio_against_an_in_process_session() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_scythe-mcp"))
         .args(["--headless", "--null-audio"])
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .env("XDG_DATA_HOME", dir.join("data"))
         .arg(&path)
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")

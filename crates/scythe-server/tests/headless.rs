@@ -23,6 +23,8 @@ fn starts_without_a_display_serves_and_stops_on_sigterm() {
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
         .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .env("XDG_DATA_HOME", dir.join("data"))
         .stderr(Stdio::piped())
         .spawn()
         .expect("scythe-server runs");
@@ -42,6 +44,8 @@ fn starts_without_a_display_serves_and_stops_on_sigterm() {
     let status = Command::new(env!("CARGO_BIN_EXE_scythe-server"))
         .args(["--status", "--control", &addr.to_string()])
         .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .env("XDG_DATA_HOME", dir.join("data"))
         .output()
         .expect("scythe-server --status runs");
     let report = String::from_utf8_lossy(&status.stdout);
@@ -76,6 +80,8 @@ fn installs_a_user_service_running_the_same_session() {
         .args(["--install-service", "set.RPP", "--output-device", "Scarlett", "--null-audio"])
         .current_dir(&dir)
         .env("XDG_CONFIG_HOME", &dir)
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .env("XDG_DATA_HOME", dir.join("data"))
         .output()
         .expect("scythe-server --install-service runs");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

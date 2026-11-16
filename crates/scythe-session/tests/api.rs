@@ -12,7 +12,14 @@ use serde_json::{Value, json};
 
 fn session() -> Session {
     let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
-    Session::new(Engine::start_offline(pool, 48_000))
+    let mut s = Session::new(Engine::start_offline(pool, 48_000));
+    // The process-wide catalog keeps its scan cache in the user's cache folder.
+    let config = scythe_engine::plugin_scan::ScanConfig {
+        cache_dir: None,
+        ..scythe_engine::plugin_scan::ScanConfig::from_env()
+    };
+    s.engine.set_plugin_catalog(scythe_engine::plugin_scan::Catalog::new(config));
+    s
 }
 
 fn ok(session: &mut Session, command: Value) -> Value {

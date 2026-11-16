@@ -134,7 +134,16 @@ impl Catalog {
     /// The process's catalog of the standard folders.
     pub fn global() -> Arc<Self> {
         static GLOBAL: OnceLock<Arc<Catalog>> = OnceLock::new();
-        GLOBAL.get_or_init(|| Catalog::new(ScanConfig::from_env())).clone()
+        GLOBAL
+            .get_or_init(|| {
+                let mut config = ScanConfig::from_env();
+                // This crate's own tests keep no scan cache: its default place is the user's.
+                if cfg!(test) {
+                    config.cache_dir = None;
+                }
+                Catalog::new(config)
+            })
+            .clone()
     }
 
     pub fn set_clap(&self, plugins: Vec<ClapDescriptor>) {

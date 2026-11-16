@@ -4,10 +4,14 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn run(flag: &str) -> Output {
+    let private = std::env::temp_dir().join(format!("scythe-cli-{}", std::process::id()));
     let mut child = Command::new(env!("CARGO_BIN_EXE_scythe-mcp"))
         .arg(flag)
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
+        .env("XDG_CONFIG_HOME", private.join("config"))
+        .env("XDG_CACHE_HOME", private.join("cache"))
+        .env("XDG_DATA_HOME", private.join("data"))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
