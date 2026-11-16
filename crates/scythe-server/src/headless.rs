@@ -31,6 +31,10 @@ fn install_signal_handlers() {
 
 /// Parses `args` (without the program name) and runs; the exit code to end with.
 pub fn main_with_args(args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("scythe-server {}", env!("CARGO_PKG_VERSION"));
+        return 0;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return 0;

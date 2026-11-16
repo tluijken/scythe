@@ -17,6 +17,8 @@ An MCP server on stdin and stdout for AI agents to drive Scythe.
   --null-audio     with --headless: open no audio device
   --tools DOMAINS  the tools to list: `default` (a compact set), `all`, or domains such as
                    `default,mix,setlist` (comma-separated); scythe_command reaches the rest
+  --version        print the version, and exit
+  --help           print this help, and exit
 ";
 
 /// How often the bridge tells Scythe its client is still there, and how long Scythe keeps listing
@@ -125,6 +127,10 @@ fn main() {
         std::process::exit(code);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("scythe-mcp {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return;

@@ -1278,7 +1278,8 @@ audio devices the device window lists, as `id ; name`, and exit; with `--all` ev
 audio systems know), `--null-audio` (open no audio device and play on a
 silent real-time clock; ALSA's `null` device is no substitute, it takes audio as fast as it is
 made), `--view=START-END`
-(open zoomed to a range in seconds), `--render=out.wav` (render the project without a window).
+(open zoomed to a range in seconds), `--render=out.wav` (render the project without a window),
+`--version` and `--help` (print, and exit; `scythe-server` and `scythe-mcp` take them too).
 A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
 `scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
 Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 2, so a debug

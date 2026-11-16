@@ -184,6 +184,28 @@ fn is_script(path: &std::path::Path) -> bool {
         .is_some_and(|e| ["lua", "eel", "py"].iter().any(|s| e.eq_ignore_ascii_case(s)))
 }
 
+const USAGE: &str = "\
+usage: scythe-app [project.RPP] [script.lua|.eel|.py ...] [options]
+       scythe-app --headless [project.RPP] [scythe-server options]
+
+  --demo                 open the demo song
+  --play                 start playback once the project is open
+  --view=START-END       open zoomed to a range in seconds
+  --setlist              open on the setlist page
+  --null-audio           open no audio device
+  --no-input             never open an audio or MIDI input
+  --audio-host NAME      audio host (ALSA, JACK, ...), and the other device options of scythe-server
+  --list-devices         print the audio devices, and exit (with --all: every name the hosts know)
+  --control ADDR         serve the control API at ADDR (also SCYTHE_CONTROL)
+  --control-token TOKEN  the token its clients present (also SCYTHE_CONTROL_TOKEN)
+  --render=OUT.wav       render the project to a 24-bit WAV without a window (--range=START-END)
+  --render-project       render the project with its own render settings, and exit
+  --render-queue [DIR]   render every project in REAPER's render queue, and exit
+  --headless             run as scythe-server: a session without a window
+  --version              print the version, and exit
+  --help                 print this help, and exit
+";
+
 fn app_icon() -> egui::IconData {
     let img = image::load_from_memory(include_bytes!("../assets/icon.png")).expect("bundled icon").to_rgba8();
     egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
@@ -194,6 +216,14 @@ fn main() -> eframe::Result {
         std::process::exit(code);
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("scythe-app {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return Ok(());
+    }
     if args.first().is_some_and(|a| a == "--script-dialog") {
         dialog::run_child();
         return Ok(());
