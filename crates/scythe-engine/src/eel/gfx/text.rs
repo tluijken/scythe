@@ -3,7 +3,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use ab_glyph::{Font, FontArc, FontVec, GlyphId, PxScale, ScaleFont, point};
@@ -99,7 +98,7 @@ fn fonts() -> std::sync::MutexGuard<'static, Fonts> {
 
 /// The file and face index fontconfig picks for `pattern`.
 fn fc_match(pattern: &str) -> Option<(PathBuf, u32)> {
-    let out = Command::new("fc-match").args(["-f", "%{file}\n%{index}", pattern]).output().ok()?;
+    let out = crate::process::command("fc-match").args(["-f", "%{file}\n%{index}", pattern]).output().ok()?;
     let text = String::from_utf8(out.stdout).ok()?;
     let (file, index) = text.split_once('\n').unwrap_or((&text, "0"));
     (!file.is_empty()).then(|| (PathBuf::from(file), index.trim().parse().unwrap_or(0)))

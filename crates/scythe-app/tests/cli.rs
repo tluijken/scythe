@@ -1,10 +1,10 @@
 //! `--version` and `--help` print and exit, without a window, a device or a server.
 
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 fn run(flag: &str) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_scythe-app"))
+    let mut child = scythe_engine::process::command(env!("CARGO_BIN_EXE_scythe-app"))
         .arg(flag)
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")

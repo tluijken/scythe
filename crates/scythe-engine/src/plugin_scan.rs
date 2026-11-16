@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -318,7 +318,7 @@ enum Helper {
 }
 
 fn run_helper(helper: &Path, args: &[&str], path: &Path, timeout: Duration) -> Helper {
-    let mut cmd = Command::new(helper);
+    let mut cmd = crate::process::command(helper);
     cmd.arg("--scan-plugin").arg(args[0]).arg(path).args(&args[1..]);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = match cmd.spawn() {

@@ -2,7 +2,6 @@
 //! with black frames and the project's video items.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use scythe_core::render_settings::{AudioCodec, Container, Video, VideoCodec};
 use scythe_core::rpp::{Chunk, Node, line_key};
@@ -232,7 +231,7 @@ fn item_fit(size: Option<(u32, u32)>, frame: (u32, u32), keep_aspect: bool) -> S
 /// The frame size of a video file's first video stream, and how far its first decoding
 /// timestamp precedes its start (the reordering delay of B-frames), read with `ffprobe`.
 fn probe(path: &Path) -> Option<((u32, u32), f64)> {
-    let output = Command::new("ffprobe")
+    let output = crate::process::command("ffprobe")
         .args(["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1"])
         .args(["-show_entries", "stream=width,height,start_time:packet=dts_time", "-of", "default=nw=1"])
         .arg(path)
@@ -595,8 +594,10 @@ pub fn write_video(
         })
         .collect();
     let args = ffmpeg_args(video, &clips, duration, audio, out)?;
-    let output =
-        Command::new("ffmpeg").args(&args).output().map_err(|e| format!("video renders need `ffmpeg` on PATH: {e}"))?;
+    let output = crate::process::command("ffmpeg")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("video renders need `ffmpeg` on PATH: {e}"))?;
     if output.status.success() {
         Ok(())
     } else {

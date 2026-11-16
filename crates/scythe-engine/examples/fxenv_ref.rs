@@ -4,7 +4,6 @@
 //! cargo run -p scythe-engine --example fxenv_ref -- <work dir> <reaper> <impulse response wav>
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use base64::Engine as _;
 use scythe_core::TimeRange;
@@ -83,7 +82,7 @@ fn main() {
         let rpp_path = dir.join(format!("fxenv_{name}.RPP"));
         std::fs::write(&rpp_path, &rpp).unwrap();
         if !out.exists() {
-            let _ = Command::new(&reaper)
+            let _ = scythe_engine::process::command(&reaper)
                 .args(["-cfgfile", &cfg.display().to_string(), "-nosplash", "-renderproject"])
                 .arg(&rpp_path)
                 .status();

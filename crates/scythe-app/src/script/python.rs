@@ -7,7 +7,7 @@
 //! stdin, so the calls run here against the script's state like Lua's and EEL's.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
 use serde_json::{Value, json};
 
@@ -137,7 +137,7 @@ pub(super) struct PythonEngine {
 
 pub(super) fn start(source: &str, name: &str, state: &Shared) -> Result<PythonEngine, String> {
     let python = if cfg!(windows) { "python" } else { "python3" };
-    let mut child = Command::new(python)
+    let mut child = scythe_engine::process::command(python)
         .args(["-u", "-c", RUNNER])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

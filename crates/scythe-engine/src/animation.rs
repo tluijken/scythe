@@ -41,7 +41,7 @@ impl Frames {
                 audio_options: String::new(),
             };
             crate::video::write_video(&video, clips, duration, None, &lossless)?;
-            let child = std::process::Command::new("ffmpeg")
+            let child = crate::process::command("ffmpeg")
                 .args(["-v", "error", "-nostdin", "-i"])
                 .arg(&lossless)
                 .args(["-f", "rawvideo", "-pix_fmt", "rgba", "-"])
