@@ -106,9 +106,11 @@ renderclosewhendone=4
 verchk=0
 EOF
     # Left to choose, Xvfb can take :0 from a desktop whose Xwayland it does not see as running.
-    for display in $(seq 300 399); do
-        [ -e "/tmp/.X$display-lock" ] || [ -e "/tmp/.X11-unix/X$display" ] || break
+    display=
+    for free in $(seq 300 399); do
+        if [ ! -e "/tmp/.X$free-lock" ] && [ ! -e "/tmp/.X11-unix/X$free" ]; then display=$free; break; fi
     done
+    [ -n "$display" ] || { echo "no free X display among :300 to :399" >&2; exit 1; }
     exec 3< <("$xvfb" ":$display" -displayfd 1 -screen 0 1280x1024x24 -nolisten tcp 2>/dev/null)
     pids+=($!)
     read -r -t 20 display <&3 || { echo "Xvfb did not start" >&2; exit 1; }
