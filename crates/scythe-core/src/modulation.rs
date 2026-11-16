@@ -166,7 +166,7 @@ pub enum LinkSource {
     /// A parameter of an effect in the same chain: `fx` as REAPER stores it (`2` or `2:1`,
     /// the second number relative to the linking effect), the parameter index and, for a CLAP
     /// or VST3 plugin, the parameter's id (REAPER writes `3:7`).
-    Fx { fx: String, param: i64, id: Option<u32> },
+    Fx { fx: String, param: i64, id: Option<String> },
     /// A MIDI message on the effect's input (`MIDIPLINK bus channel status data1`); channel 0
     /// is any.
     Midi { bus: i32, channel: i32, status: i32, data1: i32 },
@@ -301,7 +301,7 @@ impl ParamModulation {
                 _ => {
                     let (index, id) = param.split_once(':').map_or((param.as_str(), None), |(i, id)| (i, Some(id)));
                     let index = index.parse::<f64>().map_or(-1, |v| v as i64);
-                    LinkSource::Fx { fx, param: index, id: id.and_then(|id| id.parse().ok()) }
+                    LinkSource::Fx { fx, param: index, id: id.map(str::to_owned) }
                 }
             };
             m.link = Some(ParamLink { scale, offset, source, tail });
@@ -329,7 +329,7 @@ impl ParamModulation {
         if let (Some(link), true) = (&self.link, self.link_active) {
             let (fx, param) = match &link.source {
                 LinkSource::Fx { fx, param, id } => {
-                    (fx.clone(), id.map_or_else(|| param.to_string(), |id| format!("{param}:{id}")))
+                    (fx.clone(), id.as_ref().map_or_else(|| param.to_string(), |id| format!("{param}:{id}")))
                 }
                 LinkSource::Midi { .. } => ("-100".into(), "-1".into()),
             };
@@ -702,7 +702,7 @@ mod tests {
             assert_eq!(link.source, LinkSource::Midi { bus: 0, channel: 1, status: 176, data1: 11 });
             let q = modulation(&s, 19).expect("the Q's modulation");
             let link = q.link.as_ref().expect("a link from the effect before");
-            assert_eq!(link.source, LinkSource::Fx { fx: "0:-1".into(), param: 3, id: Some(3) });
+            assert_eq!(link.source, LinkSource::Fx { fx: "0:-1".into(), param: 3, id: Some("3".into()) });
             assert_eq!((link.scale, link.offset, link.source_fx(1)), (0.5, 0.1, Some(0)));
             let l = learn(&s, 17).expect("the frequency's learn");
             assert_eq!(l.param, "17:22");
@@ -713,6 +713,21 @@ mod tests {
             let rebuilt = Chunk { header: original.header.clone(), children: s.raw };
             assert_eq!(write(&rebuilt), write(&original));
         }
+    }
+
+    /// A linked parameter named by index and something other than a number (a JSFX slider's
+    /// name, say) is written back as read.
+    #[test]
+    fn a_link_keeps_its_source_parameter_as_written() {
+        let text = "<FXCHAIN\n<PROGRAMENV 0 0 \"Value / Param DC\"\nPARAMBASE 0.25\nLFO 0\nLFOWT 1 1\nAUDIOCTL 0\nAUDIOCTLWT 1 1\nPLINK 1 0:-1 3:_Freq 0 \"\"\n>\n>\n";
+        let original = parse(text).unwrap();
+        let mut s = FxSlot { name: "x".into(), enabled: true, raw: original.children.clone() };
+        let m = modulation(&s, 0).unwrap();
+        let link = m.link.as_ref().unwrap();
+        assert!(matches!(&link.source, LinkSource::Fx { param: 3, .. }), "{link:?}");
+        set_modulation(&mut s, &m);
+        let rebuilt = Chunk { header: original.header.clone(), children: s.raw };
+        assert_eq!(write(&rebuilt), write(&original));
     }
 
     #[test]

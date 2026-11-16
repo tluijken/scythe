@@ -616,7 +616,7 @@ pub fn name_link_param(session: &Session, target: Target, own: usize, link: &mut
     let Ok(index) = usize::try_from(*param) else { return };
     let (params, _) = super::envelope::listed_params(session, target, fx, source);
     *id = scythe_engine::fx::envelope_spec(source, params.as_deref(), index)
-        .and_then(|spec| spec.split_once(':').and_then(|(_, id)| id.parse().ok()));
+        .and_then(|spec| spec.split_once(':').map(|(_, id)| id.to_owned()));
 }
 
 fn apply_link(md: &mut ParamModulation, s: &LinkSpec, own: usize) -> Result<(), ApiError> {
