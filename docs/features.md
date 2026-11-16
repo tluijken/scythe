@@ -1280,6 +1280,12 @@ silent real-time clock; ALSA's `null` device is no substitute, it takes audio as
 made), `--view=START-END`
 (open zoomed to a range in seconds), `--render=out.wav` (render the project without a window),
 `--version` and `--help` (print, and exit; `scythe-server` and `scythe-mcp` take them too).
+On Windows the release `scythe-app.exe` is a GUI program: it prints to the terminal it was
+started from, but an interactive cmd or PowerShell prompt does not wait for it. For `--render`,
+`--render-project`, `--render-queue` and `--list-devices`, a `.cmd` script waits and sees the exit
+code in `%ERRORLEVEL%`; at a prompt use `start /wait "" scythe-app …` (cmd) or
+`Start-Process -Wait -NoNewWindow -PassThru` (PowerShell, `.ExitCode`). `scythe-server
+--list-devices` is a console program.
 A `.lua`, `.eel` or `.py` file among the arguments runs as a ReaScript once the project is open.
 `scripts/cargo.sh` runs cargo with the devbox library paths: `devbox run -- scripts/cargo.sh clippy`.
 Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 2, so a debug
