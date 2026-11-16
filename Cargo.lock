@@ -4189,6 +4189,7 @@ dependencies = [
  "hound",
  "image",
  "mlua",
+ "raw-window-handle",
  "rayon",
  "realfft",
  "rfd",

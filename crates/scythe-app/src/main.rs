@@ -6,6 +6,8 @@ mod editor_host;
 mod fx_preset;
 mod keys;
 mod live;
+#[cfg(any(windows, test))]
+mod main_window;
 mod nam;
 mod palette;
 mod plugin_window;
@@ -333,6 +335,8 @@ fn main() -> eframe::Result {
         "Scythe",
         options,
         Box::new(move |cc| {
+            #[cfg(windows)]
+            main_window::place(cc);
             theme::install(&cc.egui_ctx);
             if let Some(scale) = std::env::var("SCYTHE_UI_SCALE").ok().and_then(|v| v.parse::<f32>().ok()) {
                 cc.egui_ctx.set_zoom_factor(scale.clamp(0.5, 3.0));
