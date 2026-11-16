@@ -1,3 +1,7 @@
+// A release build opens no console window of its own; `attach_console` gives the output to the
+// terminal it was started from.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod commands;
 mod demo;
@@ -208,12 +212,29 @@ usage: scythe-app [project.RPP] [script.lua|.eel|.py ...] [options]
   --help                 print this help, and exit
 ";
 
+/// Gives a GUI-subsystem build the console of the terminal it was started from, so its output
+/// and logs reach it; started from Explorer there is none and nothing changes.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_console() {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: only reads and sets up this process's standard handles.
+    unsafe {
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() && GetStdHandle(STD_ERROR_HANDLE).is_null() {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
 fn app_icon() -> egui::IconData {
     let img = image::load_from_memory(include_bytes!("../assets/icon.png")).expect("bundled icon").to_rgba8();
     egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
 }
 
 fn main() -> eframe::Result {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_console();
     if let Some(code) = scythe_engine::plugin_scan::helper_main(&std::env::args().collect::<Vec<_>>()) {
         std::process::exit(code);
     }

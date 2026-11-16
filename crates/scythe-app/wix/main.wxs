@@ -39,6 +39,8 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='Scythe Installation'/>
         <Property Id='ARPHELPLINK' Value='https://github.com/tluijken/scythe'/>
+        <Icon Id='Scythe.exe' SourceFile='$(var.CargoTargetBinDir)\scythe-app.exe'/>
+        <Property Id='ARPPRODUCTICON' Value='Scythe.exe'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
@@ -66,6 +68,7 @@
                                     Directory='ProgramMenuFolder'
                                     Name='Scythe'
                                     WorkingDirectory='Bin'
+                                    Icon='Scythe.exe'
                                     Advertise='yes'/>
                             </File>
                         </Component>
