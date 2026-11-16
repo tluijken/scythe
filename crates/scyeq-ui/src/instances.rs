@@ -164,7 +164,9 @@ fn place_chips(widths: &[f32], area: Rect, more: impl Fn(usize) -> f32) -> (Vec<
             return (places, more);
         }
     }
-    (Vec::new(), None)
+    // Too narrow even for the count beside the curve: it goes over the curve's right end.
+    let w = more(widths.len());
+    (Vec::new(), Some(Rect::from_min_size(pos2(area.right() - w, area.top()), vec2(w, 22.0))))
 }
 
 /// Boxes of `widths` left to right in lines 22 px high, as many as fit in `area`.
@@ -172,6 +174,9 @@ fn flow(widths: &[f32], area: Rect) -> Vec<Rect> {
     let (mut x, mut y) = (area.left(), area.top());
     let mut out = Vec::new();
     for &w in widths {
+        if w > area.width() {
+            break;
+        }
         if x > area.left() && x + w > area.right() {
             x = area.left();
             y += 26.0;
@@ -213,5 +218,21 @@ fn open_and_bypass(list: &mut dyn InstanceControls, ui: &mut Ui, rect: Rect, ins
     .clicked()
     {
         list.toggle_instance_bypass(inst.id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::pos2;
+
+    use super::*;
+
+    #[test]
+    fn the_count_stays_in_the_row_when_not_even_it_fits_beside_the_curve() {
+        let area = Rect::from_min_max(pos2(400.0, 8.0), pos2(410.0, 92.0));
+        let (shown, more) = place_chips(&[60.0, 60.0], area, |_| 24.0);
+        assert!(shown.is_empty());
+        let more = more.expect("a count");
+        assert!(more.right() <= area.right() && more.top() >= area.top(), "{more:?}");
     }
 }
