@@ -2457,9 +2457,9 @@ fn vst3_parameter_modulation_learn_and_envelopes_are_named_by_index_and_id() {
     ok(&mut s, json!({"cmd": "envelope.point_add", "track": t, "envelope": "fx:0:0", "time": 1.0, "value": 0.25}));
     let text = scythe_core::rpp::project_to_rpp(&s.project);
     std::fs::remove_dir_all(&dir).ok();
-    assert!(text.contains("<PROGRAMENV 0:0 0"), "{text}");
-    assert!(text.contains("PARMLEARN 0:0 1968 0"), "{text}");
-    assert!(text.contains("<PARMENV 0:0 0 1 "), "{text}");
+    assert!(text.contains("<PROGRAMENV 0:3 0"), "{text}");
+    assert!(text.contains("PARMLEARN 0:3 1968 0"), "{text}");
+    assert!(text.contains("<PARMENV 0:3 0 1 "), "{text}");
 }
 
 /// A Scythe project from before the format revision holds the boost's envelope and modulation

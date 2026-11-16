@@ -33,6 +33,8 @@ fn copy_wide(src: &str, dst: &mut [TChar]) {
 const GAIN_CID: TUID = uid(0x5C7E4E01, 0x2A6B4D5A, 0x9F3B1C2D, 0x3E4F5061);
 const CONTROLLER_CID: TUID = uid(0x5C7E4E02, 0x2A6B4D5A, 0x9F3B1C2D, 0x3E4F5061);
 const SYNTH_CID: TUID = uid(0x5C7E4E03, 0x2A6B4D5A, 0x9F3B1C2D, 0x3E4F5061);
+/// The gain's parameter id, other than its index (0) so a host's tests can tell the two apart.
+const GAIN_ID: ParamID = 3;
 
 unsafe fn read_f64(stream: *mut IBStream) -> Option<f64> {
     // SAFETY: the host passes a readable stream.
@@ -223,7 +225,7 @@ impl IAudioProcessorTrait for Processor {
             if let Some(changes) = ComRef::from_raw(data.inputParameterChanges) {
                 for i in 0..changes.getParameterCount() {
                     if let Some(queue) = ComRef::from_raw(changes.getParameterData(i))
-                        && queue.getParameterId() == 0
+                        && queue.getParameterId() == GAIN_ID
                     {
                         gain_queue = Some(queue);
                     }
@@ -318,7 +320,7 @@ impl IMidiMappingTrait for Controller {
         if bus != 0 || controller != 7 {
             return kResultFalse;
         }
-        unsafe { *id = 0 };
+        unsafe { *id = GAIN_ID };
         kResultOk
     }
 }
@@ -356,7 +358,7 @@ impl IEditControllerTrait for Controller {
             return kInvalidArgument;
         }
         let info = unsafe { &mut *info };
-        info.id = 0;
+        info.id = GAIN_ID;
         copy_wide("Gain", &mut info.title);
         copy_wide("Gain", &mut info.shortTitle);
         copy_wide("", &mut info.units);
