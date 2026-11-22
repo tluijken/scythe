@@ -775,11 +775,15 @@ needed on stage, no Node toolchain to build it):
 | Page | For |
 |---|---|
 | `/` | the session editor (desktop, tablet): transport with bars and tempo, arrange view with waveforms on items (move, split, delete), markers and regions, a tempo lane (drag a tempo or time signature marker, double-tap to edit or add) and the tempo map, track headers, mixer with meters, sends, effects with their parameters, undo and redo, a file browser to open and save projects, monitor mixes (a wizard like the desktop one: musician, sources, own sources, output, limiter; copy, rename, delete, output, limiter, sources), setlists (make, rename, duplicate, delete, add songs, drag to reorder, import and export text, auto-advance) and access links with QR codes |
-| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, a click fader, the mix's meter; nothing else of the session |
-| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap, the count-in beats and a count-in switch |
+| `/monitor` | "more me" on a musician's phone: pick your monitor mix (remembered per device), a big more-me knob, a fader and mute per source, a click fader, the mix's meter, a full-screen button; nothing else of the session |
+| `/setlist` | the drummer's tablet: now playing and next up in large type, progress with cue ticks, big previous / play-stop / next, the setlist's songs to cue with a tap, the count-in beats and a count-in switch; in landscape it fits the screen without scrolling (only the song list scrolls), and a button puts it full screen |
 
 The monitor and setlist pages appear once the server offers monitor mixes (`mix.*`) and
 setlists (`setlist.*`); against an older server they say so instead.
+
+The pages carry a web app manifest, but browsers install a web app (without their address bar)
+only from https or localhost; over the plain http of a stage network the full-screen button on
+`/monitor` and `/setlist` hides the browser's bars instead.
 
 To open it from a phone or tablet on the band's network, listen on the LAN with an admin token:
 

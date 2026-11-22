@@ -6,7 +6,7 @@ import { countInLabel, detector, normalizeSetlists, normalizeStatus, setlistComm
 import { formatClock } from "./format.js";
 import { Unavailable } from "./monitor.js";
 import { useStoreValue } from "./store.js";
-import { Icon, Logo, OfflineVeil, StatusPill, Switch } from "./ui.js";
+import { FullscreenButton, Icon, Logo, OfflineVeil, StatusPill, Switch } from "./ui.js";
 
 function useSetlists(client, status) {
   const [data, setData] = useState(null);
@@ -97,6 +97,7 @@ export function SetlistPage({ client, store }) {
       <label class="auto-advance"><span>Count-in</span>
         <${Switch} on=${!!countIn} title="Count each song in with the metronome" onChange=${(on) => run(setlistCommands.countIn(on), { countIn: on })} /></label>
       <${StatusPill} status=${status} />
+      <${FullscreenButton} />
     </header>
     <main class="setlist-main">
       <section class="now">

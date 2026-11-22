@@ -46,7 +46,25 @@ const ICONS = {
   refresh: `<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>`,
   file: `<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>`,
   download: `<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>`,
+  expand: `<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>`,
+  shrink: `<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>`,
 };
+
+// Full screen for a stage tablet or phone: the browser's bars out of the way. A page served over
+// plain http cannot be installed as an app (that needs https), but it can go full screen. Hidden
+// where the browser cannot, or when the page already runs as an installed app.
+export function FullscreenButton() {
+  const [on, setOn] = useState(!!document.fullscreenElement);
+  useEffect(() => {
+    const sync = () => setOn(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", sync);
+    return () => document.removeEventListener("fullscreenchange", sync);
+  }, []);
+  const standalone = globalThis.matchMedia?.("(display-mode: standalone), (display-mode: fullscreen)").matches;
+  if (!document.fullscreenEnabled || standalone) return null;
+  const toggle = () => (on ? document.exitFullscreen() : document.documentElement.requestFullscreen()).catch(() => {});
+  return html`<${IconButton} icon=${on ? "shrink" : "expand"} title=${on ? "Leave full screen" : "Full screen"} cls="round" size=${22} onClick=${toggle} />`;
+}
 
 export function Icon({ name, size = 18, cls = "" }) {
   return html`<svg class=${"icon " + cls} width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor"

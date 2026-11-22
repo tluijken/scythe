@@ -5,7 +5,7 @@ import { html, useCallback, useEffect, useRef, useState } from "../vendor/preact
 import { MORE_ME_RANGE, detector, mixCommands, normalizeMix, normalizeMixes, pickMix } from "./domains.js";
 import { dbToGain, formatDbValue, formatPan, gainToDb } from "./format.js";
 import { useStoreValue } from "./store.js";
-import { Fader, Icon, IconButton, Knob, Logo, Meter, OfflineVeil, Pan, StatusPill } from "./ui.js";
+import { Fader, FullscreenButton, Icon, IconButton, Knob, Logo, Meter, OfflineVeil, Pan, StatusPill } from "./ui.js";
 
 const MIX_KEY = "scythe.monitor.mix";
 
@@ -152,6 +152,7 @@ export function MonitorPage({ client, store }) {
         : html`<button class="mix-title" onClick=${() => setPicking(true)} title="Choose another mix">
             <span class="dot" style=${{ background: mix.color || "var(--orange)" }}></span>${mix.name}<${Icon} name="down" size=${18} /></button>`}
       <${StatusPill} status=${status} compact=${true} />
+      <${FullscreenButton} />
     </header>
     <${Meter} axis="x" cls="mix-meter" read=${() => store.meters.mixes.get(mix.id) || store.meters.tracks.get(mix.id)} />
     <div class="more-me">
