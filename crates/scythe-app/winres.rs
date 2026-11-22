@@ -1,6 +1,6 @@
 //! The Windows resources of Scythe's programs, shared by the build scripts of scythe-app,
 //! scythe-server and scythe-mcp (`#[path]`): a VERSIONINFO naming the product Scythe and the
-//! workspace version, as SignPath's code signing checks, and the icon if there is one.
+//! workspace version, which Explorer, the installer and code signing read, and the icon if any.
 
 use std::path::Path;
 
