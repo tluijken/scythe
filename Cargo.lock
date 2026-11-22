@@ -835,7 +835,7 @@ checksum = "a76abbdb2907f6fd97fb6bc0b7be96b77d328f2dd9669d1075cc03369ed22154"
 
 [[package]]
 name = "clap-test-gain"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap-sys",
  "x11rb",
@@ -2610,7 +2610,7 @@ dependencies = [
 
 [[package]]
 name = "lv2-test-plugins"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "x11rb",
 ]
@@ -4158,14 +4158,14 @@ dependencies = [
 
 [[package]]
 name = "scyeq-dsp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "realfft",
 ]
 
 [[package]]
 name = "scyeq-plugin"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "clap-sys",
@@ -4191,7 +4191,7 @@ dependencies = [
 
 [[package]]
 name = "scyeq-ui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "egui",
  "egui_kittest",
@@ -4200,7 +4200,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "eframe",
@@ -4235,14 +4235,14 @@ dependencies = [
 
 [[package]]
 name = "scythe-chooser"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "scythe-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "thiserror 2.0.21",
@@ -4250,7 +4250,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-decode"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "opus-pure",
  "symphonia",
@@ -4258,7 +4258,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-engine"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "arc-swap",
@@ -4294,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-itest"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "hound",
  "libc",
@@ -4304,7 +4304,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-mcp"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "embed-resource",
  "hound",
@@ -4322,7 +4322,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-server"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "axum",
  "embed-resource",
@@ -4343,7 +4343,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-session"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "flate2",
@@ -4358,7 +4358,7 @@ dependencies = [
 
 [[package]]
 name = "scythe-surface"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "midir",
  "scythe-core",
@@ -5483,7 +5483,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vst2-test-plugin"
-version = "0.1.1"
+version = "0.2.0"
 
 [[package]]
 name = "vst3"
@@ -5496,7 +5496,7 @@ dependencies = [
 
 [[package]]
 name = "vst3-test-plugin"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "vst3",
 ]
