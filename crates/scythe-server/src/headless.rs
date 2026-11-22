@@ -73,7 +73,10 @@ pub fn run(options: Options) -> Result<(), String> {
     install_signal_handlers();
     scythe_engine::realtime::enable();
     scythe_engine::plugin_scan::Catalog::global().snapshot();
-    let pool = Arc::new(MediaPool::with_resample(ResampleMode::PLAYBACK));
+    let pool = Arc::new(
+        MediaPool::with_resample(ResampleMode::PLAYBACK)
+            .with_disk_cache(scythe_engine::media_cache::DiskCache::for_user()),
+    );
     let mut notice = None;
     let engine = if options.null_audio {
         Engine::start_offline(pool, options.devices.sample_rate.unwrap_or(48_000))

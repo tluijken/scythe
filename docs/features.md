@@ -982,6 +982,15 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   default playback mode, the 64-point sinc, for playback; every render follows the project's
   `RENDER_RESAMPLE` mode (16- to 768-point sinc, linear, point, linear with one or two IIR
   low-passes, r8brain free).
+- **Media cache**: unlike REAPER, which reads media as it plays, Scythe decodes every file and
+  converts it to the device's rate when a project opens. What took long to make (files at
+  another rate than the device, and compressed files) is kept in `scythe/media` under the user's
+  cache directory (`%LOCALAPPDATA%`, `~/.cache`, `~/Library/Caches`), keyed by the file's path,
+  modification time and size, the rate and the resample mode, so a changed file is read anew.
+  The least recently used entries go past 16 GB; `SCYTHE_MEDIA_CACHE=0` turns it off, or names
+  another directory. A 45-minute live set of 41 files at 44.1 kHz on a 48 kHz device opened in
+  55 s, and in 4 s from the cache (`examples/load_time.rs`); with the device at the files' rate
+  ("Allow projects to override device sample rate") nothing is converted and it took 11 s.
 - **Files**: lossless `.RPP` load/save, `<name>.RPP-bak` on save, auto-save every 5 minutes to
   `Backups/` (held while a song plays, up to 15 minutes, never while recording; the newest 50
   kept), media import (dialog and drag-and-drop), render to WAV (whole project, time selection or

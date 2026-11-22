@@ -233,7 +233,10 @@ impl ScytheApp {
     /// A window on an empty project, playing on `request` (else the default device, and a
     /// notice says why), or on a silent clock with `null_audio`.
     pub fn with_devices(ctx: egui::Context, request: &scythe_engine::DeviceRequest, null_audio: bool) -> Self {
-        let pool = Arc::new(MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK));
+        let pool = Arc::new(
+            MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK)
+                .with_disk_cache(scythe_engine::media_cache::DiskCache::for_user()),
+        );
         let mut session = Session::new(Engine::start_offline(pool, request.sample_rate.unwrap_or(48_000)));
         session.no_input = request.no_input;
         if !null_audio {

@@ -596,6 +596,8 @@ pub struct MediaPool {
     /// How files at another rate are converted to the engine's, and how takes play at another
     /// rate without keeping their pitch.
     resample: ResampleMode,
+    /// Where decoded and converted files are kept between sessions, when they are.
+    disk: Option<crate::media_cache::DiskCache>,
 }
 
 type ProcessedKey = (PathBuf, (u64, u64, u64, i32));
@@ -613,6 +615,13 @@ impl MediaPool {
     /// mode for playback.
     pub fn with_resample(mode: ResampleMode) -> Self {
         Self { resample: mode, ..Self::default() }
+    }
+
+    /// Keeps decoded and converted files in `cache`, and reads them from there when they have
+    /// not changed: for the pools a session plays from, not for renders or tests.
+    pub fn with_disk_cache(mut self, cache: Option<crate::media_cache::DiskCache>) -> Self {
+        self.disk = cache;
+        self
     }
 
     pub fn resample_mode(&self) -> ResampleMode {
@@ -709,10 +718,23 @@ impl MediaPool {
         }
         let stamp = stamp(path);
         let result = media_threads().install(|| -> Result<_, MediaError> {
-            let raw = decode_file(path)?;
-            let audio = resample_with(&raw, engine_rate, self.resample)?;
+            let cached = self.disk.as_ref().and_then(|c| Some((c, c.entry_path(path, engine_rate, self.resample)?)));
+            let (source_rate, audio) = match cached.as_ref().and_then(|(c, entry)| c.read(entry)) {
+                Some(hit) => (hit.source_rate, hit.audio),
+                None => {
+                    let raw = decode_file(path)?;
+                    let audio = resample_with(&raw, engine_rate, self.resample)?;
+                    if let Some((cache, entry)) = &cached
+                        && crate::media_cache::worth_keeping(path, raw.sample_rate, engine_rate)
+                        && let Err(e) = cache.write(entry, raw.sample_rate, &audio)
+                    {
+                        eprintln!("media cache: cannot keep {}: {e}", path.display());
+                    }
+                    (raw.sample_rate, audio)
+                }
+            };
             let peaks = Peaks::compute(&audio, Peaks::DEFAULT_RESOLUTION);
-            Ok(Arc::new(Media { path: path.to_owned(), source_rate: raw.sample_rate, audio: Arc::new(audio), peaks }))
+            Ok(Arc::new(Media { path: path.to_owned(), source_rate, audio: Arc::new(audio), peaks }))
         });
         let state = match &result {
             Ok(m) => MediaState::Ready(m.clone()),

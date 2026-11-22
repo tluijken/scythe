@@ -23,6 +23,7 @@ pub mod jsfx;
 pub mod loudness;
 pub mod lv2;
 pub mod media;
+pub mod media_cache;
 pub mod media_info;
 pub mod meter;
 pub mod midi_io;

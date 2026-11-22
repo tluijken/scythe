@@ -1,5 +1,6 @@
 //! Times loading every media file of a project into a pool, at a given engine rate.
 //! cargo run --release -p scythe-engine --example load_time -- <project.RPP> [rate]
+//! It reads and fills the media cache as the app does; `SCYTHE_MEDIA_CACHE=0` times it without.
 use std::time::Instant;
 
 use rayon::prelude::*;
@@ -20,7 +21,8 @@ fn main() {
         .collect();
     files.sort();
     files.dedup();
-    let pool = MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK);
+    let pool = MediaPool::with_resample(scythe_core::render_settings::ResampleMode::PLAYBACK)
+        .with_disk_cache(scythe_engine::media_cache::DiskCache::for_user());
     let start = Instant::now();
     let mut times: Vec<_> = files
         .par_iter()
