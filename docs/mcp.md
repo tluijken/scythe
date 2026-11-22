@@ -20,7 +20,9 @@ by the client in `initialize`.
 Build the binary with `devbox run -- scripts/cargo.sh build --release -p scythe-mcp`; it lands
 in `target/release/scythe-mcp`. Scythe has to serve its control API for `--url` and for `/mcp`:
 the headless server does by default on `127.0.0.1:8770`, the desktop app with
-`--control 127.0.0.1:8770`.
+`--control 127.0.0.1:8770` or with "Start the web UI and MCP server with Scythe" in the audio
+device window (Preferences), whose "Claude Code command" button copies the `claude mcp add` line
+with its token.
 
 ### Claude Code
 

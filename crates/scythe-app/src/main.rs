@@ -17,6 +17,7 @@ mod nam;
 mod palette;
 mod plugin_window;
 mod pump;
+mod remote;
 mod script;
 mod script_host;
 mod theme;
@@ -31,8 +32,11 @@ struct Shell {
     /// Runs the control API's commands and events, the control surfaces (OSC devices, Mackie
     /// Control, HUI), marker actions and automation between frames.
     _pump: pump::Pump,
-    /// The control API, when `--control` serves it; dropped (and stopped) with the window.
+    /// The control API, when `--control` or the preferences serve it; dropped (and stopped)
+    /// with the window.
     _control: Option<scythe_server::ControlServer>,
+    /// The Wi-Fi hotspot the preferences start with the control API; off again with the window.
+    _hotspot: Option<remote::Hotspot>,
     app: app::ScytheApp,
     /// ReaScripts from the command line, run once the window has drawn: a dialog they open
     /// blocks the window until answered.
@@ -281,6 +285,9 @@ fn main() -> eframe::Result {
             std::process::exit(2);
         }
     };
+    // `--control` (`off` too) or SCYTHE_CONTROL go before the preferences' web UI setting.
+    let control_from_command_line = args.iter().any(|a| a == "--control" || a.starts_with("--control="))
+        || std::env::var_os("SCYTHE_CONTROL").is_some();
     let valued = |i: usize| {
         i > 0 && {
             let flag = args[i - 1].as_str();
@@ -401,9 +408,20 @@ fn main() -> eframe::Result {
             }
             app.session.script_runner = Some(crate::script_host::control_runner());
             let doorbell = pump::doorbell(&app.session);
+            let control = if control_from_command_line {
+                control
+            } else {
+                remote::config(&app.prefs.remote).unwrap_or_else(|e| {
+                    app.notify(e);
+                    None
+                })
+            };
+            let token = control.as_ref().and_then(|c| c.token.clone());
             let (control, commands) = match control.map(|c| scythe_server::ControlServer::start(c, doorbell.clone())) {
                 Some(Ok((server, commands))) => {
                     eprintln!("control API: http://{}/api", server.addr());
+                    let from_command_line = control_from_command_line;
+                    app.view.control_api = Some(remote::Serving { addr: server.addr(), token, from_command_line });
                     (Some(server), Some(commands))
                 }
                 Some(Err(e)) => {
@@ -411,6 +429,16 @@ fn main() -> eframe::Result {
                     (None, None)
                 }
                 None => (None, None),
+            };
+            // The hotspot, for a tablet to reach the web UI without a router.
+            let remote_prefs = app.prefs.remote.clone();
+            let hotspot = if control.is_some() && remote_prefs.hotspot && remote::HOTSPOT_SUPPORTED {
+                let password = remote_prefs.hotspot_password.unwrap_or_else(remote::new_password);
+                remote::Hotspot::start(scythe_core::prefs::HOTSPOT_SSID, &password)
+                    .map_err(|e| app.notify(e))
+                    .ok()
+            } else {
+                None
             };
             let surfaces = scythe_surface::SurfaceHost::new(doorbell);
             let wake = cc.egui_ctx.clone();
@@ -421,7 +449,8 @@ fn main() -> eframe::Result {
                 std::sync::Arc::new(move || wake.request_repaint()),
             );
             app.session.release();
-            Ok(Box::new(Shell { _pump: pump, _control: control, app, scripts, profile: FrameProfile::from_env() }))
+            let profile = FrameProfile::from_env();
+            Ok(Box::new(Shell { _pump: pump, _control: control, _hotspot: hotspot, app, scripts, profile }))
         }),
     )
 }

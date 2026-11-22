@@ -281,7 +281,7 @@ fn is_access(value: &Value) -> bool {
 }
 
 /// Addresses phones on the network can reach this server at, for the links' QR codes.
-fn origins(addr: SocketAddr) -> Vec<String> {
+pub fn origins(addr: SocketAddr) -> Vec<String> {
     let ip = addr.ip();
     if ip.is_loopback() {
         return Vec::new();

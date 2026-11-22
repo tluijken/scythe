@@ -109,6 +109,8 @@ pub struct ViewState {
     pub main_toolbar: bool,
     /// The floating toolbars open, 1 to 32.
     pub toolbars: std::collections::BTreeSet<u8>,
+    /// The control API serving beside the window (web UI and MCP), once it started.
+    pub control_api: Option<crate::remote::Serving>,
 }
 
 /// What a cached MIDI note layout depends on.
@@ -293,6 +295,7 @@ impl ScytheApp {
                 mouse_editor: false,
                 main_toolbar: false,
                 toolbars: Default::default(),
+                control_api: None,
             },
             palette: None,
             clipboard: Vec::new(),

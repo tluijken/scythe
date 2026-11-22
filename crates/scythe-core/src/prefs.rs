@@ -36,6 +36,72 @@ pub struct Preferences {
     /// `allstereopairs`: stereo pairs start on every channel (Input 2 / Input 3), not only
     /// odd ones. `None` until set: REAPER's default, on.
     pub all_stereo_pairs: Option<bool>,
+    /// The control API the window serves on its own, with the web UI and the MCP endpoint.
+    pub remote: RemotePrefs,
+}
+
+/// `scythe_remote*`: the control API (web UI and `/mcp`) the desktop app serves when it starts,
+/// without `--control` on the command line. Scythe's own keys; REAPER ignores them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RemotePrefs {
+    /// `scythe_remote`: serve it.
+    pub enabled: bool,
+    /// `scythe_remote_addr`: where, such as `0.0.0.0:8770`; `None` for [`REMOTE_DEFAULT_ADDR`].
+    pub addr: Option<String>,
+    /// `scythe_remote_token`: the admin token clients present.
+    pub token: Option<String>,
+    /// `scythe_hotspot`: Windows only, start the computer's mobile hotspot with the control API,
+    /// so a tablet joins the computer itself instead of a router.
+    pub hotspot: bool,
+    /// `scythe_hotspot_password`: the hotspot's password (its network is [`HOTSPOT_SSID`]).
+    pub hotspot_password: Option<String>,
+}
+
+/// The network name of the hotspot Scythe starts.
+pub const HOTSPOT_SSID: &str = "Scythe";
+
+/// Where the control API listens unless the preferences say otherwise: every network, as a
+/// tablet on stage needs; the token keeps others out.
+pub const REMOTE_DEFAULT_ADDR: &str = "0.0.0.0:8770";
+
+impl RemotePrefs {
+    pub fn addr(&self) -> &str {
+        self.addr.as_deref().unwrap_or(REMOTE_DEFAULT_ADDR)
+    }
+
+    fn read(&mut self, key: &str, value: &str) -> bool {
+        let text = || Some(value.to_owned()).filter(|v| !v.is_empty());
+        match key {
+            "scythe_remote" => self.enabled = value.parse::<i64>().is_ok_and(|v| v != 0),
+            "scythe_remote_addr" => self.addr = text(),
+            "scythe_remote_token" => self.token = text(),
+            "scythe_hotspot" => self.hotspot = value.parse::<i64>().is_ok_and(|v| v != 0),
+            "scythe_hotspot_password" => self.hotspot_password = text(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Nothing until the control API was turned on once, so a fresh file stays REAPER's.
+    fn values(&self) -> Vec<(String, String)> {
+        if *self == Self::default() {
+            return Vec::new();
+        }
+        let mut out = vec![("scythe_remote".to_owned(), u8::from(self.enabled).to_string())];
+        if let Some(addr) = &self.addr {
+            out.push(("scythe_remote_addr".to_owned(), addr.clone()));
+        }
+        if let Some(token) = &self.token {
+            out.push(("scythe_remote_token".to_owned(), token.clone()));
+        }
+        if self.hotspot || self.hotspot_password.is_some() {
+            out.push(("scythe_hotspot".to_owned(), u8::from(self.hotspot).to_string()));
+        }
+        if let Some(password) = &self.hotspot_password {
+            out.push(("scythe_hotspot_password".to_owned(), password.clone()));
+        }
+        out
+    }
 }
 
 impl Preferences {
@@ -448,6 +514,7 @@ impl Default for Preferences {
             audio: AudioDevicePrefs::default(),
             channel_aliasing: 0,
             all_stereo_pairs: None,
+            remote: RemotePrefs::default(),
         }
     }
 }
@@ -502,6 +569,7 @@ impl Preferences {
                 "useinnc" => prefs.channel_aliasing = value.parse::<i64>().map_or(0, |v| v as u32),
                 "allstereopairs" => prefs.all_stereo_pairs = value.parse::<i64>().ok().map(|v| v != 0),
                 key if prefs.audio.read(key, value) => {}
+                key if prefs.remote.read(key, value) => {}
                 "csurf_cnt" => surface_count = value.parse().unwrap_or(0),
                 "projecttabs" => tab_count = value.parse().unwrap_or(0),
                 "lastproject" => prefs.last_project = Some(value.to_owned()).filter(|v| !v.is_empty()),
@@ -558,6 +626,7 @@ impl Preferences {
             values.push(("allstereopairs".to_owned(), u8::from(on).to_string()));
         }
         values.extend(self.audio.values());
+        values.extend(self.remote.values());
         let has_surfaces = !self.surfaces.is_empty() || text.lines().any(|l| l.trim_start().starts_with("csurf_cnt="));
         if has_surfaces {
             values.push(("csurf_cnt".to_owned(), self.surfaces.len().to_string()));
@@ -667,6 +736,30 @@ mod tests {
         assert_eq!(fresh, "[REAPER]\npreroll=0\nprerollmeas=2.00000000000000\nmetronome_defout=-1\n");
         assert_eq!(Preferences::parse(&fresh), Preferences::default());
         assert_eq!(Preferences::parse("[REAPER]\nprerollmeas=-2\npreroll=x\n"), Preferences::default());
+    }
+
+    #[test]
+    fn remote_keys_round_trip_and_stay_out_until_used() {
+        assert!(!Preferences::default().write_into("").contains("scythe_remote"));
+        let mut p = Preferences {
+            remote: RemotePrefs { enabled: true, token: Some("abc123".into()), ..Default::default() },
+            ..Default::default()
+        };
+        let text = p.write_into("");
+        assert!(text.contains("scythe_remote=1\n") && text.contains("scythe_remote_token=abc123\n"));
+        assert!(!text.contains("scythe_remote_addr") && !text.contains("scythe_hotspot"));
+        p.remote.hotspot = true;
+        p.remote.hotspot_password = Some("letmein99".into());
+        let text = p.write_into(&text);
+        assert!(text.contains("scythe_hotspot=1\n") && text.contains("scythe_hotspot_password=letmein99\n"));
+        let read = Preferences::parse(&text);
+        assert_eq!(read.remote, p.remote);
+        assert_eq!(read.remote.addr(), REMOTE_DEFAULT_ADDR);
+        p.remote.enabled = false;
+        p.remote.addr = Some("127.0.0.1:9000".into());
+        let read = Preferences::parse(&p.write_into(&text));
+        assert_eq!(read.remote, p.remote);
+        assert_eq!(read.remote.addr(), "127.0.0.1:9000");
     }
 
     #[test]

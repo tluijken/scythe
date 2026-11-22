@@ -205,6 +205,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
                 closing(app, ui);
                 buffering(app, ui);
                 channel_naming(app, ui, &mut state);
+                remote(app, ui);
             });
         },
     );
@@ -311,6 +312,28 @@ fn switch_row(ui: &mut Ui, label: &str, on: bool, enabled: bool) -> bool {
     let resp = switch(ui, sw, on && enabled, if enabled { ACCENT } else { RAISED_HI });
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, on, label));
     end_row(ui, r.shrink2(vec2(0.0, 5.0)));
+    enabled && resp.clicked()
+}
+
+/// A [`switch_row`] indented under the one before it, with an info button whose tooltip says
+/// what the option is for; true when the switch is clicked.
+fn info_switch_row(ui: &mut Ui, label: &str, on: bool, enabled: bool, info: &str) -> bool {
+    const INDENT: f32 = 24.0;
+    let full = ui.allocate_space(vec2(ui.available_width(), ROW_H)).1;
+    let r = Rect::from_min_max(pos2(full.left() + INDENT, full.top()), full.max);
+    ui.painter().rect_filled(r, CornerRadius::same(10), RAISED);
+    let fg = if enabled { TEXT } else { TEXT_DIM };
+    ui.painter().text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(12.0), fg);
+    let dot = pos2(r.right() - 70.0, r.center().y);
+    let hover = ui.interact(Rect::from_center_size(dot, vec2(18.0, 18.0)), ui.id().with(label), egui::Sense::hover());
+    let ring = if hover.hovered() { TEXT } else { TEXT_DIM };
+    ui.painter().circle_stroke(dot, 7.5, egui::Stroke::new(1.2, ring));
+    ui.painter().text(dot, Align2::CENTER_CENTER, "i", theme::semibold(11.0), ring);
+    hover.on_hover_text(info);
+    let sw = Rect::from_min_size(pos2(r.right() - 50.0, r.center().y - 10.0), vec2(38.0, 20.0));
+    let resp = switch(ui, sw, on && enabled, if enabled { ACCENT } else { RAISED_HI });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, enabled, on, label));
+    end_row(ui, full.shrink2(vec2(0.0, 5.0)));
     enabled && resp.clicked()
 }
 
@@ -605,6 +628,110 @@ fn closing(app: &mut ScytheApp, ui: &mut Ui) {
     let stopped = app.prefs.audio.close_stopped == Some(true);
     if switch_row(ui, "Close audio device when stopped and active (less responsive)", stopped, true) {
         app.change_preferences(|p| p.audio.close_stopped = Some(!stopped));
+    }
+}
+
+/// Scythe's own: the control API served beside the window, with the web UI for tablets and
+/// phones and the MCP endpoint (`/mcp`) for agents. `--control` goes before it, and a change
+/// takes effect when Scythe starts next.
+fn remote(app: &mut ScytheApp, ui: &mut Ui) {
+    section(ui, "Web UI and MCP server");
+    let prefs = app.prefs.remote.clone();
+    if switch_row(ui, "Start the web UI and MCP server with Scythe", prefs.enabled, true) {
+        let token = prefs.token.clone().unwrap_or_else(crate::remote::new_token);
+        app.change_preferences(|p| {
+            p.remote.enabled = !prefs.enabled;
+            p.remote.token = Some(token);
+        });
+    }
+
+    // The hotspot, only with the web UI on and where Scythe can start one.
+    let can = prefs.enabled && crate::remote::HOTSPOT_SUPPORTED;
+    let label = "Start a Wi-Fi hotspot for tablets and phones";
+    if info_switch_row(ui, label, prefs.hotspot, can, crate::remote::hotspot_info()) {
+        let password = prefs.hotspot_password.clone().unwrap_or_else(crate::remote::new_password);
+        app.change_preferences(|p| {
+            p.remote.hotspot = !prefs.hotspot;
+            p.remote.hotspot_password = Some(password);
+        });
+    }
+    if can && prefs.hotspot {
+        let r = row(ui, "Hotspot");
+        let password = prefs.hotspot_password.clone().unwrap_or_default();
+        let text = format!("Network {}, password {password}", scythe_core::prefs::HOTSPOT_SSID);
+        ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, text, theme::mono(11.0), TEXT);
+        let renew = Rect::from_min_size(pos2(r.right() - 110.0, r.top()), vec2(110.0, r.height()));
+        if text_pill(ui, renew, "New password", theme::regular(12.0), BG, TEXT).clicked() {
+            let password = crate::remote::new_password();
+            app.change_preferences(|p| p.remote.hotspot_password = Some(password));
+        }
+        end_row(ui, r);
+    }
+
+    let addr = prefs.addr().to_owned();
+    let port = crate::remote::port(&addr);
+    let public = crate::remote::is_public(&addr);
+    let r = row(ui, "Reachable from");
+    let items =
+        vec![("Every network (tablets, phones)".to_owned(), public), ("This computer only".to_owned(), !public)];
+    let shown = items[if public { 0 } else { 1 }].0.clone();
+    let picker = Rect::from_min_size(r.min, vec2(250.0, r.height()));
+    if let Some(i) = choice(ui, picker, "Reachable from", &shown, &items) {
+        let host = if i == 0 { "0.0.0.0" } else { "127.0.0.1" };
+        app.change_preferences(|p| p.remote.addr = Some(format!("{host}:{port}")));
+    }
+    let field = Rect::from_min_size(pos2(r.left() + 262.0, r.top()), vec2(110.0, r.height()));
+    ui.painter().rect_filled(field, CornerRadius::same(255), BG);
+    let mut chosen = port;
+    ui.put(field.shrink2(vec2(10.0, 2.0)), egui::DragValue::new(&mut chosen).range(1024..=65535).prefix("port "));
+    if chosen != port {
+        app.change_preferences(|p| p.remote.addr = Some(crate::remote::with_port(&addr, chosen)));
+    }
+    end_row(ui, r);
+
+    let r = row(ui, "Token");
+    let shown = prefs.token.clone().unwrap_or_else(|| "made when turned on".to_owned());
+    ui.painter().text(r.left_center() + vec2(4.0, 0.0), Align2::LEFT_CENTER, shown, theme::mono(11.0), TEXT_DIM);
+    let renew = Rect::from_min_size(pos2(r.right() - 110.0, r.top()), vec2(110.0, r.height()));
+    if text_pill(ui, renew, "New token", theme::regular(12.0), BG, TEXT).clicked() {
+        let token = crate::remote::new_token();
+        app.change_preferences(|p| p.remote.token = Some(token));
+    }
+    end_row(ui, r);
+
+    let now = app.prefs.remote.clone();
+    match app.view.control_api.clone() {
+        Some(serving) => {
+            let r = row(ui, "Copy");
+            let half = (r.width() - 8.0) / 2.0;
+            let web = Rect::from_min_size(r.min, vec2(half, r.height()));
+            let mcp = Rect::from_min_size(pos2(r.left() + half + 8.0, r.top()), vec2(half, r.height()));
+            if text_pill(ui, web, "Web UI link", theme::regular(12.0), BG, TEXT).clicked() {
+                ui.ctx().copy_text(serving.web_link());
+                app.notify("Copied the web UI link, with its token");
+            }
+            if text_pill(ui, mcp, "Claude Code command", theme::regular(12.0), BG, TEXT).clicked() {
+                ui.ctx().copy_text(serving.claude_command());
+                app.notify("Copied the command that adds Scythe to Claude Code");
+            }
+            end_row(ui, r);
+            let base = crate::remote::local_base(serving.addr);
+            let mut text = format!("Serving at {base}: the web UI, and MCP at {base}/mcp.");
+            let same = now.enabled
+                && now.addr().parse::<std::net::SocketAddr>().ok() == Some(serving.addr)
+                && now.token == serving.token;
+            if serving.from_command_line {
+                text.push_str(" Started by --control, which goes before these settings.");
+            } else if !same {
+                text.push_str(" Changes take effect when Scythe starts next.");
+            }
+            note(ui, &text);
+        }
+        None if now.enabled => note(ui, "Starts when Scythe starts next."),
+        None => {}
+    }
+    if now.enabled && crate::remote::is_public(now.addr()) {
+        note(ui, "Other devices need the token, which the web UI link holds. Musicians get links of their own there.");
     }
 }
 

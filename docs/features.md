@@ -751,6 +751,13 @@ streams transport, meter and project-changed events. It covers transport, projec
 open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
 markers, the tempo map, monitor mixes, setlists and access links, plus a full `snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
 `--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
+Without the flag, "Start the web UI and MCP server with Scythe" in the audio device window
+(Preferences) serves it from the next start: on every network or this computer only, at a port
+of choice, with an admin token made for it; the section copies the web UI link (token included)
+and the `claude mcp add` command. Under it, "Start a Wi-Fi hotspot" turns the computer into a
+Wi-Fi network named Scythe while the window is open, so a tablet joins it without a router:
+Windows' mobile hotspot (kept on while Scythe runs, also offline) or NetworkManager's on Linux;
+macOS lets no program start one, so there Internet Sharing is set up by hand.
 The window runs the control API, control surfaces and marker actions on a thread of their own,
 so they keep their pace (commands answered in a few ms, events at 20 a second) while the window
 is hidden or minimised; only actions that need the window wait for its next frame.
