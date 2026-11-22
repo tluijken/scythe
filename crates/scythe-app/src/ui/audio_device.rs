@@ -22,6 +22,8 @@ use crate::ui::window::{WindowKind, scythe_window};
 const WIDTH: f32 = 600.0;
 const LABEL_W: f32 = 150.0;
 const ROW_H: f32 = 34.0;
+/// The height of a tab's page: what the tallest, the web UI with its QR codes, needs.
+const TAB_HEIGHT: f32 = 640.0;
 /// REAPER's ALSA "RT priority" choices; 0 is "non-RT".
 const RT_PRIORITIES: [u32; 11] = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99];
 
@@ -239,8 +241,10 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
         |ui| {
             ui.set_width(WIDTH);
             tabs(ui, &mut state.tab);
-            // Each tab fits a laptop screen; a smaller window still scrolls.
-            egui::ScrollArea::vertical().id_salt(state.tab).max_height(height).show(ui, |ui| {
+            // One height for every tab, so the window keeps its size when the tab changes; each
+            // tab fits it on a laptop screen, and a smaller window still scrolls.
+            let tall = height.min(TAB_HEIGHT);
+            egui::ScrollArea::vertical().id_salt(state.tab).max_height(tall).min_scrolled_height(tall).show(ui, |ui| {
                 // Rows space themselves; widgets placed inside a row must not push the next one down.
                 ui.spacing_mut().item_spacing.y = 0.0;
                 match state.tab {
@@ -701,7 +705,7 @@ fn closing(app: &mut ScytheApp, ui: &mut Ui) {
 /// phones and the MCP endpoint (`/mcp`) for agents. `--control` goes before it, and a change
 /// takes effect when Scythe starts next.
 fn remote(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) {
-    section(ui, "Web UI and MCP server");
+    ui.add_space(6.0);
     let prefs = app.prefs.remote.clone();
     if switch_row(ui, "Start the web UI and MCP server with Scythe", prefs.enabled, true) {
         let token = prefs.token.clone().unwrap_or_else(crate::remote::new_token);
@@ -827,7 +831,7 @@ fn remote(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) {
 
 /// QR codes side by side for a phone or tablet camera, each a caption and the text it holds.
 fn qr_codes(ui: &mut Ui, codes: &[(String, String)]) {
-    const SIDE: f32 = 176.0;
+    const SIDE: f32 = 156.0;
     let r = ui.allocate_space(vec2(ui.available_width(), SIDE + 34.0)).1;
     let painter = ui.painter();
     for (i, (caption, text)) in codes.iter().enumerate() {
