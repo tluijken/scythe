@@ -966,9 +966,9 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
 
 - **Playback** of audio items (WAV/FLAC/MP3/OGG/AAC…), reversed and sectioned items (`<SOURCE
   SECTION>`), click-source items and MIDI items (through a built-in preview instrument: drums on
-  channel 10, a soft synth elsewhere). MP3s are read the way REAPER reads them: items keep the
-  encoder delay and padding and play a Xing/Info header frame as a frame of silence, the sampler
-  trims them (gapless) and holds them to 16-bit range, and both scale by 32767/32768; mid/side
+  channel 10, a soft synth elsewhere). MP3s are read the way REAPER 7.65 reads them: items and the sampler play them
+  gapless (the Xing/Info header frame, the encoder and decoder delay and the LAME header's
+  padding left out), the sampler holds them to 16-bit range, and both scale by 32767/32768; mid/side
   granules of MPEG-2 and 2.5 streams come out 3 dB low, as REAPER's decoder plays them. Opus files
   decode with the pure-Rust `opus-pure` (pre-skip and end trim applied, the header's output gain
   too, surround in the file's Vorbis channel order, as REAPER plays them) and WavPack through

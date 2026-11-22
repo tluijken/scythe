@@ -40,13 +40,13 @@ pub fn decode_file(path: &Path) -> Result<AudioData, MediaError> {
     decode_audio(path, false)
 }
 
-fn decode_audio(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
+fn decode_audio(path: &Path, sampler: bool) -> Result<AudioData, MediaError> {
     match extension(path).as_deref() {
         Some("opus") => decode_opus(path),
         Some("wv") => decode_with_ffmpeg(path),
         Some("rpp") => decode_subproject(path),
         _ => {
-            decode(path, gapless).or_else(|e| if scythe_decode::is_ogg_opus(path) { decode_opus(path) } else { Err(e) })
+            decode(path, sampler).or_else(|e| if scythe_decode::is_ogg_opus(path) { decode_opus(path) } else { Err(e) })
         }
     }
 }
@@ -133,14 +133,14 @@ fn decode_with_ffmpeg(path: &Path) -> Result<AudioData, MediaError> {
     decoded
 }
 
-/// Decodes a file the way ReaSamplOmatic5000 loads a sample: MP3 encoder delay and padding
-/// (from the LAME header) are trimmed, as in gapless playback.
-pub fn decode_gapless(path: &Path) -> Result<AudioData, MediaError> {
+/// Decodes a file the way ReaSamplOmatic5000 loads a sample: held to 16-bit range. MP3 plays
+/// gapless, as in a media item.
+pub fn decode_sample(path: &Path) -> Result<AudioData, MediaError> {
     decode_audio(path, true)
 }
 
-fn decode(path: &Path, gapless: bool) -> Result<AudioData, MediaError> {
-    from_decoded(path, scythe_decode::decode(path, gapless))
+fn decode(path: &Path, sampler: bool) -> Result<AudioData, MediaError> {
+    from_decoded(path, scythe_decode::decode(path, sampler))
 }
 
 fn from_decoded(

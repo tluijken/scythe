@@ -41,9 +41,10 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// Decodes `path` as a REAPER media item reads it, or with `gapless` as ReaSamplOmatic5000
-/// loads a sample: MP3 encoder delay and padding (from the LAME header) trimmed.
-pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
+/// Decodes `path` as a REAPER media item reads it, or with `sampler` as ReaSamplOmatic5000
+/// loads a sample. Both play MP3 gapless, as REAPER 7.65 does: the Xing/Info header frame, the
+/// encoder and decoder delay and the padding (from the LAME header) are left out.
+pub fn decode(path: &Path, sampler: bool) -> Result<Audio, Error> {
     let decode_err = Error::Decode;
     let open_err = Error::Open;
     let file = File::open(path).map_err(open_err)?;
@@ -80,17 +81,14 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
     let mut decoder = symphonia::default::get_codecs()
         .make_audio_decoder(params, &AudioDecoderOptions::default())
         .map_err(|e| decode_err(e.to_string()))?;
-    // REAPER's MPEG decoder scales its output by 32767/32768. Media items keep the encoder delay
-    // and padding and play a Xing/Info/VBRI header frame as one frame of silence.
+    // REAPER's MPEG decoder scales its output by 32767/32768.
     let mpeg = [CODEC_ID_MP1, CODEC_ID_MP2, CODEC_ID_MP3].contains(&params.codec);
-    let untrimmed = mpeg && !gapless;
-    let mut header_frame = untrimmed && starts_with_info_frame(path);
 
     let mut sample_rate = params.sample_rate.unwrap_or(0);
     let mut channels: Vec<Vec<f32>> = Vec::new();
     let mut planes: Vec<Vec<f32>> = Vec::new();
     loop {
-        let mut packet = match format.next_packet() {
+        let packet = match format.next_packet() {
             Ok(Some(p)) => p,
             Ok(None) => break,
             Err(SymphoniaError::ResetRequired) => break,
@@ -98,10 +96,6 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
         };
         if packet.track_id != track_id {
             continue;
-        }
-        if untrimmed {
-            packet.trim_start = Default::default();
-            packet.trim_end = Default::default();
         }
         match decoder.decode(&packet) {
             Ok(buf) => {
@@ -111,11 +105,6 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
                 if channels.len() < planes.len() {
                     let have = channels.first().map_or(0, Vec::len);
                     channels.resize_with(planes.len(), || vec![0.0; have]);
-                }
-                if std::mem::take(&mut header_frame) {
-                    for dst in &mut channels {
-                        dst.resize(dst.len() + frames, 0.0);
-                    }
                 }
                 for (dst, src) in channels.iter_mut().zip(&planes) {
                     dst.extend_from_slice(&src[..frames.min(src.len())]);
@@ -132,7 +121,7 @@ pub fn decode(path: &Path, gapless: bool) -> Result<Audio, Error> {
     if mpeg {
         // The sampler keeps the decoder's 16-bit output; items get it unrounded and unclipped.
         for s in channels.iter_mut().flatten() {
-            *s = if gapless {
+            *s = if sampler {
                 (*s * 32767.0).round().clamp(-32768.0, 32767.0) / 32768.0
             } else {
                 *s * (32767.0 / 32768.0)
@@ -267,26 +256,6 @@ fn lower_lsf_mid_side_gain(bytes: &mut [u8]) -> bool {
     changed
 }
 
-/// Whether the first MPEG frame (after any ID3v2 tag) carries a Xing, Info or VBRI header.
-fn starts_with_info_frame(path: &Path) -> bool {
-    use std::io::Read;
-    let mut head = Vec::new();
-    if File::open(path).and_then(|f| f.take(1 << 16).read_to_end(&mut head)).is_err() {
-        return false;
-    }
-    let mut at = 0;
-    if head.starts_with(b"ID3") && head.len() >= 10 {
-        let size = head[6..10].iter().fold(0usize, |n, &b| (n << 7) | (b & 0x7f) as usize);
-        at = 10 + size + if head[5] & 0x10 != 0 { 10 } else { 0 };
-    }
-    let Some(sync) = head.get(at..).and_then(|h| h.windows(2).position(|w| w[0] == 0xff && w[1] & 0xe0 == 0xe0)) else {
-        return false;
-    };
-    let frame = &head[at + sync..];
-    let tag_at = |offset: usize, tag: &[u8]| frame.get(offset..offset + 4) == Some(tag);
-    (4..=40).any(|o| tag_at(o, b"Xing") || tag_at(o, b"Info")) || tag_at(36, b"VBRI")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,22 +293,5 @@ mod tests {
         mpeg1[1] = 0xfb;
         let mut mpeg1 = [mpeg1.clone(), mpeg1].concat();
         assert!(!lower_lsf_mid_side_gain(&mut mpeg1));
-    }
-
-    #[test]
-    fn finds_the_mp3_info_frame() {
-        let dir = std::env::temp_dir().join(format!("scythe-info-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("x.mp3");
-        let mut bytes = b"ID3\x04\x00\x00\x00\x00\x00\x02\x00\x00".to_vec();
-        bytes.extend([0xff, 0xfb, 0x90, 0x64]);
-        bytes.extend([0; 32]);
-        bytes.extend(b"Info");
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(starts_with_info_frame(&path));
-        bytes[48..52].copy_from_slice(b"Junk");
-        std::fs::write(&path, &bytes).unwrap();
-        assert!(!starts_with_info_frame(&path));
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
