@@ -33,7 +33,7 @@ delay the device measures in its tooltip. When PipeWire still holds the card (it
 seconds after its last stream stops) Scythe waits for it rather than failing; if it stays
 busy, turn the card's profile Off (`wpctl set-profile <id> 0`, or pavucontrol's
 Configuration tab) so ALSA can have it. Without an `[audio]` section or device
-flags the server opens what the desktop app's audio device window last saved (Ctrl+P, or click
+flags the server opens what the desktop app's Preferences last saved (Ctrl+P, or click
 the rate pill in the top bar), so the rig can be set up on a screen first; `audio.set_device`
 over the control API switches it while the session runs. Each channel then shows by its name
 or its alias (`audio.channel_name`): name the in-ear outputs ("IEM Bass L") once and every
@@ -87,7 +87,7 @@ unit asking for more than that does not start at all. To raise them, put the use
 @audio - memlock unlimited
 ```
 
-Anticipative FX (on by default, as in REAPER; the audio device window's Buffering section,
+Anticipative FX (on by default, as in REAPER; the Buffering section on the Playback tab of Preferences,
 `audio.set_buffering`) renders the backing tracks ahead of the playhead on worker threads, so
 only the armed and monitored tracks and the buses they feed have to fit the device block: a
 small block (64 or 128 frames) keeps monitoring latency low without the whole set having to fit

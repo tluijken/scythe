@@ -751,14 +751,15 @@ streams transport, meter and project-changed events. It covers transport, projec
 open/save/undo, tracks, sends, effects and their parameters, items (with waveform peaks) and
 markers, the tempo map, monitor mixes, setlists and access links, plus a full `snapshot`; every change is an undo step like a UI edit. The desktop app serves it too with
 `--control ADDR` (or `SCYTHE_CONTROL`), so a tablet can drive a session that has a window.
-Without the flag, "Start the web UI and MCP server with Scythe" in the audio device window
-(Preferences) serves it from the next start: on every network or this computer only, at a port
+Without the flag, "Start the web UI and MCP server with Scythe" on the "Web UI & MCP" tab of
+Preferences serves it from the next start: on every network or this computer only, at a port
 of choice, with an admin token made for it; the section copies the web UI link (token included)
 and the `claude mcp add` command. Under it, "Start a Wi-Fi hotspot" turns the computer into a
 Wi-Fi network named Scythe while the window is open, so a tablet joins it without a router:
 Windows' mobile hotspot (kept on while Scythe runs, also offline) or NetworkManager's on Linux;
 macOS lets no program start one, so there Internet Sharing is set up by hand.
-The section shows QR codes to join that network and to open the web UI. Android 17 and later
+The tab shows QR codes to join that network and to open a page of the web UI (the editor and
+mixer, the monitor mixes or the setlist). Android 17 and later
 asks each app for local network access: the browser on the tablet needs it ("Local network"
 under the app's permissions), or the page does not load.
 The window runs the control API, control surfaces and marker actions on a thread of their own,
@@ -1257,7 +1258,7 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
   to rendering every track in the callback: Song 2's effects (NAM, ScyVerb, ScyComp, ScyEQ,
   ScyGate, ScyLimit, ScyEQ-Pro) give the same samples at 128, 384, 512 and 1024-frame blocks
   (`examples/block_identity.rs`), and a test plays a project with folders, sends, a delay, an
-  EQ and a loop both ways and compares them. Settings in the audio device window (Buffering:
+  EQ and a loop both ways and compares them. Settings on the Playback tab of Preferences (Buffering:
   anticipative FX, render-ahead, "Allow live FX multiprocessing"), `workrender` bit 1,
   `renderaheadlen` and `workthreads` (threads rendering ahead, 0 for one per performance core)
   in the preferences; API `audio.buffering` / `audio.set_buffering`, and `ahead_ms`,

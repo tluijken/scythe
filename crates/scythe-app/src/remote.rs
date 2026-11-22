@@ -1,6 +1,6 @@
 //! The control API the window serves beside it, for the web UI on a tablet or phone and for
 //! agents over MCP (`/mcp`): from `--control` (or `SCYTHE_CONTROL`), or else from the
-//! preferences ("Web UI and MCP server" in the audio device window).
+//! preferences (the "Web UI & MCP" tab of the preferences window).
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -182,6 +182,11 @@ impl Serving {
     /// The web UI's address for a tablet: on the hotspot while Scythe runs one, else on the
     /// network when the server is, else on this computer.
     pub fn web_link(&self) -> String {
+        self.page_link("/")
+    }
+
+    /// [`Self::web_link`] to one page of the web UI: `/`, `/monitor` or `/setlist`.
+    pub fn page_link(&self, path: &str) -> String {
         let on_hotspot = self.hotspot.is_some() && self.addr.ip().is_unspecified();
         let network = if on_hotspot {
             Some(format!("http://{HOTSPOT_ADDR}:{}", self.addr.port()))
@@ -189,7 +194,7 @@ impl Serving {
             scythe_server::server::origins(self.addr).into_iter().next()
         };
         let base = network.unwrap_or_else(|| local_base(self.addr));
-        format!("{base}/{}", self.token_query())
+        format!("{base}{path}{}", self.token_query())
     }
 
     /// The command that adds this Scythe to Claude Code, over MCP on this computer.
@@ -235,6 +240,7 @@ mod tests {
         );
         let everywhere = Serving { addr: "0.0.0.0:8770".parse().unwrap(), hotspot: Some("pw".into()), ..s.clone() };
         assert_eq!(everywhere.web_link(), format!("http://{HOTSPOT_ADDR}:8770/?token=abc"));
+        assert_eq!(everywhere.page_link("/setlist"), format!("http://{HOTSPOT_ADDR}:8770/setlist?token=abc"));
         let open = Serving { token: None, ..s };
         assert_eq!(open.web_link(), "http://127.0.0.1:8770/");
     }

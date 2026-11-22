@@ -642,7 +642,7 @@ A `surface` is one of:
 
 ### Audio device
 
-Admin only. As the desktop app's audio device window (REAPER's Preferences > Audio > Device).
+Admin only. As the Device tab of the desktop app's Preferences (REAPER's Preferences > Audio > Device).
 
 | `cmd` | Arguments | Answer |
 |---|---|---|

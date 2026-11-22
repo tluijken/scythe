@@ -416,7 +416,7 @@ fn the_audio_device_window_opens_from_the_status_pill_and_the_action() {
     for label in ["Audio system", "Input channels", "Input device", "Output channels", "Output device", "Sample rate"] {
         assert!(t.has(label), "{label} has no name: {:?}", t.labels());
     }
-    for label in ["Blocksize", "Bit depth", "RT priority", "Apply", "Refresh", "Edit output names"] {
+    for label in ["Blocksize", "Bit depth", "RT priority", "Apply", "Refresh"] {
         assert!(t.has(label), "{label} has no name: {:?}", t.labels());
     }
     t.h.check_accessibility();
@@ -449,21 +449,20 @@ fn the_audio_device_window_opens_from_the_status_pill_and_the_action() {
 fn the_audio_device_window_has_reapers_device_and_audio_page_switches() {
     let mut t = TestApp::live("audio_device_switches");
     t.click("Audio device settings");
-    for label in [
-        "Input channel name aliasing/remapping",
-        "Output channel name aliasing/remapping",
-        "Close audio device when stopped and application is inactive",
-        "Allow projects to override device sample rate",
-        "Lock process memory with mlockall() (caution)",
-    ] {
+    for label in ["Allow projects to override device sample rate", "Lock process memory with mlockall() (caution)"] {
         t.wait_has(label);
     }
-    t.h.get_by_label("Close audio device when stopped and application is inactive").scroll_to_me();
-    t.frames(3);
+    for tab in ["Device", "Playback", "Channels", "Web UI & MCP"] {
+        assert!(t.has(tab), "the {tab} tab has no name: {:?}", t.labels());
+    }
+    t.click_role(Role::Tab, "Playback");
+    t.wait_has("Close audio device when stopped and application is inactive");
     t.click("Close audio device when stopped and application is inactive");
     assert_eq!(t.app().prefs.audio.close_inactive, Some(scythe_core::prefs::CLOSE_INACTIVE));
-    t.h.get_by_label("Edit output names").scroll_to_me();
-    t.frames(3);
+    t.click_role(Role::Tab, "Channels");
+    for label in ["Input channel name aliasing/remapping", "Output channel name aliasing/remapping"] {
+        t.wait_has(label);
+    }
     t.click("Edit output names");
     assert!(t.has("Output 1 alias") && t.has("Output 1 hardware channel"), "{:?}", t.labels());
     t.h.check_accessibility();

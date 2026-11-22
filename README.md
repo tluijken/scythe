@@ -41,7 +41,7 @@ devbox run app -- --list-devices   # the audio devices, with their ids
 devbox run test
 ```
 
-The audio interface is chosen in the audio device window (Ctrl+P, or click the
+The audio interface is chosen on the Device tab of Preferences (Ctrl+P, or click the
 `48k · 512 · CPU` pill in the top bar): JACK, ALSA or Dummy, the devices, how many inputs and
 outputs to open, rate and block size; on ALSA it lists one entry per sound card, as REAPER does
 (`hw:QUADCAPTURE ; USB-Audio - QUAD-CAPTURE`), and the pill shows REAPER's latency figure. It

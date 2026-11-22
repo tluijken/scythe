@@ -1,7 +1,7 @@
-//! The audio device window, after REAPER's Preferences > Audio > Device page and the device
-//! parts of its Audio page: the audio system and each system's settings, closing the device
-//! while stopped, and channel naming and remapping. Apply opens the new device while the
-//! project stays open.
+//! The preferences window, in tabs that each fit the screen: the audio device (after REAPER's
+//! Preferences > Audio > Device page), playback (closing the device while stopped, and
+//! buffering), channel naming and remapping, and the web UI and MCP server. Apply opens the new
+//! device while the project stays open.
 
 use egui::{Align2, CornerRadius, Rect, RichText, Ui, pos2, vec2};
 use scythe_core::prefs::{
@@ -37,6 +37,46 @@ pub struct AudioDeviceWindow {
     pub error: Option<String>,
     /// The channel map being edited: input side or output, and the draft.
     map: Option<(bool, ChannelAliases)>,
+    /// The tab shown.
+    pub tab: Tab,
+    /// The web UI page the QR code opens.
+    page: WebPage,
+}
+
+/// The preferences window's tabs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Tab {
+    #[default]
+    Device,
+    Playback,
+    Channels,
+    Remote,
+}
+
+impl Tab {
+    const ALL: [(Tab, &'static str); 4] =
+        [(Tab::Device, "Device"), (Tab::Playback, "Playback"), (Tab::Channels, "Channels"), (Tab::Remote, "Web UI & MCP")];
+}
+
+/// The web UI pages a QR code can open: each with a caption and its path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum WebPage {
+    #[default]
+    Editor,
+    Monitor,
+    Setlist,
+}
+
+impl WebPage {
+    const ALL: [(WebPage, &'static str, &'static str); 3] = [
+        (WebPage::Editor, "Editor and mixer", "/"),
+        (WebPage::Monitor, "Monitor mixes", "/monitor"),
+        (WebPage::Setlist, "Setlist", "/setlist"),
+    ];
+
+    fn entry(self) -> (WebPage, &'static str, &'static str) {
+        Self::ALL.into_iter().find(|p| p.0 == self).unwrap_or(Self::ALL[0])
+    }
 }
 
 /// The device page's fields.
@@ -193,19 +233,25 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui) {
     let Some(mut state) = app.view.audio_device.take() else { return };
     let mut open = true;
     let height = ui.ctx().content_rect().height() - 140.0;
-    scythe_window("audio-device", "Audio device", WindowKind::Dialog).default_width(WIDTH).show(
+    scythe_window("audio-device", "Preferences", WindowKind::Dialog).default_width(WIDTH).show(
         ui.ctx(),
         &mut open,
         |ui| {
             ui.set_width(WIDTH);
-            egui::ScrollArea::vertical().max_height(height).min_scrolled_height(height.min(640.0)).show(ui, |ui| {
+            tabs(ui, &mut state.tab);
+            // Each tab fits a laptop screen; a smaller window still scrolls.
+            egui::ScrollArea::vertical().id_salt(state.tab).max_height(height).show(ui, |ui| {
                 // Rows space themselves; widgets placed inside a row must not push the next one down.
                 ui.spacing_mut().item_spacing.y = 0.0;
-                device_page(app, ui, &mut state);
-                closing(app, ui);
-                buffering(app, ui);
-                channel_naming(app, ui, &mut state);
-                remote(app, ui);
+                match state.tab {
+                    Tab::Device => device_page(app, ui, &mut state),
+                    Tab::Playback => {
+                        closing(app, ui);
+                        buffering(app, ui);
+                    }
+                    Tab::Channels => channel_naming(app, ui, &mut state),
+                    Tab::Remote => remote(app, ui, &mut state),
+                }
             });
         },
     );
@@ -253,6 +299,24 @@ fn error_window(app: &mut ScytheApp, ui: &mut Ui) {
             toggle(app);
         }
     }
+}
+
+/// The tab bar: a pill per tab, the shown one raised.
+fn tabs(ui: &mut Ui, shown: &mut Tab) {
+    let rect = ui.allocate_space(vec2(ui.available_width(), 32.0)).1;
+    ui.painter().rect_filled(rect, CornerRadius::same(255), BG);
+    let w = (rect.width() - 4.0) / Tab::ALL.len() as f32;
+    for (k, (tab, label)) in Tab::ALL.into_iter().enumerate() {
+        let r = Rect::from_min_size(pos2(rect.left() + 4.0 + k as f32 * w, rect.top() + 3.0), vec2(w - 4.0, 26.0));
+        let active = *shown == tab;
+        let (bg, fg) = if active { (RAISED_HI, TEXT) } else { (egui::Color32::TRANSPARENT, TEXT_DIM) };
+        let resp = text_pill(ui, r, label, theme::semibold(12.0), bg, fg);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Tab, true, active, label));
+        if resp.clicked() {
+            *shown = tab;
+        }
+    }
+    ui.add_space(4.0);
 }
 
 fn section(ui: &mut Ui, title: &str) {
@@ -636,7 +700,7 @@ fn closing(app: &mut ScytheApp, ui: &mut Ui) {
 /// Scythe's own: the control API served beside the window, with the web UI for tablets and
 /// phones and the MCP endpoint (`/mcp`) for agents. `--control` goes before it, and a change
 /// takes effect when Scythe starts next.
-fn remote(app: &mut ScytheApp, ui: &mut Ui) {
+fn remote(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) {
     section(ui, "Web UI and MCP server");
     let prefs = app.prefs.remote.clone();
     if switch_row(ui, "Start the web UI and MCP server with Scythe", prefs.enabled, true) {
@@ -718,13 +782,27 @@ fn remote(app: &mut ScytheApp, ui: &mut Ui) {
             }
             end_row(ui, r);
             if !serving.addr.ip().is_loopback() {
+                let r = row(ui, "QR code opens");
+                let w = (r.width() + 4.0) / WebPage::ALL.len() as f32;
+                for (k, (page, label, _)) in WebPage::ALL.into_iter().enumerate() {
+                    let pill = Rect::from_min_size(pos2(r.left() + k as f32 * w, r.top()), vec2(w - 4.0, r.height()));
+                    let active = state.page == page;
+                    let (bg, fg) = if active { (ACCENT, BG) } else { (BG, TEXT) };
+                    let resp = text_pill(ui, pill, label, theme::regular(12.0), bg, fg);
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, true, active, label));
+                    if resp.clicked() {
+                        state.page = page;
+                    }
+                }
+                end_row(ui, r);
                 let mut codes = Vec::new();
                 if let Some(password) = &serving.hotspot {
                     let wifi = crate::remote::wifi_qr(scythe_core::prefs::HOTSPOT_SSID, password);
                     codes.push(("1. Join the Wi-Fi".to_owned(), wifi));
                 }
-                let open = if codes.is_empty() { "Open the web UI" } else { "2. Open the web UI" };
-                codes.push((open.to_owned(), serving.web_link()));
+                let (_, name, path) = state.page.entry();
+                let step = if codes.is_empty() { "" } else { "2. " };
+                codes.push((format!("{step}Open {}", name.to_lowercase()), serving.page_link(path)));
                 qr_codes(ui, &codes);
             }
             let base = crate::remote::local_base(serving.addr);
