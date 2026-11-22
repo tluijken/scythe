@@ -101,7 +101,8 @@ pub fn hotspot_info() -> &'static str {
          on stage joins it directly: no router, no internet needed. Join the network with the password \
          shown here, then open the web UI link. The computer's Wi-Fi then serves the hotspot \
          (a Wi-Fi connection it had may drop); a wired network keeps working. With many devices \
-         a router reaches further."
+         a router reaches further. On Android 17 and later, allow the browser \"Local network\" \
+         access in its app permissions, or the page does not load."
     }
 }
 

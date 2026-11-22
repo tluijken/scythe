@@ -758,6 +758,9 @@ and the `claude mcp add` command. Under it, "Start a Wi-Fi hotspot" turns the co
 Wi-Fi network named Scythe while the window is open, so a tablet joins it without a router:
 Windows' mobile hotspot (kept on while Scythe runs, also offline) or NetworkManager's on Linux;
 macOS lets no program start one, so there Internet Sharing is set up by hand.
+The section shows QR codes to join that network and to open the web UI. Android 17 and later
+asks each app for local network access: the browser on the tablet needs it ("Local network"
+under the app's permissions), or the page does not load.
 The window runs the control API, control surfaces and marker actions on a thread of their own,
 so they keep their pace (commands answered in a few ms, events at 20 a second) while the window
 is hidden or minimised; only actions that need the window wait for its next frame.
