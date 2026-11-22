@@ -421,7 +421,8 @@ fn main() -> eframe::Result {
                 Some(Ok((server, commands))) => {
                     eprintln!("control API: http://{}/api", server.addr());
                     let from_command_line = control_from_command_line;
-                    app.view.control_api = Some(remote::Serving { addr: server.addr(), token, from_command_line });
+                    let addr = server.addr();
+                    app.view.control_api = Some(remote::Serving { addr, token, from_command_line, hotspot: None });
                     (Some(server), Some(commands))
                 }
                 Some(Err(e)) => {
@@ -434,9 +435,13 @@ fn main() -> eframe::Result {
             let remote_prefs = app.prefs.remote.clone();
             let hotspot = if control.is_some() && remote_prefs.hotspot && remote::HOTSPOT_SUPPORTED {
                 let password = remote_prefs.hotspot_password.unwrap_or_else(remote::new_password);
-                remote::Hotspot::start(scythe_core::prefs::HOTSPOT_SSID, &password)
+                let started = remote::Hotspot::start(scythe_core::prefs::HOTSPOT_SSID, &password)
                     .map_err(|e| app.notify(e))
-                    .ok()
+                    .ok();
+                if let (Some(_), Some(serving)) = (&started, app.view.control_api.as_mut()) {
+                    serving.hotspot = Some(password);
+                }
+                started
             } else {
                 None
             };

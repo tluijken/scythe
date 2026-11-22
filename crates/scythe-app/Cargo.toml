@@ -30,6 +30,7 @@ serde_json.workspace = true
 ureq.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
+qrcodegen.workspace = true
 hound.workspace = true
 rayon.workspace = true
 image.workspace = true

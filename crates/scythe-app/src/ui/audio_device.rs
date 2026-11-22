@@ -717,6 +717,16 @@ fn remote(app: &mut ScytheApp, ui: &mut Ui) {
                 app.notify("Copied the command that adds Scythe to Claude Code");
             }
             end_row(ui, r);
+            if !serving.addr.ip().is_loopback() {
+                let mut codes = Vec::new();
+                if let Some(password) = &serving.hotspot {
+                    let wifi = crate::remote::wifi_qr(scythe_core::prefs::HOTSPOT_SSID, password);
+                    codes.push(("1. Join the Wi-Fi".to_owned(), wifi));
+                }
+                let open = if codes.is_empty() { "Open the web UI" } else { "2. Open the web UI" };
+                codes.push((open.to_owned(), serving.web_link()));
+                qr_codes(ui, &codes);
+            }
             let base = crate::remote::local_base(serving.addr);
             let mut text = format!("Serving at {base}: the web UI, and MCP at {base}/mcp.");
             let same = now.enabled
@@ -734,6 +744,42 @@ fn remote(app: &mut ScytheApp, ui: &mut Ui) {
     }
     if now.enabled && crate::remote::is_public(now.addr()) {
         note(ui, "Other devices need the token, which the web UI link holds. Musicians get links of their own there.");
+    }
+}
+
+/// QR codes side by side for a phone or tablet camera, each a caption and the text it holds.
+fn qr_codes(ui: &mut Ui, codes: &[(String, String)]) {
+    const SIDE: f32 = 176.0;
+    let r = ui.allocate_space(vec2(ui.available_width(), SIDE + 34.0)).1;
+    let painter = ui.painter();
+    for (i, (caption, text)) in codes.iter().enumerate() {
+        let left = r.left() + 12.0 + i as f32 * (SIDE + 28.0);
+        let square = Rect::from_min_size(pos2(left, r.top() + 4.0), vec2(SIDE, SIDE));
+        painter.rect_filled(square, CornerRadius::same(8), egui::Color32::WHITE);
+        match qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Medium) {
+            Ok(qr) => {
+                // Whole pixels per module, so neighbours meet without seams, and a quiet zone
+                // of three modules or more around them.
+                let n = qr.size();
+                let module = (SIDE / (n + 6) as f32).floor().max(1.0);
+                let origin = (square.center() - vec2(module * n as f32 / 2.0, module * n as f32 / 2.0)).round();
+                for y in 0..n {
+                    for x in 0..n {
+                        if qr.get_module(x, y) {
+                            let at = origin + vec2(x as f32 * module, y as f32 * module);
+                            let dot = Rect::from_min_size(at, vec2(module, module));
+                            painter.rect_filled(dot, CornerRadius::ZERO, egui::Color32::BLACK);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                let black = egui::Color32::BLACK;
+                painter.text(square.center(), Align2::CENTER_CENTER, "Too long", theme::regular(11.0), black);
+            }
+        }
+        let below = pos2(square.center().x, square.bottom() + 15.0);
+        painter.text(below, Align2::CENTER_CENTER, caption, theme::regular(12.0), TEXT);
     }
 }
 

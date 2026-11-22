@@ -13,6 +13,26 @@ pub struct Serving {
     pub token: Option<String>,
     /// Started by `--control` or `SCYTHE_CONTROL`, which go before the preferences.
     pub from_command_line: bool,
+    /// The hotspot's password, while Scythe runs one.
+    pub hotspot: Option<String>,
+}
+
+/// The address this computer has on its own hotspot: what Windows' mobile hotspot and
+/// NetworkManager's shared Wi-Fi give it.
+pub const HOTSPOT_ADDR: &str = if cfg!(windows) { "192.168.137.1" } else { "10.42.0.1" };
+
+/// The text of a QR code that joins a WPA Wi-Fi network, as phone cameras read it.
+pub fn wifi_qr(ssid: &str, password: &str) -> String {
+    let escape = |s: &str| {
+        s.chars().fold(String::new(), |mut out, c| {
+            if matches!(c, '\\' | ';' | ',' | ':' | '"') {
+                out.push('\\');
+            }
+            out.push(c);
+            out
+        })
+    };
+    format!("WIFI:T:WPA;S:{};P:{};;", escape(ssid), escape(password))
 }
 
 /// The server the preferences ask for, `None` when they leave it off; `Err` says the address
@@ -158,9 +178,15 @@ impl Serving {
         self.token.as_ref().map(|t| format!("?token={t}")).unwrap_or_default()
     }
 
-    /// The web UI's address for a tablet: on the network when the server is, else on this computer.
+    /// The web UI's address for a tablet: on the hotspot while Scythe runs one, else on the
+    /// network when the server is, else on this computer.
     pub fn web_link(&self) -> String {
-        let network = scythe_server::server::origins(self.addr).into_iter().next();
+        let on_hotspot = self.hotspot.is_some() && self.addr.ip().is_unspecified();
+        let network = if on_hotspot {
+            Some(format!("http://{HOTSPOT_ADDR}:{}", self.addr.port()))
+        } else {
+            scythe_server::server::origins(self.addr).into_iter().next()
+        };
         let base = network.unwrap_or_else(|| local_base(self.addr));
         format!("{base}/{}", self.token_query())
     }
@@ -200,13 +226,21 @@ mod tests {
         assert_eq!(new_password().len(), 12);
         assert!(is_public("0.0.0.0:8770") && !is_public("127.0.0.1:8770"));
         let addr = "127.0.0.1:8770".parse().unwrap();
-        let s = Serving { addr, token: Some("abc".into()), from_command_line: false };
+        let s = Serving { addr, token: Some("abc".into()), from_command_line: false, hotspot: None };
         assert_eq!(s.web_link(), "http://127.0.0.1:8770/?token=abc");
         assert_eq!(
             s.claude_command(),
             "claude mcp add --transport http scythe http://127.0.0.1:8770/mcp --header \"Authorization: Bearer abc\""
         );
+        let everywhere = Serving { addr: "0.0.0.0:8770".parse().unwrap(), hotspot: Some("pw".into()), ..s.clone() };
+        assert_eq!(everywhere.web_link(), format!("http://{HOTSPOT_ADDR}:8770/?token=abc"));
         let open = Serving { token: None, ..s };
         assert_eq!(open.web_link(), "http://127.0.0.1:8770/");
+    }
+
+    #[test]
+    fn wifi_codes_escape_what_the_format_reserves() {
+        assert_eq!(wifi_qr("Scythe", "2be28w2vh3w5"), "WIFI:T:WPA;S:Scythe;P:2be28w2vh3w5;;");
+        assert_eq!(wifi_qr("a;b", "c:d\\"), "WIFI:T:WPA;S:a\\;b;P:c\\:d\\\\;;");
     }
 }
