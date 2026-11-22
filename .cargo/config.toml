@@ -1,0 +1,6 @@
+# Links the C runtime into every Windows (MSVC) binary instead of loading VCRUNTIME140.dll at
+# start, which a Windows without the Visual C++ Redistributable does not have. The cc crate builds
+# the C code of ring and asio-sys with /MT to match. Set for every build, not only releases, so CI
+# builds and tests the same programs the installer ships.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

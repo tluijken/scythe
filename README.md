@@ -116,8 +116,9 @@ cargo wix -p scythe-app --no-build --nocapture   # target\wix\scythe-app-<versio
 It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a Start menu entry,
 and the licenses in its install folder;
 adding them to `PATH` and opening `.RPP` files with Scythe are features to pick in the setup (the
-file association is off by default). The installer is not signed, so SmartScreen warns before it
-runs.
+file association is off by default). The programs carry their own C runtime (`.cargo/config.toml`),
+so they need no Visual C++ Redistributable. The installer is not signed, so SmartScreen warns before
+it runs: More info > Run anyway.
 
 ### macOS
 

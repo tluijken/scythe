@@ -40,6 +40,14 @@ case "$(uname -s)" in
     MINGW* | MSYS* | CYGWIN*)
         name=scythe-$version-windows-x86_64
         cargo build --release --locked "${packages[@]}"
+        # .cargo/config.toml links the C runtime in; a program that imports it instead fails to
+        # start on a Windows without the Visual C++ Redistributable.
+        for bin in "${bins[@]}"; do
+            if grep -qai 'vcruntime140' "$target_dir/release/$bin.exe"; then
+                echo "$bin.exe needs VCRUNTIME140.dll: is RUSTFLAGS set, overriding .cargo/config.toml?" >&2
+                exit 1
+            fi
+        done
         rm -rf "$target_dir/notices"
         "$here/notices.sh" "$target_dir/notices" scythe-app windows
         cargo wix -p scythe-app --no-build --nocapture --output "$out/$name.msi"
