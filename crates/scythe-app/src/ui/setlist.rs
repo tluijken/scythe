@@ -176,7 +176,7 @@ fn stage_view(app: &mut ScytheApp, ui: &mut Ui, rect: Rect, songs: &[Song], list
 fn scroll(ui: &Ui, id: Id, area: Rect, content_h: f32) -> f32 {
     let max = (content_h - area.height()).max(0.0);
     let mut offset: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
-    if ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| area.contains(p)) {
+    if ui.rect_contains_pointer(area) {
         offset -= ui.ctx().input(|i| i.smooth_scroll_delta.y);
     }
     offset = offset.clamp(0.0, max);

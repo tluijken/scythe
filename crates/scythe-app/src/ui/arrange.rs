@@ -142,7 +142,8 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
 
 fn handle_scroll(app: &mut ScytheApp, ui: &Ui, area: Rect, lanes_left: f32, rows: Rect) {
     let hover = ui.ctx().input(|i| i.pointer.hover_pos());
-    let Some(pos) = hover.filter(|p| area.contains(*p)) else { return };
+    // Not through a window over the lanes (the audio device window's own scrolling, say).
+    let Some(pos) = hover.filter(|p| area.contains(*p) && ui.rect_contains_pointer(area)) else { return };
     let (scroll, zoom, mods) = ui.ctx().input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers));
     if zoom != 1.0 && pos.x >= lanes_left {
         let axis = TimeAxis { left: lanes_left, start: app.view.start, pps: app.view.px_per_sec };

@@ -53,7 +53,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let max_scroll = (content_w - strips_area.width()).max(0.0);
     let scroll_id = Id::unique("mixer-scroll");
     let mut scroll: f32 = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0.0);
-    if ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| strips_area.contains(p)) {
+    if ui.rect_contains_pointer(strips_area) {
         let d = ui.ctx().input(|i| i.smooth_scroll_delta);
         scroll -= if d.x != 0.0 { d.x } else { d.y };
     }

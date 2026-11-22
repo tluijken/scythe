@@ -261,8 +261,9 @@ fn section(ui: &mut Ui, title: &str) {
     ui.painter().text(r.left_center(), Align2::LEFT_CENTER, title, theme::semibold(12.0), TEXT_DIM);
 }
 
+/// A dim line under a section, wrapped to the window's width (the theme does not wrap labels).
 fn note(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).color(TEXT_DIM).font(theme::regular(11.0)));
+    ui.add(egui::Label::new(RichText::new(text).color(TEXT_DIM).font(theme::regular(11.0))).wrap());
 }
 
 /// A row of the page: its label on the left, the rest for the control.
