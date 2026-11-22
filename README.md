@@ -397,6 +397,23 @@ interoperability goal.
 - r8brain free (`RENDER_RESAMPLE 10`) is a Rust implementation of r8brain-free-src 6.x (MIT,
   Aleksey Vaneev); marker actions follow the SWS extension's rules, read from its source (MIT).
 
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by
+[SignPath Foundation](https://signpath.org).
+
+The Windows installer and programs of a release are built from this repository by the
+[release workflow](.github/workflows/release.yml) on GitHub's runners and signed there through
+SignPath; each signing is approved by hand.
+
+- Committers and reviewers: [Thomas Luijken](https://github.com/tluijken)
+- Approvers: [Thomas Luijken](https://github.com/tluijken)
+
+Privacy: this program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. The
+[privacy policy](PRIVACY.md) says when Scythe uses the network.
+
+
 ## License
 
 Scythe is licensed under either of the [MIT license](LICENSE-MIT) or the
