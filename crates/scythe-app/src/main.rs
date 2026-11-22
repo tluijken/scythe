@@ -127,6 +127,17 @@ fn render_headless(
     Ok(())
 }
 
+/// Draws through Direct3D 12 instead of wgpu's first pick, Vulkan, unless `WGPU_BACKEND` names
+/// another: older Intel graphics drivers (igvk64.dll) crash the moment Vulkan opens the window,
+/// and Direct3D is what every Windows graphics driver is tested with.
+#[cfg(windows)]
+fn prefer_direct3d() {
+    if std::env::var_os("WGPU_BACKEND").is_none() {
+        // SAFETY: the first thing main does, before any thread is started.
+        unsafe { std::env::set_var("WGPU_BACKEND", "dx12") };
+    }
+}
+
 /// The control API to serve beside the window: `--control ADDR` (or `SCYTHE_CONTROL`), with
 /// `--control-token` (or `SCYTHE_CONTROL_TOKEN`) for clients to present.
 fn control_config(args: &[String]) -> Result<Option<scythe_server::ServerConfig>, String> {
@@ -234,6 +245,8 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(windows)]
+    prefer_direct3d();
     #[cfg(all(windows, not(debug_assertions)))]
     attach_console();
     if let Some(code) = scythe_engine::plugin_scan::helper_main(&std::env::args().collect::<Vec<_>>()) {

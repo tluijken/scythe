@@ -1292,5 +1292,7 @@ Debug builds compile `scythe-engine` at `opt-level = 1` and all dependencies at 
 build plays real projects (a live set's media loads in 10 s instead of 23 s and plays at 5 %
 DSP load instead of 13 %), at about 5 s more per engine rebuild.
 `SCYTHE_UI_SCALE=0.75` scales the UI (0.5–3).
+On Windows the window draws through Direct3D 12, as older Intel drivers crash under Vulkan;
+`WGPU_BACKEND=vulkan` (or `gl`) picks another.
 
 The demo stems are synthesised on first launch into `$XDG_DATA_HOME/scythe/demo`.
