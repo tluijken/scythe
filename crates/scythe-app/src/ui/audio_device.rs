@@ -325,7 +325,8 @@ fn info_switch_row(ui: &mut Ui, label: &str, on: bool, enabled: bool, info: &str
     let fg = if enabled { TEXT } else { TEXT_DIM };
     ui.painter().text(r.left_center() + vec2(12.0, 0.0), Align2::LEFT_CENTER, label, theme::regular(12.0), fg);
     let dot = pos2(r.right() - 70.0, r.center().y);
-    let hover = ui.interact(Rect::from_center_size(dot, vec2(18.0, 18.0)), ui.id().with(label), egui::Sense::hover());
+    let id = ui.scope_id().with(label);
+    let hover = ui.interact(Rect::from_center_size(dot, vec2(18.0, 18.0)), id, egui::Sense::hover());
     let ring = if hover.hovered() { TEXT } else { TEXT_DIM };
     ui.painter().circle_stroke(dot, 7.5, egui::Stroke::new(1.2, ring));
     ui.painter().text(dot, Align2::CENTER_CENTER, "i", theme::semibold(11.0), ring);
