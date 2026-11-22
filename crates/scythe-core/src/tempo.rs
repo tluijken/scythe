@@ -328,8 +328,10 @@ impl Timeline {
         loop {
             let q = m.qn + k as f64 * m.beat_qn();
             let next = self.measures.iter().find(|n| n.qn > m.qn + 1e-9);
+            // A signature change placed through a ramp lands a rounding error off the beat it
+            // is on; the old bar's beat that close to it is the new bar's first, not one more.
             if let Some(n) = next
-                && q >= n.qn - 1e-9
+                && q >= n.qn - 1e-6
             {
                 m = *n;
                 k = 0;
@@ -385,6 +387,19 @@ mod tests {
         assert!((bb.fraction - 0.5).abs() < 1e-9);
         assert_eq!(t.format_bar_beat(0.0), "1.1.00");
         assert_eq!(t.bar_start(3), 4.0);
+    }
+
+    #[test]
+    fn a_signature_change_a_rounding_error_late_clicks_once() {
+        // Four beats at 120 end at 2 s; the 3/4 change sits a hair after that, as a ramp's
+        // arithmetic puts it.
+        let mut t = TempoMap::constant(120.0, 4, 4);
+        t.points.push(TempoPoint { time_sig: Some((3, 4)), ..TempoPoint::new(2.0 + 1e-9, 120.0) });
+        let mut beats = Vec::new();
+        t.timeline().for_each_beat(0.0, 3.4, |time, down| beats.push((time, down)));
+        let times: Vec<f64> = beats.iter().map(|b| (b.0 * 1000.0).round() / 1000.0).collect();
+        assert_eq!(times, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], "no second click at 2 s");
+        assert!(beats[4].1 && !beats[5].1 && !beats[6].1, "the 3/4 bar starts at 2 s");
     }
 
     #[test]
