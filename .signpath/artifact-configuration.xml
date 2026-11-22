@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The artifact configuration "windows" of the SignPath project "scythe", kept here as its source:
+  SignPath uses the copy in its web interface, so paste a change there too. release.yml uploads
+  the MSI and the zip that scripts/release/package.sh makes as one GitHub artifact, which
+  upload-artifact zips. SignPath signs the programs inside the MSI before the MSI itself.
+  The paths of the programs inside the MSI are not yet checked against SignPath: try the
+  configuration on an unsigned MSI in SignPath first.
+-->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <msi-file path="scythe-${version}-windows-x86_64.msi" subject="Scythe" author="Thomas Luijken">
+      <pe-file-set product-name="Scythe" product-version="${version}">
+        <include path="scythe-app.exe" />
+        <include path="scythe-server.exe" />
+        <include path="scythe-mcp.exe" />
+        <for-each>
+          <authenticode-sign />
+        </for-each>
+      </pe-file-set>
+      <authenticode-sign />
+    </msi-file>
+    <zip-file path="scythe-${version}-windows-x86_64.zip">
+      <directory path="scythe-${version}-windows-x86_64">
+        <pe-file-set product-name="Scythe" product-version="${version}">
+          <include path="scythe-app.exe" />
+          <include path="scythe-server.exe" />
+          <include path="scythe-mcp.exe" />
+          <for-each>
+            <authenticode-sign />
+          </for-each>
+        </pe-file-set>
+      </directory>
+    </zip-file>
+  </zip-file>
+</artifact-configuration>

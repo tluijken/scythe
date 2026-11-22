@@ -41,8 +41,11 @@ Windows build plays through WASAPI.
    ```
 
    The workflow's first job fails when the tag is not `v` followed by the workspace version.
+   Once SignPath signs the Windows files (below), approve the signing request in SignPath when
+   the workflow waits for it; it waits an hour.
 4. When the workflow is done, open the draft under Releases. Check that every file above is
-   there, and edit the notes GitHub generated from the merged pull requests and commits.
+   there, and edit the notes GitHub generated from the merged pull requests and commits. Keep a
+   link to the [code signing policy](../README.md#code-signing-policy) in the notes.
 5. Publish the draft.
 
 A failed run makes no release. Fix the cause on `main`, then move the tag to the fixed commit
@@ -53,6 +56,27 @@ alone is enough: it replaces the files of a draft it already made.
 The ScyEQ-Pro plugin depends on [plugin-format](https://github.com/tluijken/plugin-format) at a
 tag; `PLUGIN_FORMAT_TAG` in `.github/workflows/scyeq-plugin.yml` names the same tag, for its
 bundle and validation scripts, and changes with it.
+
+## Signing on Windows
+
+SignPath Foundation signs the MSI and the programs in it and in the zip, for free as an
+open-source project; the README's [code signing policy](../README.md#code-signing-policy) is part
+of its conditions, as are product name Scythe and the release version in every program (set by
+`crates/scythe-app/winres.rs`). Until the repository has the variable below, the workflow skips
+signing and the Windows files stay unsigned. Set it up once:
+
+1. Apply at [signpath.org/apply](https://signpath.org/apply) and wait for approval. Turn on
+   multi-factor authentication for GitHub and SignPath.
+2. In SignPath, link the predefined GitHub.com trusted build system to the project, with the
+   project slug `scythe`, and add the artifact configuration `windows` from
+   `.signpath/artifact-configuration.xml`. Check it once on an unsigned MSI of a run by hand: the
+   paths of the programs inside the MSI are not verified yet.
+3. Make a CI user in SignPath that may submit to the `test-signing` and `release-signing`
+   policies, and add its API token as the repository secret `SIGNPATH_API_TOKEN` and the
+   organization ID as the repository variable `SIGNPATH_ORGANIZATION_ID`.
+
+A run by hand is then signed with the test certificate, which Windows does not trust; a tag with
+the release certificate, after an approver approves it in SignPath.
 
 ## Building a release locally
 

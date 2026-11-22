@@ -4299,6 +4299,7 @@ dependencies = [
 name = "scythe-mcp"
 version = "0.1.1"
 dependencies = [
+ "embed-resource",
  "hound",
  "libc",
  "schemars",
@@ -4317,6 +4318,7 @@ name = "scythe-server"
 version = "0.1.1"
 dependencies = [
  "axum",
+ "embed-resource",
  "futures-util",
  "getrandom 0.3.4",
  "libc",

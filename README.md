@@ -117,8 +117,9 @@ It installs Scythe, `scythe-server` and `scythe-mcp` under Program Files with a 
 and the licenses in its install folder;
 adding them to `PATH` and opening `.RPP` files with Scythe are features to pick in the setup (the
 file association is off by default). The programs carry their own C runtime (`.cargo/config.toml`),
-so they need no Visual C++ Redistributable. The installer is not signed, so SmartScreen warns before
-it runs: More info > Run anyway.
+so they need no Visual C++ Redistributable. Releases are signed through SignPath (see the
+[code signing policy](#code-signing-policy)); an unsigned build makes SmartScreen warn before it
+runs: More info > Run anyway.
 
 ### macOS
 
@@ -413,7 +414,6 @@ SignPath; each signing is approved by hand.
 Privacy: this program will not transfer any information to other networked systems unless
 specifically requested by the user or the person installing or operating it. The
 [privacy policy](PRIVACY.md) says when Scythe uses the network.
-
 
 ## License
 
