@@ -560,11 +560,20 @@ fn media_threads() -> &'static rayon::ThreadPool {
         rayon::ThreadPoolBuilder::new()
             .num_threads(cores.saturating_sub(1).max(1))
             .thread_name(|i| format!("scythe-media-{i}"))
-            // Per thread on Linux only; elsewhere it would lower the whole process.
+            // Per thread on Linux and Windows; on macOS `setpriority` would lower the whole
+            // process. On Windows a set loading at normal priority on every core but one kept
+            // WASAPI's capture thread from reading in time ("buffer underrun or overrun").
             .start_handler(|_| {
                 #[cfg(target_os = "linux")]
                 unsafe {
                     libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                }
+                #[cfg(windows)]
+                unsafe {
+                    use windows_sys::Win32::System::Threading::{
+                        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+                    };
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                 }
             })
             .build()

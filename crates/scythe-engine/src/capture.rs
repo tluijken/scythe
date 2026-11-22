@@ -159,7 +159,17 @@ where
                 scratch.extend(data.iter().map(|s| s.to_sample::<f32>()));
                 feed.push(&scratch);
             },
-            |e| eprintln!("input stream error: {e}"),
+            // A starved capture thread reports every lost buffer; the 1st, 2nd, 4th, 8th… say
+            // it with the count so far, so a burst does not flood the console.
+            {
+                let errors = AtomicU64::new(0);
+                move |e| {
+                    let n = errors.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_power_of_two() {
+                        eprintln!("input stream error ({n} so far): {e}");
+                    }
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())
