@@ -17,6 +17,11 @@ jobs:
       CARGO_TERM_COLOR: always
       # ASIO is built with bindgen; the runner image ships LLVM here.
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    # Not pwsh: asio-sys unpacks the ASIO SDK with Windows PowerShell, which under pwsh inherits
+    # PowerShell 7's module path and fails in its Expand-Archive (ExtractToDirectory).
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
