@@ -125,6 +125,17 @@ button, or `transport.metronome`, `transport.metronome_output` and `transport.co
 - Turning the metronome off silences the click during songs and drops the project's count-in;
   a setlist's count-in still clicks. For a click during count-ins only, leave the metronome on
   and turn off "run during playback" in the project (REAPER's metronome settings).
+- **From a recorded click to a tempo map.** A set whose click is audio (rendered click files
+  on a click track) can get a tempo map and click sources instead:
+  `cargo run --release -p scythe-engine --example click_tempo -- set.RPP Clicks out.RPP` finds
+  every click on the track, takes the rarest click sound as each bar's first beat, fits tempo
+  markers (constant stretches and linear ramps, within 3 ms of every click) and time
+  signatures, sets the project's timebase to time so the audio stays put, puts a click source
+  over each stretch of clicks and mutes the recorded ones. Silences between songs get whole
+  one-beat bars, so no bar is cut short. `click_render_check` renders the click track and
+  checks every click against the recording. A 45-minute set of 14 songs (11,738 clicks, with
+  ritardandos and odd meters) became 373 markers, 34 of them ramps; the render played every
+  click once, within 3.1 ms.
 
 ## Footswitches, tablets and control surfaces
 

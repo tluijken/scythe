@@ -239,7 +239,8 @@ mod tests {
             File::options().write(true).open(&path).unwrap().set_modified(now - age).unwrap();
         }
         cache.prune();
-        let left: Vec<bool> = ["old", "mid", "new"].iter().map(|n| dir.join(format!("{n}.scymedia")).exists()).collect();
+        let left: Vec<bool> =
+            ["old", "mid", "new"].iter().map(|n| dir.join(format!("{n}.scymedia")).exists()).collect();
         assert_eq!(left, [false, true, true], "down to 80 % of the limit, oldest first");
         assert!(worth_keeping(Path::new("x.wav"), 44_100, 48_000));
         assert!(worth_keeping(Path::new("x.mp3"), 48_000, 48_000));
