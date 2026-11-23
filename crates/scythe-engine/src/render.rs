@@ -113,8 +113,10 @@ impl GainAutomation {
 #[derive(Debug, Clone)]
 pub enum ItemAudio {
     Media(Arc<AudioData>),
-    /// A metronome source (RPP `<SOURCE CLICK`): clicks on every beat of the tempo map.
-    Click,
+    /// A metronome source (RPP `<SOURCE CLICK`): its clicks as project frames, each with whether
+    /// it starts a bar, counted from the item's start as REAPER does
+    /// (`Timeline::for_each_item_beat`).
+    Click(Arc<Vec<(i64, bool)>>),
     /// A MIDI source played by the built-in preview instrument.
     Midi(Arc<NoteList>),
     /// The timecode generator (RPP `<SOURCE LTC`): LTC audio, or MTC to the track's MIDI
@@ -825,7 +827,13 @@ impl RenderGraph {
                         // A processed copy runs on its own time axis, `time` times the source's.
                         let mut time = 1.0;
                         let audio = match &take.source {
-                            Source::Raw(c) if c.args().first().is_some_and(|k| k == "CLICK") => ItemAudio::Click,
+                            Source::Raw(c) if c.args().first().is_some_and(|k| k == "CLICK") => {
+                                let mut clicks = Vec::new();
+                                timeline.for_each_item_beat(it.position, it.end(), |t, down| {
+                                    clicks.push(((t * sr).round() as i64, down));
+                                });
+                                ItemAudio::Click(Arc::new(clicks))
+                            }
                             Source::Raw(c) if c.args().first().is_some_and(|k| k == "MIDI") => {
                                 ItemAudio::Midi(Arc::new(midi_notes(c, it, take, &timeline, sample_rate)?))
                             }
@@ -1628,10 +1636,10 @@ impl RenderGraph {
                     }
                 }
                 ItemAudio::Timecode(_) => {}
-                ItemAudio::Click => {
+                ItemAudio::Click(clicks) => {
                     let from = read.max(item.start);
                     let to = (read + n as i64).min(item.start + item.length);
-                    self.mix_clicks(read, from..to, item.gain_l, item.gain_r, tl, tr);
+                    self.mix_item_clicks(item, clicks, read, from..to, tl, tr);
                 }
             }
         }
@@ -2195,20 +2203,40 @@ impl RenderGraph {
         scratch.track_bufs[ti] = (l, r);
     }
 
-    /// Adds the clicks sounding in project frames `range` to buffers that start at `block_start`.
-    fn mix_clicks(
+    /// Adds a click item's clicks sounding in project frames `range` to buffers that start at
+    /// `block_start`: the metronome's accent on each bar's first click, its beat on the rest,
+    /// through the item's volume, fades and take envelopes (a mute envelope silences clicks the
+    /// way it silences audio).
+    fn mix_item_clicks(
         &self,
+        item: &RenderItem,
+        clicks: &[(i64, bool)],
         block_start: i64,
         range: std::ops::Range<i64>,
-        gain_l: f32,
-        gain_r: f32,
         out_l: &mut [f32],
         out_r: &mut [f32],
     ) {
-        self.beat_clicks(block_start, range, |o, s| {
-            out_l[o] += s * gain_l;
-            out_r[o] += s * gain_r;
-        });
+        if range.is_empty() {
+            return;
+        }
+        let sr = self.sample_rate as f64;
+        let tail = self.clicks.accent.len().max(self.clicks.beat.len()) as i64;
+        let first = clicks.partition_point(|c| c.0 + tail <= range.start);
+        for &(at, downbeat) in clicks[first..].iter().take_while(|c| c.0 < range.end) {
+            let sound = if downbeat { &self.clicks.accent } else { &self.clicks.beat };
+            let (from, to) = (range.start.max(at), range.end.min(at + sound.len() as i64));
+            for frame in from..to {
+                let rel = frame - item.start;
+                let (gl, gr) = match &item.automation {
+                    Some(auto) => auto.gains_at(rel as f64 / sr),
+                    None => (item.gain_l, item.gain_r),
+                };
+                let s = sound[(frame - at) as usize] * fade_gain(rel, item.length, &item.fade_in, &item.fade_out);
+                let o = (frame - block_start) as usize;
+                out_l[o] += s * gl;
+                out_r[o] += s * gr;
+            }
+        }
     }
 
     /// Calls `f(offset, sample)` for the metronome samples `clicks` plays in the `n` frames of a

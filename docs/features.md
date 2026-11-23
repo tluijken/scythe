@@ -969,7 +969,7 @@ while their labels stay REAPER's. The same is in the control API (`agents.activi
 ## Playback, rendering and formats
 
 - **Playback** of audio items (WAV/FLAC/MP3/OGG/AAC…), reversed and sectioned items (`<SOURCE
-  SECTION>`), click-source items and MIDI items (through a built-in preview instrument: drums on
+  SECTION>`), click-source items (their bars count from the item's start, the first click accented, each bar the signature in effect where it starts, as REAPER 7.65 plays them) and MIDI items (through a built-in preview instrument: drums on
   channel 10, a soft synth elsewhere). MP3s are read the way REAPER 7.65 reads them: items and the sampler play them
   gapless (the Xing/Info header frame, the encoder and decoder delay and the LAME header's
   padding left out), the sampler holds them to 16-bit range, and both scale by 32767/32768; mid/side

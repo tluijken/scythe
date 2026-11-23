@@ -320,6 +320,26 @@ impl Timeline {
         self.time_at_qn(m.qn + ((q - m.qn) / step).round() * step)
     }
 
+    /// Calls `f(time, is_downbeat)` for every click of a click source item playing `[start, end)`,
+    /// as REAPER 7.65 plays one: its beats count from the item's start rather than the project's
+    /// bar lines, its first bar starts there, and each bar lasts the signature in effect where it
+    /// starts. A take's start offset does not move them.
+    pub fn for_each_item_beat(&self, start: f64, end: f64, mut f: impl FnMut(f64, bool)) {
+        let q_end = self.qn_at(end);
+        let mut q = self.qn_at(start);
+        while q < q_end - 1e-9 {
+            let m = self.measure_at_qn(q + 1e-9);
+            for b in 0..m.num {
+                let beat = q + f64::from(b) * m.beat_qn();
+                if beat >= q_end - 1e-9 {
+                    return;
+                }
+                f(self.time_at_qn(beat), b == 0);
+            }
+            q += m.bar_qn();
+        }
+    }
+
     /// Calls `f(time, is_downbeat)` for every beat in `[t0, t1)`.
     pub fn for_each_beat(&self, t0: f64, t1: f64, mut f: impl FnMut(f64, bool)) {
         let (q0, q1) = (self.qn_at(t0), self.qn_at(t1));
@@ -400,6 +420,20 @@ mod tests {
         let times: Vec<f64> = beats.iter().map(|b| (b.0 * 1000.0).round() / 1000.0).collect();
         assert_eq!(times, [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0], "no second click at 2 s");
         assert!(beats[4].1 && !beats[5].1 && !beats[6].1, "the 3/4 bar starts at 2 s");
+    }
+
+    #[test]
+    fn a_click_item_counts_its_bars_from_its_own_start() {
+        // REAPER 7.65: 120 bpm in 4/4, 3/4 from the bar line at 2 s, a click source from 0.5 s
+        // to 8.5 s accents 0.5, 2.5, 4, 5.5 and 7 s, and clicks every half second.
+        let mut t = TempoMap::constant(120.0, 4, 4);
+        t.points.push(TempoPoint { time_sig: Some((3, 4)), ..TempoPoint::new(2.0, 120.0) });
+        let mut clicks = Vec::new();
+        t.timeline().for_each_item_beat(0.5, 8.5, |time, down| clicks.push((time, down)));
+        let times: Vec<f64> = clicks.iter().map(|c| c.0).collect();
+        assert_eq!(times, (1..17).map(|k| f64::from(k) * 0.5).collect::<Vec<_>>());
+        let accents: Vec<f64> = clicks.iter().filter(|c| c.1).map(|c| c.0).collect();
+        assert_eq!(accents, [0.5, 2.5, 4.0, 5.5, 7.0]);
     }
 
     #[test]
