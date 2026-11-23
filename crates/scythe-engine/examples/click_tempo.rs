@@ -6,6 +6,7 @@
 //! stays where it is. Prints how far each generated click lands from the recorded one.
 //!
 //! cargo run --release -p scythe-engine --example click_tempo -- <in.RPP> <track> <out.RPP>
+use scythe_core::envelope::{EnvPoint, Envelope, EnvelopeKind, PointShape};
 use scythe_core::model::{Item, Source};
 use scythe_core::rpp::{Chunk, read_project, resolve_media_path, write_project};
 use scythe_core::tempo::{TempoMap, TempoPoint};
@@ -58,6 +59,8 @@ fn main() {
 
     let mut points: Vec<TempoPoint> = Vec::new();
     let mut runs_done: Vec<&Vec<Click>> = Vec::new();
+    // Where each stretch's first bar starts: its first click, or the bar line before a pickup.
+    let mut bar_starts: Vec<f64> = Vec::new();
     let debug_at: Option<f64> = std::env::var("CLICK_DEBUG_AT").ok().and_then(|v| v.parse().ok());
     for run in &runs {
         let segs = fit(run);
@@ -90,6 +93,7 @@ fn main() {
             }
         };
         let mine = run_points(run, &segs, after);
+        bar_starts.push(mine[0].time);
         // The silence up to this stretch is whole one-beat bars at about 120 bpm, so every
         // signature change lands on a bar line: no bar is cut short, which REAPER only keeps
         // as it is when a marker allows a partial measure.
@@ -175,10 +179,12 @@ fn main() {
     for item in &mut project.tracks[ti].items {
         item.muted = true;
     }
-    for run in &runs {
+    // A click source counts its bars from its own start and accents its first click (REAPER
+    // 7.65, and Scythe after it), so each starts on its stretch's first bar line. Beats of that
+    // bar before the first recorded click (a pickup) are muted with a take mute envelope.
+    for (run, &start) in runs.iter().zip(&bar_starts) {
         let last = run.last().unwrap().t;
         let tail = if run.len() > 1 { (last - run[run.len() - 2].t) * 0.75 } else { 0.3 };
-        let start = run[0].t - 0.002;
         let mut take = template.clone();
         take.name = "Click source".into();
         take.source = Source::Raw(click_source());
@@ -186,6 +192,12 @@ fn main() {
         take.playrate = 1.0;
         take.stretch_markers.clear();
         take.envelopes.clear();
+        if start < run[0].t - 1e-6 {
+            let mut mute = Envelope::new(EnvelopeKind::Mute);
+            let square = |t: f64, v: f64| EnvPoint { shape: PointShape::Square, ..EnvPoint::new(t, v) };
+            mute.points = vec![square(0.0, 0.0), square(run[0].t - start - 0.01, 1.0)];
+            take.envelopes.push(mute);
+        }
         let mut item = Item::new(start, last + tail - start, take);
         item.fade_in.length = 0.0;
         item.fade_out.length = 0.0;

@@ -36,23 +36,39 @@ fn main() {
     for (i, s) in mono.iter().enumerate() {
         if s.abs() > peak * 0.1 {
             if silent >= quiet {
-                heard.push(start + i as f64 / sr as f64);
+                // Its pitch: zero crossings in the 10 ms after the onset.
+                let seg = &mono[i..(i + sr as usize / 100).min(mono.len())];
+                let crossings = seg.windows(2).filter(|w| (w[0] < 0.0) != (w[1] < 0.0)).count();
+                heard.push((start + i as f64 / sr as f64, crossings));
             }
             silent = 0;
         } else {
             silent += 1;
         }
     }
-    let wanted: Vec<f64> = std::fs::read_to_string(&list)
+    let wanted: Vec<(f64, bool)> = std::fs::read_to_string(&list)
         .unwrap()
         .lines()
-        .filter_map(|l| l.split_whitespace().next()?.parse().ok())
-        .filter(|&t: &f64| t >= start + 0.01 && t < end - 0.05)
+        .filter_map(|l| {
+            let mut w = l.split_whitespace();
+            Some((w.next()?.parse().ok()?, w.next()? == "1"))
+        })
+        .filter(|&(t, _): &(f64, bool)| t >= start + 0.01 && t < end - 0.05)
         .collect();
+    // The accent is the higher of the metronome's two sounds.
+    let (lo, hi) = heard.iter().fold((usize::MAX, 0), |(lo, hi), h| (lo.min(h.1), hi.max(h.1)));
+    let mut accents_off = 0;
     let mut worst: f64 = 0.0;
     let mut missing = 0;
-    for w in &wanted {
-        let near = heard.iter().map(|h| (h - w).abs()).fold(f64::INFINITY, f64::min);
+    for &(w, accent) in &wanted {
+        let nearest = heard.iter().min_by(|a, b| (a.0 - w).abs().total_cmp(&(b.0 - w).abs())).unwrap();
+        let near = (nearest.0 - w).abs();
+        if near <= 0.005 && (nearest.1 * 2 > lo + hi) != accent {
+            accents_off += 1;
+            if accents_off <= 5 {
+                println!("  click at {w:.4}: accent {} where the recording has {accent}", !accent);
+            }
+        }
         if near > 0.005 {
             missing += 1;
             if missing <= 5 {
@@ -62,12 +78,13 @@ fn main() {
             worst = worst.max(near);
         }
     }
-    let extra: Vec<f64> = heard.iter().copied().filter(|h| wanted.iter().all(|w| (w - h).abs() > 0.005)).collect();
+    let extra: Vec<f64> =
+        heard.iter().map(|h| h.0).filter(|h| wanted.iter().all(|w| (w.0 - h).abs() > 0.005)).collect();
     for e in extra.iter().take(5) {
         println!("  click heard at {e:.4} that the recording does not have");
     }
     println!(
-        "{start:.1}..{end:.1}: {} recorded clicks, {} heard, {missing} missing, {} extra, worst {:.2} ms",
+        "{start:.1}..{end:.1}: {} recorded clicks, {} heard, {missing} missing, {} extra, worst {:.2} ms, accents off {accents_off}",
         wanted.len(),
         heard.len(),
         extra.len(),
