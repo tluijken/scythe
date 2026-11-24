@@ -1165,7 +1165,7 @@ impl Engine {
                     cpal::BufferSize::Default => None,
                 };
                 let host = crate::devices::host_name(&self.devices);
-                let input = crate::devices::input_device(&self.devices).ok().and_then(|d| {
+                let input = crate::devices::input_device_beside(&self.devices, Some(device)).ok().and_then(|d| {
                     let (config, _) = crate::devices::input_config(&d, &self.devices, self.info.sample_rate).ok()?;
                     Some((crate::devices::device_name(&d), crate::devices::device_id(&d), config.channels as usize))
                 });
@@ -1624,9 +1624,18 @@ impl Engine {
         }
     }
 
+    /// The device playing the output, when there is one.
+    fn output_device(&self) -> Option<&cpal::Device> {
+        match &self.output {
+            Output::Device(out) => Some(&out.device),
+            _ => None,
+        }
+    }
+
     fn open_capture(&mut self) -> Result<(), String> {
+        let device = crate::devices::input_device_beside(&self.devices, self.output_device())?;
         let (capture, rx) =
-            crate::capture::Capture::open(&self.devices, self.info.sample_rate, self.input_map.as_deref())?;
+            crate::capture::Capture::open(device, &self.devices, self.info.sample_rate, self.input_map.as_deref())?;
         let _ = self.input_tx.send(Some(InputFeed { rx, channels: capture.channels, own_clock: true }));
         self.capture = Some(capture);
         Ok(())

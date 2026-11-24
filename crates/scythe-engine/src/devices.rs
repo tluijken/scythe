@@ -263,6 +263,20 @@ pub fn input_device(request: &DeviceRequest) -> Result<cpal::Device, String> {
     }
 }
 
+/// [`input_device`], where on ASIO the driver already playing the output (`output`) is the input
+/// too when the request names it or no other: an ASIO driver loads once, and while it runs, the
+/// host can neither enumerate nor load it again (its inputs then seem to be missing).
+pub fn input_device_beside(request: &DeviceRequest, output: Option<&cpal::Device>) -> Result<cpal::Device, String> {
+    let asio = host_name(request).eq_ignore_ascii_case("ASIO");
+    if let Some(out) = output.filter(|_| asio && !request.no_input) {
+        let same = |name: &str| name.eq_ignore_ascii_case(&device_name(out)) || name == device_id(out);
+        if request.input.as_deref().is_none_or(same) {
+            return Ok(out.clone());
+        }
+    }
+    input_device(request)
+}
+
 /// The devices to choose from, as REAPER's device page offers them: on ALSA one entry per sound
 /// card (`hw:QUADCAPTURE`, named `USB-Audio - QUAD-CAPTURE`) in both lists, not every PCM name
 /// ALSA knows; nothing on PulseAudio, whose page plays on the server's default device; JACK's

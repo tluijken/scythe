@@ -48,13 +48,14 @@ pub struct Capture {
 impl Capture {
     /// Opens the input `devices` names at `rate`, and the ring monitoring reads. `map` gives each
     /// input slot its hardware channel (-1 for none).
+    /// Opens `device` (`devices::input_device_beside` finds it) as `devices` asks.
     pub fn open(
+        device: cpal::Device,
         devices: &DeviceRequest,
         rate: u32,
         map: Option<&[i32]>,
     ) -> Result<(Self, rtrb::Consumer<f32>), String> {
         crate::devices::apply_periods(devices);
-        let device = crate::devices::input_device(devices)?;
         let name = crate::devices::device_name(&device);
         let (config, format) = crate::devices::input_config(&device, devices, rate)?;
         let hardware = config.channels as usize;

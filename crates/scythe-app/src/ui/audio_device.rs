@@ -145,8 +145,8 @@ impl Draft {
         let alsa = system == Some(AudioSystem::Alsa);
         DeviceRequest {
             host: Some(self.system.clone()),
-            output: self.output.clone().filter(|_| alsa),
-            input: self.input.clone().filter(|_| alsa),
+            output: self.output.clone().filter(|_| picks_devices(system)),
+            input: self.input.clone().filter(|_| picks_devices(system)),
             sample_rate: (!jack).then_some(self.sample_rate),
             buffer_size: (!jack).then_some(self.block_size),
             output_channels: Some(if dummy { 2 } else { self.output_channels.max(1) }),
@@ -187,6 +187,13 @@ pub fn latency_lines(health: &Health) -> Option<(String, String)> {
         measured.push_str(&format!(", input {:.1} ms", input * 1000.0));
     }
     Some((figure, measured))
+}
+
+/// Whether an audio system has devices to choose: ALSA, and Windows' WASAPI and macOS' CoreAudio
+/// (which `AudioSystem` does not name); JACK and PulseAudio route through their servers, and
+/// Dummy has none.
+fn picks_devices(system: Option<AudioSystem>) -> bool {
+    !matches!(system, Some(AudioSystem::Jack | AudioSystem::Dummy | AudioSystem::PulseAudio))
 }
 
 /// Says the system default device plays (no device chosen), so the interface still has to be
@@ -462,7 +469,7 @@ fn device_page(app: &mut ScytheApp, ui: &mut Ui, state: &mut AudioDeviceWindow) 
             let at = pos2(r.left() + 92.0, r.center().y);
             ui.painter().text(at, Align2::LEFT_CENTER, format!("of {m}"), theme::regular(11.0), TEXT_DIM);
         }
-        if alsa {
+        if picks_devices(system) {
             let device = Rect::from_min_max(pos2(r.left() + 140.0, r.top()), r.max);
             let name = if input { "Input device" } else { "Output device" };
             let chosen = if input { &mut state.draft.input } else { &mut state.draft.output };
@@ -673,7 +680,11 @@ fn device_choice(
         .iter()
         .filter(|d| d.host.eq_ignore_ascii_case(host) && if input { d.input } else { d.output })
         .collect();
-    let label = |d: &DeviceEntry| if d.id == d.name { d.id.clone() } else { format!("{} ; {}", d.id, d.name) };
+    // ALSA's ids (`hw:CARD=…`) say something; WASAPI's and CoreAudio's are opaque, so only the name.
+    let alsa = AudioSystem::from_host(host) == Some(AudioSystem::Alsa);
+    let label = |d: &DeviceEntry| {
+        if d.id == d.name || !alsa { d.name.clone() } else { format!("{} ; {}", d.id, d.name) }
+    };
     let shown = match chosen {
         None => default.clone(),
         Some(c) => offered.iter().find(|d| d.id == *c || d.name == *c).map_or(c.clone(), |d| label(d)),
