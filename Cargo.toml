@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/scyeq-dsp", "crates/scythe-decode", "crates/scythe-chooser", "crates/scyeq-ui", "crates/scyeq-plugin", "crates/scythe-core", "crates/scythe-engine", "crates/scythe-session", "crates/scythe-server", "crates/scythe-mcp", "crates/scythe-surface", "crates/scythe-app", "crates/scythe-itest", "crates/clap-test-gain", "crates/lv2-test-plugins", "crates/vst3-test-plugin", "crates/vst2-test-plugin"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
