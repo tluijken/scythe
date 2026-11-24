@@ -69,6 +69,7 @@ impl ScytheApp {
             ("40078".into(), self.view.show_mixer),
             ("_SCYTHE_TOGGLE_SETLIST".into(), self.view.setlist),
             ("_SCYTHE_TOGGLE_MONITOR_MIXES".into(), self.view.monitor_page),
+            ("41046".into(), self.view.tempo_envelope),
             ("40377".into(), self.view.keyboard_open),
             ("40605".into(), self.view.actions.is_some()),
             (menus::OPEN_MAIN_TOOLBAR.to_string(), self.view.main_toolbar),
@@ -133,6 +134,7 @@ impl ScytheApp {
             ("row_height", v.row_h.to_string()),
             ("zoom", v.px_per_sec.to_string()),
             ("keyboard", (v.keyboard_open as u8).to_string()),
+            ("tempo_envelope", (v.tempo_envelope as u8).to_string()),
             ("midi_devices", (v.midi_devices_open as u8).to_string()),
             ("actions", (v.actions.is_some() as u8).to_string()),
             ("regions", regions.to_owned()),
@@ -171,6 +173,7 @@ impl ScytheApp {
             v.px_per_sec = z.clamp(2.0, 2000.0);
         }
         v.keyboard_open = flag("keyboard").unwrap_or(v.keyboard_open);
+        v.tempo_envelope = flag("tempo_envelope").unwrap_or(v.tempo_envelope);
         v.midi_devices_open = flag("midi_devices").unwrap_or(v.midi_devices_open);
         match flag("actions") {
             Some(true) if v.actions.is_none() => v.actions = Some(Default::default()),

@@ -162,6 +162,7 @@ const FIXED: &[(&str, &str, Runs)] = &[
     // View.
     ("40078", "View: Toggle mixer visible", W),
     ("_SCYTHE_TOGGLE_ENVELOPE_LANES", "View: Toggle envelope lanes", W),
+    ("41046", "Track: Toggle show master tempo envelope", W),
     // Automation.
     ("40876", "Global automation override: No override (set automation modes per track)", S),
     ("40878", "Global automation override: All automation in trim/read mode", S),

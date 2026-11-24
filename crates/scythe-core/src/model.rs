@@ -924,6 +924,9 @@ pub struct Track {
     pub folder_compact: u8,
     /// The mixer hides the folder's children (`BUSCOMP` field 2).
     pub mixer_collapsed: bool,
+    /// The track's own height in the track view, in points (`TRACKHEIGHT` field 1, REAPER's
+    /// `I_HEIGHTOVERRIDE`); `None` (0) follows the view's track height.
+    pub height: Option<f32>,
     /// Whether the track feeds its parent folder, or the master when it has none.
     pub main_send: bool,
     /// Track pan law (`VOLPAN` field 3); negative means the project default.
@@ -1075,6 +1078,7 @@ impl Track {
             folder_depth: 0,
             folder_compact: 0,
             mixer_collapsed: false,
+            height: None,
             main_send: true,
             pan_law: -1.0,
             auto_mode: AutoMode::TrimRead,

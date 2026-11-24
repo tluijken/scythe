@@ -56,8 +56,12 @@ pub enum Tab {
 }
 
 impl Tab {
-    const ALL: [(Tab, &'static str); 4] =
-        [(Tab::Device, "Device"), (Tab::Playback, "Playback"), (Tab::Channels, "Channels"), (Tab::Remote, "Web UI & MCP")];
+    const ALL: [(Tab, &'static str); 4] = [
+        (Tab::Device, "Device"),
+        (Tab::Playback, "Playback"),
+        (Tab::Channels, "Channels"),
+        (Tab::Remote, "Web UI & MCP"),
+    ];
 }
 
 /// The web UI pages a QR code can open: each with a caption and its path.

@@ -345,8 +345,7 @@ fn card(app: &mut ScytheApp, ui: &mut Ui, painter: &egui::Painter, r: Rect, area
     let scroll_id = Id::unique(("monitor-sources-scroll", id.0));
     let content_h = sources.len() as f32 * ROW_H;
     let mut scroll: f32 = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0.0);
-    if ui.rect_contains_pointer(list.intersect(visible)) && !ui.ctx().input(|i| i.modifiers.shift)
-    {
+    if ui.rect_contains_pointer(list.intersect(visible)) && !ui.ctx().input(|i| i.modifiers.shift) {
         scroll -= ui.ctx().input(|i| i.smooth_scroll_delta.y);
     }
     scroll = scroll.clamp(0.0, (content_h - list.height()).max(0.0));

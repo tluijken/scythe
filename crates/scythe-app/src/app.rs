@@ -66,6 +66,9 @@ pub struct ViewState {
     pub fit: Option<TimeRange>,
     /// The monitor mixes page replaces the arrange view and mixer.
     pub monitor_page: bool,
+    /// The tempo map shows as a lane at the top of the arrange view, over every track, as
+    /// REAPER shows the master's tempo envelope ("Track: Toggle show master tempo envelope").
+    pub tempo_envelope: bool,
     pub monitor_wizard: Option<crate::ui::monitor::Wizard>,
     pub cue_dialog: Option<crate::ui::monitor::Wizard>,
     /// The setlist page replaces the arrange view.
@@ -273,6 +276,7 @@ impl ScytheApp {
                 editing: Default::default(),
                 fit: None,
                 monitor_page: false,
+                tempo_envelope: false,
                 monitor_wizard: None,
                 cue_dialog: None,
                 setlist: false,

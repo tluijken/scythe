@@ -140,6 +140,11 @@ fn bit(b: bool) -> String {
     if b { "1" } else { "0" }.to_owned()
 }
 
+/// `TRACKHEIGHT`'s first field: the track's own height in whole points, 0 for the default.
+fn track_height(height: Option<f32>) -> String {
+    height.map_or(0, |h| h.round().max(1.0) as i64).to_string()
+}
+
 /// The byte order of a stored colour, as the letter REAPER writes after a marker's: red in the
 /// low byte ("R") or blue ("B"). Track colours are measured as "R" on Linux and Windows alike.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -533,6 +538,10 @@ fn parse_track(c: &Chunk) -> (Track, Vec<(usize, Send)>) {
                         track.dual_pan = [num(&t, 4, -1.0), num(&t, 5, 1.0)];
                     }
                     "ISBUS" => track.folder_depth = num(&t, 2, 0.0) as i32,
+                    "TRACKHEIGHT" => {
+                        track.height = Some(num(&t, 1, 0.0) as f32).filter(|h| *h > 0.0);
+                        track.extra.push(node.clone());
+                    }
                     "BUSCOMP" => {
                         track.folder_compact = num(&t, 1, 0.0).clamp(0.0, 2.0) as u8;
                         track.mixer_collapsed = flag(&t, 2);
@@ -1429,6 +1438,7 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     let mut wrote_envs = Vec::new();
     let (mut wrote_phase, mut wrote_pan_mode, mut wrote_width, mut wrote_groups) = (false, false, false, false);
     let mut wrote_beat = false;
+    let mut wrote_height = false;
     for node in &t.extra {
         match node {
             Node::Chunk(ch) if let Some(kind) = EnvelopeKind::from_chunk_name(ch.name()) => {
@@ -1491,6 +1501,14 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
             Node::Line(l) if line_key(l) == "BEAT" => {
                 c.line(["BEAT".to_owned(), t.timebase.map_or(-1, |b| b.rpp_code()).to_string()]);
                 wrote_beat = true;
+            }
+            Node::Line(l) if line_key(l) == "TRACKHEIGHT" => {
+                let mut tokens = tokenize(l);
+                if tokens.len() > 1 {
+                    tokens[1] = track_height(t.height);
+                }
+                c.line(tokens);
+                wrote_height = true;
             }
             Node::Line(l) if matches!(line_key(l), "GROUP_FLAGS" | "GROUP_FLAGS_HIGH") => {
                 if !wrote_groups {
@@ -1555,6 +1573,18 @@ fn write_track(p: &Project, t: &Track) -> Chunk {
     }
     if !wrote_phase && t.phase {
         c.line(["IPHASE", "1"]);
+    }
+    if !wrote_height && t.height.is_some() {
+        c.line([
+            "TRACKHEIGHT".to_owned(),
+            track_height(t.height),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+        ]);
     }
     if let (false, Some(m)) = (wrote_pan_mode, t.pan_mode) {
         c.line(["PANMODE".to_owned(), m.code().to_string()]);
@@ -2185,6 +2215,23 @@ mod tests {
         assert!(p2.tracks[0].fx[1].enabled);
         assert!(!p2.tracks[0].armed);
         assert_eq!(p2.tracks[0].items[0].position, 70.0);
+    }
+
+    #[test]
+    fn a_tracks_own_height_round_trips_through_trackheight() {
+        let text = "<REAPER_PROJECT 0.1 \"7.65/win64\" 0\n  <TRACK {A}\n    NAME A\n    TRACKHEIGHT 0 1 0 0 0 0 0\n  >\n  <TRACK {B}\n    NAME B\n    TRACKHEIGHT 140 0 0 0 0 0 0\n  >\n  <TRACK {C}\n    NAME C\n  >\n>\n";
+        let mut p = project_from_rpp(text).unwrap();
+        let heights: Vec<_> = p.tracks.iter().map(|t| t.height).collect();
+        assert_eq!(heights, [None, Some(140.0), None]);
+        p.tracks[0].height = Some(96.4);
+        p.tracks[1].height = None;
+        p.tracks[2].height = Some(30.0);
+        let out = project_to_rpp(&p);
+        assert!(out.contains("TRACKHEIGHT 96 1 0 0 0 0 0"), "the other fields stay: {out}");
+        assert!(out.contains("TRACKHEIGHT 0 0 0 0 0 0 0"), "{out}");
+        assert!(out.contains("TRACKHEIGHT 30 0 0 0 0 0 0"), "{out}");
+        let back = project_from_rpp(&out).unwrap();
+        assert_eq!(back.tracks.iter().map(|t| t.height).collect::<Vec<_>>(), [Some(96.0), None, Some(30.0)]);
     }
 
     #[test]

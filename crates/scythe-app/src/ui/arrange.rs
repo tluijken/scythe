@@ -19,6 +19,8 @@ const RULER_H: f32 = 52.0;
 /// Track header layout needs this much height for its button row.
 const FULL_ROW_H: f32 = 56.0;
 const ROW_GAP: f32 = 4.0;
+/// Height of the tempo map's lane at the top ("Track: Toggle show master tempo envelope").
+const TEMPO_ROW_H: f32 = 72.0;
 /// Height of a track inside a folder set to small.
 const SMALL_ROW_H: f32 = 26.0;
 
@@ -37,6 +39,59 @@ impl TimeAxis {
 
     fn t(&self, x: f32) -> f64 {
         self.start + (x - self.left) as f64 / self.pps
+    }
+}
+
+/// Heights a track can be dragged to, per lane.
+const TRACK_HEIGHTS: std::ops::RangeInclusive<f32> = 30.0..=400.0;
+
+/// A track's height per lane: its own (`TRACKHEIGHT`), else the view's.
+fn track_height(app: &ScytheApp, t: &scythe_core::Track) -> f32 {
+    t.height.unwrap_or(app.view.row_h)
+}
+
+/// The lower edge of a track's header: drag it to set that track's height, as in REAPER;
+/// double-click it to follow the view's track height again. Every track has one, at every folder
+/// level, also inside a folder set to small (`small`: the row is one lane high). Registered after
+/// the header, so it wins over the header's own drag (moving the track) along that edge.
+fn track_resize_edge(
+    app: &mut ScytheApp,
+    ui: &mut Ui,
+    head: Rect,
+    rows: Rect,
+    track: &scythe_core::Track,
+    small: bool,
+) {
+    let edge = Rect::from_min_max(pos2(head.left(), head.bottom() - 4.0), pos2(head.right(), head.bottom() + ROW_GAP))
+        .intersect(rows);
+    if edge.height() <= 0.0 {
+        return;
+    }
+    let resp = ui
+        .interact(edge, Id::unique(("track-height", track.id)), Sense::click_and_drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeVertical)
+        .on_hover_text("Drag to set this track's height; double-click for the default");
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Height of {}", track.name)));
+    let id = track.id;
+    if resp.double_clicked() {
+        app.change_view(|p| {
+            if let Some(t) = p.track_mut(id) {
+                t.height = None;
+            }
+        });
+    } else if resp.dragged()
+        && let Some(y) = resp.interact_pointer_pos().map(|p| p.y)
+    {
+        // A compact row is one lane high whatever lanes the track has.
+        let lanes = if small { 1.0 } else { track.height_in_lanes().max(1) as f32 };
+        let h = ((y - head.top()) / lanes).clamp(*TRACK_HEIGHTS.start(), *TRACK_HEIGHTS.end()).round();
+        if track.height != Some(h) {
+            app.change_view(|p| {
+                if let Some(t) = p.track_mut(id) {
+                    t.height = Some(h);
+                }
+            });
+        }
     }
 }
 
@@ -59,8 +114,9 @@ impl RowLayout {
                     heights.push(0.0);
                     continue;
                 }
-                RowShow::Small => SMALL_ROW_H.min(app.view.row_h),
-                RowShow::Normal => app.view.row_h * t.height_in_lanes() as f32,
+                // A folder set to small shows its children compact, unless one has a height of its own.
+                RowShow::Small => t.height.unwrap_or(SMALL_ROW_H.min(app.view.row_h)),
+                RowShow::Normal => track_height(app, t) * t.height_in_lanes() as f32,
             };
             tops.push(top);
             heights.push(h);
@@ -105,7 +161,13 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
         ui.ctx().request_repaint();
     }
     let ruler = Rect::from_min_max(inner.min, pos2(inner.right(), inner.top() + RULER_H));
-    let rows = Rect::from_min_max(pos2(inner.left(), ruler.bottom() + 6.0), inner.max);
+    let mut rows = Rect::from_min_max(pos2(inner.left(), ruler.bottom() + 6.0), inner.max);
+    // The tempo map's lane sits above the tracks and stays put while they scroll.
+    let tempo_row = app.view.tempo_envelope.then(|| {
+        let row = Rect::from_min_size(rows.min, vec2(rows.width(), TEMPO_ROW_H));
+        rows.min.y = row.bottom() + ROW_GAP;
+        row
+    });
 
     handle_scroll(app, ui, inner, lanes_left, rows);
     follow_playhead(app, lanes_w);
@@ -114,6 +176,13 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     ruler_header(app, ui, Rect::from_min_max(ruler.min, pos2(lanes_left - 8.0, ruler.bottom())));
     ruler_timeline(app, ui, Rect::from_min_max(pos2(lanes_left, ruler.top()), ruler.max), axis);
 
+    if let Some(row) = tempo_row {
+        let clip = ui.painter().with_clip_rect(row);
+        let head = Rect::from_min_size(row.min, vec2(HEADER_W, row.height()));
+        clip.rect_filled(head, CornerRadius::same(12), RAISED);
+        let area = Rect::from_min_max(pos2(lanes_left, row.top()), row.max);
+        crate::ui::envelope_lanes::tempo_row(app, ui, &clip, head, area, axis.start, axis.pps);
+    }
     let clip = ui.painter().with_clip_rect(rows);
     track_rows(app, ui, rows, axis, &clip);
 
@@ -559,7 +628,6 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
     let subs = if app.project.editing.grid.lines { sub_lines(app, axis, rows.right()) } else { Vec::new() };
     let n = app.project.tracks.len();
     let scroll = app.view.track_scroll;
-    let row_h = app.view.row_h;
     let layout = RowLayout::new(app);
     // An item dragged onto a later track moves there mid-frame and would be drawn (and its
     // widget registered) a second time on that row.
@@ -625,8 +693,8 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         if layout.heights[i] <= 0.0 || row.bottom() < rows.top() || row.top() > rows.bottom() {
             continue;
         }
-        let row_h = if shows[i] == RowShow::Small { layout.heights[i] } else { row_h };
         let track = app.project.tracks[i].clone();
+        let row_h = if shows[i] == RowShow::Small { layout.heights[i] } else { track_height(app, &track) };
         let selected = app.is_track_selected(track.id);
         let audible = routing.heard(i);
         let color = track_color(track.color);
@@ -761,6 +829,9 @@ fn track_rows(app: &mut ScytheApp, ui: &mut Ui, rows: Rect, axis: TimeAxis, clip
         }
         if head_resp.drag_started() {
             crate::ui::folders::start_drag(app, ui, track.id, false);
+        }
+        if shows[i] != RowShow::Hidden {
+            track_resize_edge(app, ui, head, rows, &track, shows[i] == RowShow::Small);
         }
 
         // Lane.

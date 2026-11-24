@@ -28,7 +28,7 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   remove them and close the gap (`Ctrl+Alt+X`, markers and envelopes follow), or insert empty
   space. Takes (`T` cycles), item mute (`U`), marker
   navigation (`[` `]`), fixed lanes drawn as lanes, tracks moved with `Ctrl+↑/↓` and into or out of folders with
-  `Ctrl+→/←` (on every selected track), track height with `PageUp`/`PageDown` (compact rows below 56 points). Click a
+  `Ctrl+→/←` (on every selected track), track height with `PageUp`/`PageDown` (compact rows below 56 points), and one track's own by dragging the lower edge of its header, at any folder level (`TRACKHEIGHT`, so REAPER keeps it; double-click the edge to follow the view's height again; a track with its own height keeps it inside a folder set to small). Click a
   track's colour dot for a palette; markers jump on click, rename on double-click and delete on
   right-click. Razor edits: Alt+drag (over items too) marks a time range on every track it
   crosses (Shift+Alt adds more); `Delete` removes what lies inside, copy/cut take those pieces
@@ -96,7 +96,9 @@ compared with REAPER 7.73 is in [verification.md](verification.md).
   ruler, grid, snap, metronome and MIDI; tempo markers on the ruler, `Shift+C` inserts one at the
   cursor, the bpm control edits the tempo in effect at the cursor. As in REAPER, right-click a
   tempo marker for "Edit time signature marker..." (also a double-click: tempo, time signature,
-  gradual transition) and "Remove time signature marker" (also Alt+click).
+  gradual transition) and "Remove time signature marker" (also Alt+click). "Track: Toggle show
+  master tempo envelope" (REAPER's 41046, in the action palette) shows the tempo map as a lane at
+  the top of the arrange view, over every track, edited like the envelope lanes.
 - **Item timing**: take stretch markers (`SM`, with slopes) play in every stretch mode: without
   "Keep pitch" the source is read with the render's sinc at the position the markers give, the
   kernel following the local speed; with it (or a pitch change) the item is cut into pieces of

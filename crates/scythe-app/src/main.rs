@@ -435,9 +435,8 @@ fn main() -> eframe::Result {
             let remote_prefs = app.prefs.remote.clone();
             let hotspot = if control.is_some() && remote_prefs.hotspot && remote::HOTSPOT_SUPPORTED {
                 let password = remote_prefs.hotspot_password.unwrap_or_else(remote::new_password);
-                let started = remote::Hotspot::start(scythe_core::prefs::HOTSPOT_SSID, &password)
-                    .map_err(|e| app.notify(e))
-                    .ok();
+                let started =
+                    remote::Hotspot::start(scythe_core::prefs::HOTSPOT_SSID, &password).map_err(|e| app.notify(e)).ok();
                 if let (Some(_), Some(serving)) = (&started, app.view.control_api.as_mut()) {
                     serving.hotspot = Some(password);
                 }

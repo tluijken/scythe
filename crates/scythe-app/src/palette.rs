@@ -108,6 +108,7 @@ pub enum Action {
     NamSnapshotC,
     NamSnapshotD,
     ShowMonitorMixes,
+    ShowTempoEnvelope,
     NewMonitorMix,
     CreateCueBus,
     ToggleSetlist,
@@ -243,6 +244,7 @@ impl Action {
         Action::NamSnapshotC,
         Action::NamSnapshotD,
         Action::ShowMonitorMixes,
+        Action::ShowTempoEnvelope,
         Action::NewMonitorMix,
         Action::CreateCueBus,
         Action::ToggleSetlist,
@@ -392,6 +394,7 @@ impl Action {
             Action::NamSnapshotC => named("_SCYTHE_NAM_SNAPSHOT_C"),
             Action::NamSnapshotD => named("_SCYTHE_NAM_SNAPSHOT_D"),
             Action::ShowMonitorMixes => named("_SCYTHE_TOGGLE_MONITOR_MIXES"),
+            Action::ShowTempoEnvelope => id(41046),
             Action::NewMonitorMix => named("_SCYTHE_NEW_MONITOR_MIX"),
             Action::CreateCueBus => named("_SCYTHE_CREATE_CUE_BUS"),
             Action::ToggleSetlist => named("_SCYTHE_TOGGLE_SETLIST"),
@@ -519,7 +522,7 @@ impl Action {
             Action::NamSnapshotB => k(Modifiers::ALT, Key::Num2),
             Action::NamSnapshotC => k(Modifiers::ALT, Key::Num3),
             Action::NamSnapshotD => k(Modifiers::ALT, Key::Num4),
-            Action::ShowMonitorMixes | Action::NewMonitorMix | Action::CreateCueBus => None,
+            Action::ShowMonitorMixes | Action::ShowTempoEnvelope | Action::NewMonitorMix | Action::CreateCueBus => None,
             Action::ToggleSetlist => k(Modifiers::NONE, Key::L),
             Action::SetlistPlay => k(Modifiers::NONE, Key::Enter),
             Action::SetlistNext => k(Modifiers::NONE, Key::N),
@@ -821,6 +824,7 @@ impl Action {
                     p.global_automation = (!on).then_some(scythe_core::model::GlobalAutomation::Bypass);
                 });
             }
+            Action::ShowTempoEnvelope => app.view.tempo_envelope = !app.view.tempo_envelope,
             Action::ShowMonitorMixes => {
                 app.view.monitor_page = !app.view.monitor_page;
                 app.view.setlist = false;

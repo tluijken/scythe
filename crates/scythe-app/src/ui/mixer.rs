@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Ui, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, Id, Rect, Sense, Stroke, Ui, pos2, vec2};
 use scythe_core::TrackId;
 use scythe_core::fader::{PanMode, db_to_slider, slider_to_db};
 use scythe_core::units::{db_to_gain, format_db, format_pan, gain_to_db};
@@ -10,6 +10,8 @@ use crate::ui::widgets;
 
 const STRIP_W: f32 = 108.0;
 const STRIP_GAP: f32 = 8.0;
+/// Room between the master and the first track strip, with a line in its middle.
+const MASTER_GAP: f32 = 18.0;
 const FADER_H: f32 = 116.0;
 /// Fader travel follows REAPER's fader law, from silence to +12 dB.
 pub fn fader_position(gain: f64) -> f32 {
@@ -44,12 +46,20 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     };
     painter.text(inner.right_top() + vec2(0.0, 9.0), Align2::RIGHT_CENTER, header, theme::mono(11.0), TEXT_DIM);
 
-    let strips_area = Rect::from_min_max(pos2(inner.left(), inner.top() + 30.0), inner.max);
+    // The master stands on the left, as in REAPER's mixer, and stays there while the tracks
+    // scroll beside it.
+    let all = Rect::from_min_max(pos2(inner.left(), inner.top() + 30.0), inner.max);
+    let strip_h = all.height().min(190.0);
+    let master = Rect::from_min_size(all.min, vec2(STRIP_W, strip_h));
+    strip(app, ui, &painter, master, all, StripTarget::Master, true);
+    let divider = master.right() + MASTER_GAP / 2.0;
+    painter.vline(divider, (all.top() + 8.0)..=(all.top() + strip_h - 8.0), Stroke::new(1.0, RAISED));
+    let strips_area = Rect::from_min_max(pos2(master.right() + MASTER_GAP, all.top()), all.max);
     let hidden = app.project.mixer_hidden();
     let ids: Vec<(usize, TrackId)> =
         app.project.tracks.iter().enumerate().filter(|(i, _)| !hidden[*i]).map(|(i, t)| (i, t.id)).collect();
-    let count = ids.len() + 1;
-    let content_w = count as f32 * (STRIP_W + STRIP_GAP) - STRIP_GAP;
+    let count = ids.len();
+    let content_w = (count as f32 * (STRIP_W + STRIP_GAP) - STRIP_GAP).max(0.0);
     let max_scroll = (content_w - strips_area.width()).max(0.0);
     let scroll_id = Id::unique("mixer-scroll");
     let mut scroll: f32 = ui.data(|d| d.get_temp(scroll_id)).unwrap_or(0.0);
@@ -65,8 +75,7 @@ pub fn show(app: &mut ScytheApp, ui: &mut Ui, rect: Rect) {
     let levels = app.project.folder_levels();
     let parents = app.project.folder_parents();
     let strip_x = |k: usize| strips_area.left() + k as f32 * (STRIP_W + STRIP_GAP) - scroll;
-    let strip_h = strips_area.height().min(190.0);
-    let targets = ids.iter().map(|&(i, id)| (Some(i), StripTarget::Track(id))).chain([(None, StripTarget::Master)]);
+    let targets = ids.iter().map(|&(i, id)| (Some(i), StripTarget::Track(id)));
     for (k, (index, target)) in targets.enumerate() {
         let x = strip_x(k);
         let r = Rect::from_min_size(pos2(x, strips_area.top()), vec2(STRIP_W, strip_h));

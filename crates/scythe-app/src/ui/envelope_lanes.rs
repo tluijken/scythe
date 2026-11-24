@@ -475,6 +475,23 @@ fn lfo_menu(ui: &mut Ui, mut pick: impl FnMut(api::LfoSpec)) {
     });
 }
 
+/// The tempo map as a lane of the arrange view, over every track (REAPER's master tempo
+/// envelope): its name in `head`, the curve with its markers in `area`, edited as in the
+/// envelope lanes. `left`, `start` and `pps` are the arrange view's time axis.
+pub fn tempo_row(app: &mut ScytheApp, ui: &mut Ui, clip: &egui::Painter, head: Rect, area: Rect, start: f64, pps: f64) {
+    let lane = Lane {
+        at: EnvRef { track: TrackRef::Name("master".into()), envelope: "tempo".into(), send: None, item: None },
+        label: "Tempo map".into(),
+        color: TEMPO_COLOR,
+        kind: None,
+    };
+    let Ok(env) = api::envelope(&app.project, &lane.at) else { return };
+    lane_header(app, ui, clip, head, &lane, &env);
+    clip.rect_filled(area, CornerRadius::same(10), LANE);
+    let painter = clip.with_clip_rect(area.intersect(clip.clip_rect()));
+    lane_body(app, ui, &painter, area, Axis { left: area.left(), start, pps }, &lane, &env);
+}
+
 fn lane_body(
     app: &mut ScytheApp,
     ui: &mut Ui,

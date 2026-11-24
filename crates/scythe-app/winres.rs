@@ -61,7 +61,5 @@ END
     println!("cargo:rerun-if-changed=build.rs");
     // This file, from each of the three crates (file!() would be relative to the workspace).
     println!("cargo:rerun-if-changed=../scythe-app/winres.rs");
-    embed_resource::compile_for(&path, [bin], embed_resource::NONE)
-        .manifest_optional()
-        .unwrap();
+    embed_resource::compile_for(&path, [bin], embed_resource::NONE).manifest_optional().unwrap();
 }
