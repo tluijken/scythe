@@ -391,10 +391,12 @@ interoperability goal.
 - Rubber Band is GPL-2.0-or-later and only used with the `rubberband` cargo
   feature, off by default (`cargo build -p scythe-app --features rubberband`), also loaded at run
   time (`librubberband`); without it Rubber Band takes use the phase vocoder.
-- ASIO on Windows comes with the `asio` cargo feature, off by default
-  (`cargo build -p scythe-app --features asio`, LLVM installed for libclang). It builds against
-  Steinberg's ASIO SDK, which `asio-sys` downloads at build time; whoever distributes a build
-  with it agrees to Steinberg's ASIO license. Without it Windows plays through WASAPI.
+- ASIO on Windows comes with the `asio` cargo feature, off by default in a plain build
+  (`cargo build -p scythe-app --features asio`, LLVM installed for libclang) and on in the
+  Windows releases, for interfaces whose channels only their ASIO driver offers (a Behringer
+  UMC1820's ADAT inputs, for one). It builds against Steinberg's ASIO SDK, which `asio-sys`
+  downloads at build time; whoever distributes a build with it agrees to Steinberg's ASIO
+  license, as the releases do. Without it Windows plays through WASAPI.
 - r8brain free (`RENDER_RESAMPLE 10`) is a Rust implementation of r8brain-free-src 6.x (MIT,
   Aleksey Vaneev); marker actions follow the SWS extension's rules, read from its source (MIT).
 

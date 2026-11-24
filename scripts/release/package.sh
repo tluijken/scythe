@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Scythe (scythe-app, scythe-server and scythe-mcp) in release, without the asio feature,
+# Builds Scythe (scythe-app, scythe-server and scythe-mcp) in release (on Windows with ASIO),
 # and packs it with the licenses (notices.sh) into <out dir>, as release.yml publishes it, its
 # Linux and macOS programs stripped of their symbols (an MSVC build keeps them apart already):
 #   Linux    scythe-<version>-linux-<arch>.tar.gz
@@ -39,7 +39,10 @@ case "$(uname -s)" in
         ;;
     MINGW* | MSYS* | CYGWIN*)
         name=scythe-$version-windows-x86_64
-        cargo build --release --locked "${packages[@]}"
+        # ASIO, for interfaces whose channels only its driver offers (ADAT on a Behringer UMC1820),
+        # under Steinberg's ASIO license; asio-sys builds it with bindgen, which needs libclang.
+        export LIBCLANG_PATH="${LIBCLANG_PATH:-C:\Program Files\LLVM\bin}"
+        cargo build --release --locked "${packages[@]}" --features scythe-app/asio
         # .cargo/config.toml links the C runtime in; a program that imports it instead fails to
         # start on a Windows without the Visual C++ Redistributable.
         for bin in "${bins[@]}"; do
@@ -49,7 +52,7 @@ case "$(uname -s)" in
             fi
         done
         rm -rf "$target_dir/notices"
-        "$here/notices.sh" "$target_dir/notices" scythe-app windows
+        "$here/notices.sh" "$target_dir/notices" scythe-app windows asio
         cargo wix -p scythe-app --no-build --nocapture --output "$out/$name.msi"
         mkdir -p "$stage/$name"
         for bin in "${bins[@]}"; do
